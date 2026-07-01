@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Onelight mockup: projects</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  /* App world. No borders: separation by value and space.
+     Gradient grammar, everywhere: vertical, dark anchor at top, light terminal at bottom,
+     stops at 0% / ~55% / ~105%. The cards breathe: each gradient drifts slowly,
+     out of phase with its neighbors, and leans toward you on hover. */
+  body {
+    background: linear-gradient(180deg, #0a0d12 0%, var(--ink-000) 100%);
+    color: var(--ink-text);
+    font-size: var(--text-13);
+    min-height: 100vh;
+    display: flex;
+  }
+
+  /* ---- sidebar ---- */
+  .side {
+    width: 210px; flex: none;
+    padding: var(--pad-3) var(--pad-3);
+    display: flex; flex-direction: column; gap: var(--pad-3);
+    min-height: 100vh;
+  }
+  .wordmark { font-family: var(--font-display); font-size: var(--text-16); font-weight: 700; letter-spacing: 0.01em; }
+  .wordmark small { display: block; font-family: var(--font-ui); color: var(--ink-text-dim); font-weight: 400; font-size: var(--text-12); margin-top: 3px; }
+  nav { display: flex; flex-direction: column; gap: 11px; margin-top: var(--pad-2); font-size: var(--text-14); }
+  nav a { text-decoration: none; color: var(--ink-text-dim); font-weight: 500; }
+  nav a.on { color: var(--ink-text); }
+  nav a:hover { color: var(--ink-text); }
+  .side .grow { flex: 1; }
+  .storage { font-size: var(--text-12); color: var(--ink-text-dim); }
+  .storage .bar { height: 3px; background: var(--ink-200); border-radius: 2px; margin-top: 6px; }
+  .storage .bar div { height: 100%; width: 34%; background: var(--accent); border-radius: 2px; }
+
+  /* ---- main ---- */
+  .content { flex: 1; padding: var(--pad-4); min-width: 0; }
+
+  /* ---- right rail: the page's empty space earns its keep.
+       Operational truth a facility actually checks: attention queue, live activity. ---- */
+  .rail {
+    width: 300px; flex: none;
+    padding: var(--pad-4) var(--pad-3) var(--pad-4) 0;
+    display: flex; flex-direction: column; gap: var(--pad-3);
+  }
+  .rail h4 { margin: 0 0 10px; font-size: var(--text-13); font-weight: 600; color: var(--ink-text-dim); }
+  .attn { display: flex; flex-direction: column; gap: 2px; }
+  .attn a {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 9px 10px; margin: 0 -10px; border-radius: var(--radius);
+    text-decoration: none; color: var(--ink-text);
+  }
+  .attn a:hover { background: var(--ink-100); }
+  .attn .dot { width: 6px; height: 6px; border-radius: 50%; margin-top: 6px; flex: none; }
+  .attn .t { font-weight: 500; line-height: 1.35; }
+  .attn .s { color: var(--ink-text-dim); font-size: var(--text-12); margin-top: 1px; }
+  .feed { display: flex; flex-direction: column; }
+  .feed .ev {
+    padding: 8px 0; font-size: var(--text-13); line-height: 1.45;
+    color: var(--ink-text-dim);
+  }
+  .feed .ev b { color: var(--ink-text); font-weight: 500; }
+  .feed .ev .when { font-size: var(--text-11); color: var(--ink-text-dim); opacity: .7; margin-left: 6px; }
+  .head { display: flex; align-items: baseline; gap: var(--pad-2); margin-bottom: var(--pad-4); }
+  .head h1 { font-family: var(--font-display); font-size: var(--text-40); font-weight: 700; margin: 0; letter-spacing: -0.02em; }
+  .head .count { color: var(--ink-text-dim); font-size: var(--text-14); }
+  .head .grow { flex: 1; }
+  .textbtn { background: none; border: none; color: var(--ink-text-dim); font-size: var(--text-13); font-weight: 500; }
+  .textbtn:hover { color: var(--ink-text); }
+  .btn-new {
+    background: var(--accent); color: #0b1214; border: none;
+    border-radius: var(--radius); padding: 8px 16px;
+    font-size: var(--text-12); font-weight: 600;
+  }
+  .btn-new:hover { background: var(--accent-bright); }
+
+  /* ---- cards ---- */
+  .grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    grid-auto-rows: 200px; gap: 14px;
+  }
+  .card {
+    position: relative; display: block; overflow: hidden;
+    border-radius: var(--radius-lg);
+    text-decoration: none; color: var(--ink-text);
+    background-size: 100% 145%;
+    background-position: 50% 0%;
+    animation: breathe 16s ease-in-out infinite alternate;
+    transition: background-position 700ms cubic-bezier(.25,.6,.25,1);
+  }
+  .card:nth-child(2) { animation-delay: -4s; }
+  .card:nth-child(3) { animation-delay: -8s; }
+  .card:nth-child(4) { animation-delay: -12s; }
+  .card:nth-child(5) { animation-delay: -6s; }
+  .card:nth-child(6) { animation-delay: -10s; }
+  @keyframes breathe {
+    from { background-position: 50% 0%; }
+    to   { background-position: 50% 38%; }
+  }
+  .card:hover { background-position: 50% 62%; animation-play-state: paused; }
+  @media (prefers-reduced-motion: reduce) {
+    .card { animation: none; transition: none; }
+  }
+  .card.feature { grid-column: span 2; grid-row: span 2; }
+
+  .card .top {
+    position: absolute; left: 18px; top: 16px; right: 18px;
+  }
+  .card h3 {
+    margin: 0 0 3px; font-family: var(--font-display);
+    font-size: var(--text-20); font-weight: 700;
+    letter-spacing: -0.01em; color: rgba(250,248,244,0.96);
+  }
+  .card.feature h3 { font-size: var(--text-28); }
+  .card .meta {
+    color: rgba(250,248,244,0.62); font-size: var(--text-12); font-weight: 500;
+    display: flex; gap: 14px;
+  }
+  .card .palette {
+    position: absolute; right: 14px; bottom: 12px;
+    font-size: var(--text-11); font-weight: 500;
+    color: rgba(16,18,24,0.52);
+  }
+  .card.dark-foot .palette { color: rgba(250,248,244,0.45); }
+
+  /* Identity washes. One grammar: 180deg, dark 0%, mid ~55%, light ~105%. */
+  .wash-sumimai  { background-image: linear-gradient(180deg, var(--sumimai-a) 0%, var(--sumimai-m) 58%, var(--sumimai-b) 108%); }
+  .wash-kuwanomi { background-image: linear-gradient(180deg, #3d1c2a 0%, var(--kuwanomi-a) 34%, #5a7ba0 76%, var(--kuwanomi-b) 112%); }
+  .wash-tetsukon { background-image: linear-gradient(180deg, #16283a 0%, var(--tetsukon-a) 40%, var(--tetsukon-m) 78%, var(--tetsukon-b) 116%); }
+  .wash-ebicha   { background-image: linear-gradient(180deg, var(--ebicha-a) 0%, var(--ebicha-m) 55%, var(--ebicha-b) 108%); }
+  .wash-yorukou  { background-image: linear-gradient(180deg, var(--yorukou-a) 0%, var(--yorukou-m) 62%, var(--yorukou-b) 108%); }
+  .wash-sakinezu { background-image: linear-gradient(180deg, var(--sakinezu-b) 0%, var(--sakinezu-a) 70%, #55696a 110%); }
+
+  /* ---- continue reviewing ---- */
+  .rowlabel { margin: var(--pad-4) 0 var(--pad-2); color: var(--ink-text-dim); font-size: var(--text-12); font-weight: 500; }
+  .recent { display: flex; flex-direction: column; gap: 2px; }
+  .recent a {
+    display: flex; align-items: center; gap: var(--pad-2);
+    padding: 9px 10px; margin: 0 -10px;
+    text-decoration: none; color: var(--ink-text);
+    border-radius: var(--radius);
+  }
+  .recent a:hover { background: var(--ink-100); }
+  .recent .thumb { width: 64px; aspect-ratio: 16/9; background: var(--ink-300); border-radius: 2px; flex: none; }
+  .recent .name { font-weight: 500; flex: 1; }
+  .recent .sub { color: var(--ink-text-dim); font-size: var(--text-12); }
+</style>
+</head>
+<body>
+
+  <aside class="side">
+    <div class="wordmark">Onelight<small>Halide Post</small></div>
+    <nav>
+      <a class="on" href="#">Projects</a>
+      <a href="#">Shares</a>
+      <a href="#">Activity</a>
+      <a href="#">Members</a>
+      <a href="#">Settings</a>
+    </nav>
+    <div class="grow"></div>
+    <div class="storage">
+      6.8 TB of 20 TB
+      <div class="bar"><div></div></div>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="head">
+      <h1>Projects</h1>
+      <span class="count">6 active</span>
+      <div class="grow"></div>
+      <button class="textbtn">Sort: Active</button>
+      <button class="btn-new">New project</button>
+    </div>
+
+    <div class="grid">
+      <a class="card feature wash-sumimai" href="#">
+        <div class="top">
+          <h3>Nightjar S2</h3>
+          <div class="meta"><span>212 assets</span><span>18 in review</span><span>updated 4h ago</span></div>
+        </div>
+        <span class="palette">Sumimai</span>
+      </a>
+      <a class="card wash-kuwanomi" href="#">
+        <div class="top">
+          <h3>Meridian</h3>
+          <div class="meta"><span>14 assets</span><span>3 in review</span></div>
+        </div>
+        <span class="palette">Kuwanomi</span>
+      </a>
+      <a class="card wash-tetsukon" href="#">
+        <div class="top">
+          <h3>Coldwater Docs</h3>
+          <div class="meta"><span>67 assets</span><span>approved</span></div>
+        </div>
+        <span class="palette">Tetsukon</span>
+      </a>
+      <a class="card wash-ebicha" href="#">
+        <div class="top">
+          <h3>Verdant / Spring</h3>
+          <div class="meta"><span>31 assets</span><span>6 in review</span></div>
+        </div>
+        <span class="palette">Ebicha</span>
+      </a>
+      <a class="card wash-yorukou" href="#">
+        <div class="top">
+          <h3>Stills Library</h3>
+          <div class="meta"><span>890 assets</span></div>
+        </div>
+        <span class="palette">Yorukou</span>
+      </a>
+      <a class="card dark-foot wash-sakinezu" href="#">
+        <div class="top">
+          <h3>Archive 2025</h3>
+          <div class="meta"><span>1,204 assets</span><span>read only</span></div>
+        </div>
+        <span class="palette">Saki-nezu</span>
+      </a>
+    </div>
+
+    <div class="rowlabel">Continue reviewing</div>
+    <div class="recent">
+      <a href="#">
+        <div class="thumb"></div>
+        <span class="name">MER_30_ONLINE &nbsp; v3</span>
+        <span class="sub tc">01:00:12:07 &nbsp; 4 open comments</span>
+      </a>
+      <a href="#">
+        <div class="thumb"></div>
+        <span class="name">NJ_204_ASSEMBLY &nbsp; v11</span>
+        <span class="sub tc">02:14:33:18 &nbsp; 12 open comments</span>
+      </a>
+    </div>
+  </main>
+
+  <aside class="rail">
+    <section>
+      <h4>Needs attention</h4>
+      <div class="attn">
+        <a href="#">
+          <span class="dot" style="background: var(--note);"></span>
+          <span><span class="t">Meridian 30 awaiting approval</span>
+          <div class="s">sent to client 2 days ago, viewed 4 times</div></span>
+        </a>
+        <a href="#">
+          <span class="dot" style="background: var(--warn);"></span>
+          <span><span class="t">Transcode failed: NJ_207_VFX_TEMP</span>
+          <div class="s">truncated MXF, retry or replace</div></span>
+        </a>
+        <a href="#">
+          <span class="dot" style="background: var(--info);"></span>
+          <span><span class="t">Share expiring tomorrow</span>
+          <div class="s">Coldwater rough cuts, extend or let lapse</div></span>
+        </a>
+      </div>
+    </section>
+    <section>
+      <h4>Activity</h4>
+      <div class="feed">
+        <div class="ev"><b>Sarah Chen</b> commented on <b>MER_30_ONLINE</b> v3<span class="when">12m</span></div>
+        <div class="ev"><b>Marcus Webb</b> marked 2 comments complete on <b>NJ_204</b><span class="when">1h</span></div>
+        <div class="ev"><b>C2C ingest</b> added 14 clips to <b>Nightjar S2 / Dailies</b><span class="when">2h</span></div>
+        <div class="ev"><b>Meridian client</b> viewed the summer campaign share<span class="when">3h</span></div>
+        <div class="ev"><b>Renders</b> finished for <b>VER_SPRING_15</b> v2, proxies ready<span class="when">5h</span></div>
+        <div class="ev"><b>Priya Nair</b> uploaded <b>CW_EP3_MIX_v4.wav</b><span class="when">yesterday</span></div>
+      </div>
+    </section>
+  </aside>
+
+</body>
+</html>

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Onelight mockup: sign in</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  /* First surface anyone sees. One quiet gradient (Kuwanomi), one column, nothing else. */
+  /* Same grammar as everywhere: vertical, dark anchor top, light terminal bottom. */
+  body {
+    min-height: 100vh; margin: 0;
+    display: grid; place-items: center;
+    color: var(--ink-text);
+    background: linear-gradient(180deg,
+      #2a1520 0%, var(--kuwanomi-a) 36%, #5a7ba0 78%, var(--kuwanomi-b) 112%);
+  }
+  .panel {
+    width: 360px;
+    background: rgba(13,15,20,0.9);
+    border-radius: var(--radius-lg);
+    padding: var(--pad-4);
+  }
+  h1 { font-family: var(--font-display); font-size: var(--text-28); font-weight: 700; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--ink-text-dim); font-size: var(--text-13); margin: 0 0 28px; }
+  label { display: block; font-size: var(--text-12); font-weight: 500; color: var(--ink-text-dim); margin-bottom: 6px; }
+  input {
+    width: 100%; background: var(--ink-200); color: var(--ink-text);
+    border: none; border-radius: var(--radius);
+    padding: 10px 11px; font-size: var(--text-13); font-family: inherit;
+    margin-bottom: 16px;
+  }
+  input:focus { outline: 1px solid var(--accent); }
+  .btn {
+    width: 100%; padding: 10px; border-radius: var(--radius);
+    font-size: var(--text-13); font-weight: 600; border: none;
+    background: var(--ink-text); color: #10131a;
+  }
+  .divider {
+    display: flex; align-items: center; gap: 12px;
+    color: var(--ink-text-dim); font-size: var(--text-11); margin: 20px 0;
+  }
+  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--ink-300); }
+  .sso {
+    width: 100%; padding: 10px; border-radius: var(--radius);
+    font-size: var(--text-13); font-weight: 500;
+    background: var(--ink-200); color: var(--ink-text);
+    border: none;
+  }
+  .foot { text-align: center; color: rgba(232,228,220,0.4); font-size: var(--text-11); margin-top: 24px; }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <h1>Onelight</h1>
+    <p class="sub">Halide Post review server</p>
+    <label>Email</label>
+    <input type="email" value="david@halidepost.com">
+    <label>Password</label>
+    <input type="password" value="password">
+    <button class="btn">Sign in</button>
+    <div class="divider">or</div>
+    <button class="sso">Continue with SSO</button>
+    <div class="foot">Self-hosted &nbsp; v1.0</div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+.svelte-kit/
+.wrangler/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+.dev.vars
+/data/
+.DS_Store
+Thumbs.db

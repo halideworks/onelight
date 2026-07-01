@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Onelight mockup: review room</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  /* Review room world: neutral only. No gradients on this page, anywhere.
+     Separation by value step, not borders. */
+  body {
+    background: var(--n-050);
+    color: var(--n-800);
+    font-size: var(--text-13);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ---- top bar ---- */
+  .topbar {
+    display: flex; align-items: center; gap: var(--pad-2);
+    height: 46px; padding: 0 var(--pad-2);
+    background: var(--n-100);
+    flex: none;
+  }
+  .crumb { color: var(--n-600); font-size: var(--text-12); }
+  .crumb b { color: var(--n-800); font-weight: 500; }
+  .crumb span { margin: 0 6px; color: var(--n-400); }
+  .version {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--n-200); border-radius: var(--radius);
+    padding: 4px 9px;
+    color: var(--n-800); font-size: var(--text-12); font-weight: 500;
+  }
+  .version small { color: var(--n-600); font-weight: 400; }
+  .status {
+    font-size: var(--text-11); font-weight: 500;
+    color: var(--note); background: var(--n-200);
+    border-radius: var(--radius); padding: 4px 9px;
+  }
+  .topbar .grow { flex: 1; }
+  .btn {
+    background: var(--n-200); color: var(--n-800);
+    border: none; border-radius: var(--radius);
+    padding: 6px 13px; font-size: var(--text-12); font-weight: 500;
+  }
+  .btn:hover { background: var(--n-300); }
+  .btn.primary { background: var(--n-800); color: var(--n-050); }
+  .btn.primary:hover { background: var(--n-900); }
+  .avatar {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--n-400); color: var(--n-900);
+    display: grid; place-items: center; font-size: var(--text-11); font-weight: 600;
+  }
+
+  /* ---- main split ---- */
+  .main { flex: 1; display: flex; min-height: 0; }
+  .stage-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  /* ---- viewer well ---- */
+  .stage {
+    flex: 1; display: grid; place-items: center;
+    background: var(--n-000); /* surround control swaps this: Dark / 18% Grey / Black */
+    position: relative; min-height: 0;
+  }
+  .stage.grey18 { background: var(--grey-18); }
+  .frame {
+    width: min(92%, calc((100vh - 330px) * 2.39));
+    aspect-ratio: 2.39 / 1;
+    background: var(--n-300);
+    position: relative;
+  }
+  .frame .clipname {
+    position: absolute; left: 10px; top: 8px;
+    font-size: var(--text-11); color: var(--n-600);
+  }
+  .frame .annotation {
+    position: absolute; left: 58%; top: 30%;
+    width: 120px; height: 90px;
+    border: 2px solid var(--warn); border-radius: 2px; opacity: .9;
+  }
+  .frame .annotation::after {
+    content: ""; position: absolute; left: -46px; top: 44px;
+    width: 44px; height: 2px; background: var(--warn);
+  }
+
+  /* ---- transport ---- */
+  .transport {
+    flex: none; background: var(--n-100);
+    padding: var(--pad) var(--pad-2) 0;
+  }
+  .transport-row {
+    display: flex; align-items: center; gap: var(--pad-2);
+    height: 36px;
+  }
+  .tbtn {
+    background: none; border: none; color: var(--n-700);
+    width: 28px; height: 28px; border-radius: var(--radius);
+    display: grid; place-items: center;
+  }
+  .tbtn:hover { color: var(--n-900); background: var(--n-200); }
+  .tbtn svg { width: 15px; height: 15px; fill: currentColor; }
+  .tc-main { font-size: var(--text-16); color: var(--n-900); font-weight: 500; }
+  .tc-sub  { font-size: var(--text-11); color: var(--n-600); }
+  .transport-row .grow { flex: 1; }
+
+  .seg { display: flex; background: var(--n-200); border-radius: var(--radius); padding: 2px; }
+  .seg button {
+    background: none; border: none; color: var(--n-600);
+    padding: 3px 10px; font-size: var(--text-11); font-weight: 500;
+    border-radius: 2px;
+  }
+  .seg button.on { background: var(--n-400); color: var(--n-900); }
+  .label-sm { font-size: var(--text-11); color: var(--n-500); }
+
+  /* ---- timeline: filmstrip, waveform, then a notes lane.
+       Range comments render as bands; freehand timeline drawing lives here too. ---- */
+  .timeline { padding: var(--pad) 0 var(--pad-2); position: relative; }
+  .strip { height: 40px; display: flex; border-radius: 2px 2px 0 0; overflow: hidden; }
+  .strip div { flex: 1; }
+  .wave { height: 24px; display: block; opacity: .5; }
+  .notes-lane {
+    position: relative; height: 26px; margin-top: 3px;
+    background: var(--n-150); border-radius: 0 0 2px 2px;
+  }
+  .band {
+    position: absolute; top: 5px; height: 16px;
+    border-radius: 2px; opacity: .85;
+    font-size: 10px; font-weight: 500; color: var(--n-050);
+    display: flex; align-items: center; padding: 0 7px;
+    white-space: nowrap; overflow: hidden;
+  }
+  .scribble { position: absolute; top: 0; height: 26px; }
+  .scribble path { stroke: var(--warn); stroke-width: 1.5; fill: none; }
+  .playhead {
+    position: absolute; top: 2px; bottom: 10px; left: 38%;
+    width: 1px; background: var(--n-900); z-index: 2;
+  }
+  .playhead::before {
+    content: ""; position: absolute; top: -2px; left: -3.5px;
+    border: 4px solid transparent; border-top-color: var(--n-900);
+  }
+  .timeline .marker { position: absolute; width: 6px; height: 6px; transform: rotate(45deg); top: 47px; z-index: 1; }
+
+  /* ---- comments panel ---- */
+  .panel {
+    width: 340px; flex: none; display: flex; flex-direction: column;
+    background: var(--n-100); min-height: 0;
+  }
+  .panel-head {
+    display: flex; align-items: center; gap: var(--pad);
+    padding: 12px var(--pad-2) 8px;
+  }
+  .panel-head h2 { font-size: var(--text-13); font-weight: 600; color: var(--n-900); margin: 0; flex: 1; }
+  .filter { font-size: var(--text-11); color: var(--n-600); background: var(--n-200); border: none; border-radius: var(--radius); padding: 4px 9px; }
+  .comments { flex: 1; overflow-y: auto; padding: 4px 0; }
+  .comment { padding: 11px var(--pad-2); border-radius: var(--radius); margin: 0 6px 2px; }
+  .comment:hover { background: var(--n-150); }
+  .c-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .c-author { font-weight: 600; color: var(--n-900); font-size: var(--text-12); }
+  .c-time { color: var(--n-500); font-size: var(--text-11); }
+  .c-tc {
+    color: var(--n-050); background: var(--n-700);
+    font-size: var(--text-11); font-weight: 600;
+    border-radius: 2px; padding: 1px 5px;
+  }
+  .c-tc.is-range { background: var(--n-600); }
+  .c-body { color: var(--n-800); line-height: 1.45; }
+  .c-meta { display: flex; align-items: center; gap: 10px; margin-top: 7px; font-size: var(--text-11); color: var(--n-500); }
+  .c-meta .draw { color: var(--warn); }
+  .c-meta .internal { color: var(--note); background: var(--n-200); padding: 2px 7px; border-radius: 2px; }
+  .c-done { color: var(--ok); }
+  .comment.completed .c-body { color: var(--n-500); }
+  .reply { margin-top: 9px; padding-left: 12px; border-left: 2px solid var(--n-300); }
+
+  .composer { flex: none; padding: var(--pad-2); }
+  .composer .box {
+    background: var(--n-150); border: none; border-radius: var(--radius);
+    padding: 10px; color: var(--n-500); min-height: 54px; font-size: var(--text-13);
+  }
+  .composer .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .chip {
+    font-size: var(--text-11); font-weight: 600;
+    background: var(--n-300); color: var(--n-900);
+    padding: 2px 7px; border-radius: 2px;
+  }
+  .composer .grow { flex: 1; }
+</style>
+</head>
+<body>
+
+  <header class="topbar">
+    <div class="crumb"><b>Meridian</b><span>/</span>Spot 30s<span>/</span><b>MER_30_ONLINE</b></div>
+    <div class="version">v3 <small>of 3</small></div>
+    <div class="status">In review</div>
+    <div class="grow"></div>
+    <button class="btn">Compare</button>
+    <button class="btn">Download</button>
+    <button class="btn primary">Share</button>
+    <div class="avatar">DT</div>
+  </header>
+
+  <div class="main">
+    <div class="stage-col">
+
+      <div class="stage">
+        <div class="frame">
+          <div class="clipname">A016_C042_0712RG</div>
+          <div class="annotation"></div>
+        </div>
+      </div>
+
+      <div class="transport">
+        <div class="transport-row">
+          <button class="tbtn" title="Previous frame"><svg viewBox="0 0 16 16"><path d="M3 2h2v12H3zM13 2v12L6 8z"/></svg></button>
+          <button class="tbtn" title="Play"><svg viewBox="0 0 16 16"><path d="M4 2l9 6-9 6z"/></svg></button>
+          <button class="tbtn" title="Next frame"><svg viewBox="0 0 16 16"><path d="M11 2h2v12h-2zM3 2l7 6-7 6z"/></svg></button>
+          <div>
+            <span class="tc tc-main">01:00:12:07</span>
+            <span class="tc tc-sub">+ 295 fr &nbsp; 23.976</span>
+          </div>
+          <span class="label-sm tc">I 01:00:08:14 &nbsp; O 01:00:15:02</span>
+          <div class="grow"></div>
+          <span class="label-sm">Surround</span>
+          <div class="seg">
+            <button class="on">Dark</button>
+            <button>18% Grey</button>
+            <button>Black</button>
+          </div>
+          <div class="seg">
+            <button>540</button>
+            <button class="on">1080</button>
+            <button>4K</button>
+          </div>
+          <button class="tbtn" title="Fullscreen"><svg viewBox="0 0 16 16"><path d="M2 6V2h4v1.5H3.5V6zM10 2h4v4h-1.5V3.5H10zM2 10h1.5v2.5H6V14H2zM12.5 10H14v4h-4v-1.5h2.5z"/></svg></button>
+        </div>
+
+        <div class="timeline">
+          <div class="strip">
+            <div style="background:#262626"></div><div style="background:#2d2d2d"></div>
+            <div style="background:#353535"></div><div style="background:#303030"></div>
+            <div style="background:#282828"></div><div style="background:#3a3a3a"></div>
+            <div style="background:#333333"></div><div style="background:#2b2b2b"></div>
+            <div style="background:#272727"></div><div style="background:#313131"></div>
+            <div style="background:#383838"></div><div style="background:#2e2e2e"></div>
+          </div>
+          <svg class="wave" width="100%" height="24" preserveAspectRatio="none" viewBox="0 0 400 26">
+            <path fill="#565656" d="M0 13 L4 9 8 15 12 7 16 18 20 11 24 16 28 5 32 20 36 12 40 14 44 8 48 17 52 10 56 15 60 6 64 19 68 13 72 9 76 16 80 11 84 18 88 7 92 14 96 12 100 17 104 8 108 15 112 10 116 19 120 6 124 13 128 16 132 9 136 18 140 11 144 14 148 7 152 17 156 12 160 15 164 8 168 19 172 10 176 13 180 16 184 6 188 14 192 11 196 18 200 9 204 15 208 12 212 17 216 7 220 13 224 19 228 10 232 14 236 8 240 16 244 11 248 18 252 12 256 15 260 6 264 13 268 17 272 9 276 14 280 19 284 11 288 16 292 8 296 12 300 18 304 10 308 15 312 13 316 7 320 17 324 11 328 14 332 19 336 9 340 16 344 12 348 15 352 8 356 13 360 18 364 10 368 14 372 17 376 11 380 15 384 9 388 16 392 12 396 14 400 13 L400 26 0 26 Z"/>
+          </svg>
+
+          <!-- Notes lane: range comments render as bands gated to their TC span.
+               Drawing directly on this lane creates a new range note. -->
+          <div class="notes-lane">
+            <div class="band" style="left: 34%; width: 27%; background: var(--warn);">highlights hot</div>
+            <div class="band" style="left: 66%; width: 14%; background: var(--note); top: 5px;">legal line</div>
+            <svg class="scribble" style="left: 8%; width: 10%;" viewBox="0 0 100 26" preserveAspectRatio="none">
+              <path d="M2 18 C 14 6, 22 22, 34 12 S 58 4, 68 14 S 88 22, 98 10"/>
+            </svg>
+          </div>
+
+          <div class="playhead"></div>
+          <div class="marker" style="left: 12%; background: var(--info);"></div>
+          <div class="marker" style="left: 38%; background: var(--warn);"></div>
+          <div class="marker" style="left: 41%; background: var(--info);"></div>
+          <div class="marker" style="left: 63%; background: var(--note);"></div>
+          <div class="marker" style="left: 87%; background: var(--info);"></div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="panel">
+      <div class="panel-head">
+        <h2>Comments <span style="color:var(--n-500); font-weight:400;">12</span></h2>
+        <button class="filter">All</button>
+        <button class="filter">Sort: TC</button>
+      </div>
+
+      <div class="comments">
+        <div class="comment">
+          <div class="c-head">
+            <span class="c-author">Sarah Chen</span>
+            <span class="c-time">2h</span>
+            <span class="tc c-tc">01:00:12:07</span>
+          </div>
+          <div class="c-body">Logo lands a beat too early against the VO. Can we hold the black one more second before the reveal?</div>
+          <div class="c-meta"><span class="draw">Drawing</span><span>Reply</span><span>Complete</span></div>
+          <div class="reply">
+            <div class="c-head"><span class="c-author">David Torcivia</span><span class="c-time">1h</span></div>
+            <div class="c-body">Agreed, pushing 18 frames. In v4.</div>
+          </div>
+        </div>
+
+        <div class="comment">
+          <div class="c-head">
+            <span class="c-author">Marcus Webb</span>
+            <span class="c-time">3h</span>
+            <span class="tc c-tc is-range">01:00:08:14 &ndash; 01:00:15:02</span>
+          </div>
+          <div class="c-body">Whole product sequence feels half a stop hot on the highlights. Check the roll-off on the bottle spec.</div>
+          <div class="c-meta"><span>Reply</span><span>Complete</span></div>
+        </div>
+
+        <div class="comment">
+          <div class="c-head">
+            <span class="c-author">David Torcivia</span>
+            <span class="c-time">5h</span>
+            <span class="tc c-tc">01:00:04:00</span>
+          </div>
+          <div class="c-body">Client will ask about the pack shot framing. Prepping an alt with 4% more headroom in case.</div>
+          <div class="c-meta"><span class="internal">Internal</span><span>Reply</span><span>Complete</span></div>
+        </div>
+
+        <div class="comment completed">
+          <div class="c-head">
+            <span class="c-author">Sarah Chen</span>
+            <span class="c-time">1d</span>
+            <span class="tc c-tc">01:00:21:12</span>
+            <span class="c-done">Completed</span>
+          </div>
+          <div class="c-body">Typo in the legal line, should be registered mark not TM.</div>
+          <div class="c-meta"><span>Reply</span></div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="box">Leave a comment at the playhead...</div>
+        <div class="row">
+          <span class="tc chip">01:00:12:07</span>
+          <span class="label-sm">Range</span>
+          <span class="label-sm">Draw</span>
+          <div class="grow"></div>
+          <button class="btn primary">Post</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+</body>
+</html>

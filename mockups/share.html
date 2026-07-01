@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Onelight mockup: client presentation</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  /* Client world: the theme is the studio's brand moment.
+     This share uses the Sumimai palette (ink indigo, persimmon, egg) themed per client. */
+  body {
+    min-height: 100vh;
+    color: var(--ink-text);
+    background:
+      linear-gradient(180deg,
+        var(--sumimai-a) 0%,
+        #2a2430 34%,
+        #6a3a33 72%,
+        var(--sumimai-m) 92%,
+        #b06a48 118%);
+    background-attachment: fixed;
+    display: flex; flex-direction: column;
+  }
+
+  .top {
+    display: flex; align-items: center;
+    padding: var(--pad-3) var(--pad-4);
+  }
+  .studio { font-family: var(--font-display); font-weight: 700; font-size: var(--text-16); letter-spacing: 0.01em; }
+  .top .grow { flex: 1; }
+  .top .meta { color: rgba(232,228,220,0.6); font-size: var(--text-12); }
+
+  .hero { padding: 8vh var(--pad-4) 6vh; max-width: 1080px; }
+  .hero .kicker { color: #E8B98A; font-size: var(--text-13); font-weight: 500; margin-bottom: 14px; }
+  .hero h1 {
+    font-family: var(--font-display);
+    font-size: var(--text-56); font-weight: 700; letter-spacing: -0.02em;
+    line-height: 1.04; margin: 0 0 18px;
+  }
+  .hero p { color: rgba(232,228,220,0.72); font-size: var(--text-16); line-height: 1.5; margin: 0; max-width: 46ch; }
+
+  .reel {
+    padding: 0 var(--pad-4) 12vh;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: var(--pad-3); max-width: 1280px;
+  }
+  .item {
+    text-decoration: none; color: var(--ink-text);
+    display: block;
+  }
+  .item .thumb {
+    aspect-ratio: 16 / 9;
+    background: rgba(10,12,16,0.5);
+    border-radius: var(--radius-lg);
+    display: grid; place-items: center;
+    transition: background 140ms ease;
+  }
+  .item:hover .thumb { background: rgba(10,12,16,0.72); }
+  .item .thumb svg { width: 34px; height: 34px; fill: rgba(232,228,220,0.8); }
+  .item .row { display: flex; align-items: baseline; gap: 10px; margin-top: 10px; }
+  .item .name { font-weight: 600; font-size: var(--text-14); flex: 1; }
+  .item .len { color: rgba(232,228,220,0.55); font-size: var(--text-12); }
+  .item .sub { color: rgba(232,228,220,0.55); font-size: var(--text-12); margin-top: 2px; }
+
+  .foot {
+    margin-top: auto;
+    display: flex; align-items: center;
+    padding: var(--pad-3) var(--pad-4);
+    color: rgba(232,228,220,0.45); font-size: var(--text-12);
+  }
+  .foot .grow { flex: 1; }
+  .foot a { color: rgba(232,228,220,0.6); text-decoration: none; }
+</style>
+</head>
+<body>
+
+  <header class="top">
+    <span class="studio">HALIDE POST</span>
+    <div class="grow"></div>
+    <span class="meta">Prepared for Meridian Beverage Co. &nbsp; Expires Jul 14</span>
+  </header>
+
+  <section class="hero">
+    <div class="kicker">Director's cuts, round two</div>
+    <h1>Meridian<br>Summer Campaign</h1>
+    <p>Three spots, re-timed per Thursday's notes. The 30 carries the new end card. Comments are open on every cut, click anywhere in the frame to draw.</p>
+  </section>
+
+  <section class="reel">
+    <a class="item" href="#">
+      <div class="thumb"><svg viewBox="0 0 16 16"><path d="M4 2l9 6-9 6z"/></svg></div>
+      <div class="row"><span class="name">Meridian 60 &nbsp; Director's Cut</span><span class="len tc">01:00</span></div>
+      <div class="sub">v4 &nbsp; ProRes source &nbsp; 23.976</div>
+    </a>
+    <a class="item" href="#">
+      <div class="thumb"><svg viewBox="0 0 16 16"><path d="M4 2l9 6-9 6z"/></svg></div>
+      <div class="row"><span class="name">Meridian 30</span><span class="len tc">00:30</span></div>
+      <div class="sub">v3 &nbsp; new end card</div>
+    </a>
+    <a class="item" href="#">
+      <div class="thumb"><svg viewBox="0 0 16 16"><path d="M4 2l9 6-9 6z"/></svg></div>
+      <div class="row"><span class="name">Meridian 15 &nbsp; Social</span><span class="len tc">00:15</span></div>
+      <div class="sub">v3 &nbsp; 9x16 alt attached</div>
+    </a>
+  </section>
+
+  <footer class="foot">
+    <span>Sent by Halide Post</span>
+    <div class="grow"></div>
+    <a href="#">Onelight</a>
+  </footer>
+
+</body>
+</html>

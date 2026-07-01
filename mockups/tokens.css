@@ -1,0 +1,101 @@
+/* Onelight design tokens
+   Two worlds:
+   1. Review room: strictly neutral greys, R=G=B everywhere, no gradients, no tinted accents near the frame.
+   2. Everywhere else: dark base + Japanese gradient washes from reviewer/gradients/PALETTES.md.
+   No emojis, no glassmorphism, no gradient border highlights, no decorative monospace, no italics. */
+
+@import url('https://api.fontshare.com/v2/css?f[]=switzer@300,400,500,600,700&f[]=space-grotesk@500,600,700&display=swap');
+
+:root {
+  /* Type, two voices:
+     Switzer: quiet Swiss grotesque for working UI.
+     Space Grotesk: display face for titles, wordmark, hero type. Ties the halideworks
+     family together (Chromatic uses it) and has real personality at size.
+     Review room uses --font-ui only. */
+  --font-ui: 'Switzer', 'Helvetica Neue', system-ui, sans-serif;
+  --font-display: 'Space Grotesk', 'Switzer', system-ui, sans-serif;
+
+  --text-11: 0.6875rem;
+  --text-12: 0.75rem;
+  --text-13: 0.8125rem;
+  --text-14: 0.875rem;
+  --text-16: 1rem;
+  --text-20: 1.25rem;
+  --text-28: 1.75rem;
+  --text-40: 2.5rem;
+  --text-56: 3.5rem;
+
+  /* Neutral scale for the review room. R=G=B at every step. */
+  --n-000: #0a0a0a;
+  --n-050: #101010;
+  --n-100: #161616;
+  --n-150: #1c1c1c;
+  --n-200: #232323;
+  --n-300: #2e2e2e;
+  --n-400: #3d3d3d;
+  --n-500: #565656;
+  --n-600: #767676;
+  --n-700: #9a9a9a;
+  --n-800: #c4c4c4;
+  --n-900: #e9e9e9;
+  --grey-18: #7a7a7a; /* 18% reflectance viewing surround */
+
+  /* App-world base. Barely warm ink, from the dark stops of the library. */
+  --ink-000: #0d1117;   /* derived from sumimai #101C28 pulled toward neutral */
+  --ink-100: #131a24;
+  --ink-200: #1a2330;
+  --ink-300: #263140;
+  --ink-text: #e8e4dc;  /* kinari / unbleached cloth family */
+  --ink-text-dim: #93989e;
+
+  /* Single app accent: rokusho verdigris, used sparingly (links, focus, primary buttons). */
+  --accent: #48929B;
+  --accent-bright: #5aa8b1;
+
+  /* Muted functional colors (status, markers). Desaturated so they sit quietly on neutral. */
+  --ok: #6f8f6f;
+  --note: #b09566;
+  --warn: #a5605a;
+  --info: #6f83a0;
+
+  /* Japanese gradient palettes (three-stop where the card has one). See PALETTES.md. */
+  --kuwanomi-a: #5C2A3D; --kuwanomi-b: #89C3EB;                        /* 1: mulberry / forget-me-not */
+  --sakinezu-a: #475B5C; --sakinezu-b: #4B3F36;                        /* 6: austere pair */
+  --shinai-a: #243850;  --shinai-m: #9EA496;  --shinai-b: #ECE2D0;     /* 7 */
+  --yorukou-a: #303430; --yorukou-m: #E0D0A8; --yorukou-b: #F5F5F0;    /* 15 */
+  --tetsukon-a: #284860; --tetsukon-m: #6A4C2F; --tetsukon-b: #D8DDE4; /* 5 */
+  --ebicha-a: #5E2824;  --ebicha-m: #484050;  --ebicha-b: #93B881;     /* 22 */
+  --sumimai-a: #101C28; --sumimai-m: #934337; --sumimai-b: #F7E1A0;    /* 23 */
+  --yoai-a: #101E30;    --yoai-m: #6B8E23;    --yoai-b: #FBF6EE;       /* 14 */
+  --kachitetsu-a: #2F3640; --kachitetsu-m: #A24F46; --kachitetsu-b: #F3EAD7; /* 11 */
+  --mokutan-a: #250E0E; --mokutan-m: #97645A; --mokutan-b: #C1D8AC;    /* 20 */
+
+  /* Geometry. Small radii, hairline borders, shadows replaced by value steps. */
+  --radius: 3px;
+  --radius-lg: 6px;
+  --border: 1px solid;
+  --pad: 8px;
+  --pad-2: 16px;
+  --pad-3: 24px;
+  --pad-4: 40px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Timecode and frame counters: tabular figures so digits do not shimmer during playback.
+   Functional requirement, not decoration. */
+.tc {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+button { font-family: inherit; cursor: pointer; }
+a { color: inherit; }
