@@ -1,0 +1,16 @@
+dist
+.svelte-kit
+node_modules
+pnpm-lock.yaml
+.pnpm-store
+coverage
+packages/db/migrations
+packages/web/build
+.svelte-kit
+mockups
+gradients
+docs
+specs
+*.md
+# verbatim port of mockups/tokens.css (phase-0 T19); keep byte-identical
+packages/web/src/lib/tokens.css

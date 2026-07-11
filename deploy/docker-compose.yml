@@ -1,0 +1,53 @@
+services:
+  onelight:
+    build:
+      context: ..
+      dockerfile: apps/server/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      DATABASE_PATH: /data/onelight.db
+      BLOB_ROOT: /data/blobs
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ONELIGHT_WORKSPACE_NAME: ${ONELIGHT_WORKSPACE_NAME:-Onelight}
+      WORKER_URL: ${WORKER_URL:-http://onelight-worker:8080}
+      WORKER_SECRET: ${WORKER_SECRET:?WORKER_SECRET is required}
+    volumes:
+      - onelight-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  onelight-worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      WORKER_SECRET: ${WORKER_SECRET:?WORKER_SECRET is required}
+    volumes:
+      - onelight-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  onelight-data:

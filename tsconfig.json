@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/db" },
+    { "path": "packages/worker" },
+    { "path": "packages/player" },
+    { "path": "apps/worker" },
+    { "path": "packages/api" },
+    { "path": "apps/server" },
+    { "path": "apps/cf" }
+  ]
+}

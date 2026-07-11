@@ -1,0 +1,380 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import type { MediaInfo, TranscodeJob } from "@onelight/core";
+import {
+  BT709_CONVERT_FILTER,
+  HDR_TONEMAP_FILTER,
+  buildHdrAv1Args,
+  buildHdrHevcArgs,
+  buildPdfPagesArgs,
+  buildSdrProxyArgs,
+  clampToSupportedRate,
+  normalizeProbe,
+  parseRational,
+  planRenditions,
+  primaryRenditionKinds,
+  probeArgs,
+  sidecarArgs,
+  spriteInterval,
+  writeSpriteVtt,
+} from "./media.js";
+
+const flag = (args: string[], name: string): string | undefined =>
+  args[args.indexOf(name) + 1];
+
+const mediaInfoOf = (overrides: Partial<MediaInfo> = {}): MediaInfo => ({
+  format: {},
+  streams: [],
+  frameRateNum: 24000,
+  frameRateDen: 1001,
+  variableFrameRate: false,
+  colorAssumed: false,
+  ...overrides,
+});
+
+const jobOf = (mediaInfo: MediaInfo): TranscodeJob => ({
+  id: "job",
+  sourceKey: "source.mov",
+  outputs: [],
+  mediaInfo,
+});
+
+const hdrMediaInfo = (transfer: string): MediaInfo =>
+  mediaInfoOf({
+    streams: [
+      {
+        codec_type: "video",
+        color_transfer: transfer,
+        color_primaries: "bt2020",
+        color_space: "bt2020nc",
+      },
+    ],
+  });
+
+describe("probe normalization", () => {
+  it("stores the complete ffprobe JSON without a tags whitelist", () => {
+    const args = probeArgs("https://blob.example/source.mov");
+    expect(args).toContain("https://blob.example/source.mov");
+    expect(args).toContain("-show_format");
+    expect(args).toContain("-show_streams");
+    expect(args).not.toContain("-show_entries");
+  });
+
+  it("prefers avg_frame_rate and does not flag rounding differences as VFR", () => {
+    const mediaInfo = normalizeProbe({
+      format: { duration: "10" },
+      streams: [
+        {
+          codec_type: "video",
+          r_frame_rate: "24000/1001",
+          avg_frame_rate: "24000/1001",
+          nb_frames: "240",
+          tags: { timecode: "01:00:00;00" },
+        },
+      ],
+    });
+    expect(mediaInfo.frameRateNum).toBe(24000);
+    expect(mediaInfo.frameRateDen).toBe(1001);
+    expect(mediaInfo.sourceTimecodeStart).toBe("01:00:00;00");
+    expect(mediaInfo.dropFrame).toBe(true);
+    expect(mediaInfo.variableFrameRate).toBe(false);
+    expect(mediaInfo.colorAssumed).toBe(true);
+  });
+
+  it("treats 24000/1001 r_frame_rate vs 24 avg_frame_rate as CFR", () => {
+    const mediaInfo = normalizeProbe({
+      format: {},
+      streams: [
+        {
+          codec_type: "video",
+          r_frame_rate: "24000/1001",
+          avg_frame_rate: "24/1",
+        },
+      ],
+    });
+    expect(mediaInfo.variableFrameRate).toBe(false);
+    expect(mediaInfo.frameRateNum).toBe(24);
+    expect(mediaInfo.frameRateDen).toBe(1);
+    expect(mediaInfo.dropFrame).toBeUndefined();
+  });
+
+  it("flags materially different rates as VFR and clamps to the whitelist", () => {
+    const mediaInfo = normalizeProbe({
+      format: {},
+      streams: [
+        {
+          codec_type: "video",
+          r_frame_rate: "30000/1001",
+          avg_frame_rate: "15/1",
+        },
+      ],
+    });
+    expect(mediaInfo.variableFrameRate).toBe(true);
+    expect(mediaInfo.frameRateClamped).toBe(true);
+    expect(mediaInfo.probedFrameRate).toBe("15/1");
+    expect(mediaInfo.frameRateNum).toBe(24000);
+    expect(mediaInfo.frameRateDen).toBe(1001);
+  });
+
+  it("clamps to the nearest supported rational rate", () => {
+    expect(parseRational("30000/1001")).toEqual({ num: 30000, den: 1001 });
+    expect(clampToSupportedRate({ num: 24000, den: 1001 })).toEqual({
+      rate: { num: 24000, den: 1001 },
+      exact: true,
+    });
+    expect(clampToSupportedRate({ num: 48, den: 1 }).exact).toBe(true);
+    expect(clampToSupportedRate({ num: 30, den: 1 })).toEqual({
+      rate: { num: 30000, den: 1001 },
+      exact: false,
+    });
+    expect(clampToSupportedRate({ num: 48000, den: 1001 })).toEqual({
+      rate: { num: 48, den: 1 },
+      exact: false,
+    });
+    expect(clampToSupportedRate({ num: 23, den: 1 }).rate).toEqual({
+      num: 24000,
+      den: 1001,
+    });
+  });
+});
+
+describe("SDR proxy recipe", () => {
+  it("scales by ladder height with even width and keys CRF on height", () => {
+    const cases = [
+      { height: 2160, crf: "19" },
+      { height: 1080, crf: "18" },
+      { height: 540, crf: "21" },
+    ];
+    for (const entry of cases) {
+      const args = buildSdrProxyArgs(
+        jobOf(mediaInfoOf()),
+        "proxy.mp4",
+        entry.height,
+      );
+      expect(flag(args, "-vf")).toBe(
+        `scale=-2:${entry.height},fps=24000/1001,format=yuv420p`,
+      );
+      expect(flag(args, "-crf")).toBe(entry.crf);
+      expect(args).toContain("bt709");
+      expect(args).toContain("proxy.mp4");
+    }
+  });
+
+  it("tonemaps HDR sources with the exact libplacebo BT.2390 chain", () => {
+    for (const transfer of ["smpte2084", "arib-std-b67"]) {
+      const args = buildSdrProxyArgs(
+        jobOf(hdrMediaInfo(transfer)),
+        "proxy.mp4",
+        1080,
+      );
+      expect(flag(args, "-vf")).toBe(
+        "libplacebo=tonemapping=bt.2390:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=yuv420p,scale=-2:1080,fps=24000/1001,format=yuv420p",
+      );
+      expect(flag(args, "-vf")).not.toContain("inverse_ootf");
+    }
+    expect(HDR_TONEMAP_FILTER).toBe(
+      "libplacebo=tonemapping=bt.2390:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=yuv420p",
+    );
+  });
+
+  it("converts non-709 SDR sources to BT.709 before tagging", () => {
+    const bt601 = mediaInfoOf({
+      streams: [
+        {
+          codec_type: "video",
+          color_space: "smpte170m",
+          color_primaries: "smpte170m",
+          color_transfer: "smpte170m",
+        },
+      ],
+    });
+    const args = buildSdrProxyArgs(jobOf(bt601), "proxy.mp4", 1080);
+    expect(flag(args, "-vf")).toBe(
+      `${BT709_CONVERT_FILTER},scale=-2:1080,fps=24000/1001,format=yuv420p`,
+    );
+    const tagged709 = mediaInfoOf({
+      streams: [
+        {
+          codec_type: "video",
+          color_space: "bt709",
+          color_primaries: "bt709",
+          color_transfer: "bt709",
+        },
+      ],
+    });
+    expect(
+      flag(buildSdrProxyArgs(jobOf(tagged709), "proxy.mp4", 1080), "-vf"),
+    ).toBe("scale=-2:1080,fps=24000/1001,format=yuv420p");
+  });
+
+  it("writes a tmcd track when the source carries a start timecode", () => {
+    const args = buildSdrProxyArgs(
+      jobOf(mediaInfoOf({ sourceTimecodeStart: "01:00:00:00" })),
+      "proxy.mp4",
+      1080,
+    );
+    expect(flag(args, "-timecode")).toBe("01:00:00:00");
+    expect(flag(args, "-write_tmcd")).toBe("on");
+    const bare = buildSdrProxyArgs(jobOf(mediaInfoOf()), "proxy.mp4", 1080);
+    expect(bare).not.toContain("-write_tmcd");
+  });
+});
+
+describe("HDR renditions", () => {
+  it("sets a 1-second GOP for svt-av1 and x265", () => {
+    const av1 = buildHdrAv1Args(jobOf(hdrMediaInfo("smpte2084")), "hdr.mp4");
+    expect(flag(av1, "-g")).toBe("24");
+    expect(flag(av1, "-svtav1-params")).toBe("keyint=24");
+    expect(flag(av1, "-color_trc")).toBe("smpte2084");
+    const hevc = buildHdrHevcArgs(jobOf(hdrMediaInfo("smpte2084")), "hdr.mp4");
+    expect(flag(hevc, "-g")).toBe("24");
+    expect(flag(hevc, "-x265-params")).toBe(
+      "keyint=24:min-keyint=24:scenecut=0",
+    );
+    expect(flag(hevc, "-tag:v")).toBe("hvc1");
+  });
+});
+
+describe("sidecars", () => {
+  it("computes the sprite interval so one 10x10 sheet covers the duration", () => {
+    expect(spriteInterval(mediaInfoOf({ durationFrames: 240 }))).toBe(2);
+    const tenMinutes = mediaInfoOf({
+      frameRateNum: 24,
+      frameRateDen: 1,
+      durationFrames: 600 * 24,
+    });
+    expect(spriteInterval(tenMinutes)).toBe(6);
+  });
+
+  it("pads sprite tiles to the exact 160x90 geometry the VTT declares", () => {
+    const args = sidecarArgs(
+      jobOf(mediaInfoOf({ durationFrames: 240 })),
+      "sprite.png",
+      "sprite",
+    );
+    expect(flag(args ?? [], "-vf")).toBe(
+      "fps=1/2,scale=160:90:force_original_aspect_ratio=decrease,pad=160:90:(ow-iw)/2:(oh-ih)/2,tile=10x10",
+    );
+  });
+
+  it("tonemaps posters and sprites from HDR sources", () => {
+    const job = jobOf({ ...hdrMediaInfo("arib-std-b67"), durationFrames: 240 });
+    const poster = sidecarArgs(job, "poster.png", "poster");
+    expect(flag(poster ?? [], "-vf")).toBe(
+      `${HDR_TONEMAP_FILTER},scale=640:-2:force_original_aspect_ratio=decrease`,
+    );
+    const sprite = sidecarArgs(job, "sprite.png", "sprite");
+    expect(
+      flag(sprite ?? [], "-vf")?.startsWith(`${HDR_TONEMAP_FILTER},`),
+    ).toBe(true);
+  });
+
+  it("writes VTT cues whose coordinates match the tile grid", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "onelight-sprite-"));
+    try {
+      const job = jobOf(
+        mediaInfoOf({
+          frameRateNum: 24,
+          frameRateDen: 1,
+          durationFrames: 30 * 24,
+        }),
+      );
+      const vttPath = await writeSpriteVtt(job, path.join(root, "sprite.png"));
+      const text = await readFile(vttPath, "utf8");
+      expect(text).toContain("WEBVTT");
+      expect(text).toContain("sprite.png#xywh=0,0,160,90");
+      expect(text).toContain("sprite.png#xywh=1440,0,160,90");
+      expect(text).toContain("00:00:28.000 --> 00:00:30.000");
+      const cues = text.match(/#xywh=/g) ?? [];
+      expect(cues.length).toBe(15);
+      expect(text).toContain("#xywh=640,90,160,90");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("builds a pdftoppm invocation for pdf pages", () => {
+    expect(buildPdfPagesArgs("/src/deck.pdf", "/out/pages/page")).toEqual([
+      "-png",
+      "-r",
+      "150",
+      "/src/deck.pdf",
+      "/out/pages/page",
+    ]);
+  });
+});
+
+describe("rendition planning per asset kind", () => {
+  it("plans the full ladder plus sidecars for video", () => {
+    const uhd = mediaInfoOf({
+      streams: [{ codec_type: "video", width: 3840 }, { codec_type: "audio" }],
+    });
+    const kinds = planRenditions("video", uhd).map((entry) => entry.kind);
+    expect(kinds).toEqual([
+      "proxy_2160",
+      "proxy_1080",
+      "proxy_540",
+      "poster",
+      "sprite",
+      "audio_peaks",
+    ]);
+    const hd = mediaInfoOf({
+      streams: [{ codec_type: "video", width: 1920 }],
+    });
+    expect(planRenditions("video", hd).map((entry) => entry.kind)).toEqual([
+      "proxy_1080",
+      "proxy_540",
+      "poster",
+      "sprite",
+    ]);
+    const heights = Object.fromEntries(
+      planRenditions("video", uhd)
+        .filter((entry) => entry.height !== undefined)
+        .map((entry) => [entry.kind, entry.height]),
+    );
+    expect(heights).toEqual({
+      proxy_2160: 2160,
+      proxy_1080: 1080,
+      proxy_540: 540,
+    });
+  });
+
+  it("adds HDR renditions only for HDR sources", () => {
+    const hdr = {
+      ...hdrMediaInfo("smpte2084"),
+      streams: [
+        {
+          codec_type: "video",
+          width: 3840,
+          color_transfer: "smpte2084",
+        },
+      ],
+    };
+    const kinds = planRenditions("video", hdr).map((entry) => entry.kind);
+    expect(kinds).toContain("hdr_av1");
+    expect(kinds).toContain("hdr_hevc");
+  });
+
+  it("plans audio, image, and pdf assets without a video map", () => {
+    expect(planRenditions("audio", mediaInfoOf())).toEqual([
+      { kind: "audio_peaks", filename: "audio_peaks.png" },
+    ]);
+    expect(planRenditions("image", mediaInfoOf()).map((e) => e.kind)).toEqual([
+      "still_tiles",
+      "poster",
+    ]);
+    expect(planRenditions("pdf", mediaInfoOf())).toEqual([
+      { kind: "pdf_pages", filename: "pages/page" },
+    ]);
+    expect(planRenditions("file", mediaInfoOf())).toEqual([]);
+  });
+
+  it("declares the primary readiness rendition per kind", () => {
+    expect(primaryRenditionKinds("video")).toEqual(["proxy_1080"]);
+    expect(primaryRenditionKinds("audio")).toEqual(["audio_peaks"]);
+    expect(primaryRenditionKinds("image")).toEqual(["still_tiles", "poster"]);
+    expect(primaryRenditionKinds("pdf")).toEqual(["pdf_pages"]);
+  });
+});

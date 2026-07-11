@@ -1,0 +1,14 @@
+node_modules
+dist
+.svelte-kit
+.wrangler
+coverage
+data
+*.db
+*.db-shm
+*.db-wal
+.git
+docs
+mockups
+gradients
+specs

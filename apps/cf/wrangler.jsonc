@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "onelight",
+  "main": "src/index.ts",
+  // Highest date the installed Workers runtime supports; raise alongside wrangler upgrades.
+  "compatibility_date": "2025-09-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "../../packages/web/build",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "onelight",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "../../packages/db/migrations",
+    },
+  ],
+  "vars": {
+    "PUBLIC_URL": "http://localhost:8787",
+    // Local dev and vitest-pool-workers only. Production deployments MUST
+    // override this with `wrangler secret put SECRET_KEY`; secrets shadow vars.
+    "SECRET_KEY": "onelight-development-secret-key-32-chars",
+    "OIDC_AUTO_PROVISION": "false",
+  },
+}

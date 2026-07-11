@@ -1,0 +1,23 @@
+{
+  "name": "@onelight/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "reset-password": "tsx src/cli.ts reset-password"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@node-rs/argon2": "^2.0.2",
+    "@onelight/api": "workspace:*",
+    "@onelight/core": "workspace:*",
+    "@onelight/db": "workspace:*",
+    "@onelight/worker": "workspace:*",
+    "better-sqlite3": "^12.11.1",
+    "drizzle-orm": "^0.38.3",
+    "hono": "^4.6.14"
+  }
+}

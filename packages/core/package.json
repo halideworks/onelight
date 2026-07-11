@@ -1,0 +1,17 @@
+{
+  "name": "@onelight/core",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./*": "./dist/*.js"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "ulidx": "^2.4.0",
+    "zod": "^3.24.1"
+  }
+}
