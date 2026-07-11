@@ -11,6 +11,9 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@onelight/core": "workspace:*"
+    "@onelight/core": "workspace:*",
+    "@pdf-lib/fontkit": "^1.1.1",
+    "pdf-lib": "^1.17.1",
+    "sharp": "^0.35.3"
   }
 }

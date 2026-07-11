@@ -94,7 +94,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   root.use("*", authMiddleware(env));
   root.use("*", requireOrigin(env));
 
-  root.onError((error, c) => {
+  const errorHandler = (
+    error: unknown,
+    c: Context<{ Variables: Variables }>,
+  ) => {
     const mapped = mapError(error);
     const requestId = c.get("requestId") ?? env.ids.ulid();
     c.header("x-request-id", requestId);
@@ -115,8 +118,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       },
       mapped.status as 400,
     );
-  });
-  root.notFound((c) =>
+  };
+  const notFoundHandler = (c: Context<{ Variables: Variables }>) =>
     c.json(
       {
         error: {
@@ -125,8 +128,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         },
       },
       404,
-    ),
-  );
+    );
+  root.onError(errorHandler);
+  root.notFound(notFoundHandler);
+  // /s/* requests are forwarded to the api app with api.fetch, which is a
+  // separate dispatch: without its own handlers a thrown AppError there
+  // would surface as Hono's plain-text 500 instead of the error envelope.
+  api.onError(errorHandler);
+  api.notFound(notFoundHandler);
   root.use("*", async (c, next) => {
     c.set("requestId", env.ids.ulid());
     await next();
@@ -195,6 +204,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     projectId: string,
     user: typeof users.$inferSelect,
     minimum?: "manager" | "editor" | "commenter" | "viewer",
+    options?: { allowArchived?: boolean },
   ) => {
     const rows = await env.db
       .select()
@@ -205,15 +215,22 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const project = rows[0];
     if (!project || project.workspaceId !== user.workspaceId)
       throw errors.notFound("Project was not found.");
-    if (project.status === "archived" && minimum && minimum !== "viewer")
-      throw errors.forbidden("Archived projects are read-only.");
     const role =
       user.role === "admin"
         ? "manager"
         : ((await grantFor(project.id, user.id)) ??
           (project.restricted ? undefined : "viewer"));
-    if (!role || (minimum && !projectRoleAtLeast(role, minimum)))
-      throw errors.forbidden();
+    // Restricted projects are invisible to non-members: no role means 404,
+    // not 403, so existence does not leak.
+    if (!role) throw errors.notFound("Project was not found.");
+    if (
+      project.status === "archived" &&
+      minimum &&
+      minimum !== "viewer" &&
+      !options?.allowArchived
+    )
+      throw errors.forbidden("Archived projects are read-only.");
+    if (minimum && !projectRoleAtLeast(role, minimum)) throw errors.forbidden();
     return { project, role };
   };
 
@@ -1254,34 +1271,43 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.get("/projects", requireAuth, async (c) => {
     const user = userFromContext(c);
     const limit = getLimit(c.req.query("limit"));
-    const cursor = cursorParam(c.req.query("cursor"));
     const status = c.req.query("status") === "archived" ? "archived" : "active";
-    const rows = await env.db
-      .select()
-      .from(projects)
-      .where(
-        and(
-          eq(projects.workspaceId, user.workspaceId),
-          eq(projects.status, status),
-          cursor ? lt(projects.id, cursor) : undefined,
-        ),
-      )
-      .orderBy(desc(projects.id))
-      .limit(limit + 1)
-      .all();
-    const visible = [];
-    for (const project of rows) {
-      const wire = await projectWire(project, user.id, user.role);
-      if (wire.my_role) visible.push(wire);
+    // Scan in batches: restricted projects invisible to the caller must not
+    // consume page slots or terminate pagination early, so keep fetching
+    // until the page fills or the table is exhausted.
+    let cursor = cursorParam(c.req.query("cursor"));
+    const items: Array<Awaited<ReturnType<typeof projectWire>>> = [];
+    let nextCursor: string | null = null;
+    scan: for (;;) {
+      const rows = await env.db
+        .select()
+        .from(projects)
+        .where(
+          and(
+            eq(projects.workspaceId, user.workspaceId),
+            eq(projects.status, status),
+            cursor ? lt(projects.id, cursor) : undefined,
+          ),
+        )
+        .orderBy(desc(projects.id))
+        .limit(limit + 1)
+        .all();
+      const more = rows.length > limit;
+      const batch = rows.slice(0, limit);
+      for (const [index, project] of batch.entries()) {
+        const wire = await projectWire(project, user.id, user.role);
+        if (!wire.my_role) continue;
+        items.push(wire);
+        if (items.length === limit) {
+          if (more || index < batch.length - 1)
+            nextCursor = encodeCursor(project.id);
+          break scan;
+        }
+      }
+      if (!more) break;
+      cursor = batch[batch.length - 1]?.id;
     }
-    const page = visible.slice(0, limit);
-    return c.json({
-      items: page,
-      next_cursor:
-        rows.length > limit && page.length
-          ? encodeCursor(page[page.length - 1]?.id ?? "")
-          : null,
-    });
+    return c.json({ items, next_cursor: nextCursor });
   });
 
   api.post("/projects", requireAuth, async (c) => {
@@ -1381,10 +1407,16 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.patch("/projects/:id", requireAuth, async (c) => {
     const user = userFromContext(c);
+    // allowArchived: the read-only rule applies to project content, not the
+    // project record itself; without it an archived project could never be
+    // unarchived.
     const { project } = await requireProject(
       c.req.param("id"),
       user,
       "manager",
+      {
+        allowArchived: true,
+      },
     );
     const body = await jsonBody(
       c,
@@ -1963,6 +1995,35 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return comment;
   };
 
+  // Authors may edit and delete their own comments; project managers can
+  // moderate any comment in their project (phase-2 section 2). Admins hold
+  // manager implicitly inside requireProject.
+  const requireCommentAuthorOrModerator = async (
+    comment: typeof comments.$inferSelect,
+    actor: typeof users.$inferSelect,
+  ) => {
+    if (comment.authorUserId === actor.id) return;
+    const version = (
+      await env.db
+        .select({ assetId: assetVersions.assetId })
+        .from(assetVersions)
+        .where(eq(assetVersions.id, comment.versionId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!version) throw errors.notFound("Comment was not found.");
+    const asset = (
+      await env.db
+        .select({ projectId: assets.projectId })
+        .from(assets)
+        .where(eq(assets.id, version.assetId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!asset) throw errors.notFound("Comment was not found.");
+    await requireProject(asset.projectId, actor, "manager");
+  };
+
   api.patch("/comments/:id", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const comment = await commentForActor(
@@ -1970,8 +2031,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       actor,
       "commenter",
     );
-    if (comment.authorUserId !== actor.id && actor.role !== "admin")
-      throw errors.forbidden();
+    await requireCommentAuthorOrModerator(comment, actor);
     const body = await jsonBody(
       c,
       z.object({
@@ -2018,8 +2078,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       actor,
       "commenter",
     );
-    if (comment.authorUserId !== actor.id && actor.role !== "admin")
-      throw errors.forbidden();
+    await requireCommentAuthorOrModerator(comment, actor);
     await env.db
       .update(comments)
       .set({ deletedAt: env.clock.now() })
@@ -3529,8 +3588,17 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .limit(1)
         .all()
     )[0];
-    if (!parent || parent.parentId)
-      throw errors.validation("Replies cannot be nested.");
+    if (!parent) throw errors.notFound("Comment was not found.");
+    // The parent must be a comment this share exposes: on the current
+    // version of one of the shared assets and not internal. Without this
+    // check a share viewer could reply to any comment in the database.
+    const parentAsset = projection.assets.find(
+      (candidate: PublicShareAsset) =>
+        candidate.currentVersionId === parent.versionId,
+    );
+    if (!parentAsset || parent.internal)
+      throw errors.notFound("Comment was not found.");
+    if (parent.parentId) throw errors.validation("Replies cannot be nested.");
     const body = await jsonBody(
       c,
       z.object({
@@ -3853,6 +3921,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.post("/uploads/:id/complete", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const upload = await findUpload(c.req.param("id"), actor);
+    // Re-completing a completed upload is idempotent: return the original
+    // result instead of re-driving the blob store (spec phase-1 section 3).
+    if (upload.status === "completed")
+      return c.json({ upload: uploadWire(upload) }, 202);
+    if (upload.status === "quarantined" || upload.status === "aborted")
+      throw errors.conflict("This upload cannot be completed.");
     const store = requireBlobStore();
     const body = await jsonBody(
       c,
@@ -4408,6 +4482,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .from(jobs)
       .where(
         and(
+          // Jobs carry workspace scope in their validated payload (phase-1
+          // section 2); without this filter admins would see every
+          // workspace's jobs.
+          sql`json_extract(${jobs.payloadJson}, '$.workspace_id') = ${actor.workspaceId}`,
           cursor ? lt(jobs.id, cursor) : undefined,
           status ? eq(jobs.status, status) : undefined,
         ),

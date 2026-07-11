@@ -5,17 +5,23 @@ import { describe, expect, it } from "vitest";
 import type { MediaInfo, TranscodeJob } from "@onelight/core";
 import {
   BT709_CONVERT_FILTER,
+  DEFAULT_WATERMARK_FONTFILE,
   HDR_TONEMAP_FILTER,
   buildHdrAv1Args,
   buildHdrHevcArgs,
   buildPdfPagesArgs,
   buildSdrProxyArgs,
+  buildStillArgs,
+  buildWatermarkArgs,
+  buildWatermarkFilter,
   clampToSupportedRate,
+  escapeDrawtextValue,
   normalizeProbe,
   parseRational,
   planRenditions,
   primaryRenditionKinds,
   probeArgs,
+  renderWatermarkText,
   sidecarArgs,
   spriteInterval,
   writeSpriteVtt,
@@ -303,6 +309,129 @@ describe("sidecars", () => {
       "/src/deck.pdf",
       "/out/pages/page",
     ]);
+  });
+});
+
+describe("still extraction recipe", () => {
+  it("uses the accurate output-seek form with -ss after -i", () => {
+    const args = buildStillArgs(
+      "/blobs/proxy_1080.mp4",
+      "/out/still.png",
+      240,
+      {
+        num: 24000,
+        den: 1001,
+      },
+    );
+    expect(args.indexOf("-i")).toBeLessThan(args.indexOf("-ss"));
+    expect(flag(args, "-frames:v")).toBe("1");
+    expect(args[args.length - 1]).toBe("/out/still.png");
+  });
+
+  it("seeks half a frame early so rounding can never skip frame k", () => {
+    // Frame 240 at 23.976: pts = 240 * 1001 / 24000 = 10.010 s. The target
+    // is 239.5 * 1001 / 24000 = 9.989 s, strictly between frames 239 and 240.
+    const args = buildStillArgs("p.mp4", "s.png", 240, {
+      num: 24000,
+      den: 1001,
+    });
+    expect(flag(args, "-ss")).toBe("9.989");
+    const frameZero = buildStillArgs("p.mp4", "s.png", 0, { num: 24, den: 1 });
+    expect(flag(frameZero, "-ss")).toBe("0.000");
+    const pal = buildStillArgs("p.mp4", "s.png", 25, { num: 25, den: 1 });
+    expect(flag(pal, "-ss")).toBe("0.980");
+  });
+});
+
+describe("watermark recipe", () => {
+  const tokens = {
+    email: "client@example.com",
+    name: "Client Name",
+    share: "Cut 04 review",
+    date: "2026-07-11",
+  };
+
+  it("substitutes tokens in TypeScript, never via drawtext expansion", () => {
+    expect(renderWatermarkText("{name} <{email}> {share} {date}", tokens)).toBe(
+      "Client Name <client@example.com> Cut 04 review 2026-07-11",
+    );
+    expect(renderWatermarkText("{email}", {})).toBe("");
+  });
+
+  it("escapes drawtext metacharacters by quote wrapping", () => {
+    // Colons, backslashes, and newlines are inert inside a filtergraph quote
+    // group; only the quote itself needs the close-escape-reopen dance.
+    expect(escapeDrawtextValue("a:b")).toBe("'a:b'");
+    expect(escapeDrawtextValue("back\\slash")).toBe("'back\\slash'");
+    expect(escapeDrawtextValue("it's")).toBe("'it'\\''s'");
+    expect(escapeDrawtextValue("two\nlines")).toBe("'two\nlines'");
+  });
+
+  it("carries hostile text through the filter intact", () => {
+    const filter = buildWatermarkFilter(
+      { text: "a:b 'c' \\d\ne", position: "tl" },
+      {},
+    );
+    expect(filter).toContain(":text='a:b '\\''c'\\'' \\d\ne':");
+    expect(filter).toContain("expansion=none");
+  });
+
+  it("places each corner and center position", () => {
+    const at = (position: "tl" | "tr" | "bl" | "br" | "center"): string =>
+      buildWatermarkFilter({ text: "x", position }, {});
+    expect(at("tl")).toContain(":x=h*0.02:y=h*0.02");
+    expect(at("tr")).toContain(":x=w-text_w-h*0.02:y=h*0.02");
+    expect(at("bl")).toContain(":x=h*0.02:y=h-text_h-h*0.02");
+    expect(at("br")).toContain(":x=w-text_w-h*0.02:y=h-text_h-h*0.02");
+    expect(at("center")).toContain(":x=(w-text_w)/2:y=(h-text_h)/2");
+    // Default is bottom right.
+    expect(buildWatermarkFilter({ text: "x" }, {})).toContain(
+      ":x=w-text_w-h*0.02:y=h-text_h-h*0.02",
+    );
+  });
+
+  it("approximates tile with three diagonal drawtext placements", () => {
+    const filter = buildWatermarkFilter({ text: "x", position: "tile" }, {});
+    const placements = filter.split(",");
+    expect(placements).toHaveLength(3);
+    expect(placements[0]).toContain(":x=(w-text_w)*0.15:y=(h-text_h)*0.15");
+    expect(placements[1]).toContain(":x=(w-text_w)/2:y=(h-text_h)/2");
+    expect(placements[2]).toContain(":x=(w-text_w)*0.85:y=(h-text_h)*0.85");
+  });
+
+  it("applies opacity, relative size, and the optional box", () => {
+    const filter = buildWatermarkFilter(
+      { text: "x", opacity: 0.25, size: 0.05, box: true },
+      {},
+    );
+    expect(filter).toContain("fontcolor=white@0.25");
+    expect(filter).toContain("fontsize=54");
+    expect(filter).toContain("box=1:boxcolor=black@0.35:boxborderw=18");
+    const bare = buildWatermarkFilter({ text: "x" }, {});
+    expect(bare).toContain("fontcolor=white@0.4");
+    expect(bare).toContain("fontsize=32");
+    expect(bare).not.toContain("box=1");
+  });
+
+  it("re-encodes the proxy with copied audio and BT.709 tags", () => {
+    const args = buildWatermarkArgs(
+      "/blobs/renditions/v1/proxy_1080.mp4",
+      "/blobs/renditions/v1/watermarked-s1-h1.mp4",
+      { text: "{share}", position: "br" },
+      tokens,
+      { num: 24000, den: 1001 },
+    );
+    expect(flag(args, "-i")).toBe("/blobs/renditions/v1/proxy_1080.mp4");
+    expect(flag(args, "-vf")).toBe(
+      `drawtext=fontfile='${DEFAULT_WATERMARK_FONTFILE}':text='Cut 04 review':expansion=none:fontsize=32:fontcolor=white@0.4:x=w-text_w-h*0.02:y=h-text_h-h*0.02,format=yuv420p`,
+    );
+    expect(flag(args, "-c:v")).toBe("libx264");
+    expect(flag(args, "-c:a")).toBe("copy");
+    expect(flag(args, "-g")).toBe("24");
+    expect(flag(args, "-colorspace")).toBe("bt709");
+    expect(args[args.length - 1]).toBe(
+      "/blobs/renditions/v1/watermarked-s1-h1.mp4",
+    );
   });
 });
 

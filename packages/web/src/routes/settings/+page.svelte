@@ -1,9 +1,22 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { auth } from '$lib/auth.svelte.js';
+
+  onMount(() => {
+    if (!auth.ready) void auth.hydrate();
+  });
+</script>
+
 <svelte:head><title>Settings | Onelight</title></svelte:head>
 <main class="page">
   <h1>Settings</h1>
   <nav>
     <a href="/settings/members"><strong>Members</strong><span>Users, invites, and roles</span></a>
     <a href="/settings/tokens"><strong>API tokens</strong><span>Command-line tools and integrations</span></a>
+    <a href="/settings/sessions"><strong>Sessions</strong><span>Browsers signed in to your account</span></a>
+    {#if auth.user?.role === 'admin'}
+      <a href="/settings/jobs"><strong>Job queue</strong><span>Transcodes, probes, and background work</span></a>
+    {/if}
   </nav>
 </main>
 <style>

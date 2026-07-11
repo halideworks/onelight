@@ -1,12 +1,33 @@
 <script lang="ts">
   import Player from '@onelight/player/Player.svelte';
-  import type { AnnotationStroke, FrameAnnotation } from '@onelight/player';
+  import type {
+    AnnotationStroke,
+    FrameAnnotation,
+    PendingDrawing,
+    TimelineMarker,
+    WatermarkOverlay
+  } from '@onelight/player';
   import { page } from '$app/state';
   import { api, apiPost, ApiError, messageFrom } from '$lib/api.js';
 
-  type Share = { title: string; kind: 'review' | 'presentation'; layout: 'grid' | 'list' | 'reel'; allow_comments: boolean; expires_at: number | null };
-  type Asset = { id: string; name: string; kind: string; status: string; current_version_id: string | null; sort_order: number };
-  type Comment = { id: string; author_name: string | null; body_text: string; frame_in: number | null; annotation: unknown };
+  type Share = {
+    title: string;
+    kind: 'review' | 'presentation';
+    layout: 'grid' | 'list' | 'reel';
+    allow_comments: boolean;
+    expires_at: number | null;
+    watermark_spec: Record<string, unknown> | null;
+  };
+  type Asset = { id: string; name: string; kind: string; status: string; sort_order: number };
+  type Comment = {
+    id: string;
+    author_name: string | null;
+    body_text: string;
+    frame_in: number | null;
+    frame_out: number | null;
+    completed_at: number | null;
+    annotation: unknown;
+  };
   type AssetDetail = {
     asset: { id: string; name: string; kind: string; status: string };
     versions: Array<{
@@ -22,17 +43,51 @@
   let previewUrl = $state('');
   let previewRate = $state<{ num: number; den: number } | null>(null);
   let previewDropFrame = $state(false);
+  let previewDurationFrames = $state<number | null>(null);
   let comments = $state<Comment[]>([]);
   let passphrase = $state('');
   let viewerName = $state('');
   let viewerEmail = $state('');
+  let viewerIdentity = $state<{ name: string | null; email: string | null } | null>(null);
   let bodyText = $state('');
   let locked = $state(false);
   let error = $state('');
   let currentFrame = $state(0);
   let player = $state<Player | null>(null);
+  let highlightedId = $state<string | null>(null);
+  let pendingDrawing = $state<PendingDrawing | null>(null);
 
   const slug = $derived(page.params.slug);
+
+  /* The share bootstrap (GET /s/:slug) serializes the raw row (camelCase,
+     watermark spec still as JSON text) while POST /s/:slug/access returns
+     the snake_case wire shape. Normalize both into one Share. */
+  const normalizeShare = (raw: unknown): Share => {
+    const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+    const parseSpec = (): Record<string, unknown> | null => {
+      const wire = record['watermark_spec'];
+      if (wire && typeof wire === 'object' && !Array.isArray(wire)) return wire as Record<string, unknown>;
+      const rawJson = record['watermarkSpecJson'];
+      if (typeof rawJson === 'string' && rawJson) {
+        try {
+          const parsed: unknown = JSON.parse(rawJson);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+        } catch {
+          /* Unparseable spec: no session overlay. */
+        }
+      }
+      return null;
+    };
+    const expires = record['expires_at'] ?? record['expiresAt'];
+    return {
+      title: typeof record['title'] === 'string' ? record['title'] : 'Shared review',
+      kind: record['kind'] === 'presentation' ? 'presentation' : 'review',
+      layout: record['layout'] === 'list' ? 'list' : record['layout'] === 'reel' ? 'reel' : 'grid',
+      allow_comments: Boolean(record['allow_comments'] ?? record['allowComments']),
+      expires_at: typeof expires === 'number' ? expires : null,
+      watermark_spec: parseSpec()
+    };
+  };
 
   const strokesFrom = (annotation: unknown): AnnotationStroke[] => {
     const candidates = Array.isArray(annotation)
@@ -53,6 +108,48 @@
       .filter((annotation) => annotation.strokes.length > 0)
   );
 
+  const markers = $derived<TimelineMarker[]>(
+    comments
+      .filter((comment) => comment.frame_in !== null)
+      .map((comment) => ({
+        id: comment.id,
+        frameIn: comment.frame_in as number,
+        frameOut: comment.frame_out,
+        author: comment.author_name,
+        text: comment.body_text,
+        completed: comment.completed_at !== null
+      }))
+  );
+
+  /* Session watermark: deterrent-grade only (a DOM overlay the design doc
+     documents as DevTools-removable; the tamper-resistant path is the
+     burned per-link rendition). Identity comes from the named-viewer access
+     flow; spec fields text, position, and opacity are honored when present. */
+  const watermark = $derived<WatermarkOverlay | null>(
+    (() => {
+      const spec = share?.watermark_spec;
+      if (!spec) return null;
+      const lines: string[] = [];
+      if (typeof spec['text'] === 'string' && spec['text'].trim()) lines.push(spec['text'].trim());
+      const identity = [viewerIdentity?.name, viewerIdentity?.email]
+        .filter((part): part is string => Boolean(part && part.trim()))
+        .join('  ');
+      lines.push(identity || 'Review viewer');
+      const position = spec['position'];
+      const corner =
+        position === 'top_left' || position === 'top_right' || position === 'bottom_left' ||
+        position === 'bottom_right' || position === 'center'
+          ? position
+          : null;
+      return {
+        lines,
+        mode: corner ? 'corner' : 'tile',
+        ...(corner ? { position: corner } : {}),
+        ...(typeof spec['opacity'] === 'number' ? { opacity: spec['opacity'] } : {})
+      };
+    })()
+  );
+
   const loadAssets = async (currentSlug: string): Promise<void> => {
     try {
       assets = (await api<{ items: Asset[] }>(`/api/v1/s/${currentSlug}/assets`)).items;
@@ -63,12 +160,20 @@
 
   const load = async (currentSlug: string): Promise<void> => {
     share = null; assets = []; selected = null; previewUrl = ''; comments = []; locked = false; error = '';
+    viewerIdentity = null;
     try {
-      const payload = await api<{ share: Share; viewer: unknown; assets: Asset[] }>(`/s/${currentSlug}`);
+      const payload = await api<{ share: unknown; viewer: unknown; assets: Asset[] }>(`/s/${currentSlug}`);
       if (currentSlug !== slug) return;
-      share = payload.share;
+      share = normalizeShare(payload.share);
       assets = payload.assets;
-      if (payload.viewer) await loadAssets(currentSlug);
+      if (payload.viewer) {
+        const viewer = payload.viewer as Record<string, unknown>;
+        viewerIdentity = {
+          name: typeof viewer['name'] === 'string' ? viewer['name'] : null,
+          email: typeof viewer['email'] === 'string' ? viewer['email'] : null
+        };
+        await loadAssets(currentSlug);
+      }
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 401) locked = true;
       else error = messageFrom(caught, 'This share is not available.');
@@ -83,12 +188,13 @@
   const access = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
     try {
-      const payload = await apiPost<{ share?: Share }>(`/api/v1/s/${slug}/access`, {
+      const payload = await apiPost<{ share?: unknown }>(`/api/v1/s/${slug}/access`, {
         passphrase: passphrase || undefined,
         name: viewerName || undefined,
         email: viewerEmail || undefined
       });
-      share = payload.share ?? share;
+      share = payload.share ? normalizeShare(payload.share) : share;
+      viewerIdentity = { name: viewerName.trim() || null, email: viewerEmail.trim() || null };
       locked = false;
       error = '';
       await loadAssets(slug ?? '');
@@ -117,13 +223,18 @@
     previewUrl = '';
     previewRate = null;
     previewDropFrame = false;
+    previewDurationFrames = null;
     comments = [];
     currentFrame = 0;
+    highlightedId = null;
+    pendingDrawing = null;
     try {
       const detail = await api<AssetDetail>(`/api/v1/s/${slug}/assets/${asset.id}`);
       previewRate = rateFrom(detail);
       const info = detail.versions[0]?.media_info ?? {};
       previewDropFrame = Boolean(info['drop_frame'] ?? info['dropFrame']);
+      const frames = info['duration_frames'] ?? info['durationFrames'];
+      if (typeof frames === 'number' && frames > 0) previewDurationFrames = frames;
     } catch {
       /* Rate stays at the player default until known. */
     }
@@ -143,7 +254,10 @@
     selected = null;
     previewUrl = '';
     previewRate = null;
+    previewDurationFrames = null;
     comments = [];
+    pendingDrawing = null;
+    highlightedId = null;
   };
 
   const playerActive = $derived(Boolean(selected && previewUrl && selected.kind === 'video'));
@@ -151,14 +265,21 @@
   const addComment = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
     if (!selected || !bodyText.trim()) return;
+    const drawing = pendingDrawing;
+    const anchorFrame = drawing ? drawing.frame : playerActive ? currentFrame : null;
     try {
       const created = await apiPost<Comment>(`/api/v1/s/${slug}/assets/${selected.id}/comments`, {
         body_text: bodyText,
-        ...(playerActive ? { frame_in: currentFrame } : {})
+        ...(anchorFrame !== null ? { frame_in: anchorFrame } : {}),
+        ...(drawing ? { annotation: { strokes: drawing.strokes } } : {})
       });
       comments = [...comments, created];
       bodyText = '';
       error = '';
+      if (drawing) {
+        player?.clearDrawing();
+        pendingDrawing = null;
+      }
     } catch (caught) {
       error = messageFrom(caught, 'The comment could not be added.');
     }
@@ -166,6 +287,16 @@
 
   const seekToComment = (comment: Comment): void => {
     if (comment.frame_in !== null) player?.seekToFrame(comment.frame_in);
+  };
+
+  const highlightComment = (id: string): void => {
+    highlightedId = id;
+    document.getElementById(`share-note-${id}`)?.scrollIntoView({ block: 'nearest' });
+  };
+
+  const discardDrawing = (): void => {
+    player?.clearDrawing();
+    pendingDrawing = null;
   };
 </script>
 
@@ -213,7 +344,20 @@
         <button type="button" class="close" onclick={closePreview}>Close preview</button>
       </div>
       {#if playerActive}
-        <Player bind:this={player} src={previewUrl} rate={previewRate ?? { num: 24, den: 1 }} dropFrame={previewDropFrame} {annotations} onframechange={(frame) => { currentFrame = frame; }} />
+        <Player
+          bind:this={player}
+          src={previewUrl}
+          rate={previewRate ?? { num: 24, den: 1 }}
+          dropFrame={previewDropFrame}
+          {annotations}
+          durationFrames={previewDurationFrames}
+          {markers}
+          allowDrawing={share.allow_comments}
+          {watermark}
+          onframechange={(frame) => { currentFrame = frame; }}
+          onmarkerselect={(id) => highlightComment(id)}
+          ondrawingchange={(drawing) => { pendingDrawing = drawing; }}
+        />
       {:else if previewUrl}
         <p class="open-media"><a href={previewUrl}>Open media</a></p>
       {:else}
@@ -223,22 +367,34 @@
         <h3>Comments</h3>
         {#if comments.length === 0}<p class="empty">No comments yet.</p>{/if}
         {#each comments as comment (comment.id)}
-          <article>
+          <article id={`share-note-${comment.id}`} class:highlighted={highlightedId === comment.id}>
             <span class="c-head">
               <strong>{comment.author_name ?? 'Viewer'}</strong>
               {#if comment.frame_in !== null}
                 <button type="button" class="chip tc" onclick={() => seekToComment(comment)} aria-label={`Go to frame ${comment.frame_in}`}>Frame {comment.frame_in}</button>
               {/if}
+              {#if comment.annotation}<span class="drawn">Drawing</span>{/if}
             </span>
             <p>{comment.body_text}</p>
           </article>
         {/each}
         {#if share.allow_comments}
           <form onsubmit={addComment}>
-            <label>Add a note {#if playerActive}<span class="tc anchor">at frame {currentFrame}</span>{/if}
+            <label>
+              Add a note
+              {#if pendingDrawing}
+                <span class="tc anchor">with drawing at frame {pendingDrawing.frame}</span>
+              {:else if playerActive}
+                <span class="tc anchor">at frame {currentFrame}</span>
+              {/if}
               <textarea bind:value={bodyText} maxlength="10000" required></textarea>
             </label>
-            <button type="submit" class="post">Comment</button>
+            <div class="post-row">
+              <button type="submit" class="post">Comment</button>
+              {#if pendingDrawing}
+                <button type="button" class="quiet" onclick={discardDrawing}>Discard drawing</button>
+              {/if}
+            </div>
           </form>
           {#if error}<p class="error" role="alert">{error}</p>{/if}
         {/if}
@@ -275,17 +431,22 @@
   .comments h3 { margin: 0 0 10px; font-size: var(--text-13); font-weight: 600; color: var(--n-900); }
   .comments article { padding: 12px; margin: 0 -12px 2px; border-radius: var(--radius); }
   .comments article:hover { background: var(--n-150); }
+  .comments article.highlighted { background: var(--n-200); }
   .comments article p { margin: 6px 0 0; line-height: 1.45; }
   .c-head { display: flex; align-items: center; gap: 10px; }
   .c-head strong { color: var(--n-900); font-size: var(--text-12); font-weight: 600; }
   .chip { border: 0; border-radius: 2px; background: var(--n-700); color: var(--n-050); font-size: var(--text-11); font-weight: 600; padding: 1px 6px; cursor: pointer; }
   .chip:hover { background: var(--n-800); }
+  .drawn { color: var(--warn); font-size: var(--text-11); }
   .comments form { display: grid; gap: 12px; margin-top: var(--pad-3); padding: var(--pad-2); background: var(--n-100); border-radius: var(--radius); }
   .comments form label { display: grid; gap: 8px; color: var(--n-600); font-size: var(--text-12); }
   .comments textarea { border: 0; border-radius: var(--radius); background: var(--n-150); color: var(--n-900); padding: 8px 10px; min-height: 72px; }
   .anchor { color: var(--n-600); }
-  .post { justify-self: start; background: var(--n-800); color: var(--n-050); }
+  .post-row { display: flex; align-items: center; gap: 12px; }
+  .post { background: var(--n-800); color: var(--n-050); }
   .preview .post:hover { background: var(--n-900); }
+  .preview button.quiet { background: none; color: var(--n-600); }
+  .preview button.quiet:hover { color: var(--n-900); background: var(--n-200); }
   .error { color: var(--warn); }
   button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px solid var(--n-800); outline-offset: 2px; }
   .shell button:focus-visible, .shell input:focus-visible { outline: 2px solid var(--accent-bright); outline-offset: 3px; }

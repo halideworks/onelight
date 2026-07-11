@@ -7,7 +7,13 @@ import {
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { MediaInfo, TranscodeJob } from "@onelight/core";
-import { probeFile, runTranscode } from "@onelight/worker";
+import {
+  extractStill,
+  probeFile,
+  renderWatermark,
+  runTranscode,
+} from "@onelight/worker";
+import type { WatermarkSpec, WatermarkTokens } from "@onelight/worker";
 
 interface WorkerOutput {
   kind: string;
@@ -16,12 +22,17 @@ interface WorkerOutput {
 }
 interface WorkerRequest {
   job_id: string;
-  kind: "probe" | "transcode";
+  kind: "probe" | "transcode" | "still" | "watermark";
   timestamp?: number;
   source_path?: string;
   source_url?: string;
   media_info?: MediaInfo;
   outputs?: WorkerOutput[];
+  output_path?: string;
+  frame?: number;
+  rate?: { num: number; den: number };
+  spec?: WatermarkSpec;
+  tokens?: WatermarkTokens;
   callback_url?: string;
   callback_secret?: string;
 }
@@ -109,6 +120,49 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
   jobs.set(body.job_id, { status: "processing" });
   try {
     const source = sourceFor(body);
+    // Still and watermark jobs run against an already-probed proxy; the
+    // single output lands via the same temp-name-and-rename convention as
+    // transcode renditions.
+    if (body.kind === "still" || body.kind === "watermark") {
+      if (!body.output_path) throw new Error("An output_path is required.");
+      if (body.kind === "still") {
+        if (typeof body.frame !== "number" || !Number.isInteger(body.frame))
+          throw new Error("An integer frame is required.");
+        await extractStill(
+          source,
+          body.output_path,
+          body.frame,
+          body.rate ?? { num: 24, den: 1 },
+        );
+      } else {
+        await renderWatermark(
+          source,
+          body.output_path,
+          body.spec ?? {},
+          body.tokens ?? {},
+          body.rate,
+        );
+      }
+      const complete = {
+        job_id: body.job_id,
+        status: "complete",
+        renditions: [
+          {
+            kind: body.kind === "still" ? "still" : "watermarked",
+            key: body.output_path,
+            meta: body.kind === "still" ? { frame: body.frame } : {},
+          },
+        ],
+        failures: [],
+      };
+      jobs.set(body.job_id, {
+        status: "complete",
+        result: complete,
+        finishedAt: Date.now(),
+      });
+      await callback(body, complete);
+      return;
+    }
     const mediaInfo = body.media_info ?? (await probeFile(source));
     if (body.kind === "probe") {
       const result = {
@@ -204,7 +258,10 @@ const handler = async (
       return;
     }
     const body = JSON.parse(bodyText) as WorkerRequest;
-    if (!body.job_id || !["probe", "transcode"].includes(body.kind)) {
+    if (
+      !body.job_id ||
+      !["probe", "transcode", "still", "watermark"].includes(body.kind)
+    ) {
       json(response, 400, { error: "invalid job" });
       return;
     }

@@ -94,7 +94,8 @@ const authFromSession = async (
   env: AppEnv,
   token: string,
 ): Promise<
-  { user: typeof users.$inferSelect; authType: "session" } | undefined
+  | { user: typeof users.$inferSelect; authType: "session"; refreshed: boolean }
+  | undefined
 > => {
   const now = env.clock.now();
   const hash = await sha256Hex(token);
@@ -112,29 +113,40 @@ const authFromSession = async (
     .all();
   const row = rows[0];
   if (!row) return undefined;
+  let refreshed = false;
   if (now - row.session.lastSeenAt > 24 * 60 * 60 * 1000) {
     await env.db
       .update(sessions)
       .set({ lastSeenAt: now, expiresAt: now + SESSION_LIFETIME })
       .where(eq(sessions.id, row.session.id))
       .run();
+    refreshed = true;
   }
-  return { user: row.user, authType: "session" };
+  return { user: row.user, authType: "session", refreshed };
 };
 
 export const authMiddleware =
   (env: AppEnv): MiddlewareHandler<{ Variables: Variables }> =>
   async (c, next) => {
     const bearer = c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
-    const resolved = bearer
-      ? await authFromBearer(env, bearer)
-      : await (async () => {
-          const cookie = getCookie(c, SESSION_COOKIE);
-          return cookie ? authFromSession(env, cookie) : undefined;
-        })();
-    if (resolved) {
+    if (bearer) {
+      const resolved = await authFromBearer(env, bearer);
+      if (resolved) {
+        c.set("user", resolved.user);
+        c.set("authType", resolved.authType);
+      }
+      return next();
+    }
+    const cookie = getCookie(c, SESSION_COOKIE);
+    const resolved = cookie ? await authFromSession(env, cookie) : undefined;
+    if (resolved && cookie) {
       c.set("user", resolved.user);
       c.set("authType", resolved.authType);
+      // Sliding expiry: when the row's expiry was extended, re-send the
+      // cookie with a fresh Max-Age so the browser cookie does not expire
+      // while the session row lives (spec phase-0 section 5).
+      if (resolved.refreshed)
+        setSessionCookie(c, cookie, env.config.cookieSecure);
     }
     await next();
   };

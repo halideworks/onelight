@@ -366,6 +366,207 @@ export const buildPdfPagesArgs = (
   outputPrefix: string,
 ): string[] => ["-png", "-r", "150", source, outputPrefix];
 
+// Frame-exact still extraction from a proxy. The accurate-seek form is used:
+// -ss placed AFTER -i decodes from the first packet and discards frames until
+// the target, so the emitted frame is exact even when the target sits between
+// keyframes. Input seeking (-ss before -i) jumps to the nearest keyframe and
+// then still needs a select=eq(n\,k) refinement whose frame counter resets at
+// the seek point, which makes k wrong unless the keyframe interval is known.
+// The proxies carry a 1 second GOP, so the accurate form costs at most one
+// linear decode up to the requested frame and can never return the wrong
+// frame. The seek target is half a frame BEFORE frame k: the first decoded
+// frame with pts >= target is then exactly frame k, and the 3-decimal
+// formatting (max 0.5 ms error) stays far inside the half-frame guard band
+// (8.3 ms at 60 fps).
+export const buildStillArgs = (
+  source: string,
+  outputPath: string,
+  frame: number,
+  rate: { num: number; den: number },
+): string[] => {
+  const seconds = (Math.max(0, frame - 0.5) * rate.den) / rate.num;
+  return [
+    "-hide_banner",
+    "-y",
+    "-i",
+    source,
+    "-ss",
+    seconds.toFixed(3),
+    "-frames:v",
+    "1",
+    outputPath,
+  ];
+};
+
+export interface WatermarkSpec {
+  text?: string;
+  position?: "tl" | "tr" | "bl" | "br" | "center" | "tile";
+  opacity?: number;
+  size?: number;
+  box?: boolean;
+}
+
+export interface WatermarkTokens {
+  email?: string;
+  name?: string;
+  share?: string;
+  date?: string;
+}
+
+// The worker image installs fonts-dejavu-core, so this path always exists in
+// production. Callers may override for local runs.
+export const DEFAULT_WATERMARK_FONTFILE =
+  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+
+// Token substitution happens in TypeScript, never via drawtext expansion, so
+// the filter can run with expansion=none and no ffmpeg-side interpolation.
+export const renderWatermarkText = (
+  template: string,
+  tokens: WatermarkTokens,
+): string =>
+  template
+    .replaceAll("{email}", tokens.email ?? "")
+    .replaceAll("{name}", tokens.name ?? "")
+    .replaceAll("{share}", tokens.share ?? "")
+    .replaceAll("{date}", tokens.date ?? "");
+
+// drawtext values cross two parsers: the filtergraph option parser (single
+// quotes group, backslash escapes, ":" ends the option, "," ends the filter)
+// and drawtext's own expansion pass ("%" and "\" sequences). expansion=none
+// disables the second pass entirely, so the only remaining metacharacter
+// inside a quoted filtergraph value is the single quote itself, which cannot
+// be backslash-escaped inside a quote group: the group is closed, an escaped
+// quote is emitted, and a new group opens ("'" becomes "'\''"). Colons,
+// backslashes, percent signs, commas, and newlines ride inside the quotes
+// verbatim.
+export const escapeDrawtextValue = (value: string): string =>
+  `'${value.replaceAll("'", "'\\''")}'`;
+
+const watermarkAlpha = (spec: WatermarkSpec): string => {
+  const opacity = typeof spec.opacity === "number" ? spec.opacity : 0.4;
+  return String(Math.min(1, Math.max(0.05, opacity)));
+};
+
+// The burned watermark path always re-encodes the 1080p proxy, so the font
+// size is computed against the known 1080 line height rather than an ffmpeg
+// expression (fontsize expression support varies across ffmpeg versions).
+const watermarkFontSize = (spec: WatermarkSpec): number => {
+  const fraction = typeof spec.size === "number" ? spec.size : 0.03;
+  return Math.max(
+    10,
+    Math.round(1080 * Math.min(0.2, Math.max(0.01, fraction))),
+  );
+};
+
+const WATERMARK_MARGIN = "h*0.02";
+
+const watermarkPositions = (
+  position: WatermarkSpec["position"],
+): Array<{
+  x: string;
+  y: string;
+}> => {
+  const m = WATERMARK_MARGIN;
+  if (position === "tl") return [{ x: m, y: m }];
+  if (position === "tr") return [{ x: `w-text_w-${m}`, y: m }];
+  if (position === "bl") return [{ x: m, y: `h-text_h-${m}` }];
+  if (position === "center") return [{ x: "(w-text_w)/2", y: "(h-text_h)/2" }];
+  // tile is approximated with three placements on the frame diagonal (top
+  // left third, center, bottom right third). A true repeating tile would need
+  // one drawtext per cell or a pre-rendered overlay grid; three diagonal
+  // placements cover the crop-one-corner attack at a fraction of the filter
+  // cost and are the documented v1 behavior.
+  if (position === "tile")
+    return [
+      { x: "(w-text_w)*0.15", y: "(h-text_h)*0.15" },
+      { x: "(w-text_w)/2", y: "(h-text_h)/2" },
+      { x: "(w-text_w)*0.85", y: "(h-text_h)*0.85" },
+    ];
+  return [{ x: `w-text_w-${m}`, y: `h-text_h-${m}` }];
+};
+
+export const buildWatermarkFilter = (
+  spec: WatermarkSpec,
+  tokens: WatermarkTokens,
+  fontfile = DEFAULT_WATERMARK_FONTFILE,
+): string => {
+  // Spec values arrive from user-controlled JSON (the API validates only a
+  // record shape), so every field is type-checked before use.
+  const text = renderWatermarkText(
+    typeof spec.text === "string" && spec.text.length
+      ? spec.text
+      : "{share} {date}",
+    tokens,
+  );
+  const alpha = watermarkAlpha(spec);
+  const fontSize = watermarkFontSize(spec);
+  const box = spec.box
+    ? `:box=1:boxcolor=black@0.35:boxborderw=${Math.max(2, Math.round(fontSize / 3))}`
+    : "";
+  const common =
+    `fontfile=${escapeDrawtextValue(fontfile)}` +
+    `:text=${escapeDrawtextValue(text)}` +
+    `:expansion=none:fontsize=${fontSize}:fontcolor=white@${alpha}${box}`;
+  return watermarkPositions(spec.position)
+    .map((at) => `drawtext=${common}:x=${at.x}:y=${at.y}`)
+    .join(",");
+};
+
+// Re-encode of the 1080p proxy with the burned watermark. The proxy is
+// already BT.709 yuv420p with AAC audio, so audio is stream-copied and the
+// colorimetry tags are re-asserted rather than converted.
+export const buildWatermarkArgs = (
+  source: string,
+  outputPath: string,
+  spec: WatermarkSpec,
+  tokens: WatermarkTokens,
+  rate?: { num: number; den: number },
+  fontfile = DEFAULT_WATERMARK_FONTFILE,
+): string[] => {
+  const gop = rate ? Math.max(1, Math.round(rate.num / rate.den)) : 24;
+  return [
+    "-hide_banner",
+    "-y",
+    "-i",
+    source,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a:0?",
+    "-vf",
+    `${buildWatermarkFilter(spec, tokens, fontfile)},format=yuv420p`,
+    "-c:v",
+    "libx264",
+    "-preset",
+    "medium",
+    "-crf",
+    "18",
+    "-pix_fmt",
+    "yuv420p",
+    "-g",
+    String(gop),
+    "-keyint_min",
+    String(gop),
+    "-sc_threshold",
+    "0",
+    "-colorspace",
+    "bt709",
+    "-color_primaries",
+    "bt709",
+    "-color_trc",
+    "bt709",
+    "-color_range",
+    "tv",
+    "-c:a",
+    "copy",
+    "-movflags",
+    "+faststart",
+    "-map_metadata",
+    "0",
+    outputPath,
+  ];
+};
+
 const vttTime = (seconds: number): string => {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
@@ -733,3 +934,51 @@ export const runTranscode = async (
   }
   return { renditions, failures };
 };
+
+// Shared single-output convention: an existing finished file is reused, the
+// encode lands in a temp name in the same directory, and the rename happens
+// only on success, so a crash never leaves a truncated file at the final
+// path. The temp prefix keeps the extension so ffmpeg still infers the muxer.
+const runFfmpegToFile = async (
+  argsFor: (tempPath: string) => string[],
+  outputPath: string,
+  ffmpeg: string,
+): Promise<void> => {
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  if (await fileReady(outputPath)) return;
+  const tempPath = path.join(
+    path.dirname(outputPath),
+    `.tmp-${path.basename(outputPath)}`,
+  );
+  await runProcess(ffmpeg, argsFor(tempPath));
+  await rename(tempPath, outputPath);
+};
+
+export const extractStill = (
+  source: string,
+  outputPath: string,
+  frame: number,
+  rate: { num: number; den: number },
+  ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg",
+): Promise<void> =>
+  runFfmpegToFile(
+    (tempPath) => buildStillArgs(source, tempPath, frame, rate),
+    outputPath,
+    ffmpeg,
+  );
+
+export const renderWatermark = (
+  source: string,
+  outputPath: string,
+  spec: WatermarkSpec,
+  tokens: WatermarkTokens,
+  rate?: { num: number; den: number },
+  ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg",
+  fontfile = DEFAULT_WATERMARK_FONTFILE,
+): Promise<void> =>
+  runFfmpegToFile(
+    (tempPath) =>
+      buildWatermarkArgs(source, tempPath, spec, tokens, rate, fontfile),
+    outputPath,
+    ffmpeg,
+  );

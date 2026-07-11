@@ -18,6 +18,16 @@
       "migrations_dir": "../../packages/db/migrations",
     },
   ],
+  "r2_buckets": [
+    {
+      "binding": "BLOBS",
+      "bucket_name": "onelight-blobs",
+    },
+  ],
+  "triggers": {
+    // Webhook delivery pump: the scheduled handler drains due deliveries.
+    "crons": ["* * * * *"],
+  },
   "vars": {
     "PUBLIC_URL": "http://localhost:8787",
     // Local dev and vitest-pool-workers only. Production deployments MUST

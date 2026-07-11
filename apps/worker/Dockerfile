@@ -12,9 +12,11 @@ RUN pnpm --filter @onelight/core build \
 
 FROM node:22-bookworm-slim
 # mesa-vulkan-drivers supplies a software Vulkan implementation (lavapipe)
-# so the libplacebo tonemap filter works without a GPU.
+# so the libplacebo tonemap filter works without a GPU. fonts-dejavu-core
+# provides /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf, the default
+# fontfile for the burned watermark drawtext recipe.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg mesa-vulkan-drivers poppler-utils libvips-tools ca-certificates \
+  && apt-get install -y --no-install-recommends ffmpeg mesa-vulkan-drivers poppler-utils libvips-tools fonts-dejavu-core ca-certificates \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --create-home --uid 10001 onelight \
   && mkdir -p /data \

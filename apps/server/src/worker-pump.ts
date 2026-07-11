@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import {
   exportAvidText,
   exportAvidXml,
@@ -18,14 +18,25 @@ import {
   UlidGenerator,
 } from "@onelight/core";
 import type { MediaInfo } from "@onelight/core";
-import { planRenditions, primaryRenditionKinds } from "@onelight/worker";
+import {
+  buildPdfReport,
+  compositeAnnotation,
+  parseAnnotationStrokes,
+  planRenditions,
+  primaryRenditionKinds,
+} from "@onelight/worker";
+import type { ReportComment } from "@onelight/worker";
 import {
   assetVersions,
   assets,
+  commentReactions,
   comments,
   exportJobs,
   jobs,
+  projects,
   renditions,
+  shareAssets,
+  shares,
 } from "@onelight/db/schema";
 import { claimNextJob, completeJob, failJob, heartbeatJob } from "@onelight/db";
 import type { AppDb } from "@onelight/db";
@@ -97,53 +108,11 @@ const sha256File = (file: string): Promise<string> =>
     stream.on("end", () => resolve(hash.digest("hex")));
   });
 
-const pdfText = (value: string): string =>
-  value
-    .replaceAll("\\", "\\\\")
-    .replaceAll("(", "\\(")
-    .replaceAll(")", "\\)")
-    .replace(/[^\x20-\x7e]/g, "?");
-
-const buildPdf = (
-  rows: Array<{ timecode: string; author: string; body: string }>,
-): Uint8Array => {
-  const lines = rows.flatMap((row) => [
-    `${row.timecode}  ${row.author}`,
-    row.body,
-    "",
-  ]);
-  const content = [
-    "BT",
-    "/F1 11 Tf",
-    "50 760 Td",
-    ...lines.map(
-      (line, index) => `${index === 0 ? "" : "0 -16 Td "}(${pdfText(line)}) Tj`,
-    ),
-    "ET",
-  ].join("\n");
-  const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
-  ];
-  const chunks = ["%PDF-1.4\n"];
-  const offsets = [0];
-  for (let index = 0; index < objects.length; index += 1) {
-    offsets.push(chunks.join("").length);
-    chunks.push(`${index + 1} 0 obj\n${objects[index]}\nendobj\n`);
-  }
-  const xref = chunks.join("").length;
-  chunks.push(
-    `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets
-      .slice(1)
-      .map((offset) => `${String(offset).padStart(10, "0")} 00000 n `)
-      .join(
-        "\n",
-      )}\ntrailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`,
-  );
-  return new TextEncoder().encode(chunks.join(""));
+const chunked = <T>(items: T[], size: number): T[][] => {
+  const groups: T[][] = [];
+  for (let index = 0; index < items.length; index += size)
+    groups.push(items.slice(index, index + size));
+  return groups;
 };
 
 const sendJob = async (
@@ -168,14 +137,14 @@ const sendJob = async (
     throw new Error(`Worker rejected job with ${response.status}.`);
 };
 
-const waitForWorker = async (
-  db: AppDb,
+const pollWorker = async (
   workerUrl: string,
   workerSecret: string,
   jobId: string,
-  workerId: string,
+  timeoutMs: number,
+  onPoll?: () => Promise<void>,
 ): Promise<WorkerResponse> => {
-  const deadline = Date.now() + workerJobTimeoutMs();
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const requestPath = `/jobs/${jobId}`;
     const response = await fetch(
@@ -193,15 +162,24 @@ const waitForWorker = async (
       throw new Error(`Worker status request failed with ${response.status}.`);
     const state = (await response.json()) as WorkerResponse;
     if (state.status === "complete" || state.status === "failed") return state;
-    // Keep the job lease alive for the whole encode; transcodes routinely
-    // run far longer than the 60 second lease.
-    await heartbeatJob(db, jobId, workerId, Date.now());
+    await onPoll?.();
     await new Promise<void>((resolve) => setTimeout(resolve, 1000));
   }
-  throw new Error(
-    `Worker job exceeded WORKER_JOB_TIMEOUT_MS (${workerJobTimeoutMs()} ms).`,
-  );
+  throw new Error(`Worker job exceeded its ${timeoutMs} ms deadline.`);
 };
+
+const waitForWorker = (
+  db: AppDb,
+  workerUrl: string,
+  workerSecret: string,
+  jobId: string,
+  workerId: string,
+): Promise<WorkerResponse> =>
+  // Keep the job lease alive for the whole encode; transcodes routinely
+  // run far longer than the 60 second lease.
+  pollWorker(workerUrl, workerSecret, jobId, workerJobTimeoutMs(), () =>
+    heartbeatJob(db, jobId, workerId, Date.now()).then(() => undefined),
+  );
 
 const assetKindFor = async (
   db: AppDb,
@@ -269,6 +247,278 @@ const enqueueTranscode = async (
       workerId: null,
     })
     .run();
+};
+
+// Burned watermark rendition (phase-3 P3-T05): re-encode the 1080p proxy on
+// the media worker with the share's drawtext spec, then register the result
+// through the same checksum and registration path as other renditions. The
+// idempotency key carries the spec hash, so a spec change enqueues a fresh
+// job and the superseded rendition rows and blobs are deleted on
+// registration.
+const processWatermarkJob = async (
+  db: AppDb,
+  job: typeof jobs.$inferSelect,
+  payload: JobPayload,
+  versionId: string,
+  sourcePath: string,
+  workerUrl: string,
+  workerSecret: string,
+  blobRoot: string,
+  workerId: string,
+): Promise<void> => {
+  const shareId =
+    typeof payload.share_id === "string" ? payload.share_id : undefined;
+  const specHash =
+    typeof payload.spec_hash === "string" ? payload.spec_hash : undefined;
+  const outputKey =
+    typeof payload.output_key === "string" ? payload.output_key : undefined;
+  const spec =
+    payload.spec &&
+    typeof payload.spec === "object" &&
+    !Array.isArray(payload.spec)
+      ? (payload.spec as Record<string, unknown>)
+      : {};
+  if (!shareId || !specHash || !outputKey)
+    throw new Error(
+      "Watermark payload is missing share_id, spec_hash, or output_key.",
+    );
+  const share = (
+    await db.select().from(shares).where(eq(shares.id, shareId)).limit(1).all()
+  )[0];
+  // A revoked share or a spec changed after enqueue makes this job moot; it
+  // completes without producing anything and the sweep enqueues the current
+  // spec under its own idempotency key.
+  if (
+    !share ||
+    share.revokedAt !== null ||
+    share.watermarkSpecHash !== specHash
+  ) {
+    console.warn(
+      `[onelight] watermark job ${job.id} skipped: share ${shareId} is revoked or its spec changed.`,
+    );
+    return;
+  }
+  const version = (
+    await db
+      .select()
+      .from(assetVersions)
+      .where(eq(assetVersions.id, versionId))
+      .limit(1)
+      .all()
+  )[0];
+  const rate =
+    version?.frameRateNum && version?.frameRateDen
+      ? { num: version.frameRateNum, den: version.frameRateDen }
+      : undefined;
+  const outputPath = path.join(blobRoot, outputKey);
+  await sendJob(workerUrl, workerSecret, {
+    job_id: job.id,
+    kind: "watermark",
+    source_path: sourcePath,
+    output_path: outputPath,
+    spec,
+    // The burned path is per share, not per viewer, so the identity tokens
+    // resolve to the share; {email} and {name} stay empty until a per-viewer
+    // burned option exists (the session overlay carries viewer identity).
+    tokens: {
+      share: share.title,
+      date: new Date().toISOString().slice(0, 10),
+    },
+    ...(rate ? { rate } : {}),
+  });
+  const state = await waitForWorker(
+    db,
+    workerUrl,
+    workerSecret,
+    job.id,
+    workerId,
+  );
+  if (state.status !== "complete")
+    throw new Error(state.error ?? "Watermark render failed.");
+  const info = await stat(outputPath);
+  const checksum = await sha256File(outputPath);
+  const superseded = await db
+    .select()
+    .from(renditions)
+    .where(
+      and(
+        eq(renditions.versionId, versionId),
+        eq(renditions.kind, "watermarked"),
+        eq(renditions.shareId, shareId),
+      ),
+    )
+    .all();
+  // Rows first (the unique version+kind+share index admits only one), blobs
+  // second, and never the blob this job just wrote.
+  for (const old of superseded) {
+    await db.delete(renditions).where(eq(renditions.id, old.id)).run();
+    if (old.blobKey === outputKey) continue;
+    try {
+      await unlink(path.join(blobRoot, old.blobKey));
+    } catch (error) {
+      console.warn(
+        `[onelight] superseded watermark blob ${old.blobKey} was not deleted: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  await db
+    .insert(renditions)
+    .values({
+      id: new UlidGenerator().ulid(),
+      versionId,
+      kind: "watermarked",
+      blobKey: outputKey,
+      metaJson: JSON.stringify({
+        spec_hash: specHash,
+        frame_rate_num: rate?.num ?? null,
+        frame_rate_den: rate?.den ?? null,
+      }),
+      size: info.size,
+      checksumSha256: checksum,
+      shareId,
+      createdAt: Date.now(),
+    })
+    .onConflictDoNothing()
+    .run();
+};
+
+// The pump cannot observe share mutations (packages/api stays untouched), so
+// missing watermarked renditions are reconciled from state: every active
+// share with a watermark spec is joined through share_assets to its ready
+// video versions, and versions lacking a rendition for the current spec hash
+// get a job enqueued. The sweep is bounded per pass and throttled in the
+// poll loop, so a large backlog drains across sweeps instead of stalling the
+// queue.
+const WATERMARK_SWEEP_INTERVAL_MS = 30_000;
+const DEFAULT_WATERMARK_SWEEP_LIMIT = 8;
+
+const watermarkSweepLimit = (): number => {
+  const parsed = Number(process.env.WATERMARK_SWEEP_LIMIT);
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_WATERMARK_SWEEP_LIMIT;
+};
+
+const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
+  const now = Date.now();
+  const activeShares = await db
+    .select({ share: shares, workspaceId: projects.workspaceId })
+    .from(shares)
+    .innerJoin(projects, eq(shares.projectId, projects.id))
+    .where(
+      and(
+        isNotNull(shares.watermarkSpecJson),
+        isNotNull(shares.watermarkSpecHash),
+        isNull(shares.revokedAt),
+      ),
+    )
+    .all();
+  let enqueued = 0;
+  const limit = watermarkSweepLimit();
+  for (const entry of activeShares) {
+    if (enqueued >= limit) return;
+    const share = entry.share;
+    if (share.expiresAt !== null && share.expiresAt <= now) continue;
+    const specHash = share.watermarkSpecHash as string;
+    const versions = await db
+      .select({ version: assetVersions, asset: assets })
+      .from(shareAssets)
+      .innerJoin(assets, eq(shareAssets.assetId, assets.id))
+      .innerJoin(assetVersions, eq(assetVersions.assetId, assets.id))
+      .where(
+        and(
+          eq(shareAssets.shareId, share.id),
+          eq(assets.kind, "video"),
+          isNull(assets.deletedAt),
+          isNull(assetVersions.deletedAt),
+          eq(assetVersions.transcodeStatus, "ready"),
+        ),
+      )
+      .all();
+    for (const row of versions) {
+      if (enqueued >= limit) return;
+      if (
+        !share.showAllVersions &&
+        row.asset.currentVersionId !== row.version.id
+      )
+        continue;
+      const existing = await db
+        .select()
+        .from(renditions)
+        .where(
+          and(
+            eq(renditions.versionId, row.version.id),
+            eq(renditions.kind, "watermarked"),
+            eq(renditions.shareId, share.id),
+          ),
+        )
+        .all();
+      if (
+        existing.some(
+          (rendition) => parseObject(rendition.metaJson).spec_hash === specHash,
+        )
+      )
+        continue;
+      const idempotencyKey = `watermark:${row.version.id}:${share.id}:${specHash}`;
+      const pending = await db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(eq(jobs.idempotencyKey, idempotencyKey))
+        .limit(1)
+        .all();
+      if (pending.length) continue;
+      const proxy = (
+        await db
+          .select()
+          .from(renditions)
+          .where(
+            and(
+              eq(renditions.versionId, row.version.id),
+              eq(renditions.kind, "proxy_1080"),
+              isNull(renditions.shareId),
+            ),
+          )
+          .limit(1)
+          .all()
+      )[0];
+      if (!proxy) continue;
+      await db
+        .insert(jobs)
+        .values({
+          id: new UlidGenerator().ulid(),
+          kind: "watermark",
+          payloadJson: JSON.stringify({
+            workspace_id: entry.workspaceId,
+            project_id: share.projectId,
+            version_id: row.version.id,
+            share_id: share.id,
+            spec: parseObject(share.watermarkSpecJson ?? "{}"),
+            spec_hash: specHash,
+            blob_key: proxy.blobKey,
+            output_key: `renditions/${row.version.id}/watermarked-${share.id}-${specHash}.mp4`,
+          }),
+          idempotencyKey,
+          status: "queued",
+          priority: 0,
+          capabilityJson: "{}",
+          maxAttempts: 5,
+          attempts: 0,
+          runAfter: now,
+          createdAt: now,
+          startedAt: null,
+          heartbeatAt: null,
+          leaseExpiresAt: null,
+          finishedAt: null,
+          error: null,
+          workerId: null,
+        })
+        .onConflictDoNothing()
+        .run();
+      enqueued += 1;
+    }
+  }
 };
 
 const processJob = async (
@@ -363,6 +613,20 @@ const processJob = async (
       .where(eq(assetVersions.id, versionId))
       .run();
     await enqueueTranscode(db, payload, versionId);
+    return;
+  }
+  if (job.kind === "watermark") {
+    await processWatermarkJob(
+      db,
+      job,
+      payload,
+      versionId,
+      sourcePath,
+      workerUrl,
+      workerSecret,
+      blobRoot,
+      workerId,
+    );
     return;
   }
   if (job.kind !== "transcode")
@@ -471,10 +735,219 @@ const processJob = async (
     .run();
 };
 
+interface ExportRow {
+  comment: typeof comments.$inferSelect;
+  version: typeof assetVersions.$inferSelect;
+  asset: typeof assets.$inferSelect;
+}
+
+// Stills decode linearly up to the requested frame (accurate seek), so the
+// per-still deadline is generous but far below the transcode ceiling.
+const STILL_JOB_TIMEOUT_MS = 10 * 60_000;
+
+const summarizeFilter = (filter: ExportFilter): string => {
+  const parts: string[] = [];
+  if (filter.version_id) parts.push(`version ${filter.version_id}`);
+  if (filter.author_user_id) parts.push(`author ${filter.author_user_id}`);
+  if (filter.unresolved_only) parts.push("open comments only");
+  if (filter.internal !== undefined)
+    parts.push(filter.internal ? "internal comments" : "external comments");
+  if (filter.has_annotation !== undefined)
+    parts.push(filter.has_annotation ? "with drawings" : "without drawings");
+  if (filter.frame_in !== undefined || filter.frame_out !== undefined)
+    parts.push(
+      `frames ${filter.frame_in ?? 0} to ${filter.frame_out ?? "end"}`,
+    );
+  return parts.length ? parts.join(", ") : "All comments";
+};
+
+// PDF report with annotated stills (phase-3 P3-T07). Stills are extracted by
+// the media worker over the signed job protocol, annotated with the pure-TS
+// SVG compositor, and embedded per comment. Any failure on the still path
+// degrades that comment to a text-only block and is logged; the report still
+// ships.
+const buildPdfExport = async (
+  db: AppDb,
+  job: typeof exportJobs.$inferSelect,
+  blobRoot: string,
+  media: { workerUrl?: string | undefined; workerSecret?: string | undefined },
+  allRows: ExportRow[],
+  selected: ExportRow[],
+): Promise<Uint8Array> => {
+  const topLevel = selected.filter((row) => row.comment.parentId === null);
+  const repliesByParent = new Map<string, ExportRow[]>();
+  for (const row of allRows) {
+    const parentId = row.comment.parentId;
+    if (parentId === null) continue;
+    const entries = repliesByParent.get(parentId) ?? [];
+    entries.push(row);
+    repliesByParent.set(parentId, entries);
+  }
+  const reactionsByComment = new Map<string, Map<string, number>>();
+  for (const ids of chunked(
+    topLevel.map((row) => row.comment.id),
+    100,
+  )) {
+    const reactionRows = await db
+      .select()
+      .from(commentReactions)
+      .where(inArray(commentReactions.commentId, ids))
+      .all();
+    for (const reaction of reactionRows) {
+      const counts =
+        reactionsByComment.get(reaction.commentId) ?? new Map<string, number>();
+      counts.set(reaction.code, (counts.get(reaction.code) ?? 0) + 1);
+      reactionsByComment.set(reaction.commentId, counts);
+    }
+  }
+  const project = (
+    await db
+      .select({ name: projects.name })
+      .from(projects)
+      .where(eq(projects.id, job.projectId))
+      .limit(1)
+      .all()
+  )[0];
+  const workerConfigured = Boolean(media.workerUrl && media.workerSecret);
+  if (!workerConfigured)
+    console.warn(
+      `[onelight] pdf export ${job.id}: media worker is not configured; the report falls back to text-only blocks.`,
+    );
+  const stillsDir = path.join(blobRoot, "exports", `.stills-${job.id}`);
+  const proxyByVersion = new Map<string, string | undefined>();
+  const proxyFor = async (versionId: string): Promise<string | undefined> => {
+    if (proxyByVersion.has(versionId)) return proxyByVersion.get(versionId);
+    const proxy = (
+      await db
+        .select({ blobKey: renditions.blobKey })
+        .from(renditions)
+        .where(
+          and(
+            eq(renditions.versionId, versionId),
+            eq(renditions.kind, "proxy_1080"),
+            isNull(renditions.shareId),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    proxyByVersion.set(versionId, proxy?.blobKey);
+    return proxy?.blobKey;
+  };
+  try {
+    const reportComments: ReportComment[] = [];
+    for (const row of topLevel) {
+      const comment = row.comment;
+      const version = row.version;
+      const rate =
+        version.frameRateNum && version.frameRateDen
+          ? { num: version.frameRateNum, den: version.frameRateDen }
+          : { num: 24, den: 1 };
+      let stillPng: Uint8Array | undefined;
+      const proxyKey =
+        workerConfigured &&
+        comment.frameIn !== null &&
+        version.transcodeStatus === "ready"
+          ? await proxyFor(version.id)
+          : undefined;
+      if (proxyKey && comment.frameIn !== null) {
+        const stillPath = path.join(stillsDir, `${comment.id}.png`);
+        try {
+          await sendJob(
+            media.workerUrl as string,
+            media.workerSecret as string,
+            {
+              job_id: `still-${job.id}-${comment.id}`,
+              kind: "still",
+              source_path: path.join(blobRoot, proxyKey),
+              output_path: stillPath,
+              frame: comment.frameIn,
+              rate,
+            },
+          );
+          const state = await pollWorker(
+            media.workerUrl as string,
+            media.workerSecret as string,
+            `still-${job.id}-${comment.id}`,
+            STILL_JOB_TIMEOUT_MS,
+          );
+          if (state.status !== "complete")
+            throw new Error(state.error ?? "Still extraction failed.");
+          stillPng = new Uint8Array(await readFile(stillPath));
+        } catch (error) {
+          stillPng = undefined;
+          console.warn(
+            `[onelight] pdf export ${job.id}: still for comment ${comment.id} failed, falling back to a text-only block: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      if (stillPng && comment.annotationJson) {
+        // annotation_json is either a bare stroke array or {strokes: [...]};
+        // parseAnnotationStrokes accepts both and drops anything malformed.
+        let annotation: unknown;
+        try {
+          annotation = JSON.parse(comment.annotationJson) as unknown;
+        } catch {
+          annotation = undefined;
+        }
+        const resolved = parseAnnotationStrokes(annotation);
+        if (resolved.length) {
+          try {
+            stillPng = await compositeAnnotation(stillPng, resolved);
+          } catch (error) {
+            console.warn(
+              `[onelight] pdf export ${job.id}: annotation composite for comment ${comment.id} failed, embedding the bare still: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
+      }
+      reportComments.push({
+        author: comment.authorName ?? "Comment",
+        body: comment.bodyText,
+        frame: comment.frameIn,
+        frameOut: comment.frameOut,
+        rate,
+        dropFrame: Boolean(version.dropFrame),
+        startFrame:
+          job.timecodeBase === "source" ? (version.sourceStartFrame ?? 0) : 0,
+        assetName: row.asset.name,
+        versionNo: version.versionNo,
+        completed: comment.completedAt !== null,
+        internal: Boolean(comment.internal),
+        replies: (repliesByParent.get(comment.id) ?? []).map((reply) => ({
+          author: reply.comment.authorName ?? "Reply",
+          body: reply.comment.bodyText,
+        })),
+        reactions: [...(reactionsByComment.get(comment.id) ?? new Map())]
+          .map(([code, count]) => ({
+            code: code as string,
+            count: count as number,
+          }))
+          .sort((a, b) => a.code.localeCompare(b.code)),
+        ...(stillPng ? { stillPng } : {}),
+      });
+    }
+    return await buildPdfReport({
+      project: project?.name ?? job.projectId,
+      title: "Comment report",
+      filterSummary: summarizeFilter(parseObject(job.filtersJson)),
+      generatedAt: `${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`,
+      comments: reportComments,
+    });
+  } finally {
+    await rm(stillsDir, { recursive: true, force: true });
+  }
+};
+
 const processExportJob = async (
   db: AppDb,
   job: typeof exportJobs.$inferSelect,
   blobRoot: string,
+  media: { workerUrl?: string | undefined; workerSecret?: string | undefined },
 ): Promise<void> => {
   const filter = parseObject(job.filtersJson) as ExportFilter;
   const rows = await db
@@ -485,44 +958,38 @@ const processExportJob = async (
     .where(and(eq(assets.projectId, job.projectId), isNull(comments.deletedAt)))
     .orderBy(asc(comments.frameIn), asc(comments.id))
     .all();
-  const selected = rows.filter(
-    (row: {
-      comment: typeof comments.$inferSelect;
-      version: typeof assetVersions.$inferSelect;
-      asset: typeof assets.$inferSelect;
-    }) => {
-      const comment = row.comment;
-      if (filter.version_id && comment.versionId !== filter.version_id)
-        return false;
-      if (
-        filter.author_user_id &&
-        comment.authorUserId !== filter.author_user_id
-      )
-        return false;
-      if (filter.unresolved_only && comment.completedAt !== null) return false;
-      if (
-        filter.internal !== undefined &&
-        Boolean(comment.internal) !== filter.internal
-      )
-        return false;
-      if (
-        filter.has_annotation !== undefined &&
-        Boolean(comment.annotationJson) !== filter.has_annotation
-      )
-        return false;
-      if (
-        filter.frame_in !== undefined &&
-        (comment.frameIn === null || comment.frameIn < filter.frame_in)
-      )
-        return false;
-      if (
-        filter.frame_out !== undefined &&
-        (comment.frameIn === null || comment.frameIn > filter.frame_out)
-      )
-        return false;
-      return comment.frameIn !== null;
-    },
-  );
+  const selected = rows.filter((row: ExportRow) => {
+    const comment = row.comment;
+    if (filter.version_id && comment.versionId !== filter.version_id)
+      return false;
+    if (filter.author_user_id && comment.authorUserId !== filter.author_user_id)
+      return false;
+    if (filter.unresolved_only && comment.completedAt !== null) return false;
+    if (
+      filter.internal !== undefined &&
+      Boolean(comment.internal) !== filter.internal
+    )
+      return false;
+    if (
+      filter.has_annotation !== undefined &&
+      Boolean(comment.annotationJson) !== filter.has_annotation
+    )
+      return false;
+    if (
+      filter.frame_in !== undefined &&
+      (comment.frameIn === null || comment.frameIn < filter.frame_in)
+    )
+      return false;
+    if (
+      filter.frame_out !== undefined &&
+      (comment.frameIn === null || comment.frameIn > filter.frame_out)
+    )
+      return false;
+    return true;
+  });
+  // Marker formats require a frame; the PDF report keeps frameless comments
+  // as text-only blocks instead.
+  const markerRows = selected.filter((row) => row.comment.frameIn !== null);
   // Each version carries its own rational rate, start frame, and drop-frame
   // flag, so comments are grouped by version and serialized per group.
   interface ExportGroup {
@@ -536,7 +1003,7 @@ const processExportJob = async (
     }>;
   }
   const byVersion = new Map<string, ExportGroup>();
-  for (const row of selected) {
+  for (const row of markerRows) {
     const entry: ExportGroup = byVersion.get(row.version.id) ?? {
       version: row.version,
       markers: [],
@@ -565,15 +1032,6 @@ const processExportJob = async (
       dropFrame: Boolean(version?.dropFrame),
       timecodeBase: job.timecodeBase,
     }) as const;
-  const rowsForPdf = groupList.flatMap((group) =>
-    group.markers.map((marker) => ({
-      timecode:
-        exportText([marker], optionsFor(group.version)).trim().split(" ")[0] ??
-        "00:00:00:00",
-      author: marker.authorName ?? "Comment",
-      body: marker.bodyText,
-    })),
-  );
   const serializeGroup = (group: (typeof groupList)[number]): string => {
     const options = optionsFor(group.version);
     return job.format === "resolve_edl"
@@ -592,7 +1050,7 @@ const processExportJob = async (
   };
   const output =
     job.format === "pdf"
-      ? buildPdf(rowsForPdf)
+      ? await buildPdfExport(db, job, blobRoot, media, rows, selected)
       : job.format === "json"
         ? JSON.stringify(
             groupList.flatMap(
@@ -647,10 +1105,25 @@ export const startWorkerPump = (
   }
   const workerId = new UlidGenerator().ulid();
   let active = false;
+  let lastWatermarkSweep = 0;
   const tick = async () => {
     if (active) return;
     active = true;
     const now = Date.now();
+    // Reconcile missing watermarked renditions on a throttle rather than
+    // every poll; the sweep itself is bounded per pass.
+    if (now - lastWatermarkSweep >= WATERMARK_SWEEP_INTERVAL_MS) {
+      lastWatermarkSweep = now;
+      try {
+        await sweepWatermarkJobs(db);
+      } catch (error) {
+        console.warn(
+          `[onelight] watermark sweep failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
     const pendingExport = (
       await db
         .select()
@@ -672,7 +1145,10 @@ export const startWorkerPump = (
             ),
           )
           .run();
-        await processExportJob(db, pendingExport, options.blobRoot);
+        await processExportJob(db, pendingExport, options.blobRoot, {
+          workerUrl: options.workerUrl,
+          workerSecret: options.workerSecret,
+        });
       } catch (error) {
         await db
           .update(exportJobs)
