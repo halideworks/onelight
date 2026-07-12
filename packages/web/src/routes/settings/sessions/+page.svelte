@@ -95,8 +95,8 @@
   .info { display: grid; gap: 4px; min-width: 0; font-size: var(--text-13); }
   .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--ink-text-dim); font-variant-numeric: tabular-nums; }
   .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--ink-300); }
-  .agent { color: var(--ink-text-dim); font-size: var(--text-12); overflow-wrap: anywhere; }
-  button { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 9px 16px; font-size: var(--text-12); font-weight: 600; }
+  .agent { color: var(--ink-text-dim); font-size: var(--text-13); overflow-wrap: anywhere; }
+  button { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 9px 16px; font-size: var(--text-13); font-weight: 600; }
   button:hover { background: var(--ink-300); }
   button:focus-visible, a:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
   .empty { color: var(--ink-text-dim); }

@@ -26,7 +26,7 @@ export class ApiError extends Error {
   }
 }
 
-const PUBLIC_PREFIXES = ["/login", "/setup", "/invite", "/s"];
+const PUBLIC_PREFIXES = ["/login", "/setup", "/invite", "/reset", "/s"];
 
 const onPublicPage = (): boolean => {
   if (typeof location === "undefined") return true;
@@ -114,6 +114,21 @@ type Get<P extends keyof paths> = paths[P] extends {
 }
   ? JsonOf<R[Extract<keyof R, 200 | "200">]>
   : never;
+type PostBody<P extends keyof paths> = paths[P] extends {
+  post: { requestBody: { content: { "application/json": infer B } } };
+}
+  ? B
+  : never;
+type Created<P extends keyof paths> = paths[P] extends {
+  post: { responses: infer R };
+}
+  ? JsonOf<R[Extract<keyof R, 201 | "201">]>
+  : never;
+type PatchBody<P extends keyof paths> = paths[P] extends {
+  patch: { requestBody: { content: { "application/json": infer B } } };
+}
+  ? B
+  : never;
 
 export type SessionResponse = Get<"/api/v1/auth/session">;
 export type BootstrapResponse = Get<"/api/v1/bootstrap">;
@@ -130,6 +145,25 @@ export type SearchPage = Get<"/api/v1/search">;
 export type SearchHit = SearchPage["items"][number];
 export type ShareList = Get<"/api/v1/shares">;
 export type Share = ShareList["items"][number];
+export type ShareCreateBody = PostBody<"/api/v1/shares">;
+export type ShareCreated = Created<"/api/v1/shares">;
+export type SharePatchBody = PatchBody<"/api/v1/shares/{id}">;
+export type RenditionList = Get<"/api/v1/versions/{id}/renditions">;
+export type Rendition = RenditionList["items"][number];
+
+export type ShareViewerList = Get<"/api/v1/shares/{id}/viewers">;
+export type ShareViewer = ShareViewerList["items"][number];
+export type VersionCreated = Created<"/api/v1/assets/{id}/versions">;
+
+/* The share watermark spec crosses the wire as a loose JSON record; this is
+   the concrete shape the transcode worker consumes (media.ts WatermarkSpec). */
+export type WatermarkSpec = {
+  text?: string;
+  position?: "tl" | "tr" | "bl" | "br" | "center" | "tile";
+  opacity?: number;
+  size?: number;
+  box?: boolean;
+};
 
 /* Typed helpers for the common read paths. Pages may keep hand-rolled calls;
    these give new code a contract-typed entry point. */
@@ -180,4 +214,31 @@ export const searchWorkspace = (options: {
 export const listShares = (projectId?: string): Promise<ShareList> =>
   api<ShareList>(
     `/api/v1/shares${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
+  );
+export const createShare = (body: ShareCreateBody): Promise<ShareCreated> =>
+  apiPost<ShareCreated>("/api/v1/shares", body);
+export const updateShare = (id: string, body: SharePatchBody): Promise<Share> =>
+  apiPatch<Share>(`/api/v1/shares/${id}`, body);
+export const revokeShare = (id: string): Promise<void> =>
+  apiDelete(`/api/v1/shares/${id}`);
+export const listShareViewers = (id: string): Promise<ShareViewerList> =>
+  api<ShareViewerList>(`/api/v1/shares/${id}/viewers`);
+export const listRenditions = (versionId: string): Promise<RenditionList> =>
+  api<RenditionList>(`/api/v1/versions/${versionId}/renditions`);
+export const createAssetVersion = (
+  assetId: string,
+  body: { upload_id: string; name?: string; carry_forward?: boolean },
+): Promise<VersionCreated> =>
+  apiPost<VersionCreated>(`/api/v1/assets/${assetId}/versions`, body);
+export const requestPasswordReset = (email: string): Promise<void> =>
+  apiPost<void>(
+    "/api/v1/auth/reset-request",
+    { email },
+    { redirectOn401: false },
+  );
+export const resetPassword = (token: string, password: string): Promise<void> =>
+  apiPost<void>(
+    "/api/v1/auth/reset",
+    { token, password },
+    { redirectOn401: false },
   );

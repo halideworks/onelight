@@ -332,6 +332,8 @@ export const assetVersions = sqliteTable(
       .default("pending"),
     deletedAt: integer("deleted_at"),
     createdAt: integer("created_at").notNull(),
+    /** Set once a transcode.failed notification has been materialized. */
+    failureNotifiedAt: integer("failure_notified_at"),
   },
   (table) => ({
     assetVersionUnique: unique().on(table.assetId, table.versionNo),
@@ -339,6 +341,13 @@ export const assetVersions = sqliteTable(
       table.assetId,
       table.versionNo,
     ),
+    // Serves the GET /notifications materialize-once scan for versions that
+    // have failed but have not yet had a notification written.
+    failedIndex: index("asset_versions_failed_idx")
+      .on(table.id)
+      .where(
+        sql`${table.transcodeStatus} = 'failed' AND ${table.failureNotifiedAt} IS NULL`,
+      ),
   }),
 );
 
@@ -544,6 +553,8 @@ export const notifications = sqliteTable(
     payloadJson: text("payload_json").notNull(),
     readAt: integer("read_at"),
     createdAt: integer("created_at").notNull(),
+    /** Set when an email digest has covered this row; in-app only until then. */
+    emailedAt: integer("emailed_at"),
   },
   (table) => ({
     userIndex: index("notifications_user_idx").on(
@@ -551,8 +562,22 @@ export const notifications = sqliteTable(
       table.readAt,
       table.id,
     ),
+    // The (user_id, read_at, id) index cannot serve the id-DESC keyset used by
+    // GET /notifications; this one does.
+    userIdIndex: index("notifications_user_id_idx").on(table.userId, table.id),
   }),
 );
+
+export const passwordResets = sqliteTable("password_resets", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  createdAt: integer("created_at").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+  usedAt: integer("used_at"),
+});
 
 export const notificationPreferences = sqliteTable("notification_preferences", {
   userId: text("user_id")
@@ -744,6 +769,7 @@ export const schema = {
   commentReactions,
   notifications,
   notificationPreferences,
+  passwordResets,
   shares,
   shareAssets,
   shareViewers,

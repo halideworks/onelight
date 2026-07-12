@@ -1,9 +1,14 @@
 import fs from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
-import { createApp, deliverDueWebhookDeliveries } from "@onelight/api";
+import {
+  buildShareOgTags,
+  createApp,
+  deliverDueWebhookDeliveries,
+} from "@onelight/api";
 import { loadConfig, UlidGenerator, systemClock } from "@onelight/core";
 import {
   applyNodeMigrations,
@@ -12,6 +17,8 @@ import {
   workspaces,
 } from "@onelight/db";
 import { LocalBlobStore } from "@onelight/worker";
+import { createMailerFromEnv } from "./mailer.js";
+import { maintenanceConfigFromEnv, startMaintenance } from "./maintenance.js";
 import { NodePasswordHasher } from "./password.js";
 import { startWorkerPump } from "./worker-pump.js";
 
@@ -80,6 +87,11 @@ process.once("SIGINT", shutdown);
 
 const start = async (): Promise<void> => {
   await ensureHeadlessAdmin();
+  const blobRoot =
+    process.env.BLOB_ROOT ??
+    path.join(path.dirname(config.DATABASE_PATH), "blobs");
+  const blobStore = new LocalBlobStore(blobRoot);
+  const mailer = createMailerFromEnv(process.env);
   const api = createApp({
     db,
     hasher: new NodePasswordHasher(),
@@ -87,20 +99,55 @@ const start = async (): Promise<void> => {
     ids: new UlidGenerator(),
     config,
     version: process.env.ONELIGHT_VERSION ?? "0.1.0-dev",
-    blobStore: new LocalBlobStore(
-      process.env.BLOB_ROOT ??
-        path.join(path.dirname(config.DATABASE_PATH), "blobs"),
-    ),
+    blobStore,
+    // AppEnv.mailer is optional and exactOptionalPropertyTypes is on, so
+    // the field is present only when a mailer is configured.
+    ...(mailer ? { mailer } : {}),
   });
   const webRoot = process.env.WEB_ROOT ?? "packages/web/build";
   const app = new Hono();
   const shell = serveStatic({ root: webRoot, path: "index.html" });
+  // The built shell is read once; share requests get OG meta tags injected
+  // before </head> so link unfurls describe the share.
+  let shellHtml: string | null | undefined;
+  const loadShellHtml = async (): Promise<string | null> => {
+    if (shellHtml !== undefined) return shellHtml;
+    try {
+      shellHtml = await readFile(path.join(webRoot, "index.html"), "utf8");
+    } catch {
+      shellHtml = null;
+    }
+    return shellHtml;
+  };
   app.use("*", async (c, next) => {
     if (
       c.req.path.startsWith("/s/") &&
       (c.req.header("accept") ?? "").includes("text/html")
-    )
-      return shell(c, next);
+    ) {
+      const html = await loadShellHtml();
+      if (html === null) return shell(c, next);
+      const rawSlug = c.req.path.split("/")[2] ?? "";
+      let slug = rawSlug;
+      try {
+        slug = decodeURIComponent(rawSlug);
+      } catch {
+        // Keep the raw segment when it is not valid percent-encoding.
+      }
+      let page = html;
+      if (slug) {
+        try {
+          const tags = await buildShareOgTags(db, slug, config.PUBLIC_URL);
+          if (tags) page = page.replace("</head>", `${tags}</head>`);
+        } catch (error) {
+          console.warn(
+            `[onelight] OG tags for share ${slug} failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      return c.html(page);
+    }
     await next();
   });
   app.route("/", api);
@@ -116,15 +163,22 @@ const start = async (): Promise<void> => {
     ...(process.env.WORKER_SECRET
       ? { workerSecret: process.env.WORKER_SECRET }
       : {}),
-    blobRoot:
-      process.env.BLOB_ROOT ??
-      path.join(path.dirname(config.DATABASE_PATH), "blobs"),
+    blobRoot,
   });
+  const stopMaintenance = startMaintenance(
+    db,
+    maintenanceConfigFromEnv(process.env, {
+      publicUrl: config.PUBLIC_URL,
+      blobStore,
+    }),
+    mailer,
+  );
   const webhookTimer = setInterval(() => {
     void deliverDueWebhookDeliveries(db, Date.now());
   }, 5_000);
   cleanups.push(
     () => clearInterval(webhookTimer),
+    stopMaintenance,
     stopWorkerPump,
     () => server.close(),
   );

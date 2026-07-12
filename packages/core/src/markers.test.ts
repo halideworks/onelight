@@ -360,3 +360,75 @@ describe("exportText", () => {
     );
   });
 });
+
+// Defensive-export contract: mistagged sources and hostile comment bytes must
+// still produce importable, well-formed output rather than throwing or
+// emitting invalid XML.
+describe("defensive exporters", () => {
+  // dropFrame is set true but 24 fps is not a drop-frame rate: exporters must
+  // coerce it to non-drop rather than throwing.
+  const mistagged: MarkerOptions = {
+    title: "Mistagged",
+    rate: { num: 24, den: 1 },
+    startFrame: 0,
+    dropFrame: true,
+    timecodeBase: "source",
+  };
+  const point: MarkerComment[] = [
+    {
+      id: "01J0000000000000000000AA01",
+      bodyText: "hello",
+      authorName: "Q",
+      frameIn: 0,
+    },
+  ];
+
+  it("coerces dropFrame to non-drop at a non-drop-frame rate instead of throwing", () => {
+    expect(() => exportResolveEdl(point, mistagged)).not.toThrow();
+    const edl = exportResolveEdl(point, mistagged);
+    expect(edl).toContain("FCM: NON-DROP FRAME");
+    expect(edl).toContain("00:00:00:00");
+    expect(edl).not.toContain("00:00:00;00");
+    expect(exportAvidText(point, mistagged)).toContain("00:00:00:00");
+    expect(exportFcpXml(point, mistagged)).toContain('tcFormat="NDF"');
+    expect(() => exportCsv(point, mistagged)).not.toThrow();
+    expect(() => exportJson(point, mistagged)).not.toThrow();
+    expect(() => exportText(point, mistagged)).not.toThrow();
+    expect(() => exportXmeml(point, mistagged)).not.toThrow();
+  });
+
+  it("strips XML-illegal control characters from fcpxml and xmeml", () => {
+    const dirty: MarkerComment[] = [
+      {
+        id: "01J0000000000000000000AA02",
+        bodyText: "bell\x07 and null\x00 end",
+        authorName: "ctl\x1f",
+        frameIn: 0,
+      },
+    ];
+    const fcp = exportFcpXml(dirty, mistagged);
+    expect(fcp).not.toContain("\x07");
+    expect(fcp).not.toContain("\x00");
+    expect(fcp).toContain('value="bell and null end"');
+    const xmeml = exportXmeml(dirty, mistagged);
+    expect(xmeml).not.toContain("\x07");
+    expect(xmeml).not.toContain("\x00");
+    expect(xmeml).not.toContain("\x1f");
+    expect(xmeml).toContain("<comment>bell and null end</comment>");
+    expect(xmeml).toContain("<name>ctl</name>");
+  });
+
+  it("neutralizes the CDATA terminator in xmeml character data", () => {
+    const cdata: MarkerComment[] = [
+      {
+        id: "01J0000000000000000000AA03",
+        bodyText: "danger ]]> here",
+        authorName: null,
+        frameIn: 0,
+      },
+    ];
+    const xmeml = exportXmeml(cdata, mistagged);
+    expect(xmeml).not.toContain("]]>");
+    expect(xmeml).toContain("]]&gt;");
+  });
+});

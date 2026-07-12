@@ -6,16 +6,19 @@ import type { SuiteContext } from "./context.js";
 import { registerAuthDomain } from "./domains/auth.js";
 import { registerCommentsDomain } from "./domains/comments.js";
 import { registerEndpointInventory } from "./domains/endpoints.js";
+import { registerFolderPropertyDomain } from "./domains/folders-property.js";
 import { registerMatrixDomain } from "./domains/matrix.js";
 import { registerMediaPipelineDomain } from "./domains/media-pipeline.js";
 import { registerOidcDomain } from "./domains/oidc.js";
+import { registerPasswordResetDomain } from "./domains/password-reset.js";
 import { registerProjectsDomain } from "./domains/projects.js";
 import { registerSharesDomain } from "./domains/shares.js";
 import { registerSystemDomain } from "./domains/system.js";
+import { registerVersionsDomain } from "./domains/versions.js";
 import { registerWorkspaceUsersDomain } from "./domains/workspace-users.js";
 
 export type { ContractCapabilities, ContractHarness } from "./harness.js";
-export { FakeClock } from "./harness.js";
+export { FakeClock, StubMailer } from "./harness.js";
 export { MemoryBlobStore } from "./memory-blob-store.js";
 
 /**
@@ -64,6 +67,12 @@ export const registerContractSuite = (
   describe("Onelight API contract suite", () => {
     beforeAll(async () => {
       harness = await makeEnv();
+      // The suite drives rate-limit isolation through X-Forwarded-For, and the
+      // in-memory app under test exposes no peer socket, so the suite trusts
+      // the proxy chain. clientIp then reads the header as it would behind a
+      // configured reverse proxy (TRUST_PROXY=true). The default-off behavior
+      // is covered explicitly by the spoofing test in the auth domain.
+      harness.config.TRUST_PROXY = true;
       seedState = await buildSeed(harness);
     }, 180_000);
 
@@ -78,11 +87,14 @@ export const registerContractSuite = (
 
     registerEndpointInventory(ctx);
     registerAuthDomain(ctx);
+    registerPasswordResetDomain(ctx);
     registerWorkspaceUsersDomain(ctx);
     registerProjectsDomain(ctx);
+    registerFolderPropertyDomain(ctx);
     registerMatrixDomain(ctx);
     registerOidcDomain(ctx);
     registerMediaPipelineDomain(ctx);
+    registerVersionsDomain(ctx);
     registerCommentsDomain(ctx);
     registerSharesDomain(ctx);
     registerSystemDomain(ctx);

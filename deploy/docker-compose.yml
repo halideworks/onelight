@@ -15,6 +15,11 @@ services:
       ONELIGHT_WORKSPACE_NAME: ${ONELIGHT_WORKSPACE_NAME:-Onelight}
       WORKER_URL: ${WORKER_URL:-http://onelight-worker:8080}
       WORKER_SECRET: ${WORKER_SECRET:?WORKER_SECRET is required}
+      # Outgoing email is optional: uncomment and set SMTP_URL (or the
+      # discrete SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS/SMTP_SECURE
+      # settings) together with MAIL_FROM to enable it.
+      # SMTP_URL: ${SMTP_URL}
+      # MAIL_FROM: ${MAIL_FROM}
     volumes:
       - onelight-data:/data
     healthcheck:

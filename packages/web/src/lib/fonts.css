@@ -1,0 +1,63 @@
+/* Self-hosted web fonts.
+
+   These face declarations replace the Fontshare CDN @import that used to live
+   in tokens.css. That import was an external, render-blocking request on every
+   page (including the review room), leaking a request to a third party on
+   every load. The woff2 files are vendored under ./fonts/ so the app serves
+   its own type with no third-party call. Vite fingerprints and copies the
+   files referenced here at build time.
+
+   Weights match the former Fontshare request: Switzer 400/500/600/700 and
+   Space Grotesk 500/600/700. If a face is missing at runtime the family's
+   fallback stack in tokens.css (--font-ui / --font-display) stands in. */
+
+@font-face {
+  font-family: "Switzer";
+  src: url("./fonts/switzer-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Switzer";
+  src: url("./fonts/switzer-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Switzer";
+  src: url("./fonts/switzer-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Switzer";
+  src: url("./fonts/switzer-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("./fonts/space-grotesk-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("./fonts/space-grotesk-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("./fonts/space-grotesk-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}

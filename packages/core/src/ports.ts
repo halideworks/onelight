@@ -35,6 +35,13 @@ export interface MultipartBlobStore extends BlobStore {
     uploadId: string,
     partNo: number,
     stream: ReadableStream,
+    /**
+     * Exact byte length of the part, when the caller knows it (from a trusted
+     * Content-Length). The R2 adapter streams a fixed-length body instead of
+     * buffering the whole part in the isolate; stores that ignore it simply
+     * buffer as before.
+     */
+    partLength?: number,
   ): Promise<{ etag: string; size: number }>;
   abortMultipart?(uploadId: string): Promise<void>;
 }
@@ -80,6 +87,15 @@ export interface JobSpec {
 
 export interface JobQueue {
   enqueue(job: JobSpec): Promise<string>;
+}
+
+/**
+ * Outbound mail delivery. Optional on AppEnv: deployments without SMTP or an
+ * API-backed sender simply omit it, and mail-dependent flows degrade to an
+ * audit trail instead of failing.
+ */
+export interface Mailer {
+  send(message: { to: string; subject: string; text: string }): Promise<void>;
 }
 
 export interface RealtimeHub {

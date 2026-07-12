@@ -7,6 +7,8 @@
   } from '@onelight/core';
   import { frameForX, spanForRange, xForFrame } from './timeline.js';
   import type { TimelineMarker } from './timeline.js';
+  import { filmstripTiles, spriteSheetSize } from './filmstrip.js';
+  import type { SpriteCue } from './filmstrip.js';
 
   let {
     frame,
@@ -16,6 +18,9 @@
     inFrame = null,
     outFrame = null,
     markers = [],
+    filmstrip = null,
+    waveformUrl = null,
+    disabled = false,
     onseek = undefined,
     onmarkerselect = undefined
   }: {
@@ -26,11 +31,17 @@
     inFrame?: number | null;
     outFrame?: number | null;
     markers?: TimelineMarker[];
+    filmstrip?: { url: string; cues: SpriteCue[] } | null;
+    waveformUrl?: string | null;
+    /* Seeking is suspended (a drawing is armed upstream): pointer scrubbing
+       and marker jumps are refused while this is true. */
+    disabled?: boolean;
     onseek?: ((frame: number) => void) | undefined;
     onmarkerselect?: ((markerId: string, frame: number) => void) | undefined;
   } = $props();
 
-  let track: HTMLDivElement | undefined = $state();
+  let stack: HTMLDivElement | undefined = $state();
+  let laneWidth = $state(0);
   let scrubbing = $state(false);
   let hovered = $state<TimelineMarker | null>(null);
   let hoveredPercent = $state(0);
@@ -56,17 +67,61 @@
       : null
   );
 
+  /* ---- filmstrip lane (sprite sheet tiles across the width) ---- */
+  const FILM_LANE_HEIGHT = 36;
+  const showFilmstrip = $derived(Boolean(filmstrip && filmstrip.cues.length > 0));
+  const sheet = $derived(filmstrip ? spriteSheetSize(filmstrip.cues) : { width: 0, height: 0 });
+  const tiles = $derived(
+    filmstrip && laneWidth > 0
+      ? filmstripTiles({
+          cues: filmstrip.cues,
+          durationFrames,
+          rate,
+          width: laneWidth,
+          /* Slot width follows the tile aspect at the lane height. */
+          tileWidth: Math.max(
+            24,
+            Math.round((FILM_LANE_HEIGHT * (filmstrip.cues[0]?.w ?? 160)) / (filmstrip.cues[0]?.h ?? 90))
+          )
+        })
+      : []
+  );
+  const tileStyle = (cue: SpriteCue, left: number, width: number): string => {
+    const scale = FILM_LANE_HEIGHT / cue.h;
+    return [
+      `left: ${left}px`,
+      `width: ${width}px`,
+      `background-image: url(${JSON.stringify(filmstrip?.url ?? '')})`,
+      `background-size: ${sheet.width * scale}px ${sheet.height * scale}px`,
+      `background-position: ${-cue.x * scale}px ${-cue.y * scale}px`
+    ].join('; ');
+  };
+
+  /* Track layout width for the tile mapping. The lane is width-driven, so a
+     ResizeObserver on the stack keeps tiles honest across window resizes. */
+  $effect(() => {
+    if (!stack) return;
+    const element = stack;
+    const measure = (): void => {
+      laneWidth = element.clientWidth;
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  });
+
   const seekFromEvent = (event: PointerEvent): void => {
-    if (!track) return;
-    const rect = track.getBoundingClientRect();
+    if (!stack) return;
+    const rect = stack.getBoundingClientRect();
     onseek?.(frameForX(event.clientX - rect.left, durationFrames, rect.width));
   };
 
   const handlePointerDown = (event: PointerEvent): void => {
-    if (!event.isPrimary) return;
+    if (!event.isPrimary || disabled) return;
     event.preventDefault();
     try {
-      track?.setPointerCapture(event.pointerId);
+      stack?.setPointerCapture(event.pointerId);
     } catch {
       /* An inactive pointer id cannot be captured; the click still seeks. */
     }
@@ -75,7 +130,14 @@
   };
 
   const handlePointerMove = (event: PointerEvent): void => {
-    if (scrubbing) seekFromEvent(event);
+    if (!scrubbing) return;
+    /* If the pointerup was missed (capture failed, release off-track), no
+       button is held any more: drop the latch so a bare hover cannot seek. */
+    if (event.buttons === 0) {
+      scrubbing = false;
+      return;
+    }
+    seekFromEvent(event);
   };
 
   const endScrub = (): void => {
@@ -93,6 +155,7 @@
   };
 
   const selectMarker = (marker: TimelineMarker): void => {
+    if (disabled) return;
     onseek?.(marker.frameIn);
     onmarkerselect?.(marker.id, marker.frameIn);
   };
@@ -110,65 +173,86 @@
 
 <div class="timeline">
   <!-- Keyboard operation comes from the player's global map (arrows step,
-       Home/End jump); the track itself is a pointer scrubber. -->
+       Home/End jump); the stack is a pointer scrubber across every lane. -->
   <div
-    class="track"
-    bind:this={track}
-    role="slider"
-    tabindex="0"
-    aria-label="Timeline scrubber"
-    aria-valuemin={0}
-    aria-valuemax={lastFrame}
-    aria-valuenow={Math.min(frame, lastFrame)}
-    aria-valuetext={timecodeFor(frame)}
+    class="stack"
+    class:disabled
+    bind:this={stack}
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
     onpointerup={endScrub}
     onpointercancel={endScrub}
   >
-    {#if ioSpan}
-      <div
-        class="io"
-        style:left={`${ioSpan.left * 100}%`}
-        style:width={`${ioSpan.width * 100}%`}
-      ></div>
-    {/if}
-    <div class="playhead" style:left={`${percentFor(frame)}%`}></div>
-  </div>
-  <div class="lane">
-    {#each markers as marker (marker.id)}
-      {#if marker.frameOut != null && marker.frameOut > marker.frameIn}
-        {@const span = spanForRange(marker.frameIn, marker.frameOut, durationFrames)}
-        <button
-          type="button"
-          class="span"
-          class:completed={marker.completed}
-          style:left={`${span.left * 100}%`}
-          style:width={`${Math.max(span.width * 100, 0.4)}%`}
-          aria-label={markerLabel(marker)}
-          onpointerdown={(event) => event.stopPropagation()}
-          onclick={() => selectMarker(marker)}
-          onpointerenter={() => showTip(marker)}
-          onpointerleave={() => hideTip(marker)}
-          onfocus={() => showTip(marker)}
-          onblur={() => hideTip(marker)}
-        ></button>
-      {:else}
-        <button
-          type="button"
-          class="mark"
-          class:completed={marker.completed}
-          style:left={`${percentFor(marker.frameIn)}%`}
-          aria-label={markerLabel(marker)}
-          onpointerdown={(event) => event.stopPropagation()}
-          onclick={() => selectMarker(marker)}
-          onpointerenter={() => showTip(marker)}
-          onpointerleave={() => hideTip(marker)}
-          onfocus={() => showTip(marker)}
-          onblur={() => hideTip(marker)}
-        ></button>
+    <div
+      class="track"
+      role="slider"
+      tabindex="0"
+      aria-label="Timeline scrubber"
+      aria-valuemin={0}
+      aria-valuemax={lastFrame}
+      aria-valuenow={Math.min(frame, lastFrame)}
+      aria-valuetext={timecodeFor(frame)}
+    >
+      {#if ioSpan}
+        <div
+          class="io"
+          style:left={`${ioSpan.left * 100}%`}
+          style:width={`${ioSpan.width * 100}%`}
+        ></div>
       {/if}
-    {/each}
+    </div>
+    {#if showFilmstrip}
+      <!-- Thumbnails are duplicates of footage on screen: decorative for
+           assistive tech, informative for eyes. -->
+      <div class="film" aria-hidden="true">
+        {#each tiles as tile, index (index)}
+          <div class="tile" style={tileStyle(tile.cue, tile.left, tile.width)}></div>
+        {/each}
+      </div>
+    {/if}
+    {#if waveformUrl}
+      <!-- The peaks sidecar is a pre-rendered image, not peak data; it is
+           stretched to the lane and forced neutral (grayscale keeps R=G=B). -->
+      <div class="wave" aria-hidden="true">
+        <img src={waveformUrl} alt="" draggable="false" />
+      </div>
+    {/if}
+    <div class="lane">
+      {#each markers as marker (marker.id)}
+        {#if marker.frameOut != null && marker.frameOut > marker.frameIn}
+          {@const span = spanForRange(marker.frameIn, marker.frameOut, durationFrames)}
+          <button
+            type="button"
+            class="span"
+            class:completed={marker.completed}
+            style:left={`${span.left * 100}%`}
+            style:width={`${Math.max(span.width * 100, 0.4)}%`}
+            aria-label={markerLabel(marker)}
+            onpointerdown={(event) => event.stopPropagation()}
+            onclick={() => selectMarker(marker)}
+            onpointerenter={() => showTip(marker)}
+            onpointerleave={() => hideTip(marker)}
+            onfocus={() => showTip(marker)}
+            onblur={() => hideTip(marker)}
+          ></button>
+        {:else}
+          <button
+            type="button"
+            class="mark"
+            class:completed={marker.completed}
+            style:left={`${percentFor(marker.frameIn)}%`}
+            aria-label={markerLabel(marker)}
+            onpointerdown={(event) => event.stopPropagation()}
+            onclick={() => selectMarker(marker)}
+            onpointerenter={() => showTip(marker)}
+            onpointerleave={() => hideTip(marker)}
+            onfocus={() => showTip(marker)}
+            onblur={() => hideTip(marker)}
+          ></button>
+        {/if}
+      {/each}
+    </div>
+    <div class="playhead" style:left={`${percentFor(frame)}%`}></div>
   </div>
   {#if hovered}
     <div class="tip" style:left={`${hoveredPercent}%`} role="status">
@@ -186,13 +270,20 @@
 <style>
   /* Review-room chrome: neutral values only, separation by value step. */
   .timeline { position: relative; padding: 8px 0 2px; }
+  .stack {
+    position: relative;
+    display: grid;
+    gap: 1px;
+    cursor: pointer;
+    touch-action: none;
+  }
+  .stack.disabled { cursor: default; }
+  .stack.disabled .lane button { cursor: default; }
   .track {
     position: relative;
     height: 18px;
     background: var(--n-150, #1c1c1c);
     border-radius: 2px 2px 0 0;
-    cursor: pointer;
-    touch-action: none;
   }
   .track:focus-visible { outline: 1px solid var(--n-800, #c4c4c4); outline-offset: 2px; }
   .io {
@@ -201,10 +292,38 @@
     bottom: 0;
     background: var(--n-300, #2e2e2e);
   }
+  .film {
+    position: relative;
+    height: 36px;
+    overflow: hidden;
+    background: var(--n-100, #161616);
+  }
+  .tile {
+    position: absolute;
+    top: 0;
+    height: 36px;
+    background-repeat: no-repeat;
+  }
+  .wave {
+    height: 26px;
+    overflow: hidden;
+    background: var(--n-100, #161616);
+  }
+  .wave img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: fill;
+    /* The sidecar PNG is tinted; grayscale forces it back to R=G=B. */
+    filter: grayscale(1);
+    opacity: 0.7;
+    pointer-events: none;
+    user-select: none;
+  }
   .playhead {
     position: absolute;
     top: 0;
-    bottom: -17px;
+    bottom: 0;
     width: 1px;
     margin-left: -0.5px;
     background: var(--n-900, #e9e9e9);
@@ -222,7 +341,6 @@
   .lane {
     position: relative;
     height: 16px;
-    margin-top: 1px;
     background: var(--n-100, #161616);
     border-radius: 0 0 2px 2px;
   }

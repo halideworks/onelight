@@ -1,15 +1,20 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import Player from '@onelight/player/Player.svelte';
+  import { parseSpriteVtt } from '@onelight/player';
   import type {
-    AnnotationStroke,
     FrameAnnotation,
     PendingDrawing,
     PlayerRendition,
+    SpriteCue,
     TimelineMarker,
     WatermarkOverlay
   } from '@onelight/player';
   import { page } from '$app/state';
+  import { replaceState } from '$app/navigation';
   import { api, apiPost, ApiError, messageFrom } from '$lib/api.js';
+  import { annotationsFrom, markersFrom, type ReviewComment } from '$lib/comments.js';
+  import { hashtagsIn, segmentCommentBody } from '../../projects/[id]/assets/[assetId]/comment-text.js';
 
   type Share = {
     title: string;
@@ -21,15 +26,7 @@
     watermark_spec: Record<string, unknown> | null;
   };
   type Asset = { id: string; name: string; kind: string; status: string; sort_order: number };
-  type Comment = {
-    id: string;
-    author_name: string | null;
-    body_text: string;
-    frame_in: number | null;
-    frame_out: number | null;
-    completed_at: number | null;
-    annotation: unknown;
-  };
+  type Comment = ReviewComment;
   type AssetDetail = {
     asset: { id: string; name: string; kind: string; status: string };
     versions: Array<{
@@ -37,6 +34,10 @@
       media_info: Record<string, unknown>;
       renditions: Array<{ kind: string; meta: Record<string, unknown> }>;
       sources: Array<{ kind: string; url: string }>;
+      sidecars?: {
+        sprite?: { url: string; vtt_url: string | null } | null;
+        peaks?: { url: string } | null;
+      } | null;
       watermark: 'ready' | 'processing' | null;
     }>;
   };
@@ -49,6 +50,8 @@
   let previewDropFrame = $state(false);
   let previewDurationFrames = $state<number | null>(null);
   let previewRenditions = $state<PlayerRendition[]>([]);
+  let previewFilmstrip = $state<{ url: string; cues: SpriteCue[] } | null>(null);
+  let previewWaveformUrl = $state<string | null>(null);
   let watermarkPending = $state(false);
   let downloadNote = $state('');
   let comments = $state<Comment[]>([]);
@@ -63,11 +66,26 @@
   let player = $state<Player | null>(null);
   let highlightedId = $state<string | null>(null);
   let pendingDrawing = $state<PendingDrawing | null>(null);
+  let activeTag = $state<string | null>(null);
+  let copyNotice = $state('');
   /* Bumped whenever the preview changes; in-flight media polls compare it
      and stand down. */
   let mediaPollToken = 0;
 
+  /* The preview is a modal dialog: it covers the share landing beneath. Track
+     the element that opened it so focus can return there on close, and the
+     dialog element so focus can move into it on open. */
+  let previewEl = $state<HTMLElement | null>(null);
+  let restoreFocusTo: HTMLElement | null = null;
+
   const slug = $derived(page.params.slug);
+
+  const tagsOf = (comment: Comment): string[] =>
+    Array.isArray(comment.tags) ? comment.tags : hashtagsIn(comment.body_text);
+
+  const visibleComments = $derived(
+    activeTag === null ? comments : comments.filter((comment) => tagsOf(comment).includes(activeTag ?? ''))
+  );
 
   /* The share bootstrap (GET /s/:slug) serializes the raw row (camelCase,
      watermark spec still as JSON text) while POST /s/:slug/access returns
@@ -101,37 +119,9 @@
     };
   };
 
-  const strokesFrom = (annotation: unknown): AnnotationStroke[] => {
-    const candidates = Array.isArray(annotation)
-      ? annotation
-      : annotation && typeof annotation === 'object' && Array.isArray((annotation as { strokes?: unknown }).strokes)
-        ? (annotation as { strokes: unknown[] }).strokes
-        : [];
-    return candidates.filter(
-      (stroke): stroke is AnnotationStroke =>
-        typeof stroke === 'object' && stroke !== null && Array.isArray((stroke as { points?: unknown }).points)
-    );
-  };
+  const annotations = $derived<FrameAnnotation[]>(annotationsFrom(comments));
 
-  const annotations = $derived<FrameAnnotation[]>(
-    comments
-      .filter((comment) => comment.frame_in !== null && comment.annotation)
-      .map((comment) => ({ frame: comment.frame_in, strokes: strokesFrom(comment.annotation) }))
-      .filter((annotation) => annotation.strokes.length > 0)
-  );
-
-  const markers = $derived<TimelineMarker[]>(
-    comments
-      .filter((comment) => comment.frame_in !== null)
-      .map((comment) => ({
-        id: comment.id,
-        frameIn: comment.frame_in as number,
-        frameOut: comment.frame_out,
-        author: comment.author_name,
-        text: comment.body_text,
-        completed: comment.completed_at !== null
-      }))
-  );
+  const markers = $derived<TimelineMarker[]>(markersFrom(comments));
 
   /* Session watermark: deterrent-grade only (a DOM overlay the design doc
      documents as DevTools-removable; the tamper-resistant path is the
@@ -185,11 +175,22 @@
           email: typeof viewer['email'] === 'string' ? viewer['email'] : null
         };
         await loadAssets(currentSlug);
+        openFromUrl();
       }
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 401) locked = true;
       else error = messageFrom(caught, 'This share is not available.');
     }
+  };
+
+  /* Deep links: ?a= names the asset to open (share pages host several),
+     ?f= the frame. location.search is read directly so the slug-keyed load
+     effect never re-runs on our own ?f= rewrites. */
+  const openFromUrl = (): void => {
+    const requested = new URLSearchParams(location.search).get('a');
+    if (!requested) return;
+    const match = assets.find((candidate) => candidate.id === requested);
+    if (match && selected?.id !== match.id) void openAsset(match, { fromUrl: true });
   };
 
   $effect(() => {
@@ -210,6 +211,7 @@
       locked = false;
       error = '';
       await loadAssets(slug ?? '');
+      openFromUrl();
     } catch (caught) {
       error = messageFrom(caught, 'Access could not be granted.');
     }
@@ -256,21 +258,27 @@
     }
   };
 
-  const openAsset = async (asset: Asset): Promise<void> => {
+  const openAsset = async (asset: Asset, options?: { fromUrl?: boolean }): Promise<void> => {
+    /* Remember the trigger so focus returns to it when the dialog closes. */
+    if (!selected && document.activeElement instanceof HTMLElement) restoreFocusTo = document.activeElement;
     selected = asset;
     previewUrl = '';
     previewRate = null;
     previewDropFrame = false;
     previewDurationFrames = null;
     previewRenditions = [];
+    previewFilmstrip = null;
+    previewWaveformUrl = null;
     watermarkPending = false;
     downloadNote = '';
     comments = [];
     currentFrame = 0;
     highlightedId = null;
     pendingDrawing = null;
+    activeTag = null;
     mediaPollToken += 1;
     const token = mediaPollToken;
+    if (!options?.fromUrl) writeAssetParam(asset.id);
     try {
       const detail = await api<AssetDetail>(`/api/v1/s/${slug}/assets/${asset.id}`);
       previewRate = rateFrom(detail);
@@ -285,6 +293,22 @@
         url: source.url
       }));
       if (version?.watermark === 'processing') watermarkPending = true;
+      /* Sidecar lanes: peaks stretch as an image, the sprite VTT carries the
+         filmstrip tile geometry. Absent sidecars mean absent lanes. */
+      const sidecars = version?.sidecars;
+      if (token === mediaPollToken && sidecars?.peaks?.url) previewWaveformUrl = sidecars.peaks.url;
+      if (sidecars?.sprite?.url && sidecars.sprite.vtt_url) {
+        const spriteUrl = sidecars.sprite.url;
+        try {
+          const response = await fetch(sidecars.sprite.vtt_url);
+          if (response.ok) {
+            const cues = parseSpriteVtt(await response.text());
+            if (token === mediaPollToken && cues.length) previewFilmstrip = { url: spriteUrl, cues };
+          }
+        } catch {
+          /* No filmstrip lane on this share. */
+        }
+      }
     } catch {
       /* Rate stays at the player default until known. */
     }
@@ -296,19 +320,147 @@
     }
   };
 
+  /* Move focus into the dialog when it opens. */
+  $effect(() => {
+    const el = previewEl;
+    if (selected && el) el.focus();
+  });
+
+  /* Escape closes the dialog. A pending drawing owns Escape (the player exits
+     draw mode), and typing in the composer must not close the room. */
+  const onPreviewKeydown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape' || pendingDrawing) return;
+    const target = event.target;
+    if (
+      target instanceof HTMLElement &&
+      (target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target.isContentEditable)
+    )
+      return;
+    event.stopPropagation();
+    closePreview();
+  };
+
   const closePreview = (): void => {
+    /* Return focus to whatever opened the dialog before it unmounts. */
+    const toRestore = restoreFocusTo;
+    restoreFocusTo = null;
+    void tick().then(() => toRestore?.focus());
     mediaPollToken += 1;
     selected = null;
     previewUrl = '';
     previewRate = null;
     previewDurationFrames = null;
     previewRenditions = [];
+    previewFilmstrip = null;
+    previewWaveformUrl = null;
     watermarkPending = false;
     downloadNote = '';
     comments = [];
     pendingDrawing = null;
     highlightedId = null;
+    activeTag = null;
+    writeAssetParam(null);
   };
+
+  /* ---- frame deep links. The share SSE story: GET /projects/:id/events
+     requires an authenticated project member, so share viewers cannot
+     subscribe; comments refresh by polling instead (below). ---- */
+
+  let paused = true;
+  let lastWrittenF: number | null = null;
+  let appliedF: number | null = null;
+  let urlTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const writeAssetParam = (assetId: string | null): void => {
+    const url = new URL(page.url.href);
+    if (assetId) url.searchParams.set('a', assetId);
+    else url.searchParams.delete('a');
+    url.searchParams.delete('f');
+    lastWrittenF = null;
+    appliedF = null;
+    replaceState(url, {});
+  };
+
+  $effect(() => {
+    const raw = page.url.searchParams.get('f');
+    const current = player;
+    if (!current || !previewUrl) return;
+    if (raw === null || !/^\d+$/.test(raw)) return;
+    const frame = Number(raw);
+    if (frame === lastWrittenF || frame === appliedF) return;
+    appliedF = frame;
+    current.seekToFrame(frame);
+  });
+
+  const writeFrameParam = (): void => {
+    const frame = currentFrame;
+    if (frame === lastWrittenF || !selected) return;
+    const url = new URL(page.url.href);
+    url.searchParams.set('a', selected.id);
+    url.searchParams.set('f', String(frame));
+    lastWrittenF = frame;
+    replaceState(url, {});
+  };
+
+  /* Write only once the playhead is stable: a paused scrub drag or the
+     reverse shuttle (which steps a paused element) never spams the URL. */
+  const scheduleFrameParam = (): void => {
+    if (urlTimer !== null) return;
+    const anchor = currentFrame;
+    urlTimer = setTimeout(() => {
+      urlTimer = null;
+      if (!paused) return;
+      if (currentFrame === anchor) writeFrameParam();
+      else scheduleFrameParam();
+    }, 350);
+  };
+
+  $effect(() => {
+    return () => {
+      if (urlTimer !== null) clearTimeout(urlTimer);
+    };
+  });
+
+  const copyFrameLink = async (): Promise<void> => {
+    if (!selected) return;
+    const url = new URL(page.url.href);
+    url.searchParams.set('a', selected.id);
+    url.searchParams.set('f', String(currentFrame));
+    try {
+      await navigator.clipboard.writeText(url.toString());
+      copyNotice = 'Link copied';
+    } catch {
+      copyNotice = 'Copy failed';
+    }
+    setTimeout(() => {
+      copyNotice = '';
+    }, 2000);
+  };
+
+  /* Live-ish comments: a 15 second poll while a preview is open and the tab
+     is visible. Wholesale replacement is safe; the server list is the truth
+     and rows are keyed by id. */
+  $effect(() => {
+    const current = selected;
+    const currentSlug = slug;
+    if (!current || !currentSlug) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void (async () => {
+        try {
+          const items = (
+            await api<{ items: Comment[] }>(`/api/v1/s/${currentSlug}/assets/${current.id}/comments`)
+          ).items;
+          if (selected?.id === current.id) comments = items;
+        } catch {
+          /* The next tick retries. */
+        }
+      })();
+    }, 15_000);
+    return () => clearInterval(timer);
+  });
 
   /* Download affordance, gated on the share's allow_download. A 202 means
      the watermarked file is still rendering. */
@@ -340,7 +492,8 @@
         ...(anchorFrame !== null ? { frame_in: anchorFrame } : {}),
         ...(drawing ? { annotation: { strokes: drawing.strokes } } : {})
       });
-      comments = [...comments, created];
+      /* A poll may already have delivered this comment. */
+      if (!comments.some((existing) => existing.id === created.id)) comments = [...comments, created];
       bodyText = '';
       error = '';
       if (drawing) {
@@ -388,7 +541,7 @@
     </form>
   </main>
 {:else if share}
-  <main class="shell">
+  <main class="shell" inert={selected !== null}>
     <header>
       <p class="eyebrow">{share.kind === 'presentation' ? 'Presentation' : 'Review room'}</p>
       <h1>{share.title}</h1>
@@ -405,9 +558,23 @@
   {#if selected}
     <!-- Media is open: a full-bleed opaque neutral layer. No gradient is
          visible anywhere behind footage. -->
-    <section class="preview" aria-label="Asset preview">
+    <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role a11y_no_noninteractive_tabindex -->
+    <section
+      class="preview"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Preview: ${selected.name}`}
+      tabindex="-1"
+      bind:this={previewEl}
+      onkeydown={onPreviewKeydown}
+    >
       <div class="preview-bar">
         <h2>{selected.name}</h2>
+        {#if playerActive}
+          <span class="tc frame-readout">Frame {currentFrame}</span>
+          <button type="button" class="copylink" onclick={() => void copyFrameLink()}>Copy link at this frame</button>
+          {#if copyNotice}<span class="copy-note" role="status">{copyNotice}</span>{/if}
+        {/if}
         {#if share.allow_download !== 'none'}
           <button type="button" class="download" onclick={() => void download()}>Download</button>
         {/if}
@@ -424,9 +591,18 @@
           durationFrames={previewDurationFrames}
           {markers}
           renditions={previewRenditions}
+          filmstrip={previewFilmstrip}
+          waveformUrl={previewWaveformUrl}
           allowDrawing={share.allow_comments}
           {watermark}
-          onframechange={(frame) => { currentFrame = frame; }}
+          onframechange={(frame) => {
+            currentFrame = frame;
+            if (paused) scheduleFrameParam();
+          }}
+          onplaystate={(playing) => {
+            paused = !playing;
+            if (paused) scheduleFrameParam();
+          }}
           onmarkerselect={(id) => highlightComment(id)}
           ondrawingchange={(drawing) => { pendingDrawing = drawing; }}
         />
@@ -438,9 +614,18 @@
         <p class="empty">A review rendition is not ready.</p>
       {/if}
       <section class="comments" aria-label="Comments">
-        <h3>Comments</h3>
-        {#if comments.length === 0}<p class="empty">No comments yet.</p>{/if}
-        {#each comments as comment (comment.id)}
+        <div class="c-bar">
+          <h3>Comments</h3>
+          {#if activeTag}
+            <button type="button" class="tagfilter" onclick={() => { activeTag = null; }} aria-label={`Stop filtering by #${activeTag}`}>
+              #{activeTag} <span aria-hidden="true">clear</span>
+            </button>
+          {/if}
+        </div>
+        {#if visibleComments.length === 0}
+          <p class="empty">{comments.length === 0 ? 'No comments yet.' : 'No comments match this tag.'}</p>
+        {/if}
+        {#each visibleComments as comment (comment.id)}
           <article id={`share-note-${comment.id}`} class:highlighted={highlightedId === comment.id}>
             <span class="c-head">
               <strong>{comment.author_name ?? 'Viewer'}</strong>
@@ -449,7 +634,17 @@
               {/if}
               {#if comment.annotation}<span class="drawn">Drawing</span>{/if}
             </span>
-            <p>{comment.body_text}</p>
+            <p>
+              {#each segmentCommentBody(comment.body_text) as segment, index (index)}
+                {#if segment.kind === 'mention'}
+                  <span class="mention">{segment.text}</span>
+                {:else if segment.kind === 'tag' && segment.tag}
+                  <button type="button" class="tag" onclick={() => { activeTag = segment.tag ?? null; }} aria-label={`Filter comments by ${segment.text}`}>{segment.text}</button>
+                {:else}
+                  {segment.text}
+                {/if}
+              {/each}
+            </p>
           </article>
         {/each}
         {#if share.allow_comments}
@@ -496,24 +691,35 @@
   .preview { position: fixed; inset: 0; z-index: 10; overflow: auto; padding: 0 0 var(--pad-4); background: var(--n-050); color: var(--n-800); font-size: var(--text-13); }
   .preview-bar { display: flex; align-items: center; gap: var(--pad-2); padding: 10px var(--pad-2); background: var(--n-100); }
   .preview h2 { flex: 1; margin: 0; font-family: var(--font-ui); font-size: var(--text-16); font-weight: 500; color: var(--n-900); }
-  .preview button { border: 0; border-radius: var(--radius); background: var(--n-200); color: var(--n-800); padding: 8px 12px; font-size: var(--text-12); font-weight: 500; }
+  .preview { outline: none; }
+  .preview button { border: 0; border-radius: var(--radius); background: var(--n-200); color: var(--n-800); padding: 8px 12px; font-size: var(--text-13); font-weight: 500; }
   .preview button:hover { background: var(--n-300); color: var(--n-900); }
   .open-media { padding: var(--pad-3) var(--pad-2); }
   .open-media a { color: var(--n-900); }
   .empty { color: var(--n-600); padding: var(--pad-2); }
+  .frame-readout { color: var(--n-600); font-size: var(--text-13); }
+  .copy-note { color: var(--n-600); font-size: var(--text-13); }
   .comments { max-width: 760px; margin: var(--pad-3) auto 0; padding: 0 var(--pad-2); }
-  .comments h3 { margin: 0 0 10px; font-size: var(--text-13); font-weight: 600; color: var(--n-900); }
+  .c-bar { display: flex; align-items: center; gap: 12px; margin: 0 0 10px; }
+  .comments h3 { margin: 0; font-size: var(--text-13); font-weight: 600; color: var(--n-900); }
+  .tagfilter { background: var(--n-300); color: var(--n-900); font-weight: 600; padding: 4px 10px; }
+  .tagfilter span { color: var(--n-600); font-weight: 400; margin-left: 6px; }
+  /* Mentions and hashtags carry weight and value only; the preview stays
+     strictly neutral. */
+  .mention { color: var(--n-900); font-weight: 600; }
+  .tag { display: inline; border: 0; border-radius: 2px; background: var(--n-150); color: var(--n-900); font-weight: 600; font-size: inherit; padding: 0 3px; cursor: pointer; }
+  .tag:hover { background: var(--n-300); }
   .comments article { padding: 12px; margin: 0 -12px 2px; border-radius: var(--radius); }
   .comments article:hover { background: var(--n-150); }
   .comments article.highlighted { background: var(--n-200); }
-  .comments article p { margin: 6px 0 0; line-height: 1.45; }
+  .comments article p { margin: 6px 0 0; line-height: 1.45; white-space: pre-wrap; }
   .c-head { display: flex; align-items: center; gap: 10px; }
-  .c-head strong { color: var(--n-900); font-size: var(--text-12); font-weight: 600; }
+  .c-head strong { color: var(--n-900); font-size: var(--text-13); font-weight: 600; }
   .chip { border: 0; border-radius: 2px; background: var(--n-700); color: var(--n-050); font-size: var(--text-11); font-weight: 600; padding: 1px 6px; cursor: pointer; }
   .chip:hover { background: var(--n-800); }
-  .drawn { color: var(--warn); font-size: var(--text-11); }
+  .drawn { color: var(--warn); font-size: var(--text-13); }
   .comments form { display: grid; gap: 12px; margin-top: var(--pad-3); padding: var(--pad-2); background: var(--n-100); border-radius: var(--radius); }
-  .comments form label { display: grid; gap: 8px; color: var(--n-600); font-size: var(--text-12); }
+  .comments form label { display: grid; gap: 8px; color: var(--n-600); font-size: var(--text-13); }
   .comments textarea { border: 0; border-radius: var(--radius); background: var(--n-150); color: var(--n-900); padding: 8px 10px; min-height: 72px; }
   .anchor { color: var(--n-600); }
   .post-row { display: flex; align-items: center; gap: 12px; }

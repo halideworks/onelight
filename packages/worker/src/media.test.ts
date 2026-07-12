@@ -4,9 +4,10 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { MediaInfo, TranscodeJob } from "@onelight/core";
 import {
-  BT709_CONVERT_FILTER,
   DEFAULT_WATERMARK_FONTFILE,
   HDR_TONEMAP_FILTER,
+  VULKAN_HWDEVICE_ARGS,
+  bt709ConvertFilter,
   buildHdrAv1Args,
   buildHdrHevcArgs,
   buildPdfPagesArgs,
@@ -16,6 +17,7 @@ import {
   buildWatermarkFilter,
   clampToSupportedRate,
   escapeDrawtextValue,
+  needsBt709Conversion,
   normalizeProbe,
   parseRational,
   planRenditions,
@@ -84,9 +86,32 @@ describe("probe normalization", () => {
     expect(mediaInfo.frameRateNum).toBe(24000);
     expect(mediaInfo.frameRateDen).toBe(1001);
     expect(mediaInfo.sourceTimecodeStart).toBe("01:00:00;00");
-    expect(mediaInfo.dropFrame).toBe(true);
+    // 23.976 is not an NTSC drop rate, so a ";" here is a mistag: not drop.
+    expect(mediaInfo.dropFrame).toBe(false);
     expect(mediaInfo.variableFrameRate).toBe(false);
     expect(mediaInfo.colorAssumed).toBe(true);
+  });
+
+  it("marks drop-frame only for the 29.97 and 59.94 NTSC rates", () => {
+    const dropFrameOf = (avgRate: string): boolean | undefined =>
+      normalizeProbe({
+        format: {},
+        streams: [
+          {
+            codec_type: "video",
+            avg_frame_rate: avgRate,
+            tags: { timecode: "01:00:00;00" },
+          },
+        ],
+      }).dropFrame;
+    expect(dropFrameOf("30000/1001")).toBe(true);
+    expect(dropFrameOf("60000/1001")).toBe(true);
+    // A ";" on a mistagged 23.976 or 25 source must not set drop-frame.
+    expect(dropFrameOf("24000/1001")).toBe(false);
+    expect(dropFrameOf("25/1")).toBe(false);
+    // An exact 30 clamps to the supported 29.97 rate, which IS a drop rate,
+    // so the flag is evaluated against the clamped rate, not the probed one.
+    expect(dropFrameOf("30/1")).toBe(true);
   });
 
   it("treats 24000/1001 r_frame_rate vs 24 avg_frame_rate as CFR", () => {
@@ -185,6 +210,42 @@ describe("SDR proxy recipe", () => {
     );
   });
 
+  it("creates a Vulkan device for every HDR tonemap path, and only those", () => {
+    const device = VULKAN_HWDEVICE_ARGS.join(" ");
+    const hasDevice = (args: string[]): boolean =>
+      args.join(" ").includes(device);
+    const beforeInput = (args: string[]): boolean =>
+      args.indexOf("-init_hw_device") < args.indexOf("-i");
+    for (const transfer of ["smpte2084", "arib-std-b67"]) {
+      const job = jobOf({ ...hdrMediaInfo(transfer), durationFrames: 240 });
+      const proxy = buildSdrProxyArgs(job, "proxy.mp4", 1080);
+      expect(hasDevice(proxy)).toBe(true);
+      expect(beforeInput(proxy)).toBe(true);
+      const poster = sidecarArgs(job, "poster.png", "poster") ?? [];
+      expect(hasDevice(poster)).toBe(true);
+      expect(beforeInput(poster)).toBe(true);
+      const sprite = sidecarArgs(job, "sprite.png", "sprite") ?? [];
+      expect(hasDevice(sprite)).toBe(true);
+      expect(beforeInput(sprite)).toBe(true);
+    }
+    // SDR encodes must not create a Vulkan device (libplacebo is not used).
+    const sdr = jobOf(mediaInfoOf({ durationFrames: 240 }));
+    expect(hasDevice(buildSdrProxyArgs(sdr, "proxy.mp4", 1080))).toBe(false);
+    expect(hasDevice(sidecarArgs(sdr, "poster.png", "poster") ?? [])).toBe(
+      false,
+    );
+    expect(hasDevice(sidecarArgs(sdr, "sprite.png", "sprite") ?? [])).toBe(
+      false,
+    );
+    // The HDR passthrough renditions do not tonemap, so no device either.
+    expect(
+      hasDevice(buildHdrAv1Args(jobOf(hdrMediaInfo("smpte2084")), "hdr.mp4")),
+    ).toBe(false);
+    expect(
+      hasDevice(buildHdrHevcArgs(jobOf(hdrMediaInfo("smpte2084")), "hdr.mp4")),
+    ).toBe(false);
+  });
+
   it("converts non-709 SDR sources to BT.709 before tagging", () => {
     const bt601 = mediaInfoOf({
       streams: [
@@ -198,7 +259,10 @@ describe("SDR proxy recipe", () => {
     });
     const args = buildSdrProxyArgs(jobOf(bt601), "proxy.mp4", 1080);
     expect(flag(args, "-vf")).toBe(
-      `${BT709_CONVERT_FILTER},scale=-2:1080,fps=24000/1001,format=yuv420p`,
+      `${bt709ConvertFilter(bt601)},scale=-2:1080,fps=24000/1001,format=yuv420p`,
+    );
+    expect(bt709ConvertFilter(bt601)).toBe(
+      "zscale=matrixin=smpte170m:transferin=smpte170m:primariesin=smpte170m:matrix=709:primaries=709:transfer=709",
     );
     const tagged709 = mediaInfoOf({
       streams: [
@@ -213,6 +277,34 @@ describe("SDR proxy recipe", () => {
     expect(
       flag(buildSdrProxyArgs(jobOf(tagged709), "proxy.mp4", 1080), "-vf"),
     ).toBe("scale=-2:1080,fps=24000/1001,format=yuv420p");
+  });
+
+  it("supplies a complete zscale input spec for partially-tagged 601", () => {
+    // The common failing case: only the matrix is tagged (color_space=
+    // smpte170m); transfer and primaries are unspecified. zscale would fail
+    // with "no path between colorspaces" unless the input components are
+    // supplied, so each unspecified component defaults to its SD BT.601 value.
+    const partial = mediaInfoOf({
+      streams: [{ codec_type: "video", color_space: "smpte170m" }],
+    });
+    expect(needsBt709Conversion(partial)).toBe(true);
+    expect(bt709ConvertFilter(partial)).toBe(
+      "zscale=matrixin=smpte170m:transferin=smpte170m:primariesin=smpte170m:matrix=709:primaries=709:transfer=709",
+    );
+    // A tagged component overrides its default; "unknown" is treated as blank.
+    const pal = mediaInfoOf({
+      streams: [
+        {
+          codec_type: "video",
+          color_space: "bt470bg",
+          color_transfer: "unknown",
+          color_primaries: "bt470bg",
+        },
+      ],
+    });
+    expect(bt709ConvertFilter(pal)).toBe(
+      "zscale=matrixin=bt470bg:transferin=smpte170m:primariesin=bt470bg:matrix=709:primaries=709:transfer=709",
+    );
   });
 
   it("writes a tmcd track when the source carries a start timecode", () => {

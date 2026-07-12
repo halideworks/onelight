@@ -117,18 +117,38 @@ export class R2BlobStore implements MultipartBlobStore {
     uploadId: string,
     partNo: number,
     stream: ReadableStream,
+    partLength?: number,
   ): Promise<{ etag: string; size: number }> {
     if (!Number.isInteger(partNo) || partNo < 1)
       throw new Error("Invalid part number.");
     const { key, id } = this.unpackUploadId(uploadId);
-    // Buffer the part: the API pipes part bodies through a byte limiter,
-    // which strips the known length R2 requires, and the byte count has to
-    // be reported back anyway. Parts are capped near PART_SIZE, well inside
-    // the Worker memory limit.
+    const upload = this.bucket.resumeMultipartUpload(key, id);
+    // Preferred path: the caller knows the exact part length (the API
+    // validates it from the request Content-Length), so stream it straight to
+    // R2 through a FixedLengthStream instead of buffering the whole part.
+    // A part is up to ~17 MiB; several buffered concurrently in one isolate
+    // could OOM-terminate it (128 MB limit). FixedLengthStream supplies the
+    // known length R2 requires and fails the upload if the body length does
+    // not match, so the reported size is exactly partLength.
+    if (
+      typeof partLength === "number" &&
+      Number.isInteger(partLength) &&
+      partLength >= 0
+    ) {
+      const fixed = new FixedLengthStream(partLength);
+      const [uploaded] = await Promise.all([
+        upload.uploadPart(partNo, fixed.readable),
+        stream.pipeTo(fixed.writable),
+      ]);
+      return { etag: uploaded.etag, size: partLength };
+    }
+    // Fallback when the length is not supplied: the API's byte limiter strips
+    // the known length R2 needs, so the part is buffered to learn its size.
+    // The API caps part bodies near PART_SIZE, so this stays bounded, but the
+    // streaming path above is preferred and the putPart route in packages/api
+    // should pass the declared Content-Length to take it.
     const bytes = await new Response(stream).arrayBuffer();
-    const uploaded = await this.bucket
-      .resumeMultipartUpload(key, id)
-      .uploadPart(partNo, bytes);
+    const uploaded = await upload.uploadPart(partNo, bytes);
     return { etag: uploaded.etag, size: bytes.byteLength };
   }
 

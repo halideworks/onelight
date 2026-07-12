@@ -1,9 +1,72 @@
 import type { Context } from "hono";
 import type { z } from "zod";
 import { AppError, errors } from "@onelight/core";
-import type { Variables } from "./types.js";
+import type { AppEnv, Variables } from "./types.js";
 
 const JSON_BODY_LIMIT = 1_048_576;
+
+/**
+ * Rate-limit bucket key when the real client IP cannot be observed: no proxy
+ * is trusted (TRUST_PROXY=false) and the runtime does not expose a peer
+ * socket address (the Workers target, or a request re-dispatched without the
+ * node-server bindings). Every such request shares one bucket, which is the
+ * safe default: a spoofed header can never split it. Self-hosters who sit a
+ * reverse proxy in front of Onelight must set TRUST_PROXY=true so the real
+ * client IP is read from CF-Connecting-IP / X-Forwarded-For instead.
+ */
+const PROXYLESS_IP = "no-socket";
+
+/**
+ * The peer socket address, when the Node server exposes it. @hono/node-server
+ * passes the underlying IncomingMessage as the Hono env (directly, or nested
+ * under `server` in some versions); its socket.remoteAddress is the real,
+ * unspoofable client address. On Workers, and in the in-memory test harness,
+ * env carries no socket, so this returns undefined.
+ */
+const socketAddress = (
+  c: Context<{ Variables: Variables }>,
+): string | undefined => {
+  const bindings = c.env as
+    | {
+        incoming?: { socket?: { remoteAddress?: unknown } };
+        server?: { incoming?: { socket?: { remoteAddress?: unknown } } };
+      }
+    | undefined;
+  const incoming = bindings?.incoming ?? bindings?.server?.incoming;
+  const address = incoming?.socket?.remoteAddress;
+  return typeof address === "string" && address.length > 0
+    ? address
+    : undefined;
+};
+
+/**
+ * The client IP used for rate-limit buckets. TRUST_PROXY=false (default)
+ * NEVER trusts request headers: a spoofed X-Forwarded-For cannot split a
+ * bucket, because only the peer socket address (or a shared constant when it
+ * is unavailable) is used. TRUST_PROXY=true trusts the proxy chain, reading
+ * CF-Connecting-IP first, then the rightmost X-Forwarded-For hop (the address
+ * the nearest trusted proxy observed).
+ */
+export const clientIp = (
+  c: Context<{ Variables: Variables }>,
+  env: AppEnv,
+): string => {
+  if (env.config.TRUST_PROXY) {
+    const cfConnecting = c.req.header("cf-connecting-ip")?.trim();
+    if (cfConnecting) return cfConnecting;
+    const forwarded = c.req.header("x-forwarded-for");
+    if (forwarded) {
+      const hops = forwarded
+        .split(",")
+        .map((hop) => hop.trim())
+        .filter(Boolean);
+      const rightmost = hops[hops.length - 1];
+      if (rightmost) return rightmost;
+    }
+    return "unknown";
+  }
+  return socketAddress(c) ?? PROXYLESS_IP;
+};
 
 export const jsonBody = async <S extends z.ZodTypeAny>(
   c: Context<{ Variables: Variables }>,
@@ -168,6 +231,19 @@ export const parseJsonObject = (
   return parsed && typeof parsed === "object" && !Array.isArray(parsed)
     ? (parsed as Record<string, unknown>)
     : {};
+};
+
+/**
+ * Hashtags are derived from comment body text, never stored: #[a-z0-9_]+
+ * case-insensitive, deduplicated, lowercased, in order of first appearance.
+ */
+export const extractHashtags = (text: string): string[] => {
+  const tags: string[] = [];
+  for (const match of text.matchAll(/#([a-z0-9_]+)/gi)) {
+    const tag = (match[1] ?? "").toLowerCase();
+    if (tag && !tags.includes(tag)) tags.push(tag);
+  }
+  return tags;
 };
 
 export const parseJsonValue = (value: string | null | undefined): unknown => {

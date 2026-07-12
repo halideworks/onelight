@@ -1,0 +1,281 @@
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import type { MailMessage, Mailer } from "./mailer.js";
+import {
+  DEFAULT_GC_INTERVAL_MS,
+  DEFAULT_TRASH_PURGE_AFTER_MS,
+  DEFAULT_UPLOAD_REAP_AFTER_MS,
+  diffOrphanBlobs,
+  maintenanceConfigFromEnv,
+  notificationDeepLink,
+  planEmailSweep,
+  subjectForKind,
+  walkBlobObjects,
+} from "./maintenance.js";
+import type { SweepNotificationRow } from "./maintenance.js";
+
+const HOUR = 60 * 60_000;
+const DAY = 24 * HOUR;
+
+const row = (
+  overrides: Partial<SweepNotificationRow> & { id: string },
+): SweepNotificationRow => ({
+  userId: "user-1",
+  kind: "comment.created",
+  payloadJson: JSON.stringify({
+    project_id: "proj",
+    asset_id: "asset",
+    preview: "Looks good",
+  }),
+  createdAt: 1_000,
+  email: "user@example.com",
+  mode: "instant",
+  ...overrides,
+});
+
+class FakeMailer implements Mailer {
+  sent: MailMessage[] = [];
+  send(message: MailMessage): Promise<void> {
+    this.sent.push(message);
+    return Promise.resolve();
+  }
+}
+
+describe("notificationDeepLink", () => {
+  it("builds the project asset link with an optional frame", () => {
+    expect(
+      notificationDeepLink("https://onelight.example.com/", {
+        project_id: "p1",
+        asset_id: "a1",
+      }),
+    ).toBe("https://onelight.example.com/projects/p1/assets/a1");
+    expect(
+      notificationDeepLink("https://onelight.example.com", {
+        project_id: "p1",
+        asset_id: "a1",
+        frame: 240,
+      }),
+    ).toBe("https://onelight.example.com/projects/p1/assets/a1?f=240");
+  });
+
+  it("returns null without both ids and ignores a non-integer frame", () => {
+    expect(notificationDeepLink("https://x.test", { project_id: "p1" })).toBe(
+      null,
+    );
+    expect(notificationDeepLink("https://x.test", { asset_id: "a1" })).toBe(
+      null,
+    );
+    expect(
+      notificationDeepLink("https://x.test", {
+        project_id: "p1",
+        asset_id: "a1",
+        frame: 1.5,
+      }),
+    ).toBe("https://x.test/projects/p1/assets/a1");
+  });
+});
+
+describe("planEmailSweep", () => {
+  it("sends one email per notification in instant mode", () => {
+    const now = 10 * HOUR;
+    const plan = planEmailSweep(
+      [
+        row({ id: "n1" }),
+        row({ id: "n2", kind: "approval.updated", createdAt: 2_000 }),
+      ],
+      now,
+      "https://x.test",
+    );
+    expect(plan.skippedIds).toEqual([]);
+    expect(plan.emails).toHaveLength(2);
+    expect(plan.emails[0]).toMatchObject({
+      to: "user@example.com",
+      subject: subjectForKind("comment.created"),
+      notificationIds: ["n1"],
+    });
+    expect(plan.emails[0]?.text).toContain("Looks good");
+    expect(plan.emails[0]?.text).toContain(
+      "https://x.test/projects/proj/assets/asset",
+    );
+    expect(plan.emails[1]?.notificationIds).toEqual(["n2"]);
+  });
+
+  it("holds hourly digests until the oldest row is an hour old", () => {
+    const rows = [
+      row({ id: "n1", mode: "hourly", createdAt: 1_000 }),
+      row({ id: "n2", mode: "hourly", createdAt: 2_000 }),
+    ];
+    const early = planEmailSweep(rows, 1_000 + HOUR - 1, "https://x.test");
+    expect(early.emails).toEqual([]);
+    const due = planEmailSweep(rows, 1_000 + HOUR, "https://x.test");
+    expect(due.emails).toHaveLength(1);
+    expect(due.emails[0]?.notificationIds).toEqual(["n1", "n2"]);
+    expect(due.emails[0]?.subject).toContain("2 new notifications");
+  });
+
+  it("holds daily digests for 24 hours", () => {
+    const rows = [row({ id: "n1", mode: "daily", createdAt: 5_000 })];
+    expect(
+      planEmailSweep(rows, 5_000 + DAY - 1, "https://x.test").emails,
+    ).toEqual([]);
+    const due = planEmailSweep(rows, 5_000 + DAY, "https://x.test");
+    expect(due.emails).toHaveLength(1);
+    expect(due.emails[0]?.notificationIds).toEqual(["n1"]);
+  });
+
+  it("groups digests per user and mixes modes independently", () => {
+    const now = 2 * DAY;
+    const plan = planEmailSweep(
+      [
+        row({ id: "a1", userId: "instant-user", email: "i@example.com" }),
+        row({
+          id: "b1",
+          userId: "hourly-user",
+          email: "h@example.com",
+          mode: "hourly",
+          createdAt: now - 2 * HOUR,
+        }),
+        row({
+          id: "b2",
+          userId: "hourly-user",
+          email: "h@example.com",
+          mode: "hourly",
+          createdAt: now - 1,
+        }),
+        row({
+          id: "c1",
+          userId: "daily-user",
+          email: "d@example.com",
+          mode: "daily",
+          createdAt: now - HOUR,
+        }),
+      ],
+      now,
+      "https://x.test",
+    );
+    expect(plan.emails).toHaveLength(2);
+    const digest = plan.emails.find((email) => email.to === "h@example.com");
+    expect(digest?.notificationIds).toEqual(["b1", "b2"]);
+    expect(
+      plan.emails.find((email) => email.to === "d@example.com"),
+    ).toBeUndefined();
+  });
+
+  it("skips rows without a recipient address", () => {
+    const plan = planEmailSweep(
+      [row({ id: "n1", email: "  " }), row({ id: "n2" })],
+      0,
+      "https://x.test",
+    );
+    expect(plan.skippedIds).toEqual(["n1"]);
+    expect(plan.emails).toHaveLength(1);
+  });
+
+  it("drives an injected fake mailer with the planned batches", async () => {
+    const mailer = new FakeMailer();
+    const now = 3 * HOUR;
+    const plan = planEmailSweep(
+      [
+        row({ id: "n1" }),
+        row({
+          id: "n2",
+          userId: "hourly-user",
+          email: "h@example.com",
+          mode: "hourly",
+          createdAt: now - 2 * HOUR,
+        }),
+      ],
+      now,
+      "https://x.test",
+    );
+    const marked: string[] = [];
+    for (const email of plan.emails) {
+      await mailer.send(email);
+      marked.push(...email.notificationIds);
+    }
+    expect(mailer.sent.map((message) => message.to)).toEqual([
+      "user@example.com",
+      "h@example.com",
+    ]);
+    expect(marked.sort()).toEqual(["n1", "n2"]);
+  });
+});
+
+describe("maintenanceConfigFromEnv", () => {
+  const base = {
+    publicUrl: "https://x.test",
+    blobStore: { delete: () => Promise.resolve() } as never,
+  };
+
+  it("applies defaults", () => {
+    const config = maintenanceConfigFromEnv({}, base);
+    expect(config.uploadReapAfterMs).toBe(DEFAULT_UPLOAD_REAP_AFTER_MS);
+    expect(config.trashPurgeAfterMs).toBe(DEFAULT_TRASH_PURGE_AFTER_MS);
+    expect(config.gcIntervalMs).toBe(DEFAULT_GC_INTERVAL_MS);
+    expect(config.gcDelete).toBe(false);
+  });
+
+  it("reads overrides and rejects nonsense values", () => {
+    const config = maintenanceConfigFromEnv(
+      {
+        UPLOAD_REAP_AFTER_MS: "60000",
+        TRASH_PURGE_AFTER_MS: "-5",
+        GC_INTERVAL_MS: "oops",
+        ONELIGHT_GC_DELETE: "true",
+      },
+      base,
+    );
+    expect(config.uploadReapAfterMs).toBe(60_000);
+    expect(config.trashPurgeAfterMs).toBe(DEFAULT_TRASH_PURGE_AFTER_MS);
+    expect(config.gcIntervalMs).toBe(DEFAULT_GC_INTERVAL_MS);
+    expect(config.gcDelete).toBe(true);
+  });
+});
+
+describe("blob gc diff", () => {
+  it("walks a blob root and diffs object keys against referenced keys", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "onelight-gc-"));
+    try {
+      await mkdir(path.join(root, "renditions", "v1"), { recursive: true });
+      await mkdir(path.join(root, ".multipart", "u1"), { recursive: true });
+      await writeFile(path.join(root, "originals.bin"), "original");
+      await writeFile(
+        path.join(root, "renditions", "v1", "proxy_1080.mp4"),
+        "proxy",
+      );
+      await writeFile(
+        path.join(root, "renditions", "v1", "stray.mp4"),
+        "stray-bytes",
+      );
+      await writeFile(
+        path.join(root, ".multipart", "u1", "manifest.json"),
+        "{}",
+      );
+      await writeFile(path.join(root, "upload.tmp-abc123"), "partial");
+      const old = new Date(Date.now() - 48 * HOUR);
+      await utimes(path.join(root, "renditions", "v1", "stray.mp4"), old, old);
+      const objects = await walkBlobObjects(root);
+      expect(objects.map((object) => object.key).sort()).toEqual([
+        "originals.bin",
+        "renditions/v1/proxy_1080.mp4",
+        "renditions/v1/stray.mp4",
+      ]);
+      const orphans = diffOrphanBlobs(
+        objects,
+        new Set(["originals.bin", "renditions/v1/proxy_1080.mp4"]),
+      );
+      expect(orphans).toHaveLength(1);
+      expect(orphans[0]).toMatchObject({
+        key: "renditions/v1/stray.mp4",
+        size: 11,
+      });
+      expect(Date.now() - (orphans[0]?.mtimeMs ?? 0)).toBeGreaterThan(
+        24 * HOUR,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

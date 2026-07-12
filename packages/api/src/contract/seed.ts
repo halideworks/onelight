@@ -224,6 +224,50 @@ export const seedAssetVersion = async (
   return { uploadSessionId, assetId, versionId, blobKey };
 };
 
+/**
+ * Seed a completed, unattached upload session directly in the database, for
+ * routes that attach uploads (POST /projects/:id/assets and
+ * POST /assets/:id/versions) without driving the multipart flow.
+ */
+export const seedCompletedUpload = async (
+  h: ContractHarness,
+  options: {
+    workspaceId: string;
+    projectId: string;
+    userId: string;
+    filename?: string;
+    size?: number;
+    status?: "pending" | "uploading" | "completed" | "quarantined" | "aborted";
+  },
+): Promise<{ id: string; blobKey: string; size: number }> => {
+  const id = h.ids.ulid();
+  const filename = options.filename ?? `${unique("upload")}.mp4`;
+  const size = options.size ?? 24;
+  const now = h.clock.now();
+  const blobKey = `${options.workspaceId}/${options.projectId}/uploads/${id}/${filename}`;
+  const status = options.status ?? "completed";
+  await h.db
+    .insert(uploadSessions)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      projectId: options.projectId,
+      createdBy: options.userId,
+      clientFilename: filename,
+      relativePath: "",
+      size,
+      checksumCrc32c: "abc",
+      blobKey,
+      uploadId: null,
+      partSize: null,
+      status,
+      createdAt: now,
+      completedAt: status === "completed" ? now : null,
+    })
+    .run();
+  return { id, blobKey, size };
+};
+
 /** Add another version (with its own completed upload) to an existing asset. */
 export const seedExtraVersion = async (
   h: ContractHarness,

@@ -14,6 +14,7 @@ import type { ContractHarness } from "../harness.js";
 import type { SeedState } from "../seed.js";
 import {
   createProject,
+  grantRole,
   seedAssetVersion,
   seedExtraVersion,
   seedRendition,
@@ -232,6 +233,61 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
       expect(media.status).toBe(404);
     });
 
+    it("keeps server-only share and viewer fields off the public wire", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const fixture = await makeShare(h, seed, {
+        passphrase: "open-sesame-1",
+        watermark_spec: { text: "CONFIDENTIAL", position: "center" },
+      });
+      const access = await req(h, `/api/v1/s/${fixture.slug}/access`, {
+        json: { name: "Client Ten", passphrase: "open-sesame-1" },
+        headers: { "x-forwarded-for": uniqueIp() },
+      });
+      expect(access.status).toBe(200);
+      const accessBody = await json<{
+        share: Record<string, unknown>;
+        viewer_key: string;
+      }>(access);
+      // The access response carries the viewer's own key by design, but the
+      // share projection is the public shape: watermarking as a boolean.
+      expect(accessBody.viewer_key).toBeTruthy();
+      expect(accessBody.share.watermark).toBe(true);
+      expect(accessBody.share).not.toHaveProperty("watermark_spec");
+      expect(accessBody.share).not.toHaveProperty("watermark_spec_hash");
+      expect(accessBody.share).not.toHaveProperty("passphrase_hash");
+      expect(accessBody.share).not.toHaveProperty("created_by");
+      expect(assertSnakeCaseKeys(accessBody.share)).toEqual([]);
+      const cookie = cookieFrom(access);
+      const shown = await req(h, `/api/v1/s/${fixture.slug}`, { cookie });
+      expect(shown.status).toBe(200);
+      const body = await json<{
+        share: Record<string, unknown>;
+        viewer: Record<string, unknown> | null;
+        assets: unknown[];
+      }>(shown);
+      expect(assertSnakeCaseKeys(body)).toEqual([]);
+      expect(
+        forbiddenKeysIn(body, [
+          "passphrase_hash",
+          "watermark_spec_hash",
+          "watermark_spec",
+          "viewer_key",
+          "created_by",
+        ]),
+      ).toEqual([]);
+      expect(body.share).not.toHaveProperty("passphrase_hash");
+      expect(body.share).not.toHaveProperty("watermark_spec_hash");
+      expect(body.share.watermark).toBe(true);
+      // The viewer projection carries display identity only.
+      expect(body.viewer).not.toBeNull();
+      expect(Object.keys(body.viewer ?? {}).sort()).toEqual([
+        "email",
+        "id",
+        "name",
+      ]);
+    });
+
     it("projects only public comments on the current version to viewers", async () => {
       const h = ctx.h();
       const seed = ctx.seed();
@@ -267,7 +323,18 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
       expect(listed.items).toHaveLength(1);
       expect(listed.items[0]?.body_text).toBe("public note");
       expect(listed.items[0]?.internal).toBe(false);
-      expect(forbiddenKeysIn(listed, ["viewer_key"])).toEqual([]);
+      // Public share comments never expose the registered author identity:
+      // author_email and author_user_id are dropped, author_name is kept.
+      expect(listed.items[0]).not.toHaveProperty("author_email");
+      expect(listed.items[0]).not.toHaveProperty("author_user_id");
+      expect(listed.items[0]).toHaveProperty("author_name");
+      expect(
+        forbiddenKeysIn(listed, [
+          "viewer_key",
+          "author_email",
+          "author_user_id",
+        ]),
+      ).toEqual([]);
       // Replying to the internal comment through the share is refused.
       const internalBody = await json<{ id: string }>(internal);
       const replyToInternal = await req(
@@ -1098,6 +1165,78 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
       expect(fetched.headers.get("content-disposition")).toBe(
         'attachment; filename="comments.csv"',
       );
+    });
+  });
+
+  describe("share viewers", () => {
+    it("lists viewers to the owner and project managers only, never the viewer key", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const fixture = await makeShare(h, seed);
+      await grantRole(
+        h,
+        seed.admin,
+        fixture.projectId,
+        seed.manager.id,
+        "manager",
+      );
+      const first = await accessShare(h, fixture.slug, {
+        name: "Viewer One",
+        email: "viewer.one@example.com",
+      });
+      expect(first.response.status).toBe(200);
+      const second = await accessShare(h, fixture.slug, { name: "Viewer Two" });
+      expect(second.response.status).toBe(200);
+      // Owner (the admin created the share) sees the roster.
+      const owned = await req(h, `/api/v1/shares/${fixture.shareId}/viewers`, {
+        cookie: seed.admin.cookie,
+      });
+      expect(owned.status).toBe(200);
+      const body = await json<{
+        items: Array<{
+          id: string;
+          name: string | null;
+          email: string | null;
+          first_seen_at: number;
+          last_seen_at: number;
+          user_agent: string | null;
+        }>;
+      }>(owned);
+      expect(body.items).toHaveLength(2);
+      expect(body.items.map((item) => item.name).sort()).toEqual([
+        "Viewer One",
+        "Viewer Two",
+      ]);
+      expect(body.items.find((item) => item.name === "Viewer One")?.email).toBe(
+        "viewer.one@example.com",
+      );
+      expect(assertSnakeCaseKeys(body)).toEqual([]);
+      expect(forbiddenKeysIn(body, ["viewer_key"])).toEqual([]);
+      // A project manager who is not the owner sees it too.
+      const managed = await req(
+        h,
+        `/api/v1/shares/${fixture.shareId}/viewers`,
+        { cookie: seed.manager.cookie },
+      );
+      expect(managed.status).toBe(200);
+      // A plain workspace member (default viewer role) is forbidden.
+      const denied = await req(h, `/api/v1/shares/${fixture.shareId}/viewers`, {
+        cookie: seed.editor.cookie,
+      });
+      expect(denied.status).toBe(403);
+      // Cross-workspace callers get 404, and unknown ids 404.
+      const foreign = await req(
+        h,
+        `/api/v1/shares/${fixture.shareId}/viewers`,
+        { cookie: seed.other.admin.cookie },
+      );
+      expect(foreign.status).toBe(404);
+      const missing = await req(
+        h,
+        "/api/v1/shares/01ARZ3NDEKTSV4RRFFQ69G5FAV/viewers",
+        { cookie: seed.admin.cookie },
+      );
+      expect(missing.status).toBe(404);
     });
   });
 };

@@ -12,6 +12,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import {
+  isHdrSource,
   probeFile,
   runProcess,
   SUPPORTED_MEDIA_RATES,
@@ -500,3 +501,97 @@ export const synthesizeFixtures = async (
 
 export const readManifest = async (): Promise<FixtureManifest> =>
   JSON.parse(await readFile(manifestPath, "utf8")) as FixtureManifest;
+
+/* HDR fixtures for the tonemap suite (qa/src/hdr-tonemap.spec.ts). These
+   live outside the main manifest on purpose: they are synthesized lazily by
+   the suite that needs them, so an ffmpeg build that cannot produce 10-bit
+   H.264 breaks only the HDR spec, never the whole corpus.
+
+   The clips are a uniform 25 percent grey tagged as PQ (smpte2084) and HLG
+   (arib-std-b67) over bt2020 in 10-bit. Tag-only synthesis (no zscale
+   dependency): the product's HDR routing keys off the transfer tag
+   (isHdrSource), and a known flat input makes the tonemapped center-pixel
+   luma assertable without modeling the exact transfer math. */
+
+export type HdrTransfer = "smpte2084" | "arib-std-b67";
+
+export interface HdrClipFixture {
+  id: string;
+  file: string;
+  transfer: HdrTransfer;
+  rate: QaRate;
+}
+
+const HDR_RATE: QaRate = { num: 25, den: 1 };
+const HDR_SECONDS = 2;
+
+export const HDR_CLIPS: ReadonlyArray<{ id: string; transfer: HdrTransfer }> = [
+  { id: "hdr-pq", transfer: "smpte2084" },
+  { id: "hdr-hlg", transfer: "arib-std-b67" },
+];
+
+export const hdrClipArgs = (
+  transfer: HdrTransfer,
+  outputPath: string,
+): string[] => [
+  "-hide_banner",
+  "-y",
+  "-f",
+  "lavfi",
+  "-i",
+  `color=c=0x404040:s=640x360:r=${HDR_RATE.num}/${HDR_RATE.den}:d=${HDR_SECONDS}`,
+  "-vf",
+  "format=yuv420p10le",
+  "-c:v",
+  "libx264",
+  "-preset",
+  "veryfast",
+  "-crf",
+  "18",
+  "-pix_fmt",
+  "yuv420p10le",
+  "-g",
+  String(HDR_RATE.num),
+  "-keyint_min",
+  String(HDR_RATE.num),
+  "-sc_threshold",
+  "0",
+  "-color_primaries",
+  "bt2020",
+  "-color_trc",
+  transfer,
+  "-colorspace",
+  "bt2020nc",
+  "-color_range",
+  "tv",
+  "-movflags",
+  "+faststart",
+  outputPath,
+];
+
+export const synthesizeHdrFixtures = async (
+  log: (line: string) => void = console.log,
+): Promise<HdrClipFixture[]> => {
+  await mkdir(fixturesDir, { recursive: true });
+  const fixtures: HdrClipFixture[] = [];
+  for (const clip of HDR_CLIPS) {
+    const file = `${clip.id}.mp4`;
+    const outputPath = path.join(fixturesDir, file);
+    if (!existsSync(outputPath)) {
+      log(`[qa] fixtures: synthesizing ${file} (${clip.transfer})`);
+      await runProcess(ffmpegBin(), hdrClipArgs(clip.transfer, outputPath));
+    }
+    const probe = await probeFile(outputPath);
+    if (!isHdrSource(probe))
+      throw new Error(
+        `HDR fixture ${file} does not probe as HDR; the product's transfer routing would never see it.`,
+      );
+    fixtures.push({
+      id: clip.id,
+      file,
+      transfer: clip.transfer,
+      rate: HDR_RATE,
+    });
+  }
+  return fixtures;
+};

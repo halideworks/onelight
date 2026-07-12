@@ -8,6 +8,8 @@ export const migrationFiles = [
   "0002_phase2.sql",
   "0003_phase3.sql",
   "0004_comments_fks.sql",
+  "0005_password_resets.sql",
+  "0006_transcode_notify.sql",
 ];
 
 const migrationPath = (file: string): string =>

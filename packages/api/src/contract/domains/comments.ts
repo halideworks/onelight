@@ -11,6 +11,7 @@ import {
   errorCode,
   forbiddenKeysIn,
   json,
+  parseSse,
   req,
 } from "../harness.js";
 import type { ContractHarness } from "../harness.js";
@@ -648,6 +649,44 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       expect(unauth.status).toBe(401);
     });
 
+    it("escapes LIKE wildcards and returns frame_in on comment hits", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const needle = unique("pct");
+      const withPercent = await postComment(
+        h,
+        seed.commenter.cookie,
+        seed.media.versionId,
+        { body_text: `${needle} 50% off the grade`, frame_in: 77 },
+      );
+      expect(withPercent.status).toBe(201);
+      const withPercentId = (await json<{ id: string }>(withPercent)).id;
+      const decoy = await postComment(
+        h,
+        seed.commenter.cookie,
+        seed.media.versionId,
+        { body_text: `${needle} 5000 frames long` },
+      );
+      expect(decoy.status).toBe(201);
+      const decoyId = (await json<{ id: string }>(decoy)).id;
+      const results = await json<{
+        items: Array<{ type: string; id: string; frame_in?: number | null }>;
+      }>(
+        await req(
+          h,
+          `/api/v1/search?q=${encodeURIComponent(`${needle} 50%`)}&scope=comments`,
+          { cookie: seed.viewer.cookie },
+        ),
+      );
+      const hit = results.items.find((item) => item.id === withPercentId);
+      expect(hit).toBeDefined();
+      // The "%" is matched literally, so the "5000" decoy is not a hit; an
+      // unescaped LIKE would have matched it.
+      expect(results.items.some((item) => item.id === decoyId)).toBe(false);
+      // Comment hits carry frame_in so ?f= deep links land on the frame.
+      expect(hit?.frame_in).toBe(77);
+    });
+
     it("scopes and paginates server-side with keyset cursors", async () => {
       const h = ctx.h();
       const seed = ctx.seed();
@@ -815,6 +854,22 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       expect(
         untouched.items.find((item) => item.id === ids[1])?.read_at,
       ).toBeNull();
+    });
+
+    it("rejects an over-limit notifications/read id list", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const overLimit = await req(h, "/api/v1/notifications/read", {
+        cookie: seed.admin.cookie,
+        json: {
+          ids: Array.from(
+            { length: 501 },
+            (_unused, index) => `id-${index.toString()}`,
+          ),
+        },
+      });
+      expect(overLimit.status).toBe(400);
+      expect(await errorCode(overLimit)).toBe("validation_failed");
     });
 
     it("round-trips notification preferences with defaults", async () => {
@@ -1086,6 +1141,35 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       expect(await failuresFor(commenter.cookie)).toHaveLength(0);
     });
 
+    it("does not notify an uploader who lost access to a now-restricted project", async () => {
+      const { h, seed, project, uploader, manager, media } =
+        await notificationFixture();
+      // The project becomes restricted. The uploader was never granted a
+      // member role, so they can no longer see it and must not receive a
+      // notification carrying a content preview.
+      const restrict = await req(h, `/api/v1/projects/${project.id}`, {
+        method: "PATCH",
+        cookie: seed.admin.cookie,
+        json: { restricted: true },
+      });
+      expect(restrict.status).toBe(200);
+      await h.db
+        .update(assetVersions)
+        .set({ transcodeStatus: "failed" })
+        .where(eq(assetVersions.id, media.versionId))
+        .run();
+      const failuresFor = async (cookie: string) =>
+        (await listFor(h, cookie)).filter(
+          (item) =>
+            item.kind === "transcode.failed" &&
+            item.payload.version_id === media.versionId,
+        );
+      // A manager (project member) still gets the failure notification.
+      expect(await failuresFor(manager.cookie)).toHaveLength(1);
+      // The uploader, having lost access, gets none.
+      expect(await failuresFor(uploader.cookie)).toHaveLength(0);
+    });
+
     it("notifies on share-viewer comments with the viewer identity", async () => {
       const { h, seed, project, uploader, manager, media } =
         await notificationFixture();
@@ -1128,6 +1212,276 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
         expect(hit?.payload.actor_name).toBe("Client Nine");
         expect(hit?.payload.preview).toBe("client feedback from the share");
       }
+    });
+  });
+
+  describe("live comment events", () => {
+    it("streams comment.created over project events with a small id payload", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin);
+      const media = await seedAssetVersion(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+      });
+      const created = await postComment(h, seed.admin.cookie, media.versionId, {
+        frame_in: 12,
+        body_text: "live event check",
+      });
+      expect(created.status).toBe(201);
+      const commentId = (await json<{ id: string }>(created)).id;
+      const stream = await req(h, `/api/v1/projects/${project.id}/events`, {
+        cookie: seed.admin.cookie,
+      });
+      expect(stream.status).toBe(200);
+      const events = parseSse(await stream.text());
+      const hit = events.find(
+        (event) =>
+          event.event === "comment.created" &&
+          (JSON.parse(event.data) as { comment_id?: string }).comment_id ===
+            commentId,
+      );
+      expect(hit).toBeDefined();
+      expect(JSON.parse(hit?.data ?? "{}")).toEqual({
+        comment_id: commentId,
+        version_id: media.versionId,
+        frame_in: 12,
+      });
+      // Update and delete feed the stream too, by their exact type strings.
+      await req(h, `/api/v1/comments/${commentId}`, {
+        method: "PATCH",
+        cookie: seed.admin.cookie,
+        json: { body_text: "edited live" },
+      });
+      await req(h, `/api/v1/comments/${commentId}`, {
+        method: "DELETE",
+        cookie: seed.admin.cookie,
+      });
+      const afterMutations = parseSse(
+        await (
+          await req(h, `/api/v1/projects/${project.id}/events`, {
+            cookie: seed.admin.cookie,
+          })
+        ).text(),
+      );
+      const types = afterMutations
+        .filter(
+          (event) =>
+            (JSON.parse(event.data) as { comment_id?: string }).comment_id ===
+            commentId,
+        )
+        .map((event) => event.event);
+      expect(types).toEqual([
+        "comment.created",
+        "comment.updated",
+        "comment.deleted",
+      ]);
+    });
+  });
+
+  describe("mentions", () => {
+    const mentionFixture = async (options: { restricted?: boolean } = {}) => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, {
+        restricted: options.restricted ?? false,
+      });
+      const mk = () =>
+        createUser(h, {
+          workspaceId: seed.workspaceId,
+          passwordHash: seed.passwordHash,
+        });
+      const [commenter, member, outsider] = await Promise.all([
+        mk(),
+        mk(),
+        mk(),
+      ]);
+      await grantRole(h, seed.admin, project.id, commenter.id, "commenter");
+      await grantRole(h, seed.admin, project.id, member.id, "viewer");
+      const media = await seedAssetVersion(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+      });
+      return { h, seed, project, commenter, member, outsider, media };
+    };
+
+    const listFor = async (h: ContractHarness, cookie: string) =>
+      (
+        await json<{
+          items: Array<{ kind: string; payload: Record<string, unknown> }>;
+        }>(await req(h, "/api/v1/notifications?limit=200", { cookie }))
+      ).items;
+
+    it("notifies mentioned users exactly once, with comment.mention winning the dedup", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin);
+      const mk = () =>
+        createUser(h, {
+          workspaceId: seed.workspaceId,
+          passwordHash: seed.passwordHash,
+        });
+      const [commenter, manager] = await Promise.all([mk(), mk()]);
+      await grantRole(h, seed.admin, project.id, commenter.id, "commenter");
+      await grantRole(h, seed.admin, project.id, manager.id, "manager");
+      const media = await seedAssetVersion(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+      });
+      // The manager would receive comment.created anyway; mentioning them
+      // must collapse that into a single comment.mention row.
+      const created = await postComment(h, commenter.cookie, media.versionId, {
+        body_text: "please check the grade",
+        mentions: [manager.id],
+      });
+      expect(created.status).toBe(201);
+      const commentId = (await json<{ id: string }>(created)).id;
+      const managerRows = (await listFor(h, manager.cookie)).filter(
+        (item) => item.payload.comment_id === commentId,
+      );
+      expect(managerRows).toHaveLength(1);
+      expect(managerRows[0]?.kind).toBe("comment.mention");
+      // Non-mentioned recipients still get the plain comment.created.
+      const adminRows = (await listFor(h, seed.admin.cookie)).filter(
+        (item) => item.payload.comment_id === commentId,
+      );
+      expect(adminRows).toHaveLength(1);
+      expect(adminRows[0]?.kind).toBe("comment.created");
+      // Replies carry mentions too, deduped against comment.reply.
+      const reply = await req(h, `/api/v1/comments/${commentId}/replies`, {
+        cookie: seed.admin.cookie,
+        json: { body_text: "on it", mentions: [commenter.id] },
+      });
+      expect(reply.status).toBe(201);
+      const replyId = (await json<{ id: string }>(reply)).id;
+      const commenterRows = (await listFor(h, commenter.cookie)).filter(
+        (item) => item.payload.comment_id === replyId,
+      );
+      expect(commenterRows).toHaveLength(1);
+      expect(commenterRows[0]?.kind).toBe("comment.mention");
+    });
+
+    it("drops invalid and cross-workspace mentions silently", async () => {
+      const { h, seed, member, media, commenter } = await mentionFixture();
+      const created = await postComment(h, commenter.cookie, media.versionId, {
+        body_text: "mention sweep",
+        mentions: [
+          member.id,
+          "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          seed.other.admin.id,
+        ],
+      });
+      expect(created.status).toBe(201);
+      const commentId = (await json<{ id: string }>(created)).id;
+      expect(
+        (await listFor(h, member.cookie)).some(
+          (item) =>
+            item.kind === "comment.mention" &&
+            item.payload.comment_id === commentId,
+        ),
+      ).toBe(true);
+      expect(
+        (await listFor(h, seed.other.admin.cookie)).some(
+          (item) => item.payload.comment_id === commentId,
+        ),
+      ).toBe(false);
+    });
+
+    it("blocks mentions of users who cannot see a restricted project", async () => {
+      const { h, media, commenter, member, outsider } = await mentionFixture({
+        restricted: true,
+      });
+      const created = await postComment(h, commenter.cookie, media.versionId, {
+        body_text: "restricted mention",
+        mentions: [member.id, outsider.id],
+      });
+      expect(created.status).toBe(201);
+      const commentId = (await json<{ id: string }>(created)).id;
+      expect(
+        (await listFor(h, member.cookie)).some(
+          (item) =>
+            item.kind === "comment.mention" &&
+            item.payload.comment_id === commentId,
+        ),
+      ).toBe(true);
+      expect(
+        (await listFor(h, outsider.cookie)).some(
+          (item) => item.payload.comment_id === commentId,
+        ),
+      ).toBe(false);
+    });
+
+    it("allows mentioning any workspace user on non-restricted projects", async () => {
+      const { h, media, commenter, outsider } = await mentionFixture();
+      const created = await postComment(h, commenter.cookie, media.versionId, {
+        body_text: "open project mention",
+        mentions: [outsider.id],
+      });
+      expect(created.status).toBe(201);
+      const commentId = (await json<{ id: string }>(created)).id;
+      const rows = (await listFor(h, outsider.cookie)).filter(
+        (item) => item.payload.comment_id === commentId,
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.kind).toBe("comment.mention");
+    });
+  });
+
+  describe("hashtags", () => {
+    it("derives tags from body text and searches them as whole tokens", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const media = await seedAssetVersion(h, {
+        workspaceId: seed.workspaceId,
+        projectId: seed.project.id,
+        userId: seed.admin.id,
+      });
+      const tagged = await postComment(
+        h,
+        seed.commenter.cookie,
+        media.versionId,
+        {
+          body_text: "needs #Mix_Notes and #vfx before lock",
+        },
+      );
+      expect(tagged.status).toBe(201);
+      const taggedBody = await json<{ id: string; tags: string[] }>(tagged);
+      expect(taggedBody.tags).toEqual(["mix_notes", "vfx"]);
+      const longer = await postComment(
+        h,
+        seed.commenter.cookie,
+        media.versionId,
+        {
+          body_text: "different tag #mix_notes_final here",
+        },
+      );
+      const longerId = (await json<{ id: string }>(longer)).id;
+      const plain = await postComment(
+        h,
+        seed.commenter.cookie,
+        media.versionId,
+        {
+          body_text: "mix_notes without a hash",
+        },
+      );
+      const plainId = (await json<{ id: string }>(plain)).id;
+      const results = await json<{
+        items: Array<{ type: string; id: string }>;
+      }>(
+        await req(h, `/api/v1/search?q=${encodeURIComponent("#mix_notes")}`, {
+          cookie: seed.viewer.cookie,
+        }),
+      );
+      const commentHits = results.items.filter(
+        (item) => item.type === "comment",
+      );
+      expect(commentHits.some((item) => item.id === taggedBody.id)).toBe(true);
+      // Whole-token semantics: neither the longer tag nor the bare word hit.
+      expect(commentHits.some((item) => item.id === longerId)).toBe(false);
+      expect(commentHits.some((item) => item.id === plainId)).toBe(false);
     });
   });
 };

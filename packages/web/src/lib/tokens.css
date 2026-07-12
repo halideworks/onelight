@@ -4,7 +4,11 @@
    2. Everywhere else: dark base + Japanese gradient washes from reviewer/gradients/PALETTES.md.
    No emojis, no glassmorphism, no gradient border highlights, no decorative monospace, no italics. */
 
-@import url('https://api.fontshare.com/v2/css?f[]=switzer@300,400,500,600,700&f[]=space-grotesk@500,600,700&display=swap');
+/* Font loading intentionally diverges from mockups/tokens.css: the Fontshare
+   CDN @import that lived here was an external render-blocking phone-home on
+   every page (including the review room). Faces are now self-hosted in
+   lib/fonts.css (imported by +layout.svelte); the token VALUES below remain a
+   verbatim port of mockups/tokens.css. */
 
 :root {
   /* Type, two voices:

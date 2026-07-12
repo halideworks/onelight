@@ -231,14 +231,22 @@ const handler = async (
     return;
   }
   if (request.method === "GET" && request.url?.startsWith("/jobs/")) {
-    // Status reads are signed over the request path so probe results and
-    // filesystem paths never leak to unauthenticated callers.
-    const requestPath = request.url.split("?")[0] ?? "";
-    if (!validSignature(requestPath, request.headers["x-onelight-signature"])) {
+    // Status reads are signed over the full request path including a "ts"
+    // timestamp, so probe results and filesystem paths never leak to
+    // unauthenticated callers and a captured signed request cannot be
+    // replayed beyond the skew window (mirrors the POST /jobs body timestamp).
+    const signedPath = request.url;
+    if (!validSignature(signedPath, request.headers["x-onelight-signature"])) {
       json(response, 401, { error: "invalid worker signature" });
       return;
     }
-    const id = requestPath.slice("/jobs/".length);
+    const url = new URL(request.url, "http://worker");
+    const ts = Number(url.searchParams.get("ts"));
+    if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > SIGNATURE_SKEW_MS) {
+      json(response, 401, { error: "stale or missing timestamp" });
+      return;
+    }
+    const id = url.pathname.slice("/jobs/".length);
     const state = jobs.get(id);
     if (!state) {
       json(response, 404, { error: "job not found" });

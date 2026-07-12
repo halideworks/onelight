@@ -83,6 +83,13 @@
     replaceState(query ? `/search?${query}` : '/search', {});
   };
 
+  /* Frame-anchored comment hits deep link into the player's ?f= seek. The
+     field is optional on the wire; read it defensively. */
+  const commentFrame = (hit: SearchHit): number | null => {
+    const value = (hit as { frame_in?: unknown }).frame_in;
+    return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+  };
+
   let timer: ReturnType<typeof setTimeout> | undefined;
   const onInput = (): void => {
     clearTimeout(timer);
@@ -116,7 +123,12 @@
       input?.select();
     };
     window.addEventListener('onelight:focus-search', focusSearch);
-    return () => window.removeEventListener('onelight:focus-search', focusSearch);
+    return () => {
+      /* Drop the pending debounce so it cannot fire a fetch after the page
+         has navigated away. */
+      clearTimeout(timer);
+      window.removeEventListener('onelight:focus-search', focusSearch);
+    };
   });
 </script>
 
@@ -161,7 +173,7 @@
           <span class="name">{hit.name}</span>
         </a>
       {:else}
-        <a class="hit" href={`/projects/${hit.project_id}/assets/${hit.asset_id}`}>
+        <a class="hit" href={`/projects/${hit.project_id}/assets/${hit.asset_id}${commentFrame(hit) === null ? '' : `?f=${commentFrame(hit)}`}`}>
           <span class="kind">Comment</span>
           <span class="name">{excerpt(hit.body_text)}</span>
         </a>
@@ -188,9 +200,9 @@
   .results { max-width: 760px; display: grid; gap: 2px; }
   .hit { display: flex; align-items: baseline; gap: 14px; padding: 12px 14px; margin: 0 -14px; border: 0; border-radius: var(--radius); background: none; color: var(--ink-text); text-decoration: none; text-align: left; font-size: var(--text-13); }
   .hit:hover { background: var(--ink-100); }
-  .kind { flex: none; width: 64px; color: var(--ink-text-dim); font-size: var(--text-12); }
+  .kind { flex: none; width: 64px; color: var(--ink-text-dim); font-size: var(--text-13); }
   .name { font-weight: 500; overflow-wrap: anywhere; }
-  .more { justify-self: start; margin-top: 10px; border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 9px 16px; font-size: var(--text-12); font-weight: 500; }
+  .more { justify-self: start; margin-top: 10px; border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 9px 16px; font-size: var(--text-13); font-weight: 500; }
   .more:hover { background: var(--ink-300); }
   .empty { color: var(--ink-text-dim); }
   .error { color: var(--warn); }

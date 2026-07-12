@@ -176,14 +176,14 @@
   .body a, .title { color: var(--ink-text); font-weight: 500; text-decoration: none; }
   .body a:hover { color: var(--accent-bright); }
   .detail { margin: 0; color: var(--ink-text-dim); overflow-wrap: anywhere; }
-  .when { color: var(--ink-text-dim); font-size: var(--text-12); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .when { color: var(--ink-text-dim); font-size: var(--text-13); white-space: nowrap; font-variant-numeric: tabular-nums; }
   .prefs { max-width: 560px; }
   fieldset { border: 0; margin: 0 0 24px; padding: 0; display: grid; gap: 10px; }
   legend { padding: 0; margin-bottom: 10px; color: var(--ink-text-dim); font-size: var(--text-13); font-weight: 600; }
   label { display: flex; align-items: center; gap: 10px; font-size: var(--text-13); }
   input[type='radio'], input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
   .actions { display: flex; align-items: center; gap: 14px; }
-  button { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 9px 16px; font-size: var(--text-12); font-weight: 600; }
+  button { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 9px 16px; font-size: var(--text-13); font-weight: 600; }
   button:hover { background: var(--accent-bright); }
   button:disabled { opacity: 0.5; cursor: default; }
   button.quiet { background: var(--ink-200); color: var(--ink-text); font-weight: 500; }

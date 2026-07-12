@@ -35,6 +35,17 @@ const commentsHaveSelfFks = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes("carried_from_comment_id TEXT REFERENCES"));
 };
 
+const assetVersionsHaveFailureNotified = async (
+  binding: D1Database,
+): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='asset_versions'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("failure_notified_at"));
+};
+
 export const d1Migrations: D1Migration[] = [
   {
     name: "0000_init.sql",
@@ -135,6 +146,23 @@ export const d1Migrations: D1Migration[] = [
       "ALTER TABLE comment_reads_new RENAME TO comment_reads",
       "ALTER TABLE comment_reactions_new RENAME TO comment_reactions",
       "CREATE INDEX comments_version_frame_idx ON comments(version_id, deleted_at, frame_in, id)",
+    ],
+  },
+  {
+    name: "0005_password_resets.sql",
+    applied: (binding) => tableExists(binding, "password_resets"),
+    statements: [
+      "CREATE TABLE password_resets (\n  id TEXT PRIMARY KEY,\n  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  token_hash TEXT NOT NULL UNIQUE,\n  created_at INTEGER NOT NULL,\n  expires_at INTEGER NOT NULL,\n  used_at INTEGER\n)",
+      "ALTER TABLE notifications ADD COLUMN emailed_at INTEGER",
+    ],
+  },
+  {
+    name: "0006_transcode_notify.sql",
+    applied: assetVersionsHaveFailureNotified,
+    statements: [
+      "ALTER TABLE asset_versions ADD COLUMN failure_notified_at INTEGER",
+      "CREATE INDEX asset_versions_failed_idx ON asset_versions(id) WHERE transcode_status = 'failed' AND failure_notified_at IS NULL",
+      "CREATE INDEX notifications_user_id_idx ON notifications(user_id, id)",
     ],
   },
 ];

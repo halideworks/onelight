@@ -9,6 +9,7 @@ import {
   sha256Hex,
 } from "@onelight/core";
 import { apiTokens, sessions, users } from "@onelight/db/schema";
+import { clientIp } from "./helpers.js";
 import type { AppEnv, Variables } from "./types.js";
 
 export const SESSION_COOKIE = "ol_session";
@@ -51,10 +52,7 @@ export const createSession = async (
       createdAt: now,
       expiresAt: now + SESSION_LIFETIME,
       lastSeenAt: now,
-      ip:
-        c.req.header("cf-connecting-ip") ??
-        c.req.header("x-forwarded-for") ??
-        null,
+      ip: clientIp(c, env),
       userAgent: c.req.header("user-agent") ?? null,
     })
     .run();

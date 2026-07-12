@@ -1,0 +1,56 @@
+# Full-stack integration: build the real compose stack (server + media
+# worker), then drive it end to end with scripts/integration-e2e.mjs from
+# the runner: setup, multipart upload with CRC32C, probe and transcode,
+# proxy colorimetry and tmcd assertions via ffprobe, Range serving, the
+# watermarked share flow (202 while pending, burned rendition differs from
+# the clean proxy), a Resolve marker EDL export, and an HDR PQ leg that
+# exercises libplacebo on lavapipe inside the worker container. Finishes by
+# asserting the server shuts down gracefully within 15 seconds of SIGTERM.
+name: Integration
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  full-stack:
+    runs-on: ubuntu-latest
+    env:
+      # Throwaway CI-only values; the compose file refuses to start without
+      # SECRET_KEY (min 32 chars) and WORKER_SECRET.
+      SECRET_KEY: integration-only-secret-key-0123456789abcdefghij
+      WORKER_SECRET: integration-only-worker-secret-0123456789
+      PUBLIC_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # ffmpeg synthesizes the test clips on the runner and ffprobe verifies
+      # the downloaded proxies; dejavu supplies the drawtext counter font.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+      # The workspace install lets the e2e script compute CRC32C through the
+      # product implementation (@onelight/core via tsx).
+      - run: pnpm install --frozen-lockfile
+      - name: Build and start the stack (waits on both healthchecks)
+        run: docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
+      - name: Run the end-to-end exercise
+        run: node scripts/integration-e2e.mjs
+      - name: Graceful shutdown within 15 seconds
+        run: |
+          started=$(date +%s)
+          docker compose -f deploy/docker-compose.yml stop -t 15
+          elapsed=$(( $(date +%s) - started ))
+          echo "docker compose stop completed in ${elapsed}s"
+          server_id=$(docker compose -f deploy/docker-compose.yml ps -a -q onelight)
+          exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$server_id")
+          echo "server container exit code: ${exit_code}"
+          test "$elapsed" -le 15
+          test "$exit_code" = "0"
+      - name: Dump service logs
+        if: failure()
+        run: docker compose -f deploy/docker-compose.yml logs --no-color

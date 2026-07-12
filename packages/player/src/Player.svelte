@@ -13,8 +13,10 @@
   } from '@onelight/core';
   import AnnotationOverlay from './AnnotationOverlay.svelte';
   import Timeline from './Timeline.svelte';
+  import { isVerifyStale, seeksLocked } from './transport-state.js';
   import type { AnnotationStroke, FrameAnnotation, PendingDrawing } from './annotations.js';
   import type { TimelineMarker } from './timeline.js';
+  import type { SpriteCue } from './filmstrip.js';
   import type { PlayerRendition, SurroundMode, WatermarkOverlay } from './options.js';
 
   let {
@@ -28,9 +30,12 @@
     renditions = [],
     allowDrawing = false,
     watermark = null,
+    filmstrip = null,
+    waveformUrl = null,
     onframechange = undefined,
     onmarkerselect = undefined,
-    ondrawingchange = undefined
+    ondrawingchange = undefined,
+    onplaystate = undefined
   }: {
     src: string;
     rate?: { num: number; den: number };
@@ -42,9 +47,12 @@
     renditions?: PlayerRendition[];
     allowDrawing?: boolean;
     watermark?: WatermarkOverlay | null;
+    filmstrip?: { url: string; cues: SpriteCue[] } | null;
+    waveformUrl?: string | null;
     onframechange?: ((frame: number) => void) | undefined;
     onmarkerselect?: ((markerId: string, frame: number) => void) | undefined;
     ondrawingchange?: ((drawing: PendingDrawing | null) => void) | undefined;
+    onplaystate?: ((playing: boolean) => void) | undefined;
   } = $props();
 
   let video: HTMLVideoElement | undefined = $state();
@@ -121,7 +129,10 @@
       return;
     }
     stopReverse();
-    pendingRestore = { frame, playing: !video.paused, playbackRate: video.playbackRate };
+    /* Preserve the first capture across back-to-back switches: a second switch
+       effect must not re-read the already-paused state and lose the fact that
+       playback was running before the first swap. */
+    pendingRestore ??= { frame, playing: !video.paused, playbackRate: video.playbackRate };
     video.pause();
     currentSrc = next;
   });
@@ -150,6 +161,31 @@
     surround === 'grey18' ? 'var(--grey-18, #7a7a7a)' : surround === 'black' ? '#000000' : 'var(--n-000, #0a0a0a)'
   );
 
+  /* ---- timeline lane visibility, persisted per user ---- */
+  const FILM_LANE_KEY = 'onelight.lane.filmstrip';
+  const WAVE_LANE_KEY = 'onelight.lane.waveform';
+  let showFilmLane = $state(true);
+  let showWaveLane = $state(true);
+  $effect(() => {
+    try {
+      showFilmLane = localStorage.getItem(FILM_LANE_KEY) !== '0';
+      showWaveLane = localStorage.getItem(WAVE_LANE_KEY) !== '0';
+    } catch {
+      /* Storage can be unavailable; both lanes stay on. */
+    }
+  });
+  const toggleLane = (lane: 'film' | 'wave'): void => {
+    const next = lane === 'film' ? !showFilmLane : !showWaveLane;
+    if (lane === 'film') showFilmLane = next;
+    else showWaveLane = next;
+    try {
+      localStorage.setItem(lane === 'film' ? FILM_LANE_KEY : WAVE_LANE_KEY, next ? '1' : '0');
+    } catch {
+      /* Non-persistent visibility still applies for the session. */
+    }
+  };
+  const hasFilmstrip = $derived(Boolean(filmstrip && filmstrip.cues.length > 0));
+
   /* ---- drawing ---- */
   const INK_NEUTRAL = '#e9e9e9'; /* --n-900, neutral-safe ink */
   const INK_ACCENT = '#a5605a'; /* --warn, the one functional accent */
@@ -159,6 +195,12 @@
   let drawInk = $state<'neutral' | 'accent'>('accent');
   let pendingStrokes = $state<AnnotationStroke[]>([]);
   let drawingFrame = $state<number | null>(null);
+
+  /* While a drawing is armed with a committed stroke, seeks are blocked so a
+     stray Previous/Next, timeline scrub, or marker jump cannot re-anchor the
+     pending strokes to a different frame's pixels (transport keys are already
+     suspended in draw mode). The hint below tells the reviewer why. */
+  const seekLocked = $derived(seeksLocked(drawMode, pendingStrokes.length));
 
   const emitDrawing = (): void => {
     ondrawingchange?.(
@@ -255,11 +297,21 @@
     if (pendingRestore) {
       const restore = pendingRestore;
       pendingRestore = null;
+      /* A restore supersedes any queued deep-link seek. */
+      pendingSeekFrame = null;
+      /* Cancel a reverse shuttle that may have been started against the old
+         media before this metadata arrived; otherwise the restored forward
+         playback and the reverse interval would fight. */
+      stopReverse();
       seekFrame(restore.frame);
       if (restore.playing) {
         video.playbackRate = restore.playbackRate;
         void video.play();
       }
+    } else if (pendingSeekFrame !== null) {
+      const queued = pendingSeekFrame;
+      pendingSeekFrame = null;
+      seekFrame(queued);
     }
     if (!hasRvfc) handleTimeUpdate();
   };
@@ -271,16 +323,33 @@
       : next;
   };
 
+  /* Seeks requested before the media has metadata (frame deep links on
+     mount) queue here and run from handleLoadedMetadata. */
+  let pendingSeekFrame: number | null = null;
+
+  /* Bumped by every seekFrame call. Each one-shot verify closes over the
+     generation it was queued at and stands down if a newer seek has landed,
+     so a stale verify from an earlier fast-scrub target cannot re-seek the
+     playhead backward after the pointer settles. */
+  let seekGeneration = 0;
+
   /* Seek to frame middle. With rVFC, verify the presented mediaTime maps to
      the target frame and re-seek once if it does not. */
   const seekFrame = (targetFrame: number): void => {
-    if (!video) return;
+    if (!video || video.readyState === 0) {
+      pendingSeekFrame = boundedFrame(targetFrame);
+      return;
+    }
     const next = boundedFrame(targetFrame);
+    const generation = ++seekGeneration;
     video.currentTime = mediaTimeForFrameMiddle(next, rate);
     if (hasRvfc) {
       let retried = false;
       const verify = (_now: number, metadata: VideoFrameCallbackMetadata): void => {
         if (!video || retried) return;
+        /* A later seek has superseded this one: leave the playhead where the
+           newer target put it. */
+        if (isVerifyStale(generation, seekGeneration)) return;
         if (frameAtMediaTime(metadata.mediaTime, rate) !== next) {
           retried = true;
           video.currentTime = mediaTimeForFrameMiddle(next, rate);
@@ -300,11 +369,22 @@
     reverseSpeed = 0;
   };
 
+  /* Any explicit transport action cancels a rendition-switch restore in
+     flight: the reviewer's intent supersedes the frame/play state captured
+     before the swap, and letting the restore run would fight it (for example
+     restore.play() racing a reverse shuttle the reviewer just started). */
+  const cancelPendingRestore = (): void => {
+    pendingRestore = null;
+  };
+
   const jumpTo = (targetFrame: number): void => {
-    if (!video) return;
+    /* Refuse user seeks while a drawing is armed with a committed stroke, so
+       the anchor cannot drift off the frame the strokes were drawn on. */
+    if (seekLocked) return;
+    cancelPendingRestore();
     stopReverse();
     forwardSpeed = 0;
-    video.pause();
+    video?.pause();
     seekFrame(targetFrame);
   };
 
@@ -314,6 +394,7 @@
 
   const pausePlayback = (): void => {
     if (!video) return;
+    cancelPendingRestore();
     stopReverse();
     forwardSpeed = 0;
     video.pause();
@@ -321,6 +402,7 @@
 
   const playForward = (): void => {
     if (!video) return;
+    cancelPendingRestore();
     const wasPlayingForward = !video.paused && forwardSpeed > 0 && reverseTimer === null;
     stopReverse();
     forwardSpeed = wasPlayingForward ? Math.min(4, forwardSpeed * 2) : 1;
@@ -332,6 +414,7 @@
      stepping timer that seeks back speed frames per frame-duration tick. */
   const playReverse = (): void => {
     if (!video) return;
+    cancelPendingRestore();
     video.pause();
     forwardSpeed = 0;
     reverseSpeed = reverseSpeed > 0 ? Math.min(4, reverseSpeed * 2) : 1;
@@ -435,6 +518,8 @@
         playsinline
         ontimeupdate={hasRvfc ? undefined : handleTimeUpdate}
         onloadedmetadata={handleLoadedMetadata}
+        onplay={() => onplaystate?.(true)}
+        onpause={() => onplaystate?.(false)}
       >
         <track kind="captions" srclang="en" label="English captions" src={captionsSrc ?? 'data:text/vtt;charset=utf-8,WEBVTT'} />
       </video>
@@ -469,8 +554,8 @@
   </div>
   <div class="transport">
     <div class="transport-row">
-      <button type="button" onclick={() => step(-1)} aria-label="Previous frame">Previous frame</button>
-      <button type="button" onclick={() => step(1)} aria-label="Next frame">Next frame</button>
+      <button type="button" onclick={() => step(-1)} disabled={seekLocked} aria-label="Previous frame">Previous frame</button>
+      <button type="button" onclick={() => step(1)} disabled={seekLocked} aria-label="Next frame">Next frame</button>
       <span class="readout">
         {#if timecode}<span class="tc tc-main">{timecode}</span>{/if}
         <span class="tc tc-sub">{frame} fr&nbsp; {rateLabel}{dropFrame && isDropFrameRate(rate) ? ' DF' : ''}</span>
@@ -494,9 +579,23 @@
           </div>
           <button type="button" onclick={undoStroke} disabled={pendingStrokes.length === 0}>Undo</button>
           <button type="button" onclick={clearStrokes} disabled={pendingStrokes.length === 0}>Clear</button>
+          {#if seekLocked}
+            <span class="draw-hint" role="status">Seeking is locked while this drawing is unsent.</span>
+          {/if}
         {/if}
       {/if}
       <span class="grow"></span>
+      {#if (hasFilmstrip || waveformUrl) && durationFrames !== null && durationFrames > 0}
+        <span class="ctl-label" id="lanes-label">Lanes</span>
+        <div class="seg" role="group" aria-labelledby="lanes-label">
+          {#if hasFilmstrip}
+            <button type="button" aria-pressed={showFilmLane} onclick={() => toggleLane('film')}>Filmstrip</button>
+          {/if}
+          {#if waveformUrl}
+            <button type="button" aria-pressed={showWaveLane} onclick={() => toggleLane('wave')}>Waveform</button>
+          {/if}
+        </div>
+      {/if}
       <span class="ctl-label" id="surround-label">Surround</span>
       <div class="seg" role="group" aria-labelledby="surround-label">
         <button type="button" aria-pressed={surround === 'dark'} onclick={() => setSurround('dark')}>Dark</button>
@@ -524,6 +623,9 @@
         {inFrame}
         {outFrame}
         {markers}
+        filmstrip={showFilmLane ? filmstrip : null}
+        waveformUrl={showWaveLane ? waveformUrl : null}
+        disabled={seekLocked}
         onseek={jumpTo}
         onmarkerselect={handleMarkerSelect}
       />
@@ -568,8 +670,9 @@
   .readout { display: grid; text-align: center; gap: 2px; }
   .tc { font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
   .tc-main { font-size: 16px; color: var(--n-900, #e9e9e9); }
-  .tc-sub { font-size: 12px; color: var(--n-600, #767676); }
+  .tc-sub { font-size: 13px; color: var(--n-600, #767676); }
   .ctl-label { font-size: 13px; color: var(--n-600, #767676); }
+  .draw-hint { font-size: 13px; color: var(--n-600, #767676); }
   button { border: 0; border-radius: 3px; background: var(--n-200, #232323); color: var(--n-800, #c4c4c4); padding: 8px 12px; font-size: 13px; }
   button:hover { background: var(--n-300, #2e2e2e); color: var(--n-900, #e9e9e9); }
   button:disabled { color: var(--n-500, #565656); background: var(--n-150, #1c1c1c); }

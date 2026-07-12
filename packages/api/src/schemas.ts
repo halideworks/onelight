@@ -41,6 +41,10 @@ const commentBody = z.object({
   annotation: z.unknown().optional(),
 });
 
+/* Mentioned user ids; authed comment routes only. The server drops ids that
+   cannot see the project silently instead of rejecting the comment. */
+const mentionList = z.array(z.string()).max(20).optional();
+
 export const bodies = {
   setup: z.object({
     workspace_name: z.string().min(1).max(200),
@@ -49,6 +53,11 @@ export const bodies = {
     password: z.string(),
   }),
   login: z.object({ email: z.string().email(), password: z.string() }),
+  resetRequest: z.object({ email: z.string().email() }),
+  resetComplete: z.object({
+    token: z.string().min(1),
+    password: z.string(),
+  }),
   workspacePatch: z.object({
     name: z.string().min(1).max(200).optional(),
     settings: z.record(z.unknown()).optional(),
@@ -103,6 +112,7 @@ export const bodies = {
     pin_xy: z.unknown().optional(),
     page_no: z.number().int().positive().optional(),
     internal: z.boolean().default(false),
+    mentions: mentionList,
   }),
   commentPatch: z.object({
     frame_in: z.number().int().nonnegative().optional(),
@@ -111,14 +121,14 @@ export const bodies = {
     annotation: z.unknown().optional(),
     pin_xy: z.unknown().optional(),
   }),
-  replyCreate: commentBody,
+  replyCreate: commentBody.extend({ mentions: mentionList }),
   reactionCreate: z.object({ code: z.string().regex(/^[a-z0-9_]{1,32}$/) }),
   carryForward: z.object({ from_version_id: z.string() }),
   approvalPatch: z.object({ status: approvalStatus }),
-  notificationsRead: z.object({ ids: z.array(z.string()).min(1) }),
+  notificationsRead: z.object({ ids: z.array(z.string()).min(1).max(500) }),
   notificationPreferencesPatch: z.object({
     mode: z.enum(["instant", "hourly", "daily"]),
-    muted_projects: z.array(z.string()).default([]),
+    muted_projects: z.array(z.string()).max(1000).default([]),
   }),
   shareCreate: z.object({
     project_id: z.string(),
@@ -132,7 +142,7 @@ export const bodies = {
     show_all_versions: z.boolean().default(false),
     watermark_spec: z.record(z.unknown()).nullable().optional(),
     brand: z.record(z.unknown()).nullable().optional(),
-    asset_ids: z.array(z.string()).min(1),
+    asset_ids: z.array(z.string()).min(1).max(1000),
   }),
   sharePatch: z.object({
     title: z.string().min(1).max(200).optional(),
@@ -148,7 +158,7 @@ export const bodies = {
   webhookCreate: z.object({
     url: z.string().url(),
     secret: z.string().min(16).optional(),
-    events: z.array(z.string()).min(1),
+    events: z.array(z.string()).min(1).max(50),
   }),
   exportCreate: z.object({
     format: exportFormat,
@@ -187,7 +197,8 @@ export const bodies = {
       .array(
         z.object({ part_no: z.number().int().positive(), etag: z.string() }),
       )
-      .min(1),
+      .min(1)
+      .max(10000),
     checksum_crc32c: z.string().optional(),
   }),
   assetCreate: z.object({
@@ -203,6 +214,11 @@ export const bodies = {
     tags: z.array(z.string().min(1).max(100)).max(100).optional(),
   }),
   stackPatch: z.object({ version_no: z.number().int().positive() }),
+  versionCreate: z.object({
+    upload_id: z.string(),
+    name: z.string().min(1).max(500).optional(),
+    carry_forward: z.boolean().default(false),
+  }),
 };
 
 /* Response shapes. */
@@ -291,6 +307,8 @@ const comment = z.object({
   deleted_at: timestamp.nullable(),
   created_at: timestamp,
   edited_at: timestamp.nullable(),
+  /* Derived from body_text (#[a-z0-9_]+, lowercased), never stored. */
+  tags: z.array(z.string()),
 });
 
 const signedUrl = z.object({ url: z.string(), expires_at: timestamp });
@@ -331,6 +349,8 @@ const searchCommentHit = z.object({
   asset_id: z.string(),
   version_id: z.string(),
   project_id: z.string(),
+  /* Anchor frame for ?f= deep links; null for unanchored comments. */
+  frame_in: z.number().int().nullable(),
 });
 
 const searchHit = z.discriminatedUnion("type", [
@@ -354,6 +374,16 @@ const share = z.object({
   created_by: z.string(),
   revoked_at: timestamp.nullable(),
   created_at: timestamp,
+});
+
+/* Share viewer roster; the signed viewer_key never leaves the server. */
+const shareViewerItem = z.object({
+  id: z.string(),
+  name: z.string().nullable(),
+  email: z.string().nullable(),
+  first_seen_at: timestamp,
+  last_seen_at: timestamp,
+  user_agent: z.string().nullable(),
 });
 
 const webhookItem = z.object({
@@ -473,15 +503,9 @@ const auditEntry = z.object({
 
 const processing = z.object({ status: z.literal("processing") });
 
-/* Public share projections. GET /s/:slug intentionally serializes raw rows
-   (the web share page normalizes both shapes), so the shell is documented
-   loosely. */
-const publicShareShell = z.object({
-  share: jsonRecord,
-  viewer: jsonRecord.nullable(),
-  assets: z.array(jsonRecord),
-});
-
+/* Public share projections for unauthenticated share clients: client-safe
+   fields only (never passphrase_hash, watermark_spec_hash, created_by, or
+   camelCase). Watermarking is exposed as a boolean presence flag. */
 const publicShareAsset = z.object({
   id: z.string(),
   name: z.string(),
@@ -489,6 +513,39 @@ const publicShareAsset = z.object({
   status: approvalStatus,
   current_version_id: z.string().nullable(),
   sort_order: z.number().int(),
+});
+
+const publicShare = z.object({
+  id: z.string(),
+  slug: z.string(),
+  kind: shareKind,
+  title: z.string(),
+  layout: shareLayout,
+  allow_download: allowDownload,
+  allow_comments: z.boolean(),
+  show_all_versions: z.boolean(),
+  expires_at: timestamp.nullable(),
+  revoked_at: timestamp.nullable(),
+  watermark: z.boolean(),
+  brand: jsonRecord.nullable(),
+});
+
+const publicViewer = z.object({
+  id: z.string(),
+  name: z.string().nullable(),
+  email: z.string().nullable(),
+});
+
+const publicShareShell = z.object({
+  share: publicShare,
+  viewer: publicViewer.nullable(),
+  assets: z.array(publicShareAsset),
+});
+
+/* Share comments never expose the registered author's user id or email. */
+const publicComment = comment.omit({
+  author_user_id: true,
+  author_email: true,
 });
 
 const shareSource = z.object({
@@ -631,6 +688,18 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: { "200": ok(z.object({ user })) },
   },
   "POST /auth/logout": { responses: { "204": noContent } },
+  "POST /auth/reset-request": {
+    summary:
+      "Request a password reset link. Always 204 so account existence never leaks; rate limited per email and per IP.",
+    request: bodies.resetRequest,
+    responses: { "204": noContent },
+  },
+  "POST /auth/reset": {
+    summary:
+      "Complete a password reset with a token from the reset email. Revokes every session of the user.",
+    request: bodies.resetComplete,
+    responses: { "204": noContent },
+  },
   "GET /auth/session": {
     responses: {
       "200": ok(z.object({ user, auth: z.enum(["session", "token"]) })),
@@ -812,7 +881,17 @@ export const routeDocs: Record<string, RouteDoc> = {
   },
   "GET /shares/:id": {
     responses: {
-      "200": ok(share.extend({ assets: z.array(jsonRecord) })),
+      "200": ok(
+        share.extend({
+          assets: z.array(
+            z.object({
+              share_id: z.string(),
+              asset_id: z.string(),
+              sort_order: z.number().int(),
+            }),
+          ),
+        }),
+      ),
     },
   },
   "PATCH /shares/:id": {
@@ -820,6 +899,11 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: { "200": ok(share) },
   },
   "DELETE /shares/:id": { responses: { "204": noContent } },
+  "GET /shares/:id/viewers": {
+    summary:
+      "Share viewer roster (share owner or project manager). The viewer_key is never on the wire.",
+    responses: { "200": ok(list(shareViewerItem)) },
+  },
   "POST /webhooks": {
     request: bodies.webhookCreate,
     responses: {
@@ -849,7 +933,7 @@ export const routeDocs: Record<string, RouteDoc> = {
   "POST /s/:slug/access": {
     request: bodies.shareAccess,
     responses: {
-      "200": ok(z.object({ share, viewer_key: z.string() })),
+      "200": ok(z.object({ share: publicShare, viewer_key: z.string() })),
     },
   },
   "GET /s/:slug": { responses: { "200": ok(publicShareShell) } },
@@ -860,20 +944,20 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: { "200": ok(publicShareAssetDetail) },
   },
   "GET /s/:slug/assets/:assetId/comments": {
-    responses: { "200": ok(list(comment)) },
+    responses: { "200": ok(list(publicComment)) },
   },
   "POST /s/:slug/assets/:assetId/comments": {
     request: bodies.shareCommentCreate,
-    responses: { "201": created(comment) },
+    responses: { "201": created(publicComment) },
   },
   "PATCH /s/:slug/comments/:commentId": {
     request: bodies.shareCommentPatch,
-    responses: { "200": ok(comment) },
+    responses: { "200": ok(publicComment) },
   },
   "DELETE /s/:slug/comments/:commentId": { responses: { "204": noContent } },
   "POST /s/:slug/comments/:commentId/replies": {
     request: bodies.shareReplyCreate,
-    responses: { "201": created(comment) },
+    responses: { "201": created(publicComment) },
   },
   "PATCH /s/:slug/approval": {
     request: bodies.shareApprovalPatch,
@@ -989,6 +1073,14 @@ export const routeDocs: Record<string, RouteDoc> = {
   },
   "DELETE /assets/:id": { responses: { "204": noContent } },
   "GET /assets/:id/versions": { responses: { "200": ok(list(version)) } },
+  "POST /assets/:id/versions": {
+    summary:
+      "Attach a completed upload as the next version of an asset. The new version becomes current; carry_forward copies unresolved comments from the previous current version.",
+    request: bodies.versionCreate,
+    responses: {
+      "201": created(z.object({ asset, version, job_id: z.string() })),
+    },
+  },
   "POST /assets/:id/trash": { responses: { "204": noContent } },
   "POST /assets/:id/restore": { responses: { "200": ok(asset) } },
   "GET /versions/:id": { responses: { "200": ok(version) } },

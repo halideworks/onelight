@@ -3,6 +3,7 @@ import type {
   BlobStore,
   Clock,
   IdGen,
+  Mailer,
   PasswordHasher,
 } from "@onelight/core";
 import type { AppDb } from "@onelight/db";
@@ -16,6 +17,7 @@ export interface AppEnv {
   config: AppConfig;
   version: string;
   blobStore?: BlobStore;
+  mailer?: Mailer;
 }
 
 export type Variables = {

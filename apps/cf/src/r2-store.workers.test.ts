@@ -106,6 +106,41 @@ describe("R2BlobStore", () => {
     });
   });
 
+  it("streams parts via FixedLengthStream when a length is supplied", async () => {
+    const store = new R2BlobStore(env.BLOBS);
+    const key = "ws/media/streamed-multipart.bin";
+    const partOne = new Uint8Array(5 * 1024 * 1024).fill(0xcd);
+    const partTwo = new Uint8Array(2048).fill(0xef);
+    const { uploadId } = await store.createMultipart(key, {
+      size: partOne.byteLength + partTwo.byteLength,
+    });
+    // The fourth argument is the declared part length: the store streams the
+    // body straight to R2 instead of buffering it.
+    const first = await store.putPart(
+      uploadId,
+      1,
+      streamOf(partOne),
+      partOne.byteLength,
+    );
+    const second = await store.putPart(
+      uploadId,
+      2,
+      streamOf(partTwo),
+      partTwo.byteLength,
+    );
+    expect(first.size).toBe(partOne.byteLength);
+    expect(second.size).toBe(partTwo.byteLength);
+    await store.completeMultipart(key, uploadId, [
+      { partNo: 1, etag: first.etag },
+      { partNo: 2, etag: second.etag },
+    ]);
+    const assembled = await collect(await store.getStream(key));
+    expect(assembled.byteLength).toBe(partOne.byteLength + partTwo.byteLength);
+    expect(assembled[0]).toBe(0xcd);
+    expect(assembled[partOne.byteLength]).toBe(0xef);
+    expect(assembled[assembled.byteLength - 1]).toBe(0xef);
+  });
+
   it("rejects duplicate parts at completion", async () => {
     const store = new R2BlobStore(env.BLOBS);
     const key = "ws/media/duplicate.bin";

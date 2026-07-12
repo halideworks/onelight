@@ -115,10 +115,20 @@ export const describeNotification = (
   return { title, detail };
 };
 
+const frame = (value: unknown): number | null =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
+    : null;
+
 export const notificationLink = (item: AppNotification): string | null => {
   const project = text(item.payload.project_id);
   const asset = text(item.payload.asset_id);
-  if (project && asset) return `/projects/${project}/assets/${asset}`;
+  if (project && asset) {
+    /* Frame-anchored payloads (comments) deep link into the player's ?f=
+       seek; positions are integer frames, never seconds. */
+    const at = frame(item.payload.frame) ?? frame(item.payload.frame_in);
+    return `/projects/${project}/assets/${asset}${at === null ? "" : `?f=${at}`}`;
+  }
   if (project) return `/projects/${project}`;
   return null;
 };

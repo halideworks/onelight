@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, lt } from "drizzle-orm";
 import {
   exportAvidText,
   exportAvidXml,
@@ -33,6 +33,7 @@ import {
   comments,
   exportJobs,
   jobs,
+  projectEvents,
   projects,
   renditions,
   shareAssets,
@@ -99,6 +100,59 @@ const parseObject = (value: string): Record<string, unknown> => {
   }
 };
 
+// Mirror of the API's appendProjectEvent row shape (ULID id, type, JSON
+// payload) so the web app can live-update transcode progress over the
+// project event stream. Best effort: a failed event insert never fails the
+// job that produced it.
+const insertVersionEvent = async (
+  db: AppDb,
+  payload: JobPayload,
+  versionId: string,
+  type: "version.transcode" | "version.probed",
+  status?: string,
+): Promise<void> => {
+  try {
+    let projectId =
+      typeof payload.project_id === "string" ? payload.project_id : undefined;
+    let assetId =
+      typeof payload.asset_id === "string" ? payload.asset_id : undefined;
+    if (!projectId || !assetId) {
+      const row = (
+        await db
+          .select({ assetId: assets.id, projectId: assets.projectId })
+          .from(assetVersions)
+          .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+          .where(eq(assetVersions.id, versionId))
+          .limit(1)
+          .all()
+      )[0];
+      assetId = assetId ?? row?.assetId;
+      projectId = projectId ?? row?.projectId;
+    }
+    if (!projectId) return;
+    await db
+      .insert(projectEvents)
+      .values({
+        id: new UlidGenerator().ulid(),
+        projectId,
+        type,
+        payloadJson: JSON.stringify({
+          asset_id: assetId ?? null,
+          version_id: versionId,
+          ...(status ? { status } : {}),
+        }),
+        createdAt: Date.now(),
+      })
+      .run();
+  } catch (error) {
+    console.warn(
+      `[onelight] ${type} event for version ${versionId} was not recorded: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+};
+
 const sha256File = (file: string): Promise<string> =>
   new Promise((resolve, reject) => {
     const hash = createHash("sha256");
@@ -146,7 +200,11 @@ const pollWorker = async (
 ): Promise<WorkerResponse> => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const requestPath = `/jobs/${jobId}`;
+    // The status GET is signed over the path plus a fresh timestamp, so a
+    // captured signed request cannot be replayed to re-read a job's
+    // media_info and filesystem paths beyond the worker's skew window. This
+    // mirrors the POST /jobs body timestamp; keep the two schemes in sync.
+    const requestPath = `/jobs/${jobId}?ts=${Date.now()}`;
     const response = await fetch(
       `${workerUrl.replace(/\/$/, "")}${requestPath}`,
       {
@@ -462,13 +520,6 @@ const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
       )
         continue;
       const idempotencyKey = `watermark:${row.version.id}:${share.id}:${specHash}`;
-      const pending = await db
-        .select({ id: jobs.id })
-        .from(jobs)
-        .where(eq(jobs.idempotencyKey, idempotencyKey))
-        .limit(1)
-        .all();
-      if (pending.length) continue;
       const proxy = (
         await db
           .select()
@@ -484,21 +535,63 @@ const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
           .all()
       )[0];
       if (!proxy) continue;
+      const payloadJson = JSON.stringify({
+        workspace_id: entry.workspaceId,
+        project_id: share.projectId,
+        version_id: row.version.id,
+        share_id: share.id,
+        spec: parseObject(share.watermarkSpecJson ?? "{}"),
+        spec_hash: specHash,
+        blob_key: proxy.blobKey,
+        output_key: `renditions/${row.version.id}/watermarked-${share.id}-${specHash}.mp4`,
+      });
+      // idempotency_key is UNIQUE, so a job already carries this key when one
+      // exists. A queued/processing/complete job owns it and the sweep leaves
+      // it alone. A job that exhausted its attempts sits as 'dead' (or the
+      // enum's 'failed'): claimNextJob never revisits those rows, so the
+      // rendition would be blocked forever. The UNIQUE constraint forbids
+      // inserting a fresh job, so a terminal row is reset in place to queued
+      // with attempts=0 (and a refreshed payload, since the proxy blob key can
+      // change) to requeue the render. Any other swept job kind must reuse
+      // this same reset-or-skip path for the same reason.
+      const existingJob = (
+        await db
+          .select({ id: jobs.id, status: jobs.status })
+          .from(jobs)
+          .where(eq(jobs.idempotencyKey, idempotencyKey))
+          .limit(1)
+          .all()
+      )[0];
+      if (existingJob) {
+        if (existingJob.status !== "dead" && existingJob.status !== "failed")
+          continue;
+        await db
+          .update(jobs)
+          .set({
+            payloadJson,
+            status: "queued",
+            priority: 0,
+            maxAttempts: 5,
+            attempts: 0,
+            runAfter: now,
+            startedAt: null,
+            heartbeatAt: null,
+            leaseExpiresAt: null,
+            finishedAt: null,
+            error: null,
+            workerId: null,
+          })
+          .where(eq(jobs.id, existingJob.id))
+          .run();
+        enqueued += 1;
+        continue;
+      }
       await db
         .insert(jobs)
         .values({
           id: new UlidGenerator().ulid(),
           kind: "watermark",
-          payloadJson: JSON.stringify({
-            workspace_id: entry.workspaceId,
-            project_id: share.projectId,
-            version_id: row.version.id,
-            share_id: share.id,
-            spec: parseObject(share.watermarkSpecJson ?? "{}"),
-            spec_hash: specHash,
-            blob_key: proxy.blobKey,
-            output_key: `renditions/${row.version.id}/watermarked-${share.id}-${specHash}.mp4`,
-          }),
+          payloadJson,
           idempotencyKey,
           status: "queued",
           priority: 0,
@@ -550,6 +643,13 @@ const processJob = async (
         })
         .where(eq(assetVersions.id, versionId))
         .run();
+      await insertVersionEvent(
+        db,
+        payload,
+        versionId,
+        "version.transcode",
+        assetKind === "pdf" ? "processing" : "skipped",
+      );
       if (assetKind === "pdf") await enqueueTranscode(db, payload, versionId);
       return;
     }
@@ -580,8 +680,16 @@ const processJob = async (
       typeof mediaInfo.sourceTimecodeStart === "string"
         ? mediaInfo.sourceTimecodeStart
         : undefined;
-    // A ";" separator in the probed timecode tag marks drop-frame.
-    const dropFrame = timecode?.includes(";") ?? false;
+    // Drop-frame timecode is defined only for the 29.97 (30000/1001) and
+    // 59.94 (60000/1001) NTSC rates. A ";" separator on any other (commonly
+    // mistagged 24/25/30) source is not drop-frame; honoring it corrupts
+    // frame math and breaks exports, so the flag is gated on the clamped rate
+    // as well as the separator. The worker's normalizeProbe applies the same
+    // guard; this is the write-back source of truth.
+    const dropFrame =
+      (timecode?.includes(";") ?? false) &&
+      den === 1001 &&
+      (num === 30000 || num === 60000);
     let sourceStartFrame: number | null = null;
     if (timecode && num && den) {
       try {
@@ -612,6 +720,14 @@ const processJob = async (
       })
       .where(eq(assetVersions.id, versionId))
       .run();
+    await insertVersionEvent(db, payload, versionId, "version.probed");
+    await insertVersionEvent(
+      db,
+      payload,
+      versionId,
+      "version.transcode",
+      "processing",
+    );
     await enqueueTranscode(db, payload, versionId);
     return;
   }
@@ -655,6 +771,13 @@ const processJob = async (
       .set({ transcodeStatus: "skipped" })
       .where(eq(assetVersions.id, version.id))
       .run();
+    await insertVersionEvent(
+      db,
+      payload,
+      version.id,
+      "version.transcode",
+      "skipped",
+    );
     return;
   }
   const outputs = planned.map((entry) => ({
@@ -733,6 +856,55 @@ const processJob = async (
     .set({ transcodeStatus: "ready" })
     .where(eq(assetVersions.id, version.id))
     .run();
+  await insertVersionEvent(
+    db,
+    payload,
+    version.id,
+    "version.transcode",
+    "ready",
+  );
+};
+
+// When a probe or transcode job exhausts its attempts and goes dead, the
+// version is marked failed (the API materializes transcode.failed
+// notifications from that state) and a failed transcode event is emitted.
+const recordDeadMediaJob = async (
+  db: AppDb,
+  job: typeof jobs.$inferSelect,
+): Promise<void> => {
+  try {
+    if (job.kind !== "probe" && job.kind !== "transcode") return;
+    const state = (
+      await db
+        .select({ status: jobs.status })
+        .from(jobs)
+        .where(eq(jobs.id, job.id))
+        .limit(1)
+        .all()
+    )[0];
+    if (state?.status !== "dead") return;
+    const payload = parsePayload(job.payloadJson);
+    const versionId = payload.version_id;
+    if (!versionId) return;
+    await db
+      .update(assetVersions)
+      .set({ transcodeStatus: "failed" })
+      .where(eq(assetVersions.id, versionId))
+      .run();
+    await insertVersionEvent(
+      db,
+      payload,
+      versionId,
+      "version.transcode",
+      "failed",
+    );
+  } catch (error) {
+    console.warn(
+      `[onelight] dead job ${job.id} was not written back to its version: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 };
 
 interface ExportRow {
@@ -943,6 +1115,32 @@ const buildPdfExport = async (
   }
 };
 
+// export_jobs has no lease or heartbeat column like the jobs table, so an
+// export left in 'processing' by a crashed pump is never reclaimed on its own
+// (the pump only ever selects status='queued'). The single pump processes one
+// export synchronously per tick, so any 'processing' row on startup is
+// necessarily orphaned; a periodic pass with a generous age threshold catches
+// a mid-flight crash after startup. Reclaimed rows go back to 'queued' to be
+// retried. There is no started_at column, so createdAt is the age proxy; the
+// pump moves queued->processing immediately, so it tracks start time closely.
+const EXPORT_RECLAIM_STALE_MS = 30 * 60_000;
+
+const reclaimStuckExports = async (
+  db: AppDb,
+  processingOlderThan: number,
+): Promise<void> => {
+  await db
+    .update(exportJobs)
+    .set({ status: "queued", error: null })
+    .where(
+      and(
+        eq(exportJobs.status, "processing"),
+        lt(exportJobs.createdAt, processingOlderThan),
+      ),
+    )
+    .run();
+};
+
 const processExportJob = async (
   db: AppDb,
   job: typeof exportJobs.$inferSelect,
@@ -1106,85 +1304,123 @@ export const startWorkerPump = (
   const workerId = new UlidGenerator().ulid();
   let active = false;
   let lastWatermarkSweep = 0;
+  let reclaimedOnStart = false;
   const tick = async () => {
     if (active) return;
     active = true;
-    const now = Date.now();
-    // Reconcile missing watermarked renditions on a throttle rather than
-    // every poll; the sweep itself is bounded per pass.
-    if (now - lastWatermarkSweep >= WATERMARK_SWEEP_INTERVAL_MS) {
-      lastWatermarkSweep = now;
-      try {
-        await sweepWatermarkJobs(db);
-      } catch (error) {
-        console.warn(
-          `[onelight] watermark sweep failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
+    // The whole body runs inside try/finally: `active` is the pump's single
+    // re-entrancy guard, so a throw anywhere here (claimNextJob, failJob, a
+    // transient DB error) must never leave it stuck true, which would wedge
+    // the pump for the process lifetime. The finally clears it and the outer
+    // catch keeps the throw from escaping `void tick()` as an
+    // unhandledRejection.
+    try {
+      const now = Date.now();
+      // On the first tick, reclaim every export still in 'processing': the
+      // single pump processes exports synchronously, so such a row can only
+      // be an orphan from a crashed previous process. Afterwards, reclaim
+      // only rows older than the stale threshold, catching a mid-flight crash
+      // without disturbing an export this pump is actively running.
+      if (!reclaimedOnStart) {
+        reclaimedOnStart = true;
+        await reclaimStuckExports(db, now);
+      } else {
+        await reclaimStuckExports(db, now - EXPORT_RECLAIM_STALE_MS);
       }
-    }
-    const pendingExport = (
-      await db
-        .select()
-        .from(exportJobs)
-        .where(eq(exportJobs.status, "queued"))
-        .orderBy(asc(exportJobs.createdAt))
-        .limit(1)
-        .all()
-    )[0];
-    if (pendingExport) {
-      try {
+      // Reconcile missing watermarked renditions on a throttle rather than
+      // every poll; the sweep itself is bounded per pass.
+      if (now - lastWatermarkSweep >= WATERMARK_SWEEP_INTERVAL_MS) {
+        lastWatermarkSweep = now;
+        try {
+          await sweepWatermarkJobs(db);
+        } catch (error) {
+          console.warn(
+            `[onelight] watermark sweep failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      // One export per tick. A long export (a large PDF report) head-of-line
+      // blocks this single pump for its whole duration, since the tick awaits
+      // it before claiming a transcode. The real fix is a separate export
+      // pump/process; that lives outside this file's ownership, so it is
+      // documented here rather than worked around. Exports are bounded work
+      // (bytes already in the DB, at worst a bounded set of still extractions
+      // that each carry their own deadline), so the block is finite.
+      const pendingExport = (
         await db
-          .update(exportJobs)
-          .set({ status: "processing" })
-          .where(
-            and(
-              eq(exportJobs.id, pendingExport.id),
-              eq(exportJobs.status, "queued"),
-            ),
-          )
-          .run();
-        await processExportJob(db, pendingExport, options.blobRoot, {
-          workerUrl: options.workerUrl,
-          workerSecret: options.workerSecret,
-        });
-      } catch (error) {
-        await db
-          .update(exportJobs)
-          .set({
-            status: "failed",
-            error: error instanceof Error ? error.message : "Export failed.",
-            finishedAt: Date.now(),
-          })
-          .where(eq(exportJobs.id, pendingExport.id))
-          .run();
+          .select()
+          .from(exportJobs)
+          .where(eq(exportJobs.status, "queued"))
+          .orderBy(asc(exportJobs.createdAt))
+          .limit(1)
+          .all()
+      )[0];
+      if (pendingExport) {
+        try {
+          await db
+            .update(exportJobs)
+            .set({ status: "processing" })
+            .where(
+              and(
+                eq(exportJobs.id, pendingExport.id),
+                eq(exportJobs.status, "queued"),
+              ),
+            )
+            .run();
+          await processExportJob(db, pendingExport, options.blobRoot, {
+            workerUrl: options.workerUrl,
+            workerSecret: options.workerSecret,
+          });
+        } catch (error) {
+          await db
+            .update(exportJobs)
+            .set({
+              status: "failed",
+              error: error instanceof Error ? error.message : "Export failed.",
+              finishedAt: Date.now(),
+            })
+            .where(eq(exportJobs.id, pendingExport.id))
+            .run();
+        }
       }
-    }
-    const job = await claimNextJob(db, now, workerId, ["cpu"]);
-    if (job) {
-      try {
-        await processJob(
-          db,
-          job,
-          options.workerUrl as string,
-          options.workerSecret as string,
-          options.blobRoot,
-          workerId,
-        );
-        await completeJob(db, job.id, workerId, Date.now());
-      } catch (error) {
-        await failJob(
-          db,
-          job.id,
-          workerId,
-          Date.now(),
-          error instanceof Error ? error.message : "Worker job failed.",
-          1000,
-        );
+      const job = await claimNextJob(db, now, workerId, ["cpu"]);
+      if (job) {
+        try {
+          await processJob(
+            db,
+            job,
+            options.workerUrl as string,
+            options.workerSecret as string,
+            options.blobRoot,
+            workerId,
+          );
+          await completeJob(db, job.id, workerId, Date.now());
+        } catch (error) {
+          await failJob(
+            db,
+            job.id,
+            workerId,
+            Date.now(),
+            error instanceof Error ? error.message : "Worker job failed.",
+            1000,
+          );
+          await recordDeadMediaJob(db, job);
+        }
       }
+    } catch (error) {
+      // A transient failure outside the inner try/catch blocks (for example a
+      // DB error in claimNextJob or the export reclaim) must not wedge the
+      // pump: log it and let finally clear `active` for the next tick.
+      console.warn(
+        `[onelight] worker pump tick failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    } finally {
+      active = false;
     }
-    active = false;
   };
   const timer = setInterval(() => {
     void tick();

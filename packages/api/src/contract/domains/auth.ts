@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { days, sha256Hex } from "@onelight/core";
-import { sessions } from "@onelight/db/schema";
+import { rateLimits, sessions } from "@onelight/db/schema";
 import {
   assertSnakeCaseKeys,
   errorCode,
@@ -271,6 +271,68 @@ export const registerAuthDomain = (ctx: SuiteContext): void => {
       });
       expect(limited.status).toBe(429);
       expect(limited.headers.get("retry-after")).toBeTruthy();
+    });
+
+    it("does not let a spoofed X-Forwarded-For split rate buckets when the proxy is untrusted", async () => {
+      const h = ctx.h();
+      const original = h.config.TRUST_PROXY;
+      h.config.TRUST_PROXY = false;
+      try {
+        // The in-memory app exposes no peer socket, so every request shares the
+        // socket-less bucket. Clean it so the threshold is deterministic.
+        await h.db
+          .delete(rateLimits)
+          .where(eq(rateLimits.key, "login:ip:no-socket"))
+          .run();
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          const response = await req(h, "/api/v1/auth/login", {
+            json: { email: uniqueEmail(), password: "definitely-wrong-1" },
+            // A distinct spoofed client IP per attempt: with the proxy
+            // untrusted these must NOT create distinct buckets.
+            headers: { "x-forwarded-for": `10.0.0.${attempt.toString()}` },
+          });
+          expect(response.status).toBe(401);
+        }
+        const limited = await req(h, "/api/v1/auth/login", {
+          json: { email: uniqueEmail(), password: "definitely-wrong-1" },
+          headers: { "x-forwarded-for": "203.0.113.254" },
+        });
+        expect(limited.status).toBe(429);
+        expect(await errorCode(limited)).toBe("rate_limited");
+      } finally {
+        h.config.TRUST_PROXY = original;
+      }
+    });
+
+    it("prunes rate-limit rows older than the retention window on increment", async () => {
+      const h = ctx.h();
+      const staleIp = uniqueIp();
+      await req(h, "/api/v1/auth/login", {
+        json: { email: uniqueEmail(), password: "definitely-wrong-1" },
+        headers: { "x-forwarded-for": staleIp },
+      });
+      const key = `login:ip:${staleIp}`;
+      expect(
+        await h.db
+          .select()
+          .from(rateLimits)
+          .where(eq(rateLimits.key, key))
+          .all(),
+      ).toHaveLength(1);
+      // A fresh increment more than the retention window later prunes the row.
+      await travel(h.clock, 16 * 60 * 1000, async () => {
+        await req(h, "/api/v1/auth/login", {
+          json: { email: uniqueEmail(), password: "definitely-wrong-1" },
+          headers: { "x-forwarded-for": uniqueIp() },
+        });
+      });
+      expect(
+        await h.db
+          .select()
+          .from(rateLimits)
+          .where(eq(rateLimits.key, key))
+          .all(),
+      ).toHaveLength(0);
     });
 
     it("changes passwords: current required, other sessions revoked, policy enforced", async () => {

@@ -65,7 +65,7 @@
   .eyebrow { margin: 0 0 6px; color: var(--accent-bright); font-size: var(--text-13); }
   h1 { margin: 0 0 28px; font-family: var(--font-display); font-size: var(--text-28); font-weight: 700; letter-spacing: -0.01em; }
   form { display: grid; gap: 16px; }
-  label { display: grid; gap: 6px; color: var(--ink-text-dim); font-size: var(--text-12); font-weight: 500; }
+  label { display: grid; gap: 6px; color: var(--ink-text-dim); font-size: var(--text-13); font-weight: 500; }
   input { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 10px 11px; font-size: var(--text-13); }
   input:focus { outline: 1px solid var(--accent); }
   button { border: 0; border-radius: var(--radius); background: var(--accent); color: #081014; padding: 10px; font-size: var(--text-13); font-weight: 600; }

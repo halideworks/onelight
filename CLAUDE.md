@@ -64,9 +64,19 @@ pnpm qa             # media verification harness (skips cleanly where ffmpeg/bro
 4. Verify visually: render UI changes (headless Chrome screenshots are fine) and check against section 24 and the mockups before considering UI work done.
 5. When auditing or reviewing, distrust green CI until you have checked what the tests actually assert. The v1 build passed CI while the Resolve EDL, the HDR pipeline, J/K/L, and the D1 migration path were all broken; the audit report documents the pattern.
 
+## CI jobs
+
+CI runs four jobs (.github/workflows): `node` (lint, typecheck, format, openapi:check, test, test:workers), `docker` (both image builds), `media-qc` (the qa harness: WebCodecs frame accuracy, color QC in Chromium/Firefox/WebKit, tmcd, HDR tonemap), and `integration` (compose up, a real upload/probe/transcode/serve/share/export/watermark/HDR round-trip via scripts/integration-e2e.mjs, plus a graceful-shutdown assertion). The integration and media-qc jobs need a Linux runner with ffmpeg and Docker; they are where the ffmpeg-dependent behavior is actually confirmed.
+
+## Deployment and privacy notes
+
+- Client IP for rate limiting and session records is resolved through a TRUST_PROXY-aware helper: with TRUST_PROXY unset or false (default), the socket address is used and proxy headers are ignored. Self-hosters behind a reverse proxy MUST set TRUST_PROXY=true or per-IP limits collapse to one bucket.
+- Fonts (Space Grotesk, Switzer) are self-hosted under packages/web/src/lib/fonts and loaded via lib/fonts.css. Do not reintroduce the Fontshare CDN import; a self-hosted product must not phone home, and the review room must not block on an external fetch.
+- The API is a public contract: never serialize raw ORM rows to share viewers. Public share and comment projections deliberately omit passphrase_hash, watermark_spec_hash, viewer_key, and member emails.
+
 ## State of v1 (2026-07-11)
 
-Phases 0-3 are implemented, audited, repaired, and completed through a two-wave remainder build; all gates above are green, including the qa harness executed against real synthesized fixtures on this machine. What blocks the v1.0 tag is enumerated in docs/ROADMAP.md: the Linux verification run (libplacebo tonemap, compose end to end, media-qc CI job with real WebKit), real-NLE import round-trips of the export fixtures, the full-app browser pass against section 24, and HDR pipeline fixtures. David manually validates NLE imports, HDR behavior, and browser color.
+Phases 0-3 are implemented, audited, repaired, and feature-completed through a two-wave remainder build plus a full-gap build with three adversarial reviewers whose findings were all fixed; all gates above are green, including the qa harness and integration dry-run executed on this machine. What blocks the v1.0 tag is enumerated in docs/ROADMAP.md and is now Linux-only or human-judgement: the first green integration and media-qc CI runs (which automate most of the former manual Linux checks), real-NLE import round-trips, and the full-app browser pass against section 24. David manually validates NLE imports, HDR behavior, and browser color.
 
 ## Context worth knowing
 

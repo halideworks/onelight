@@ -1,25 +1,64 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { api, apiDelete, apiPatch, apiPost, messageFrom } from '$lib/api.js';
+  import { api, apiDelete, apiPatch, apiPost, createAssetVersion, messageFrom } from '$lib/api.js';
+  import { createMediaCache } from '$lib/asset-media.svelte.js';
+  import AssetSelect from '$lib/AssetSelect.svelte';
+  import ScrubThumb from '$lib/ScrubThumb.svelte';
+  import { whenAbsolute, whenRelative } from '$lib/format.js';
+  import { projectEvents } from '$lib/sse.svelte.js';
+  import type { ProjectEvent } from '$lib/sse.svelte.js';
+  import {
+    filesFromDataTransfer,
+    filesFromInput,
+    formatBytes,
+    formatRate,
+    uploadFile,
+    UploadQuarantinedError
+  } from '$lib/upload.js';
+  import type { PendingFile } from '$lib/upload.js';
+  import { washFor } from '$lib/washes.js';
 
-  type Asset = { id: string; name: string; kind: string; status: string; current_version_id?: string | null };
+  type Asset = {
+    id: string;
+    project_id: string;
+    folder_id: string | null;
+    name: string;
+    kind: string;
+    status: string;
+    current_version_id?: string | null;
+    created_at: number;
+    updated_at: number;
+  };
   type Project = { id: string; name: string; palette: string; status: string };
   type Folder = { id: string; parent_id: string | null; name: string };
   type TreeNode = { folder: Folder; childIds: string[] | null; expanded: boolean };
   type UploadItem = {
+    key: number;
     file: File;
+    relativePath: string;
     sessionId: string | null;
-    progress: number;
+    bytes: number;
+    rate: number;
     status: 'queued' | 'uploading' | 'failed' | 'quarantined' | 'done';
     error: string;
+    /* Upload-time version stacking: when set, the finished upload becomes a
+       new version of this asset instead of a new asset. */
+    versionOf: string | null;
+    carryForward: boolean;
   };
 
   let project = $state<Project | null>(null);
   let assets = $state<Asset[]>([]);
+  let nextCursor = $state<string | null>(null);
+  let loadingMore = $state(false);
   let error = $state('');
+  let listError = $state('');
   let queue = $state<UploadItem[]>([]);
   let uploading = $state(false);
+  let dropActive = $state(false);
+  let nextKey = 0;
 
   /* Folder tree (phase-0 T20). Children load lazily per folder; 'root' is the
      synthetic all-assets row. */
@@ -35,32 +74,46 @@
   let dragging = $state<string | null>(null);
 
   const projectId = $derived(page.params.id);
+  const wash = $derived(washFor(project?.palette));
 
-  /* One grammar: vertical, dark anchor at top, light terminal at bottom.
-     Stops follow mockups/projects.html where the mockup defines the wash. */
-  const WASHES: Record<string, string> = {
-    kuwanomi: 'linear-gradient(180deg, #3d1c2a 0%, var(--kuwanomi-a) 34%, #5a7ba0 76%, var(--kuwanomi-b) 112%)',
-    sakinezu: 'linear-gradient(180deg, var(--sakinezu-b) 0%, var(--sakinezu-a) 70%, #55696a 110%)',
-    shinai: 'linear-gradient(180deg, var(--shinai-a) 0%, var(--shinai-m) 55%, var(--shinai-b) 105%)',
-    yorukou: 'linear-gradient(180deg, var(--yorukou-a) 0%, var(--yorukou-m) 62%, var(--yorukou-b) 108%)',
-    tetsukon: 'linear-gradient(180deg, #16283a 0%, var(--tetsukon-a) 40%, var(--tetsukon-m) 78%, var(--tetsukon-b) 116%)',
-    ebicha: 'linear-gradient(180deg, var(--ebicha-a) 0%, var(--ebicha-m) 55%, var(--ebicha-b) 108%)',
-    sumimai: 'linear-gradient(180deg, var(--sumimai-a) 0%, var(--sumimai-m) 58%, var(--sumimai-b) 108%)',
-    yoai: 'linear-gradient(180deg, var(--yoai-a) 0%, var(--yoai-m) 55%, var(--yoai-b) 105%)',
-    kachitetsu: 'linear-gradient(180deg, var(--kachitetsu-a) 0%, var(--kachitetsu-m) 55%, var(--kachitetsu-b) 105%)',
-    mokutan: 'linear-gradient(180deg, var(--mokutan-a) 0%, var(--mokutan-m) 55%, var(--mokutan-b) 105%)'
-  };
-  const wash = $derived(WASHES[project?.palette ?? ''] ?? WASHES.sumimai);
+  const media = createMediaCache();
+  const observeMedia = media.observe;
 
   const loadAssets = async (id: string): Promise<void> => {
     const folder = selectedFolder;
-    const suffix = folder ? `?folder_id=${encodeURIComponent(folder)}` : '';
+    const suffix = folder ? `&folder_id=${encodeURIComponent(folder)}` : '';
     try {
-      const items = (await api<{ items: Asset[] }>(`/api/v1/projects/${id}/assets${suffix}`)).items;
+      const loaded = await api<{ items: Asset[]; next_cursor: string | null }>(
+        `/api/v1/projects/${id}/assets?limit=100${suffix}`
+      );
       if (id !== projectId || folder !== selectedFolder) return;
-      assets = items;
+      assets = loaded.items;
+      nextCursor = loaded.next_cursor;
+      selected = selected.filter((entry) => loaded.items.some((asset) => asset.id === entry));
     } catch {
       /* Keep whatever list we had; the page error covers hard failures. */
+    }
+  };
+
+  const loadMoreAssets = async (): Promise<void> => {
+    const id = projectId;
+    const cursor = nextCursor;
+    if (!id || !cursor || loadingMore) return;
+    loadingMore = true;
+    const folder = selectedFolder;
+    const suffix = folder ? `&folder_id=${encodeURIComponent(folder)}` : '';
+    try {
+      const loaded = await api<{ items: Asset[]; next_cursor: string | null }>(
+        `/api/v1/projects/${id}/assets?limit=100&cursor=${encodeURIComponent(cursor)}${suffix}`
+      );
+      if (id !== projectId || folder !== selectedFolder) return;
+      const known = new Set(assets.map((asset) => asset.id));
+      assets = [...assets, ...loaded.items.filter((asset) => !known.has(asset.id))];
+      nextCursor = loaded.next_cursor;
+    } catch (caught) {
+      listError = messageFrom(caught, 'More assets could not be loaded.');
+    } finally {
+      loadingMore = false;
     }
   };
 
@@ -84,9 +137,10 @@
   };
 
   const load = async (id: string): Promise<void> => {
-    project = null; assets = []; error = ''; queue = [];
+    project = null; assets = []; nextCursor = null; error = ''; listError = ''; queue = [];
     nodes = {}; rootIds = []; selectedFolder = null; focusedRow = 'root';
     renaming = null; treeError = ''; newFolderName = '';
+    selected = []; anchor = null; batch = { running: false, label: '', done: 0, total: 0, errors: [] };
     try {
       const loaded = await api<Project>(`/api/v1/projects/${id}`);
       if (id !== projectId) return;
@@ -106,6 +160,60 @@
   $effect(() => {
     const id = projectId;
     if (id) void load(id);
+  });
+
+  /* ---- live updates (project SSE) ---- */
+
+  const refreshAsset = async (assetId: string): Promise<void> => {
+    try {
+      const asset = await api<Asset>(`/api/v1/assets/${assetId}`);
+      assets = assets.map((entry) => (entry.id === assetId ? asset : entry));
+      media.refresh(asset);
+    } catch {
+      /* The row keeps its last known state. */
+    }
+  };
+
+  const onProjectEvent = (id: string, event: ProjectEvent): void => {
+    const payload = event.payload;
+    const assetId = typeof payload.asset_id === 'string' ? payload.asset_id : null;
+    if (!assetId) return;
+    if (event.type === 'asset.created') {
+      void (async () => {
+        if (assets.some((asset) => asset.id === assetId)) return;
+        try {
+          const asset = await api<Asset>(`/api/v1/assets/${assetId}`);
+          if (id !== projectId || asset.project_id !== id) return;
+          if (selectedFolder && asset.folder_id !== selectedFolder) return;
+          if (assets.some((entry) => entry.id === assetId)) return;
+          assets = [asset, ...assets];
+        } catch {
+          /* A later refresh picks it up. */
+        }
+      })();
+    } else if (event.type === 'version.transcode') {
+      const status = typeof payload.status === 'string' ? payload.status : null;
+      if (status) media.setTranscodeStatus(assetId, status);
+      if (status === 'ready') {
+        const known = assets.find((asset) => asset.id === assetId);
+        media.refresh(known ?? { id: assetId });
+      }
+    } else if (event.type === 'asset.version_created') {
+      void refreshAsset(assetId);
+    } else if (event.type === 'version.probed') {
+      const known = assets.find((asset) => asset.id === assetId);
+      if (known) media.refresh(known);
+    }
+  };
+
+  $effect(() => {
+    const id = projectId;
+    if (!id) return;
+    return projectEvents(
+      id,
+      ['asset.created', 'asset.version_created', 'version.transcode', 'version.probed'],
+      (event) => onProjectEvent(id, event)
+    );
   });
 
   /* ---- tree rows and keyboard ---- */
@@ -150,6 +258,8 @@
 
   const select = async (id: string | null): Promise<void> => {
     selectedFolder = id;
+    selected = [];
+    anchor = null;
     if (id) await expand(id);
     const project_ = projectId;
     if (project_) await loadAssets(project_);
@@ -338,83 +448,274 @@
     selectedFolder ? (nodes[selectedFolder]?.folder.name ?? 'Folder') : 'All assets'
   );
 
-  /* ---- uploads ---- */
+  /* ---- view mode, sorting, selection ---- */
 
-  const chooseFiles = (event: Event): void => {
-    const files = (event.currentTarget as HTMLInputElement).files;
-    if (!files) return;
-    const additions: UploadItem[] = [];
-    for (const file of files) {
-      additions.push({ file, sessionId: null, progress: 0, status: 'queued', error: '' });
+  const VIEW_KEY = 'onelight.assets.view';
+  const initialView = (): 'grid' | 'list' =>
+    typeof localStorage !== 'undefined' && localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'grid';
+  let view = $state<'grid' | 'list'>(initialView());
+  const setView = (next: 'grid' | 'list'): void => {
+    view = next;
+    try {
+      localStorage.setItem(VIEW_KEY, next);
+    } catch {
+      /* Private mode: the toggle still works for this visit. */
     }
-    queue = [...queue, ...additions];
-    (event.currentTarget as HTMLInputElement).value = '';
   };
 
-  /* Resumable upload: the session id is kept on the item, so a retry reuses
-     the same session, lists its persisted parts, skips completed part numbers,
-     and continues from where the failure happened. */
+  type SortKey = 'name' | 'status' | 'created_at' | 'updated_at';
+  let sortKey = $state<SortKey>('created_at');
+  let sortDir = $state<1 | -1>(-1);
+  const sortBy = (key: SortKey): void => {
+    if (sortKey === key) {
+      sortDir = sortDir === 1 ? -1 : 1;
+    } else {
+      sortKey = key;
+      sortDir = key === 'name' || key === 'status' ? 1 : -1;
+    }
+  };
+  /* Client-side sort over the pages loaded so far; unloaded pages join the
+     order as they arrive via Load more. */
+  const sortedAssets = $derived.by(() => {
+    const list = [...assets];
+    list.sort((a, b) => {
+      const left = a[sortKey];
+      const right = b[sortKey];
+      const compared =
+        typeof left === 'string' && typeof right === 'string'
+          ? left.localeCompare(right, undefined, { sensitivity: 'base' })
+          : Number(left) - Number(right);
+      return compared * sortDir || a.id.localeCompare(b.id);
+    });
+    return list;
+  });
+  const displayed = $derived(view === 'grid' ? assets : sortedAssets);
+
+  let selected = $state<string[]>([]);
+  let anchor = $state<string | null>(null);
+  const isSelected = (id: string): boolean => selected.includes(id);
+
+  const handleSelect = (event: MouseEvent | KeyboardEvent, id: string): void => {
+    if (event.shiftKey && anchor) {
+      const order = displayed.map((asset) => asset.id);
+      const from = order.indexOf(anchor);
+      const to = order.indexOf(id);
+      if (from >= 0 && to >= 0) {
+        const [low, high] = from < to ? [from, to] : [to, from];
+        selected = order.slice(low, high + 1);
+        return;
+      }
+    }
+    if (event.ctrlKey || event.metaKey) {
+      selected = isSelected(id) ? selected.filter((entry) => entry !== id) : [...selected, id];
+      anchor = id;
+      return;
+    }
+    selected = isSelected(id) && selected.length === 1 ? [] : [id];
+    anchor = id;
+  };
+
+  const toggleAll = (): void => {
+    selected = selected.length === displayed.length ? [] : displayed.map((asset) => asset.id);
+  };
+
+  const assetHref = (id: string): string => `/projects/${projectId}/assets/${id}`;
+
+  const onItemKeydown = (event: KeyboardEvent, id: string): void => {
+    if (event.key === ' ') {
+      event.preventDefault();
+      handleSelect(event, id);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      void goto(assetHref(id));
+    }
+  };
+
+  const STATUS_LABEL: Record<string, string> = {
+    in_review: 'In review',
+    approved: 'Approved',
+    changes_requested: 'Changes requested'
+  };
+  const transcodeLabel = (status: string | null): string | null =>
+    status === 'pending' || status === 'processing'
+      ? 'Processing'
+      : status === 'failed'
+        ? 'Transcode failed'
+        : null;
+
+  /* ---- batch operations ---- */
+
+  let batch = $state<{
+    running: boolean;
+    label: string;
+    done: number;
+    total: number;
+    errors: Array<{ name: string; message: string }>;
+  }>({ running: false, label: '', done: 0, total: 0, errors: [] });
+  let moveOpen = $state(false);
+  let moveTarget = $state('');
+  let folderChoices = $state<Array<{ id: string; name: string; depth: number }>>([]);
+  let approvalChoice = $state<'none' | 'in_review' | 'approved' | 'changes_requested'>('approved');
+
+  const nameOf = (id: string): string => assets.find((asset) => asset.id === id)?.name ?? id;
+
+  const runBatch = async (
+    label: string,
+    ids: string[],
+    run: (id: string) => Promise<void>
+  ): Promise<void> => {
+    if (batch.running) return;
+    batch = { running: true, label, done: 0, total: ids.length, errors: [] };
+    for (const id of ids) {
+      try {
+        await run(id);
+      } catch (caught) {
+        batch.errors.push({ name: nameOf(id), message: messageFrom(caught, 'The operation failed.') });
+      }
+      batch.done += 1;
+    }
+    batch = { ...batch, running: false };
+  };
+
+  const openMove = async (): Promise<void> => {
+    const id = projectId;
+    if (!id) return;
+    moveOpen = true;
+    moveTarget = '';
+    /* The move picker needs the whole tree, not just expanded branches. */
+    const collected: Array<{ id: string; name: string; depth: number }> = [];
+    const walk = async (parent: string | null, depth: number): Promise<void> => {
+      const suffix = parent ? `?parent_id=${encodeURIComponent(parent)}` : '';
+      const children = (await api<{ items: Folder[] }>(`/api/v1/projects/${id}/folders${suffix}`)).items;
+      for (const folder of children) {
+        collected.push({ id: folder.id, name: folder.name, depth });
+        await walk(folder.id, depth + 1);
+      }
+    };
+    try {
+      await walk(null, 0);
+      folderChoices = collected;
+    } catch (caught) {
+      error = messageFrom(caught, 'Folders could not be loaded.');
+      moveOpen = false;
+    }
+  };
+
+  const applyMove = async (): Promise<void> => {
+    const ids = [...selected];
+    moveOpen = false;
+    await runBatch('Moving', ids, async (id) => {
+      await apiPatch(`/api/v1/assets/${id}`, { folder_id: moveTarget || null });
+    });
+    selected = [];
+    const id = projectId;
+    if (id) await loadAssets(id);
+  };
+
+  const applyApproval = async (): Promise<void> => {
+    const ids = [...selected];
+    await runBatch('Setting status', ids, async (id) => {
+      const updated = await apiPatch<Asset>(`/api/v1/assets/${id}/approval`, { status: approvalChoice });
+      assets = assets.map((asset) => (asset.id === id ? { ...asset, status: updated.status } : asset));
+    });
+  };
+
+  const trashSelected = async (): Promise<void> => {
+    const ids = [...selected];
+    if (!confirm(`Move ${ids.length === 1 ? nameOf(ids[0]) : `${ids.length} assets`} to trash?`)) return;
+    await runBatch('Trashing', ids, async (id) => {
+      await apiPost(`/api/v1/assets/${id}/trash`);
+    });
+    selected = [];
+    const id = projectId;
+    if (id) await loadAssets(id);
+  };
+
+  /* ---- uploads ---- */
+
+  const enqueue = (files: PendingFile[]): void => {
+    const additions = files.map(({ file, relativePath }) => ({
+      key: nextKey++,
+      file,
+      relativePath,
+      sessionId: null,
+      bytes: 0,
+      rate: 0,
+      status: 'queued' as const,
+      error: '',
+      versionOf: null,
+      carryForward: true
+    }));
+    queue = [...queue, ...additions];
+  };
+
+  const chooseFiles = (event: Event): void => {
+    const input = event.currentTarget as HTMLInputElement;
+    if (input.files) enqueue(filesFromInput(input.files));
+    input.value = '';
+  };
+
+  const onQueueDrop = async (event: DragEvent): Promise<void> => {
+    /* Folder-tree drags carry no files; leave them to the tree. */
+    if (dragging || !event.dataTransfer?.types.includes('Files')) return;
+    event.preventDefault();
+    dropActive = false;
+    enqueue(await filesFromDataTransfer(event.dataTransfer));
+  };
+
+  const onQueueDragOver = (event: DragEvent): void => {
+    if (dragging || !event.dataTransfer?.types.includes('Files')) return;
+    event.preventDefault();
+    dropActive = true;
+  };
+
+  /* Resumable upload: the session id stays on the item, so a retry reuses the
+     session, skips completed parts, and continues from the failure. Files run
+     one at a time, four parts in parallel inside each file. */
   const uploadOne = async (item: UploadItem): Promise<void> => {
-    if (!projectId || item.status === 'uploading' || item.status === 'done' || item.status === 'quarantined') return;
+    const id = projectId;
+    if (!id || item.status === 'uploading' || item.status === 'done' || item.status === 'quarantined') return;
     item.status = 'uploading';
     item.error = '';
     try {
-      if (!item.sessionId) {
-        const created = await apiPost<{ upload: { id: string } }>('/api/v1/uploads', {
-          project_id: projectId,
-          filename: item.file.name,
-          relative_path: '',
-          size: item.file.size
-        });
-        item.sessionId = created.upload.id;
-      }
-      const sessionId = item.sessionId;
-      const multipart = await apiPost<{ upload: { status: string }; part_size?: number }>(`/api/v1/uploads/${sessionId}/multipart`);
-      if (multipart.upload.status !== 'completed') {
-        const partSize = multipart.part_size;
-        if (!partSize) throw new Error('The upload session did not return a part size.');
-        const existing = (await api<{ items: Array<{ part_no: number; etag: string }> }>(`/api/v1/uploads/${sessionId}/parts`)).items;
-        const parts: Array<{ part_no: number; etag: string }> = [];
-        const count = Math.max(1, Math.ceil(item.file.size / partSize));
-        for (let partNo = 1; partNo <= count; partNo += 1) {
-          const known = existing.find((part) => part.part_no === partNo && part.etag);
-          if (known) {
-            parts.push({ part_no: known.part_no, etag: known.etag });
-          } else {
-            const start = (partNo - 1) * partSize;
-            const response = await fetch(`/api/v1/uploads/${sessionId}/parts/${partNo}`, {
-              method: 'PUT',
-              headers: { 'content-type': 'application/octet-stream' },
-              body: item.file.slice(start, Math.min(item.file.size, start + partSize))
-            });
-            if (!response.ok) throw new Error(`Part ${partNo} could not be uploaded.`);
-            parts.push({ part_no: partNo, etag: response.headers.get('etag') ?? '' });
-          }
-          item.progress = Math.round((partNo / count) * 90);
+      const sessionId = await uploadFile({
+        projectId: id,
+        file: item.file,
+        relativePath: item.relativePath,
+        sessionId: item.sessionId,
+        onSession: (session) => {
+          item.sessionId = session;
+        },
+        onProgress: (progress) => {
+          item.bytes = progress.bytes;
+          item.rate = progress.rate;
         }
-        try {
-          await apiPost(`/api/v1/uploads/${sessionId}/complete`, { parts });
-        } catch (caught) {
-          const message = messageFrom(caught, 'Upload completion failed.');
-          if (message.toLowerCase().includes('checksum')) {
-            item.status = 'quarantined';
-            item.error = 'Checksum mismatch: the upload is quarantined and cannot be resumed.';
-            return;
-          }
-          throw caught;
-        }
-      }
-      item.progress = 95;
-      /* New assets land in the folder selected in the tree. */
-      await apiPost(`/api/v1/projects/${projectId}/assets`, {
-        upload_id: sessionId,
-        name: item.file.name,
-        ...(selectedFolder ? { folder_id: selectedFolder } : {})
       });
-      item.progress = 100;
+      item.sessionId = sessionId;
+      if (item.versionOf) {
+        await createAssetVersion(item.versionOf, {
+          upload_id: sessionId,
+          name: item.file.name,
+          carry_forward: item.carryForward
+        });
+        await refreshAsset(item.versionOf);
+      } else {
+        await apiPost(`/api/v1/projects/${id}/assets`, {
+          upload_id: sessionId,
+          name: item.file.name,
+          ...(selectedFolder ? { folder_id: selectedFolder } : {})
+        });
+        await loadAssets(id);
+      }
+      item.rate = 0;
       item.status = 'done';
-      await loadAssets(projectId);
     } catch (caught) {
+      item.rate = 0;
+      if (caught instanceof UploadQuarantinedError) {
+        item.status = 'quarantined';
+        item.error = caught.message;
+        return;
+      }
       item.status = 'failed';
       item.error = messageFrom(caught, 'Upload failed.');
     }
@@ -448,13 +749,31 @@
   };
 
   const hasPending = $derived(queue.some((item) => item.status === 'queued' || item.status === 'failed'));
+  const overall = $derived.by(() => {
+    let total = 0;
+    let bytes = 0;
+    let rate = 0;
+    let done = 0;
+    for (const item of queue) {
+      total += item.file.size;
+      bytes += item.status === 'done' ? item.file.size : item.bytes;
+      if (item.status === 'uploading') rate += item.rate;
+      if (item.status === 'done') done += 1;
+    }
+    return { total, bytes, rate, done, count: queue.length };
+  });
+  const versionOptions = $derived(assets.map((asset) => ({ id: asset.id, name: asset.name })));
 </script>
 
 <svelte:head><title>{project?.name ?? 'Project'} | Onelight</title></svelte:head>
 
 <main class="room">
   <header class="wash" style={`background-image: ${wash};`}>
-    <a href="/">Projects</a>
+    <div class="washrow">
+      <a href="/">Projects</a>
+      <span class="grow"></span>
+      <a href={`/projects/${projectId}/shares`}>Shares</a>
+    </div>
     <p class="eyebrow">{project?.palette ?? ''}</p>
     <h1>{project?.name ?? 'Project'}</h1>
   </header>
@@ -561,46 +880,266 @@
       </aside>
 
       <section class="main">
-        <form class="upload" onsubmit={uploadAll}>
-          <label class="file">Add media to {selectedName} <input type="file" multiple onchange={chooseFiles} /></label>
-          <button type="submit" disabled={!hasPending || uploading}>{uploading ? 'Uploading' : 'Upload'}</button>
-          {#if queue.some((item) => item.status === 'done')}
-            <button type="button" class="quiet" onclick={clearFinished}>Clear finished</button>
+        <section
+          class="uploader"
+          class:dropactive={dropActive}
+          aria-label="Upload"
+          ondragover={onQueueDragOver}
+          ondragleave={() => (dropActive = false)}
+          ondrop={onQueueDrop}
+        >
+          <form class="upload" onsubmit={uploadAll}>
+            <span class="upload-label">Add media to {selectedName}</span>
+            <label class="filebtn">Add files
+              <input type="file" multiple onchange={chooseFiles} />
+            </label>
+            <label class="filebtn">Add a folder
+              <input type="file" webkitdirectory multiple onchange={chooseFiles} />
+            </label>
+            <button type="submit" disabled={!hasPending || uploading}>{uploading ? 'Uploading' : 'Upload'}</button>
+            {#if queue.some((item) => item.status === 'done')}
+              <button type="button" class="quiet" onclick={clearFinished}>Clear finished</button>
+            {/if}
+          </form>
+          <p class="hint">Drop files or folders anywhere in this panel. Folder structure is kept as each file's relative path.</p>
+          {#if queue.length > 1}
+            <p class="summary tc" aria-live="polite">
+              {overall.done} of {overall.count} files, {formatBytes(overall.bytes)} of {formatBytes(overall.total)}{overall.rate > 0 ? `, ${formatRate(overall.rate)}` : ''}
+            </p>
           {/if}
-        </form>
-        {#if queue.length > 0}
-          <ul class="queue" aria-label="Upload queue">
-            {#each queue as item (item.file)}
-              <li class={`q-${item.status}`}>
-                <span class="name">{item.file.name}</span>
-                <span class="bar" role="progressbar" aria-valuenow={item.progress} aria-valuemin="0" aria-valuemax="100"><span style={`width: ${item.progress}%;`}></span></span>
-                <span class="state">
-                  {#if item.status === 'queued'}Waiting
-                  {:else if item.status === 'uploading'}{item.progress}%
-                  {:else if item.status === 'done'}Done
-                  {:else if item.status === 'quarantined'}Quarantined
-                  {:else}Failed{/if}
-                </span>
-                {#if item.status === 'failed'}
-                  <button type="button" class="quiet" onclick={() => retry(item)}>Resume</button>
-                {/if}
-                {#if item.error}<span class="error">{item.error}</span>{/if}
-              </li>
-            {/each}
-          </ul>
-        {/if}
-        <section aria-label="Assets" class="assets">
-          {#if assets.length === 0}
-            <p class="empty">{selectedFolder ? 'No assets in this folder.' : 'No assets yet. Upload media to start a review.'}</p>
+          {#if queue.length > 0}
+            <ul class="queue" aria-label="Upload queue">
+              {#each queue as item (item.key)}
+                <li class={`q-${item.status}`}>
+                  <span class="qname">
+                    {item.file.name}
+                    {#if item.relativePath && item.relativePath !== item.file.name}
+                      <span class="qpath">{item.relativePath}</span>
+                    {/if}
+                  </span>
+                  <span class="stackpick">
+                    <AssetSelect
+                      options={versionOptions}
+                      bind:value={item.versionOf}
+                      label={`New version of, for ${item.file.name}`}
+                      placeholder="New version of..."
+                      disabled={item.status !== 'queued' && item.status !== 'failed'}
+                    />
+                    {#if item.versionOf}
+                      <label class="carry">
+                        <input type="checkbox" bind:checked={item.carryForward} disabled={item.status !== 'queued' && item.status !== 'failed'} />
+                        Carry comments forward
+                      </label>
+                    {/if}
+                  </span>
+                  <span
+                    class="bar"
+                    role="progressbar"
+                    aria-valuenow={item.file.size > 0 ? Math.round((item.bytes / item.file.size) * 100) : 0}
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                  ><span style={`width: ${item.file.size > 0 ? (item.bytes / item.file.size) * 100 : 0}%;`}></span></span>
+                  <span class="state tc">
+                    {#if item.status === 'queued'}Waiting
+                    {:else if item.status === 'uploading'}{formatBytes(item.bytes)} of {formatBytes(item.file.size)}{item.rate > 0 ? `, ${formatRate(item.rate)}` : ''}
+                    {:else if item.status === 'done'}Done
+                    {:else if item.status === 'quarantined'}Quarantined
+                    {:else}Failed{/if}
+                  </span>
+                  {#if item.status === 'failed'}
+                    <button type="button" class="quiet" onclick={() => retry(item)}>Resume</button>
+                  {/if}
+                  {#if item.error}<span class="error">{item.error}</span>{/if}
+                </li>
+              {/each}
+            </ul>
           {/if}
-          {#each assets as asset (asset.id)}
-            <a class="asset" href={`/projects/${projectId}/assets/${asset.id}`}>
-              <span class="asset-name">{asset.name}</span>
-              <span class="asset-meta">{asset.kind}</span>
-              <span class="asset-meta">{asset.status}</span>
-            </a>
-          {/each}
         </section>
+
+        <div class="browser-bar">
+          <h2 class="browser-title">{selectedName}</h2>
+          <span class="grow"></span>
+          <div class="views" role="group" aria-label="View mode">
+            <button type="button" class="viewbtn" aria-pressed={view === 'grid'} onclick={() => setView('grid')}>Grid</button>
+            <button type="button" class="viewbtn" aria-pressed={view === 'list'} onclick={() => setView('list')}>List</button>
+          </div>
+        </div>
+
+        {#if selected.length > 0 || batch.running || batch.errors.length > 0}
+          <div class="batchbar" aria-live="polite">
+            {#if batch.running}
+              <span class="tc">{batch.label} {batch.done} of {batch.total}</span>
+            {:else if selected.length > 0}
+              <span class="tc">{selected.length} selected</span>
+              <button type="button" class="quiet" onclick={() => void openMove()}>Move to folder</button>
+              <span class="approval">
+                <select bind:value={approvalChoice} aria-label="Approval status to apply">
+                  <option value="none">No status</option>
+                  <option value="in_review">In review</option>
+                  <option value="approved">Approved</option>
+                  <option value="changes_requested">Changes requested</option>
+                </select>
+                <button type="button" class="quiet" onclick={() => void applyApproval()}>Set status</button>
+              </span>
+              <button type="button" class="quiet danger" onclick={() => void trashSelected()}>Trash</button>
+              <button type="button" class="quiet" onclick={() => { selected = []; anchor = null; }}>Clear</button>
+            {/if}
+            {#if !batch.running && batch.errors.length > 0}
+              <ul class="batch-errors">
+                {#each batch.errors as failure, index (index)}
+                  <li class="error">{failure.name}: {failure.message}</li>
+                {/each}
+              </ul>
+              <button type="button" class="quiet" onclick={() => (batch = { ...batch, errors: [] })}>Dismiss</button>
+            {/if}
+          </div>
+          {#if moveOpen}
+            <div class="movebar">
+              <label>Destination
+                <select bind:value={moveTarget} aria-label="Destination folder">
+                  <option value="">All assets (no folder)</option>
+                  {#each folderChoices as choice (choice.id)}
+                    <option value={choice.id}>{String.fromCharCode(160).repeat(choice.depth * 3)}{choice.name}</option>
+                  {/each}
+                </select>
+              </label>
+              <button type="button" class="quiet" onclick={() => void applyMove()}>Move {selected.length}</button>
+              <button type="button" class="quiet" onclick={() => (moveOpen = false)}>Cancel</button>
+            </div>
+          {/if}
+        {/if}
+
+        {#snippet sortHeader(key: SortKey, label: string)}
+          <th aria-sort={sortKey === key ? (sortDir === 1 ? 'ascending' : 'descending') : undefined}>
+            <button type="button" class="colsort" onclick={() => sortBy(key)}>
+              {label}
+              {#if sortKey === key}
+                <svg class="dir" class:desc={sortDir === -1} viewBox="0 0 8 8" width="8" height="8" aria-hidden="true"><path d="M4 2l3 4H1z" fill="currentColor" /></svg>
+              {/if}
+            </button>
+          </th>
+        {/snippet}
+
+        {#if displayed.length === 0}
+          <p class="empty">{selectedFolder ? 'No assets in this folder. Drop media above to fill it.' : 'No assets yet. Upload media to start a review.'}</p>
+        {:else if view === 'grid'}
+          <div class="grid" role="listbox" aria-multiselectable="true" aria-label="Assets">
+            {#each displayed as asset (asset.id)}
+              {@const entry = media.entries[asset.id]}
+              {@const detail = entry?.media}
+              <div
+                class="card"
+                class:picked={isSelected(asset.id)}
+                role="option"
+                aria-selected={isSelected(asset.id)}
+                tabindex="0"
+                use:observeMedia={asset}
+                onclick={(event) => handleSelect(event, asset.id)}
+                ondblclick={() => void goto(assetHref(asset.id))}
+                onkeydown={(event) => onItemKeydown(event, asset.id)}
+              >
+                <ScrubThumb
+                  poster={detail?.posterUrl ?? null}
+                  sprite={detail?.spriteUrl ?? null}
+                  spriteVtt={detail?.spriteVttUrl ?? null}
+                  alt=""
+                />
+                <div class="card-line">
+                  <a
+                    class="card-name"
+                    href={assetHref(asset.id)}
+                    onclick={(event) => event.stopPropagation()}
+                  >{asset.name}</a>
+                  {#if detail && detail.versionCount > 1}
+                    <span class="vbadge tc" title={`${detail.versionCount} versions`}>v{detail.versionCount}</span>
+                  {/if}
+                </div>
+                <div class="card-meta">
+                  {#if STATUS_LABEL[asset.status]}
+                    <span class={`chip s-${asset.status}`}>{STATUS_LABEL[asset.status]}</span>
+                  {/if}
+                  {#if transcodeLabel(detail?.transcodeStatus ?? null)}
+                    <span class="chip t-{detail?.transcodeStatus}">{transcodeLabel(detail?.transcodeStatus ?? null)}</span>
+                  {/if}
+                  <span class="kind">{asset.kind}</span>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <table class="list" aria-label="Assets">
+            <thead>
+              <tr>
+                <th class="sel">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all"
+                    checked={displayed.length > 0 && selected.length === displayed.length}
+                    indeterminate={selected.length > 0 && selected.length < displayed.length}
+                    onchange={toggleAll}
+                  />
+                </th>
+                {@render sortHeader('name', 'Name')}
+                {@render sortHeader('status', 'Status')}
+                <th>Versions</th>
+                {@render sortHeader('created_at', 'Created')}
+                {@render sortHeader('updated_at', 'Updated')}
+              </tr>
+            </thead>
+            <tbody>
+              {#each displayed as asset (asset.id)}
+                {@const entry = media.entries[asset.id]}
+                {@const detail = entry?.media}
+                <tr
+                  class:picked={isSelected(asset.id)}
+                  tabindex="0"
+                  use:observeMedia={asset}
+                  onclick={(event) => handleSelect(event, asset.id)}
+                  ondblclick={() => void goto(assetHref(asset.id))}
+                  onkeydown={(event) => onItemKeydown(event, asset.id)}
+                >
+                  <td class="sel">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${asset.name}`}
+                      checked={isSelected(asset.id)}
+                      onclick={(event) => event.stopPropagation()}
+                      onchange={() => {
+                        selected = isSelected(asset.id)
+                          ? selected.filter((entry_) => entry_ !== asset.id)
+                          : [...selected, asset.id];
+                        anchor = asset.id;
+                      }}
+                    />
+                  </td>
+                  <td class="namecell">
+                    <a href={assetHref(asset.id)} onclick={(event) => event.stopPropagation()}>{asset.name}</a>
+                  </td>
+                  <td>
+                    {#if STATUS_LABEL[asset.status]}
+                      <span class={`chip s-${asset.status}`}>{STATUS_LABEL[asset.status]}</span>
+                    {/if}
+                    {#if transcodeLabel(detail?.transcodeStatus ?? null)}
+                      <span class="chip t-{detail?.transcodeStatus}">{transcodeLabel(detail?.transcodeStatus ?? null)}</span>
+                    {/if}
+                  </td>
+                  <td class="tc">{detail ? detail.versionCount : ''}</td>
+                  <td class="tc" title={whenAbsolute(asset.created_at)}>{whenRelative(asset.created_at)}</td>
+                  <td class="tc" title={whenAbsolute(asset.updated_at)}>{whenRelative(asset.updated_at)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+          <p class="hint">Sorting orders the {assets.length} loaded assets; load more to include the rest.</p>
+        {/if}
+        {#if nextCursor}
+          <button type="button" class="quiet more" onclick={() => void loadMoreAssets()} disabled={loadingMore}>
+            {loadingMore ? 'Loading' : 'Load more'}
+          </button>
+        {/if}
+        {#if displayed.length > 0}
+          <p class="hint">Click selects. Ctrl-click adds, Shift-click extends, Space selects, Enter or the name opens.</p>
+        {/if}
       </section>
     </div>
   {/if}
@@ -611,11 +1150,13 @@
      Separation by value step and space, not borders. */
   .room { min-height: 100vh; background: var(--ink-000); color: var(--ink-text); font-size: var(--text-13); }
   .wash { padding: var(--pad-3) var(--pad-4) var(--pad-4); background-size: 100% 300%; background-position: 50% 0%; }
-  .wash a { color: rgba(250, 248, 244, 0.72); font-size: var(--text-13); text-decoration: none; }
-  .wash a:hover { color: rgba(250, 248, 244, 0.96); }
+  .washrow { display: flex; gap: 16px; }
+  .washrow a { color: rgba(250, 248, 244, 0.72); font-size: var(--text-13); text-decoration: none; }
+  .washrow a:hover { color: rgba(250, 248, 244, 0.96); }
+  .grow { flex: 1; }
   .eyebrow { margin: var(--pad-3) 0 0; color: rgba(250, 248, 244, 0.62); font-size: var(--text-13); font-weight: 500; }
   h1 { margin: 4px 0 0; font-family: var(--font-display); font-size: clamp(2rem, 5vw, var(--text-56)); font-weight: 700; letter-spacing: -0.02em; color: rgba(250, 248, 244, 0.96); }
-  .body { padding: var(--pad-3) var(--pad-4) var(--pad-4); display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--pad-4); max-width: 1200px; align-items: start; }
+  .body { padding: var(--pad-3) var(--pad-4) var(--pad-4); display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--pad-4); max-width: 1400px; align-items: start; }
   @media (max-width: 760px) { .body { grid-template-columns: 1fr; } }
 
   /* ---- folder tree pane ---- */
@@ -633,25 +1174,39 @@
   .caret.open svg { transform: rotate(90deg); }
   .acts { display: none; gap: 2px; flex: none; }
   .row:hover .acts, .row:focus-within .acts { display: inline-flex; }
-  .act { border: 0; border-radius: 2px; background: none; color: var(--ink-text-dim); padding: 2px 6px; font-size: var(--text-12); }
+  .act { border: 0; border-radius: 2px; background: none; color: var(--ink-text-dim); padding: 2px 6px; font-size: var(--text-13); }
   .act:hover { background: var(--ink-300); color: var(--ink-text); }
   .rename { flex: 1; min-width: 0; border: 0; border-radius: 2px; background: var(--ink-300); color: var(--ink-text); padding: 3px 6px; font-size: var(--text-13); }
   .newfolder { display: flex; gap: 6px; margin-top: 14px; }
   .newfolder input { flex: 1; min-width: 0; border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 10px; font-size: var(--text-13); }
   .newfolder input::placeholder { color: var(--ink-text-dim); }
-  .hint { margin: 12px 0 0; color: var(--ink-text-dim); font-size: var(--text-12); }
+  .hint { margin: 12px 0 0; color: var(--ink-text-dim); font-size: var(--text-13); }
 
-  /* ---- uploads and assets ---- */
-  .upload { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; }
-  .upload .file { display: grid; gap: 8px; color: var(--ink-text-dim); }
-  button { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 9px 16px; font-size: var(--text-12); font-weight: 600; }
+  /* ---- uploader ---- */
+  .uploader { border-radius: var(--radius-lg); padding: 14px; margin: -14px -14px var(--pad-2); }
+  .uploader.dropactive { background: var(--ink-100); }
+  .upload { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .upload-label { color: var(--ink-text-dim); margin-right: 4px; }
+  /* The native file input stays in the tree for keyboard and screen reader
+     use but is visually replaced by the label styled as a quiet button. */
+  .filebtn { position: relative; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 9px 16px; font-size: var(--text-13); font-weight: 500; cursor: pointer; }
+  .filebtn:hover { background: var(--ink-300); }
+  .filebtn:focus-within { outline: 1px solid var(--accent); outline-offset: 2px; }
+  .filebtn input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  button { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 9px 16px; font-size: var(--text-13); font-weight: 600; }
   button:hover { background: var(--accent-bright); }
   button:disabled { opacity: 0.5; cursor: default; }
   button.quiet { background: var(--ink-200); color: var(--ink-text); font-weight: 500; }
   button.quiet:hover { background: var(--ink-300); }
-  .queue { list-style: none; margin: var(--pad-2) 0 0; padding: 0; display: grid; gap: 2px; }
+  button.danger { color: var(--warn); }
+  .summary { margin: 12px 0 0; color: var(--ink-text-dim); font-variant-numeric: tabular-nums; }
+  .queue { list-style: none; margin: var(--pad) 0 0; padding: 0; display: grid; gap: 2px; }
   .queue li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--radius); background: var(--ink-100); }
-  .queue .name { flex: 1; min-width: 160px; font-weight: 500; }
+  .qname { flex: 1; min-width: 160px; font-weight: 500; display: grid; gap: 2px; }
+  .qpath { color: var(--ink-text-dim); font-size: var(--text-13); font-weight: 400; overflow-wrap: anywhere; }
+  .stackpick { flex: none; width: 220px; display: grid; gap: 6px; }
+  .carry { display: flex; align-items: center; gap: 8px; color: var(--ink-text-dim); font-size: var(--text-13); }
+  .carry input { accent-color: var(--accent); margin: 0; }
   .queue .bar { flex: 2; min-width: 120px; height: 3px; border-radius: 2px; background: var(--ink-200); overflow: hidden; display: block; }
   .queue .bar span { display: block; height: 100%; background: var(--accent); }
   .queue .state { min-width: 80px; color: var(--ink-text-dim); font-variant-numeric: tabular-nums; }
@@ -659,13 +1214,63 @@
   li.q-quarantined .state { color: var(--warn); font-weight: 600; }
   li.q-quarantined { background: var(--ink-200); }
   li.q-failed .state { color: var(--warn); }
-  .assets { display: grid; gap: 2px; margin-top: var(--pad-4); }
-  .asset { display: flex; align-items: baseline; gap: var(--pad-2); padding: 14px 12px; margin: 0 -12px; border-radius: var(--radius); color: var(--ink-text); text-decoration: none; }
-  .asset:hover { background: var(--ink-100); }
-  .asset-name { flex: 1; font-weight: 500; font-size: var(--text-14); }
-  .asset-meta { color: var(--ink-text-dim); font-size: var(--text-12); }
-  .empty { color: var(--ink-text-dim); }
+
+  /* ---- browser chrome ---- */
+  .browser-bar { display: flex; align-items: center; gap: 14px; margin-top: var(--pad-2); }
+  .browser-title { margin: 0; font-size: var(--text-14); font-weight: 600; }
+  .views { display: flex; gap: 2px; }
+  .viewbtn { background: var(--ink-100); color: var(--ink-text-dim); font-weight: 500; padding: 6px 12px; }
+  .viewbtn:hover { background: var(--ink-200); color: var(--ink-text); }
+  .viewbtn[aria-pressed='true'] { background: var(--ink-300); color: var(--ink-text); }
+  .batchbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 12px; padding: 10px 12px; border-radius: var(--radius); background: var(--ink-200); }
+  .batchbar .tc { font-variant-numeric: tabular-nums; font-weight: 500; }
+  .batchbar select, .movebar select { border: 0; border-radius: var(--radius); background: var(--ink-300); color: var(--ink-text); padding: 7px 9px; font-size: var(--text-13); }
+  .approval { display: inline-flex; gap: 6px; align-items: center; }
+  .batch-errors { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; flex-basis: 100%; }
+  .movebar { display: flex; align-items: end; gap: 10px; margin-top: 6px; padding: 10px 12px; border-radius: var(--radius); background: var(--ink-100); }
+  .movebar label { display: grid; gap: 6px; color: var(--ink-text-dim); font-size: var(--text-13); font-weight: 500; min-width: 220px; }
+
+  /* ---- grid ---- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-top: var(--pad-2); }
+  .card { display: grid; gap: 8px; padding: 8px; margin: -8px; border-radius: var(--radius-lg); }
+  .card:hover { background: var(--ink-100); }
+  .card.picked { background: var(--ink-200); }
+  .card:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
+  .card-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .card-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-text); font-weight: 500; font-size: var(--text-13); text-decoration: none; }
+  .card-name:hover { color: var(--accent-bright); }
+  .vbadge { flex: none; padding: 1px 6px; border-radius: 8px; background: var(--ink-300); color: var(--ink-text); font-size: var(--text-12); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .card-meta { display: flex; align-items: center; gap: 8px; min-height: 18px; }
+  .kind { color: var(--ink-text-dim); font-size: var(--text-13); }
+  .chip { padding: 1px 7px; border-radius: 8px; background: var(--ink-200); font-size: var(--text-12); font-weight: 500; }
+  .chip.s-approved { color: var(--ok); }
+  .chip.s-in_review { color: var(--info); }
+  .chip.s-changes_requested { color: var(--note); }
+  .chip.t-pending, .chip.t-processing { color: var(--ink-text-dim); }
+  .chip.t-failed { color: var(--warn); }
+
+  /* ---- list ---- */
+  table.list { width: 100%; border-collapse: collapse; margin-top: var(--pad-2); font-size: var(--text-13); }
+  table.list th { text-align: left; padding: 6px 10px; color: var(--ink-text-dim); font-weight: 500; }
+  table.list th.sel, table.list td.sel { width: 28px; padding-right: 0; }
+  .colsort { background: none; color: var(--ink-text-dim); padding: 0; font-size: var(--text-13); font-weight: 500; display: inline-flex; align-items: center; gap: 5px; }
+  .colsort:hover { background: none; color: var(--ink-text); }
+  .dir { flex: none; }
+  .dir.desc { transform: rotate(180deg); }
+  table.list td { padding: 10px; }
+  table.list tbody tr { border-radius: var(--radius); }
+  table.list tbody tr:nth-child(odd) { background: var(--ink-100); }
+  table.list tbody tr:hover { background: var(--ink-200); }
+  table.list tbody tr.picked { background: var(--ink-300); }
+  table.list tbody tr:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
+  .namecell a { color: var(--ink-text); font-weight: 500; text-decoration: none; }
+  .namecell a:hover { color: var(--accent-bright); }
+  td.tc, .state.tc, .summary.tc { font-variant-numeric: tabular-nums; }
+  input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
+
+  .more { margin-top: var(--pad-2); }
+  .empty { color: var(--ink-text-dim); margin-top: var(--pad-2); }
   .error { color: var(--warn); }
   .page-error { padding: var(--pad-3) var(--pad-4); }
-  button:focus-visible, a:focus-visible, input:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 </style>

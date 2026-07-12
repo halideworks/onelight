@@ -1,4 +1,8 @@
-import { createApp, deliverDueWebhookDeliveries } from "@onelight/api";
+import {
+  buildShareOgTags,
+  createApp,
+  deliverDueWebhookDeliveries,
+} from "@onelight/api";
 import {
   loadConfig,
   Pbkdf2PasswordHasher,
@@ -63,9 +67,29 @@ export default {
       pathname.startsWith("/s/") &&
       (request.headers.get("accept") ?? "").includes("text/html")
     ) {
-      return env.ASSETS.fetch(
+      const shell = await env.ASSETS.fetch(
         new Request(new URL("/index.html", request.url), request),
       );
+      // Server-render Open Graph tags into the shell so link unfurlers,
+      // which never run the SPA, see the share title. Unknown, revoked,
+      // expired, or unresolvable slugs serve the shell untouched.
+      const slug = pathname.split("/")[2];
+      if (!shell.ok || !slug) return shell;
+      let tags: string | null = null;
+      try {
+        tags = await buildShareOgTags(createD1Db(env.DB), slug, env.PUBLIC_URL);
+      } catch {
+        return shell;
+      }
+      if (!tags) return shell;
+      const html = await shell.text();
+      const headIndex = html.indexOf("</head>");
+      if (headIndex === -1) return new Response(html, shell);
+      const headers = new Headers(shell.headers);
+      headers.delete("content-length");
+      const injected =
+        html.slice(0, headIndex) + tags + "\n" + html.slice(headIndex);
+      return new Response(injected, { status: shell.status, headers });
     }
     if (
       env.ASSETS &&

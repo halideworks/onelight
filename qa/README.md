@@ -15,12 +15,17 @@ pnpm qa:fixtures     # synthesize the corpus only (debugging aid)
 
 Requirements: ffmpeg and ffprobe on PATH (or `FFMPEG_PATH`/`FFPROBE_PATH`),
 and Playwright browsers (`pnpm --filter @onelight/qa exec playwright install
-chromium firefox`). When a tool is missing each suite skips with a single
-logged reason and the run exits 0, so `pnpm qa` is safe on any machine.
+chromium firefox webkit`). When a tool is missing each suite skips with a
+single logged reason and the run exits 0, so `pnpm qa` is safe on any
+machine.
 
 CI runs the `media-qc` job (`.github/workflows/ci.yml`) on ubuntu-latest on
-every push and pull request: apt ffmpeg + dejavu fonts, Playwright chromium
-and firefox, then `pnpm qa`. It is independent of the docker job.
+every push and pull request: apt ffmpeg + dejavu fonts + mesa-vulkan-drivers
+(software Vulkan for the HDR tonemap suite), Playwright chromium, firefox,
+and webkit, then `pnpm qa`. It is independent of the docker job. The
+separate `Integration` workflow (`.github/workflows/integration.yml`) builds
+the real compose stack and drives it end to end with
+`scripts/integration-e2e.mjs` (also available as `pnpm integration:e2e`).
 
 ## The fixture corpus
 
@@ -44,6 +49,11 @@ Plus:
 
 - `dropframe-2997.mp4`: 30000/1001 with `-timecode 00:59:55;00
   -write_tmcd on`, exactly as the proxy recipe re-embeds source timecode.
+- `hdr-pq.mp4` and `hdr-hlg.mp4` (synthesized lazily by the HDR suite, not
+  part of the main manifest): 10-bit uniform 25 percent grey tagged
+  smpte2084 and arib-std-b67 over bt2020. Tag-only synthesis, so an ffmpeg
+  without zscale still produces them; the product's HDR routing keys off
+  the transfer tag (`isHdrSource`).
 - `bars-bt709.mp4`: 5 seconds of `smptehdbars` (SMPTE RP 219), BT.709
   tagged, limited range, with a sidecar `bars-expected.json` of expected
   sRGB values. The sidecar reference is the exact float BT.709
@@ -101,8 +111,26 @@ Tolerances (embedded per patch in the sidecar):
   Derivation in `patchTolerance` in `src/fixtures.ts`; background in
   `docs/research/playback-transcode.md` section 2.4.
 
-webkit is not installed in CI (documented skip); real Safari belongs to the
-manual pass below.
+CI installs webkit alongside chromium and firefox, so all three engines run
+there. Playwright webkit is not real Safari (it lacks the macOS media
+stack), so real Safari still belongs to the manual pass below.
+
+### hdr-tonemap.spec.ts (Node only, ffmpeg + ffprobe)
+
+Runs the product's literal `HDR_TONEMAP_FILTER` string (imported from
+`packages/worker/src/media.ts`) against the PQ and HLG fixtures and asserts
+the output is tagged bt709 across primaries, transfer, and matrix (by
+libplacebo's own frame metadata, no explicit `-colorspace` flags), is
+yuv420p, and that the tonemapped center-pixel luma of the known flat grey
+input lands in a sane SDR mid band (neither black nor blown).
+
+Detection is two-stage and always logs which path was taken: skip when
+ffmpeg lacks the libplacebo filter, and skip with the logged error when the
+filter exists but cannot initialize a device (a one-frame smoke run). Note
+for local runs: ffmpeg 6.0 and older require `-init_hw_device vulkan` for
+vf_libplacebo and will log "Missing vulkan hwdevice"; automatic device
+creation landed in ffmpeg 6.1. The compose integration workflow is the hard
+gate for the worker container's tonemap path.
 
 ### tmcd.spec.ts (Node only, ffprobe)
 
@@ -139,12 +167,15 @@ protocol (design doc section 21):
 - NLE round-trips: import the exported Resolve marker EDL, Avid marker
   text/XML, FCPX FCPXML, and Premiere paths into real Resolve, Media
   Composer, Premiere, and Final Cut, with the recorded checklist.
-- HDR tonemap verification on a real libplacebo/Vulkan (or lavapipe)
-  stack, and HDR rail playback gating on genuine HDR displays and Safari.
-- Real Safari/WebKit color QC on macOS (CI covers chromium and firefox
-  only) and hardware-decoder color behavior (the CI runs decode in
-  software; this repo's Windows dev runs already showed OS decoder paths
-  can differ).
+- HDR rail playback gating on genuine HDR displays and Safari. (The
+  tonemap chain itself is now automated twice: hdr-tonemap.spec.ts against
+  the local ffmpeg, and the Integration workflow against libplacebo on
+  lavapipe inside the worker container. Judging the visual quality of the
+  tonemap on real footage stays manual.)
+- Real Safari color QC on macOS (CI covers chromium, firefox, and
+  Playwright webkit, which is not Safari's media stack) and
+  hardware-decoder color behavior (the CI runs decode in software; this
+  repo's Windows dev runs already showed OS decoder paths can differ).
 - Compose/burn-in export end-to-end against real graded footage, and the
   curated real-camera corpus (ProRes, DNx, XAVC, VFR phone clips, 8ch MXF)
   which is license-encumbered and lives outside the repo.

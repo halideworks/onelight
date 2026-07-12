@@ -156,13 +156,13 @@
   article.s-failed .status, article.s-dead .status { color: var(--warn); font-weight: 600; }
   article.s-complete .status { color: var(--ok); }
   .attempts { min-width: 48px; color: var(--ink-text-dim); }
-  .when { color: var(--ink-text-dim); font-size: var(--text-12); }
+  .when { color: var(--ink-text-dim); font-size: var(--text-13); }
   .grow { flex: 1; }
   .target { color: var(--accent); text-decoration: none; font-weight: 500; }
   .target:hover { color: var(--accent-bright); }
   .joberror { margin: 8px 0 0; color: var(--warn); overflow-wrap: anywhere; }
   .joberror.dead { font-weight: 600; }
-  .more { justify-self: start; margin-top: 10px; border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 9px 16px; font-size: var(--text-12); font-weight: 500; }
+  .more { justify-self: start; margin-top: 10px; border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 9px 16px; font-size: var(--text-13); font-weight: 500; }
   .more:hover { background: var(--ink-300); }
   .empty { color: var(--ink-text-dim); }
   .error { color: var(--warn); }

@@ -6,7 +6,6 @@ import {
   gt,
   inArray,
   isNull,
-  like,
   lt,
   ne,
   or,
@@ -60,6 +59,7 @@ import {
   workspaces,
   notifications,
   notificationPreferences,
+  passwordResets,
 } from "@onelight/db/schema";
 import {
   authMiddleware,
@@ -71,11 +71,13 @@ import {
   SESSION_COOKIE,
 } from "./auth.js";
 import {
+  clientIp,
   commentCursorParam,
   cursorParam,
   encodeCommentCursor,
   encodeCursor,
   encodeSearchCursor,
+  extractHashtags,
   getLimit,
   searchCursorParam,
   jsonBody,
@@ -260,6 +262,21 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .run();
   };
 
+  /**
+   * Append a live-update event to the project stream (SSE replay via
+   * GET /projects/:id/events) and schedule webhook deliveries for it.
+   *
+   * Web clients subscribe by these EXACT type strings; keep this list in
+   * sync with every emitter:
+   *   - "project.created"        {project_id, name}
+   *   - "asset.created"          {asset_id, version_id, job_id}
+   *   - "asset.version_created"  {asset_id, version_id, version_no, job_id}
+   *   - "comment.created"        {comment_id, version_id, frame_in, parent_id?}
+   *   - "comment.updated"        {comment_id, version_id, frame_in}
+   *   - "comment.deleted"        {comment_id, version_id}
+   * Comment payloads stay small on purpose: ids plus version_id/frame_in;
+   * clients refetch the comment list for full bodies.
+   */
   const appendProjectEvent = async (
     projectId: string,
     type: string,
@@ -332,6 +349,17 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       if (candidate) recipients.add(candidate);
     if (options.actorUserId) recipients.delete(options.actorUserId);
     if (!recipients.size) return;
+    // Re-authorize every recipient against the project's CURRENT visibility.
+    // A historical uploader who has since lost access (the project became
+    // restricted, or they were removed or disabled) must never receive a row
+    // carrying a content preview. Managers are already live-derived, but this
+    // filter also covers them idempotently.
+    const authorized = new Set(
+      await visibleMentionIds(options.projectId, [...recipients]),
+    );
+    for (const userId of [...recipients])
+      if (!authorized.has(userId)) recipients.delete(userId);
+    if (!recipients.size) return;
     const prefRows = await env.db
       .select()
       .from(notificationPreferences)
@@ -347,20 +375,21 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       }),
     );
     const now = env.clock.now();
+    const payloadJson = JSON.stringify(options.payload);
+    // One multi-row insert instead of a round trip per recipient.
+    const values = [];
     for (const userId of recipients) {
       if (mutedByUser.get(userId)?.includes(options.projectId)) continue;
-      await env.db
-        .insert(notifications)
-        .values({
-          id: env.ids.ulid(),
-          userId,
-          kind: options.kind,
-          payloadJson: JSON.stringify(options.payload),
-          readAt: null,
-          createdAt: now,
-        })
-        .run();
+      values.push({
+        id: env.ids.ulid(),
+        userId,
+        kind: options.kind,
+        payloadJson,
+        readAt: null,
+        createdAt: now,
+      });
     }
+    if (values.length) await env.db.insert(notifications).values(values).run();
   };
 
   /** Distinct registered-user authors of a thread (parent plus replies). */
@@ -384,8 +413,147 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     ];
   };
 
+  /** The owning project id of a version, for event emission. */
+  const projectIdForVersion = async (
+    versionId: string,
+  ): Promise<string | undefined> => {
+    const rows = await env.db
+      .select({ projectId: assets.projectId })
+      .from(assetVersions)
+      .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+      .where(eq(assetVersions.id, versionId))
+      .limit(1)
+      .all();
+    return rows[0]?.projectId;
+  };
+
+  /**
+   * Mentioned user ids that can actually see the project: enabled workspace
+   * users for non-restricted projects; members and workspace admins for
+   * restricted ones. Ids that fail the check are dropped silently (the
+   * comment itself is never rejected over a bad mention).
+   */
+  const visibleMentionIds = async (
+    projectId: string,
+    candidates: string[] | undefined,
+  ): Promise<string[]> => {
+    const uniqueIds = [...new Set(candidates ?? [])].filter(Boolean);
+    if (!uniqueIds.length) return [];
+    const project = (
+      await env.db
+        .select()
+        .from(projects)
+        .where(eq(projects.id, projectId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!project) return [];
+    const userRows = await env.db
+      .select({ id: users.id, role: users.role })
+      .from(users)
+      .where(
+        and(
+          eq(users.workspaceId, project.workspaceId),
+          inArray(users.id, uniqueIds),
+          isNull(users.disabledAt),
+        ),
+      )
+      .all();
+    if (!project.restricted)
+      return userRows.map((row: { id: string }) => row.id);
+    const visible = new Set(
+      userRows
+        .filter((row: { role: string }) => row.role === "admin")
+        .map((row: { id: string }) => row.id),
+    );
+    const memberRows = await env.db
+      .select({ userId: projectMembers.userId })
+      .from(projectMembers)
+      .where(
+        and(
+          eq(projectMembers.projectId, project.id),
+          inArray(projectMembers.userId, uniqueIds),
+        ),
+      )
+      .all();
+    for (const row of memberRows as Array<{ userId: string }>)
+      if (userRows.some((user: { id: string }) => user.id === row.userId))
+        visible.add(row.userId);
+    return [...visible];
+  };
+
+  /**
+   * Copy unresolved, non-deleted top-level comments from one version to
+   * another at the same frame with carried_from_comment_id provenance.
+   * Shared by POST /versions/:id/carry-forward and the carry_forward flag
+   * of POST /assets/:id/versions.
+   */
+  const copyUnresolvedComments = async (
+    sourceVersionId: string,
+    targetVersionId: string,
+  ): Promise<string[]> => {
+    const sourceComments = await env.db
+      .select()
+      .from(comments)
+      .where(
+        and(
+          eq(comments.versionId, sourceVersionId),
+          isNull(comments.deletedAt),
+          isNull(comments.completedAt),
+          isNull(comments.parentId),
+        ),
+      )
+      .all();
+    const copied: string[] = [];
+    for (const sourceComment of sourceComments as Array<
+      typeof comments.$inferSelect
+    >) {
+      const id = env.ids.ulid();
+      await env.db
+        .insert(comments)
+        .values({
+          id,
+          versionId: targetVersionId,
+          parentId: null,
+          authorUserId: sourceComment.authorUserId,
+          authorName: sourceComment.authorName,
+          authorEmail: sourceComment.authorEmail,
+          viewerKey: sourceComment.viewerKey,
+          frameIn: sourceComment.frameIn,
+          frameOut: sourceComment.frameOut,
+          bodyText: sourceComment.bodyText,
+          annotationJson: sourceComment.annotationJson,
+          pinXyJson: sourceComment.pinXyJson,
+          pageNo: sourceComment.pageNo,
+          internal: sourceComment.internal,
+          completedAt: null,
+          completedBy: null,
+          carriedFromCommentId: sourceComment.id,
+          deletedAt: null,
+          createdAt: env.clock.now(),
+          editedAt: null,
+        })
+        .run();
+      copied.push(id);
+    }
+    return copied;
+  };
+
+  // Any bucket older than this is definitely outside its own window (it must
+  // be >= the longest window any hitRateLimit caller uses, currently the
+  // 15 minute password-reset window), so deleting it opportunistically can
+  // never reset a still-live counter for another key.
+  const RATE_LIMIT_RETENTION_MS = 15 * 60 * 1000;
+
   const hitRateLimit = async (key: string, limit: number, windowMs: number) => {
     const now = env.clock.now();
+    // Opportunistic cleanup keeps rate_limits from growing without bound: on
+    // every increment, drop rows whose window closed long enough ago that no
+    // live counter can be lost. Bounded to stale rows only.
+    await env.db
+      .delete(rateLimits)
+      .where(lt(rateLimits.windowStart, now - RATE_LIMIT_RETENTION_MS))
+      .run();
     const rows = await env.db
       .select()
       .from(rateLimits)
@@ -603,7 +771,19 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     deleted_at: comment.deletedAt,
     created_at: comment.createdAt,
     edited_at: comment.editedAt,
+    // Derived from body_text on every read, never a column.
+    tags: extractHashtags(comment.bodyText),
   });
+
+  // Public (share viewer) projection of a comment: drops author_email and
+  // author_user_id so external viewers never learn the registered identity
+  // behind a comment. author_name is the only author field exposed.
+  const publicCommentWire = (comment: typeof comments.$inferSelect) => {
+    const wire: Record<string, unknown> = { ...commentWire(comment) };
+    delete wire.author_user_id;
+    delete wire.author_email;
+    return wire;
+  };
 
   const shareWire = (share: typeof shares.$inferSelect) => ({
     id: share.id,
@@ -623,6 +803,33 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     created_by: share.createdBy,
     revoked_at: share.revokedAt,
     created_at: share.createdAt,
+  });
+
+  // Client-safe share projection for public (unauthenticated) share pages.
+  // Unlike shareWire it never exposes passphrase_hash, watermark_spec_hash,
+  // the full watermark spec, created_by, project_id, or camelCase drizzle
+  // keys: watermarking is reported only as a boolean presence flag.
+  const publicShareWire = (share: typeof shares.$inferSelect) => ({
+    id: share.id,
+    slug: share.slug,
+    kind: share.kind,
+    title: share.title,
+    layout: share.layout,
+    allow_download: share.allowDownload,
+    allow_comments: Boolean(share.allowComments),
+    show_all_versions: Boolean(share.showAllVersions),
+    expires_at: share.expiresAt,
+    revoked_at: share.revokedAt,
+    watermark: shareIsWatermarked(share),
+    brand: share.brandJson ? parseJsonObject(share.brandJson) : null,
+  });
+
+  // Share viewers expose only their display identity; the signed viewer_key
+  // never leaves the server.
+  const publicViewerWire = (viewer: typeof shareViewers.$inferSelect) => ({
+    id: viewer.id,
+    name: viewer.name,
+    email: viewer.email,
   });
 
   const currentWorkspace = async (c: {
@@ -719,10 +926,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.post("/auth/login", async (c) => {
     const body = await jsonBody(c, bodies.login);
-    const ip =
-      c.req.header("cf-connecting-ip") ??
-      c.req.header("x-forwarded-for") ??
-      "unknown";
+    const ip = clientIp(c, env);
     await hitRateLimit(
       `login:email:${body.email.toLowerCase()}`,
       10,
@@ -768,6 +972,122 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .run();
     clearSessionCookie(c);
     await audit(user.workspaceId, user.id, "user.logout", `user:${user.id}`);
+    return c.body(null, 204);
+  });
+
+  // Password reset request. ALWAYS 204: whether the email exists, is
+  // disabled, or has no password must be indistinguishable to the caller
+  // (no account enumeration). Rate limited like login: per email and per IP.
+  api.post("/auth/reset-request", async (c) => {
+    const body = await jsonBody(c, bodies.resetRequest);
+    const email = body.email.trim().toLowerCase();
+    const ip = clientIp(c, env);
+    await hitRateLimit(`pwreset:email:${email}`, 5, 15 * 60 * 1000);
+    await hitRateLimit(`pwreset:ip:${ip}`, 5, 15 * 60 * 1000);
+    const user = (
+      await env.db
+        .select()
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1)
+        .all()
+    )[0];
+    if (user && !user.disabledAt) {
+      const token = base64UrlEncode(randomBytes(32));
+      const now = env.clock.now();
+      await env.db
+        .insert(passwordResets)
+        .values({
+          id: env.ids.ulid(),
+          userId: user.id,
+          tokenHash: await sha256Hex(token),
+          createdAt: now,
+          expiresAt: now + 60 * 60 * 1000,
+          usedAt: null,
+        })
+        .run();
+      if (env.mailer) {
+        await env.mailer.send({
+          to: user.email,
+          subject: "Reset your Onelight password",
+          text: [
+            `A password reset was requested for ${user.email}.`,
+            "",
+            "Reset your password within the next hour:",
+            `${env.config.PUBLIC_URL.replace(/\/$/, "")}/reset/${token}`,
+            "",
+            "If you did not request this, you can ignore this message.",
+          ].join("\n"),
+        });
+        await audit(
+          user.workspaceId,
+          user.id,
+          "password_reset.request",
+          `user:${user.id}`,
+        );
+      } else {
+        // No mailer is configured: the token row exists but nothing was
+        // delivered. Record that so operators can see why resets stall.
+        await audit(
+          user.workspaceId,
+          user.id,
+          "password_reset.request",
+          `user:${user.id}`,
+          { mail: "unconfigured" },
+        );
+      }
+    }
+    return c.body(null, 204);
+  });
+
+  api.post("/auth/reset", async (c) => {
+    const body = await jsonBody(c, bodies.resetComplete);
+    const reset = (
+      await env.db
+        .select()
+        .from(passwordResets)
+        .where(eq(passwordResets.tokenHash, await sha256Hex(body.token)))
+        .limit(1)
+        .all()
+    )[0];
+    const now = env.clock.now();
+    if (!reset || reset.usedAt || reset.expiresAt <= now)
+      throw errors.validation("Reset token is invalid or has expired.");
+    const user = (
+      await env.db
+        .select()
+        .from(users)
+        .where(eq(users.id, reset.userId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!user || user.disabledAt)
+      throw errors.validation("Reset token is invalid or has expired.");
+    // Password policy runs after token validation but BEFORE the token is
+    // consumed, so a weak password does not burn the link.
+    assertPassword(body.password);
+    await env.db
+      .update(users)
+      .set({
+        passwordHash: await env.hasher.hash(body.password),
+        updatedAt: now,
+      })
+      .where(eq(users.id, user.id))
+      .run();
+    await env.db
+      .update(passwordResets)
+      .set({ usedAt: now })
+      .where(eq(passwordResets.id, reset.id))
+      .run();
+    // Every session dies: a reset is the recovery path from a compromised
+    // credential, so nothing issued under the old password survives.
+    await env.db.delete(sessions).where(eq(sessions.userId, user.id)).run();
+    await audit(
+      user.workspaceId,
+      user.id,
+      "password_reset.complete",
+      `user:${user.id}`,
+    );
     return c.body(null, 204);
   });
 
@@ -1175,10 +1495,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   };
 
   api.post("/invites/lookup", async (c) => {
-    const ip =
-      c.req.header("cf-connecting-ip") ??
-      c.req.header("x-forwarded-for") ??
-      "unknown";
+    const ip = clientIp(c, env);
     await hitRateLimit(`invite_lookup:${ip}`, 20, 5 * 60 * 1000);
     const body = await jsonBody(c, bodies.inviteLookup);
     const invite = await inviteByToken(body.token);
@@ -1187,10 +1504,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   });
 
   api.post("/invites/accept", async (c) => {
-    const ip =
-      c.req.header("cf-connecting-ip") ??
-      c.req.header("x-forwarded-for") ??
-      "unknown";
+    const ip = clientIp(c, env);
     await hitRateLimit(`invite_accept:${ip}`, 20, 5 * 60 * 1000);
     const body = await jsonBody(c, bodies.inviteAccept);
     assertPassword(body.password);
@@ -1706,6 +2020,28 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return depth;
   };
 
+  /**
+   * Height of a folder's subtree (the folder itself counts 1). Moves must
+   * respect the depth cap for the DEEPEST descendant, not just the moved
+   * node; capped at the limit since anything deeper already fails.
+   */
+  const folderSubtreeHeight = async (folderId: string): Promise<number> => {
+    let height = 1;
+    let frontier = [folderId];
+    while (frontier.length) {
+      const children = await env.db
+        .select({ id: folders.id })
+        .from(folders)
+        .where(inArray(folders.parentId, frontier))
+        .all();
+      if (!children.length) break;
+      height += 1;
+      if (height > 10) break;
+      frontier = children.map((child: { id: string }) => child.id);
+    }
+    return height;
+  };
+
   api.get("/projects/:id/folders", requireAuth, async (c) => {
     const actor = userFromContext(c);
     await requireProject(c.req.param("id"), actor, "viewer");
@@ -1788,7 +2124,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       body.parent_id === undefined ? folder.parentId : body.parent_id;
     if (parentId === folder.id)
       throw errors.validation("A folder cannot be its own parent.");
-    await folderDepth(folder.projectId, parentId ?? null);
+    const newDepth = await folderDepth(folder.projectId, parentId ?? null);
+    // The cap applies to the deepest DESCENDANT after the move, not just
+    // the moved folder itself.
+    if (newDepth + (await folderSubtreeHeight(folder.id)) - 1 > 10)
+      throw errors.validation("Folder depth cannot exceed 10 levels.");
     let current = parentId;
     while (current) {
       if (current === folder.id)
@@ -2013,25 +2353,48 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .limit(1)
         .all()
     )[0];
-    if (commentedAsset)
+    if (commentedAsset) {
+      const payload = {
+        project_id: commentedAsset.projectId,
+        asset_id: commentedAsset.id,
+        asset_name: commentedAsset.name,
+        version_id: version.id,
+        comment_id: id,
+        actor_name: actor.name,
+        preview: notificationPreview(body.body_text.trim()),
+      };
+      // Mention dedup: a mentioned user gets exactly one notification for
+      // this comment and it is the mention (comment.mention wins over
+      // comment.created for the same comment).
+      const mentioned = await visibleMentionIds(
+        commentedAsset.projectId,
+        body.mentions,
+      );
+      if (mentioned.length)
+        await createNotifications({
+          projectId: commentedAsset.projectId,
+          actorUserId: actor.id,
+          recipients: mentioned,
+          kind: "comment.mention",
+          payload,
+        });
+      const mentionedSet = new Set(mentioned);
       await createNotifications({
         projectId: commentedAsset.projectId,
         actorUserId: actor.id,
         recipients: [
           version.uploadedBy,
           ...(await projectManagerIds(commentedAsset.projectId)),
-        ],
+        ].filter((recipient) => recipient && !mentionedSet.has(recipient)),
         kind: "comment.created",
-        payload: {
-          project_id: commentedAsset.projectId,
-          asset_id: commentedAsset.id,
-          asset_name: commentedAsset.name,
-          version_id: version.id,
-          comment_id: id,
-          actor_name: actor.name,
-          preview: notificationPreview(body.body_text.trim()),
-        },
+        payload,
       });
+      await appendProjectEvent(commentedAsset.projectId, "comment.created", {
+        comment_id: id,
+        version_id: version.id,
+        frame_in: comment.frameIn,
+      });
+    }
     return c.json(commentWire(comment), 201);
   });
 
@@ -2117,6 +2480,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!updated) throw errors.notFound();
+    const patchedProjectId = await projectIdForVersion(updated.versionId);
+    if (patchedProjectId)
+      await appendProjectEvent(patchedProjectId, "comment.updated", {
+        comment_id: updated.id,
+        version_id: updated.versionId,
+        frame_in: updated.frameIn,
+      });
     return c.json(commentWire(updated));
   });
 
@@ -2133,6 +2503,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .set({ deletedAt: env.clock.now() })
       .where(eq(comments.id, comment.id))
       .run();
+    const deletedProjectId = await projectIdForVersion(comment.versionId);
+    if (deletedProjectId)
+      await appendProjectEvent(deletedProjectId, "comment.deleted", {
+        comment_id: comment.id,
+        version_id: comment.versionId,
+      });
     return c.body(null, 204);
   });
 
@@ -2314,23 +2690,47 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             .all()
         )[0]
       : undefined;
-    if (repliedAsset)
+    if (repliedAsset) {
+      const payload = {
+        project_id: repliedAsset.projectId,
+        asset_id: repliedAsset.id,
+        asset_name: repliedAsset.name,
+        version_id: parent.versionId,
+        comment_id: id,
+        parent_comment_id: parent.id,
+        actor_name: actor.name,
+        preview: notificationPreview(body.body_text.trim()),
+      };
+      // Mention dedup, same rule as top-level comments: mention wins.
+      const mentioned = await visibleMentionIds(
+        repliedAsset.projectId,
+        body.mentions,
+      );
+      if (mentioned.length)
+        await createNotifications({
+          projectId: repliedAsset.projectId,
+          actorUserId: actor.id,
+          recipients: mentioned,
+          kind: "comment.mention",
+          payload,
+        });
+      const mentionedSet = new Set(mentioned);
       await createNotifications({
         projectId: repliedAsset.projectId,
         actorUserId: actor.id,
-        recipients: await threadParticipantIds(parent.id),
+        recipients: (await threadParticipantIds(parent.id)).filter(
+          (participant) => !mentionedSet.has(participant),
+        ),
         kind: "comment.reply",
-        payload: {
-          project_id: repliedAsset.projectId,
-          asset_id: repliedAsset.id,
-          asset_name: repliedAsset.name,
-          version_id: parent.versionId,
-          comment_id: id,
-          parent_comment_id: parent.id,
-          actor_name: actor.name,
-          preview: notificationPreview(body.body_text.trim()),
-        },
+        payload,
       });
+      await appendProjectEvent(repliedAsset.projectId, "comment.created", {
+        comment_id: id,
+        version_id: parent.versionId,
+        frame_in: parent.frameIn,
+        parent_id: parent.id,
+      });
+    }
     return c.json(commentWire(reply), 201);
   });
 
@@ -2355,6 +2755,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!completed) throw errors.notFound();
+    const completedProjectId = await projectIdForVersion(completed.versionId);
+    if (completedProjectId)
+      await appendProjectEvent(completedProjectId, "comment.updated", {
+        comment_id: completed.id,
+        version_id: completed.versionId,
+        frame_in: completed.frameIn,
+      });
     return c.json(commentWire(completed));
   });
 
@@ -2404,48 +2811,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const target = await versionForActor(c.req.param("id"), actor, "manager");
     const body = await jsonBody(c, bodies.carryForward);
     const source = await versionForActor(body.from_version_id, actor, "viewer");
-    const sourceComments = await env.db
-      .select()
-      .from(comments)
-      .where(
-        and(
-          eq(comments.versionId, source.id),
-          isNull(comments.deletedAt),
-          isNull(comments.completedAt),
-          isNull(comments.parentId),
-        ),
-      )
-      .all();
-    const copied = [];
-    for (const sourceComment of sourceComments) {
-      const id = env.ids.ulid();
-      await env.db
-        .insert(comments)
-        .values({
-          id,
-          versionId: target.id,
-          parentId: null,
-          authorUserId: sourceComment.authorUserId,
-          authorName: sourceComment.authorName,
-          authorEmail: sourceComment.authorEmail,
-          viewerKey: sourceComment.viewerKey,
-          frameIn: sourceComment.frameIn,
-          frameOut: sourceComment.frameOut,
-          bodyText: sourceComment.bodyText,
-          annotationJson: sourceComment.annotationJson,
-          pinXyJson: sourceComment.pinXyJson,
-          pageNo: sourceComment.pageNo,
-          internal: sourceComment.internal,
-          completedAt: null,
-          completedBy: null,
-          carriedFromCommentId: sourceComment.id,
-          deletedAt: null,
-          createdAt: env.clock.now(),
-          editedAt: null,
-        })
-        .run();
-      copied.push(id);
-    }
+    const copied = await copyUnresolvedComments(source.id, target.id);
     return c.json({ items: copied });
   });
 
@@ -2521,26 +2887,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const limit = getLimit(c.req.query("limit"));
     const cursor = cursorParam(c.req.query("cursor"));
     // Transcode failures are recorded by the out-of-process worker pump,
-    // which writes version state but never notification rows. Materialize
-    // them at read time for the requesting user when they are the uploader
-    // or a manager of the project, deduplicated by version_id (muted
-    // projects are skipped inside createNotifications). The scan is bounded;
-    // failed versions are rare.
-    const managedProjects = new Set<string>(
-      (
-        await env.db
-          .select({ projectId: projectMembers.projectId })
-          .from(projectMembers)
-          .where(
-            and(
-              eq(projectMembers.userId, actor.id),
-              eq(projectMembers.role, "manager"),
-            ),
-          )
-          .all()
-      ).map((row: { projectId: string }) => row.projectId),
-    );
-    const failedVersions = await env.db
+    // which sets transcode_status='failed' but writes no notification rows.
+    // On the first read that observes a newly failed version in the actor's
+    // workspace, materialize real notification rows ONCE for the uploader and
+    // current managers, then stamp failure_notified_at so the work never
+    // repeats (no per-request json_extract scan). The scan is index-served
+    // (asset_versions_failed_idx) and failed versions are rare.
+    const newlyFailed = await env.db
       .select({ version: assetVersions, asset: assets })
       .from(assetVersions)
       .innerJoin(assets, eq(assetVersions.assetId, assets.id))
@@ -2549,6 +2902,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         and(
           eq(projects.workspaceId, actor.workspaceId),
           eq(assetVersions.transcodeStatus, "failed"),
+          isNull(assetVersions.failureNotifiedAt),
           isNull(assets.deletedAt),
           isNull(assetVersions.deletedAt),
         ),
@@ -2556,31 +2910,17 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .orderBy(desc(assetVersions.id))
       .limit(100)
       .all();
-    for (const row of failedVersions as Array<{
+    for (const row of newlyFailed as Array<{
       version: typeof assetVersions.$inferSelect;
       asset: typeof assets.$inferSelect;
     }>) {
-      const isRecipient =
-        row.version.uploadedBy === actor.id ||
-        managedProjects.has(row.asset.projectId);
-      if (!isRecipient) continue;
-      const existing = await env.db
-        .select({ id: notifications.id })
-        .from(notifications)
-        .where(
-          and(
-            eq(notifications.userId, actor.id),
-            eq(notifications.kind, "transcode.failed"),
-            sql`json_extract(${notifications.payloadJson}, '$.version_id') = ${row.version.id}`,
-          ),
-        )
-        .limit(1)
-        .all();
-      if (existing.length) continue;
       await createNotifications({
         projectId: row.asset.projectId,
         actorUserId: null,
-        recipients: [actor.id],
+        recipients: [
+          row.version.uploadedBy,
+          ...(await projectManagerIds(row.asset.projectId)),
+        ],
         kind: "transcode.failed",
         payload: {
           project_id: row.asset.projectId,
@@ -2590,6 +2930,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           preview: `Transcode failed for ${row.asset.name}`,
         },
       });
+      await env.db
+        .update(assetVersions)
+        .set({ failureNotifiedAt: env.clock.now() })
+        .where(eq(assetVersions.id, row.version.id))
+        .run();
     }
     const rows = await env.db
       .select()
@@ -2732,10 +3077,22 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         (cursor.t === "comment" && !wantComments))
     )
       throw errors.validation("Cursor does not match the requested scope.");
-    const pattern = `%${q}%`;
+    // Escape LIKE metacharacters (%, _, and the escape char itself) so a
+    // query containing them matches literally instead of widening the search
+    // within the caller's workspace. The LIKE conditions declare ESCAPE '\'.
+    const escapeLike = (value: string): string =>
+      value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const pattern = `%${escapeLike(q)}%`;
+    // A query starting with # is a hashtag search: comments match when they
+    // contain that exact tag token (derived, see extractHashtags), not just
+    // the substring. The LIKE fetch is a candidate superset ("#tag" also
+    // matches "#tagged"); rows are re-checked against the extracted tags
+    // before they count.
+    const tagQuery = q.startsWith("#") ? q.slice(1).toLowerCase() : undefined;
+    const commentPattern = tagQuery ? `%#${escapeLike(tagQuery)}%` : pattern;
     const items: Array<Record<string, unknown>> = [];
     let nextCursor: string | null = null;
-    const matchingComments = (after: string | undefined, take: number) =>
+    const fetchCommentRows = (after: string | undefined, take: number) =>
       env.db
         .select()
         .from(comments)
@@ -2746,13 +3103,35 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           and(
             eq(projects.workspaceId, actor.workspaceId),
             isNull(comments.deletedAt),
-            like(comments.bodyText, pattern),
+            sql`${comments.bodyText} LIKE ${commentPattern} ESCAPE '\\'`,
             after ? lt(comments.id, after) : undefined,
           ),
         )
         .orderBy(desc(comments.id))
         .limit(take)
         .all();
+    type CommentRow = Awaited<ReturnType<typeof fetchCommentRows>>[number];
+    const matchingComments = async (
+      after: string | undefined,
+      take: number,
+    ): Promise<CommentRow[]> => {
+      if (!tagQuery) return fetchCommentRows(after, take);
+      // Post-filtered keyset scan: batches stay ordered by id desc, so the
+      // filtered stream keeps the same cursor semantics as the plain LIKE.
+      const batchSize = Math.max(take, 50);
+      const collected: CommentRow[] = [];
+      let cursor = after;
+      for (;;) {
+        const batch = await fetchCommentRows(cursor, batchSize);
+        for (const row of batch) {
+          if (extractHashtags(row.comments.bodyText).includes(tagQuery))
+            collected.push(row);
+          if (collected.length === take) return collected;
+        }
+        if (batch.length < batchSize) return collected;
+        cursor = batch[batch.length - 1]?.comments.id;
+      }
+    };
     if (wantAssets && (!cursor || cursor.t === "asset")) {
       const assetRows = await env.db
         .select()
@@ -2762,7 +3141,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           and(
             eq(projects.workspaceId, actor.workspaceId),
             isNull(assets.deletedAt),
-            like(assets.name, pattern),
+            sql`${assets.name} LIKE ${pattern} ESCAPE '\\'`,
             cursor?.id ? lt(assets.id, cursor.id) : undefined,
           ),
         )
@@ -2803,6 +3182,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           asset_id: row.assets.id,
           version_id: row.comments.versionId,
           project_id: row.assets.projectId,
+          // Deep-link anchor for ?f= so search hits jump to the frame.
+          frame_in: row.comments.frameIn,
         })),
       );
       if (commentRows.length > remaining) {
@@ -3218,7 +3599,51 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .where(eq(shareAssets.shareId, share.id))
       .orderBy(asc(shareAssets.sortOrder))
       .all();
-    return c.json({ ...shareWire(share), assets: links });
+    return c.json({
+      ...shareWire(share),
+      assets: links.map((link: typeof shareAssets.$inferSelect) => ({
+        share_id: link.shareId,
+        asset_id: link.assetId,
+        sort_order: link.sortOrder,
+      })),
+    });
+  });
+
+  // Share viewer roster: who opened the share and when. Restricted to the
+  // share owner or a project manager; the signed viewer_key never leaves
+  // the server.
+  api.get("/shares/:id/viewers", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const share = (
+      await env.db
+        .select()
+        .from(shares)
+        .where(eq(shares.id, c.req.param("id")))
+        .limit(1)
+        .all()
+    )[0];
+    if (!share) throw errors.notFound();
+    // requireProject 404s cross-workspace and non-member-on-restricted
+    // callers before the owner-or-manager rule applies.
+    const { role } = await requireProject(share.projectId, actor, "viewer");
+    if (share.createdBy !== actor.id && !projectRoleAtLeast(role, "manager"))
+      throw errors.forbidden();
+    const rows = await env.db
+      .select()
+      .from(shareViewers)
+      .where(eq(shareViewers.shareId, share.id))
+      .orderBy(desc(shareViewers.id))
+      .all();
+    return c.json({
+      items: rows.map((viewer: typeof shareViewers.$inferSelect) => ({
+        id: viewer.id,
+        name: viewer.name,
+        email: viewer.email,
+        first_seen_at: viewer.firstSeenAt,
+        last_seen_at: viewer.lastSeenAt,
+        user_agent: viewer.userAgent,
+      })),
+    });
   });
 
   api.patch("/shares/:id", requireAuth, async (c) => {
@@ -3448,10 +3873,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.post("/s/:slug/access", async (c) => {
     const share = await shareBySlug(c.req.param("slug"));
-    const ip =
-      c.req.header("cf-connecting-ip") ??
-      c.req.header("x-forwarded-for") ??
-      "unknown";
+    const ip = clientIp(c, env);
     await hitRateLimit(`share_access:${share.id}:${ip}`, 20, 5 * 60 * 1000);
     const body = await jsonBody(c, bodies.shareAccess);
     if (
@@ -3461,7 +3883,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     )
       throw errors.invalidCredentials();
     const viewer = await issueViewer(c, share, body.name, body.email);
-    return c.json({ share: shareWire(share), viewer_key: viewer.viewerKey });
+    return c.json({
+      share: publicShareWire(share),
+      viewer_key: viewer.viewerKey,
+    });
   });
 
   type PublicShareAsset = typeof assets.$inferSelect & { sort_order: number };
@@ -3491,16 +3916,37 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     };
   };
 
+  // Client-safe projection of a publicShare result: raw share and viewer rows
+  // are replaced by the public wire shapes and assets are reduced to the
+  // fields a share client needs, so no internal columns reach the wire.
+  const publicShareResponse = (projection: {
+    share: typeof shares.$inferSelect;
+    viewer: typeof shareViewers.$inferSelect | undefined;
+    assets: PublicShareAsset[];
+  }) => ({
+    share: publicShareWire(projection.share),
+    viewer: projection.viewer ? publicViewerWire(projection.viewer) : null,
+    assets: projection.assets.map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      kind: asset.kind,
+      status: asset.status,
+      current_version_id: asset.currentVersionId,
+      sort_order: asset.sort_order,
+    })),
+  });
+
   root.get("/s/:slug", async (c) =>
-    c.json(await publicShare(c, await shareBySlug(c.req.param("slug")))),
+    c.json(
+      publicShareResponse(
+        await publicShare(c, await shareBySlug(c.req.param("slug"))),
+      ),
+    ),
   );
 
   root.post("/s/:slug/access", async (c) => {
     const share = await shareBySlug(c.req.param("slug"));
-    const ip =
-      c.req.header("cf-connecting-ip") ??
-      c.req.header("x-forwarded-for") ??
-      "unknown";
+    const ip = clientIp(c, env);
     await hitRateLimit(`share_access:${share.id}:${ip}`, 20, 5 * 60 * 1000);
     const body = await jsonBody(c, bodies.shareAccess);
     if (
@@ -3510,11 +3956,18 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     )
       throw errors.invalidCredentials();
     const viewer = await issueViewer(c, share, body.name, body.email);
-    return c.json({ share: shareWire(share), viewer_key: viewer.viewerKey });
+    return c.json({
+      share: publicShareWire(share),
+      viewer_key: viewer.viewerKey,
+    });
   });
 
   api.get("/s/:slug", async (c) =>
-    c.json(await publicShare(c, await shareBySlug(c.req.param("slug")))),
+    c.json(
+      publicShareResponse(
+        await publicShare(c, await shareBySlug(c.req.param("slug"))),
+      ),
+    ),
   );
 
   api.get("/s/:slug/assets", async (c) => {
@@ -3707,7 +4160,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .all();
     return c.json({
       items: rows.map((comment: typeof comments.$inferSelect) =>
-        commentWire(comment),
+        publicCommentWire(comment),
       ),
     });
   });
@@ -3716,10 +4169,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const share = await shareBySlug(c.req.param("slug"));
     if (!share.allowComments)
       throw errors.forbidden("Comments are disabled for this share.");
-    const ip =
-      c.req.header("cf-connecting-ip") ??
-      c.req.header("x-forwarded-for") ??
-      "unknown";
+    const ip = clientIp(c, env);
     await hitRateLimit(`share_comment:${share.id}:${ip}`, 30, 5 * 60 * 1000);
     const projection = await publicShare(c, share);
     if (!projection.viewer || !projection.viewer.viewerKey)
@@ -3800,7 +4250,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         preview: notificationPreview(body.body_text.trim()),
       },
     });
-    return c.json(commentWire(comment), 201);
+    // Share-viewer comments feed the same live stream as member comments.
+    await appendProjectEvent(share.projectId, "comment.created", {
+      comment_id: id,
+      version_id: asset.currentVersionId,
+      frame_in: comment.frameIn,
+    });
+    return c.json(publicCommentWire(comment), 201);
   });
 
   const shareCommentForViewer = async (
@@ -3827,7 +4283,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   };
 
   api.patch("/s/:slug/comments/:commentId", async (c) => {
-    const { comment } = await shareCommentForViewer(
+    const { share, comment } = await shareCommentForViewer(
       c,
       c.req.param("slug"),
       c.req.param("commentId"),
@@ -3854,11 +4310,16 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!updated) throw errors.notFound();
-    return c.json(commentWire(updated));
+    await appendProjectEvent(share.projectId, "comment.updated", {
+      comment_id: updated.id,
+      version_id: updated.versionId,
+      frame_in: updated.frameIn,
+    });
+    return c.json(publicCommentWire(updated));
   });
 
   api.delete("/s/:slug/comments/:commentId", async (c) => {
-    const { comment } = await shareCommentForViewer(
+    const { share, comment } = await shareCommentForViewer(
       c,
       c.req.param("slug"),
       c.req.param("commentId"),
@@ -3868,6 +4329,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .set({ deletedAt: env.clock.now() })
       .where(eq(comments.id, comment.id))
       .run();
+    await appendProjectEvent(share.projectId, "comment.deleted", {
+      comment_id: comment.id,
+      version_id: comment.versionId,
+    });
     return c.body(null, 204);
   });
 
@@ -3960,7 +4425,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         preview: notificationPreview(body.body_text.trim()),
       },
     });
-    return c.json(commentWire(reply), 201);
+    await appendProjectEvent(share.projectId, "comment.created", {
+      comment_id: id,
+      version_id: parent.versionId,
+      frame_in: parent.frameIn,
+      parent_id: parent.id,
+    });
+    return c.json(publicCommentWire(reply), 201);
   });
 
   api.patch("/s/:slug/approval", async (c) => {
@@ -4346,6 +4817,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       upload.uploadId,
       partNo,
       limitStream(c.req.raw.body, maxPartBytes),
+      // A trusted Content-Length lets the R2 adapter stream a fixed-length
+      // body instead of buffering the whole part; omit it when absent so the
+      // adapter falls back to buffering rather than truncating to zero.
+      declaredPartLength > 0 ? declaredPartLength : undefined,
     );
     await env.db
       .insert(uploadParts)
@@ -4736,6 +5211,169 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     });
   });
 
+  // Version stacking: attach a completed upload as the next version of an
+  // existing asset. Mirrors the initial attach (probe job, storage
+  // accounting, project event) and optionally carries unresolved comments
+  // forward from the version that was current until this call.
+  api.post("/assets/:id/versions", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const asset = await assetForActor(c.req.param("id"), actor, "editor");
+    const body = await jsonBody(c, bodies.versionCreate);
+    const upload = await findUpload(body.upload_id, actor);
+    // The three attach rules are all state conflicts, not shape errors: 409.
+    if (upload.status !== "completed")
+      throw errors.conflict("Upload must be completed before attaching.");
+    if (upload.projectId !== asset.projectId)
+      throw errors.conflict("Upload must belong to the asset's project.");
+    const alreadyAttached = await env.db
+      .select({ id: assetVersions.id })
+      .from(assetVersions)
+      .where(eq(assetVersions.uploadSessionId, upload.id))
+      .limit(1)
+      .all();
+    if (alreadyAttached.length)
+      throw errors.conflict(
+        "This upload is already attached to an asset version.",
+      );
+    const priorVersions = await env.db
+      .select({
+        id: assetVersions.id,
+        versionNo: assetVersions.versionNo,
+        uploadedBy: assetVersions.uploadedBy,
+      })
+      .from(assetVersions)
+      .where(eq(assetVersions.assetId, asset.id))
+      .all();
+    const versionNo =
+      priorVersions.reduce(
+        (max: number, row: { versionNo: number }) =>
+          Math.max(max, row.versionNo),
+        0,
+      ) + 1;
+    const previousCurrentId = asset.currentVersionId;
+    const now = env.clock.now();
+    const versionId = env.ids.ulid();
+    await env.db
+      .insert(assetVersions)
+      .values({
+        id: versionId,
+        assetId: asset.id,
+        uploadSessionId: upload.id,
+        versionNo,
+        originalBlobKey: upload.blobKey,
+        originalFilename: upload.clientFilename,
+        size: upload.size,
+        checksumCrc32c: upload.checksumCrc32c ?? "",
+        uploadedBy: actor.id,
+        mediaInfoJson: "{}",
+        sourceTimecodeStart: null,
+        sourceStartFrame: null,
+        frameRateNum: null,
+        frameRateDen: null,
+        dropFrame: false,
+        durationFrames: null,
+        colorJson: "{}",
+        transcodeStatus: "pending",
+        deletedAt: null,
+        createdAt: now,
+      })
+      .run();
+    await env.db
+      .update(assets)
+      .set({
+        currentVersionId: versionId,
+        ...(body.name ? { name: body.name.trim() } : {}),
+        updatedAt: now,
+      })
+      .where(eq(assets.id, asset.id))
+      .run();
+    await env.db
+      .update(projects)
+      .set({ storageBytes: sql`${projects.storageBytes} + ${upload.size}` })
+      .where(eq(projects.id, asset.projectId))
+      .run();
+    const jobId = env.ids.ulid();
+    await env.db
+      .insert(jobs)
+      .values({
+        id: jobId,
+        kind: "probe",
+        payloadJson: JSON.stringify({
+          workspace_id: actor.workspaceId,
+          project_id: asset.projectId,
+          asset_id: asset.id,
+          version_id: versionId,
+          blob_key: upload.blobKey,
+        }),
+        idempotencyKey: `probe:${versionId}`,
+        status: "queued",
+        priority: 0,
+        capabilityJson: "{}",
+        maxAttempts: 5,
+        attempts: 0,
+        runAfter: now,
+        createdAt: now,
+        startedAt: null,
+        heartbeatAt: null,
+        leaseExpiresAt: null,
+        finishedAt: null,
+        error: null,
+        workerId: null,
+      })
+      .run();
+    if (body.carry_forward && previousCurrentId)
+      await copyUnresolvedComments(previousCurrentId, versionId);
+    await appendProjectEvent(asset.projectId, "asset.version_created", {
+      asset_id: asset.id,
+      version_id: versionId,
+      version_no: versionNo,
+      job_id: jobId,
+    });
+    const updatedAsset = (
+      await env.db
+        .select()
+        .from(assets)
+        .where(eq(assets.id, asset.id))
+        .limit(1)
+        .all()
+    )[0];
+    const newVersion = (
+      await env.db
+        .select()
+        .from(assetVersions)
+        .where(eq(assetVersions.id, versionId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!updatedAsset || !newVersion) throw errors.internal();
+    await createNotifications({
+      projectId: asset.projectId,
+      actorUserId: actor.id,
+      recipients: [
+        ...priorVersions.map((row: { uploadedBy: string }) => row.uploadedBy),
+        ...(await projectManagerIds(asset.projectId)),
+      ],
+      kind: "version.created",
+      payload: {
+        project_id: asset.projectId,
+        asset_id: asset.id,
+        asset_name: updatedAsset.name,
+        version_id: versionId,
+        version_no: versionNo,
+        actor_name: actor.name,
+        preview: `Version ${versionNo} of ${updatedAsset.name}`,
+      },
+    });
+    return c.json(
+      {
+        asset: assetWire(updatedAsset),
+        version: versionWire(newVersion),
+        job_id: jobId,
+      },
+      201,
+    );
+  });
+
   api.post("/assets/:id/trash", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const asset = await assetForActor(c.req.param("id"), actor, "editor");
@@ -5045,10 +5683,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.get("/auth/oidc/callback", async (c) => {
     const { issuer, clientId, clientSecret } = oidcEnabled();
-    const ip =
-      c.req.header("cf-connecting-ip") ??
-      c.req.header("x-forwarded-for") ??
-      "unknown";
+    const ip = clientIp(c, env);
     await hitRateLimit(`oidc_callback:${ip}`, 20, 5 * 60 * 1000);
     const code = c.req.query("code");
     const returnedState = c.req.query("state");
@@ -5347,7 +5982,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   root.route("/api/v1", api);
   // Phase 0 places the reference UI at /api/docs.
   root.get("/api/docs", (c) => c.html(docsHtml));
-  root.all("/s/*", (c) => api.fetch(c.req.raw));
+  // Forward the runtime env (the node-server socket bindings on Node) so
+  // clientIp can read the real peer address for share rate limiting.
+  root.all("/s/*", (c) => api.fetch(c.req.raw, c.env));
   root.get("/healthz", (c) => c.json({ status: "ok", version: env.version }));
   return root;
 };

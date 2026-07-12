@@ -25,6 +25,14 @@
   let canvas: HTMLCanvasElement | undefined = $state();
   let inProgress = $state<AnnotationStroke | null>(null);
 
+  /* Draw mode can be disarmed mid-drag (the D shortcut exits while the pointer
+     is still down). Drop any in-progress stroke when the overlay stops being
+     interactive so a later re-arm cannot extend or commit the stale stroke on
+     a bare pointermove/pointerup. */
+  $effect(() => {
+    if (!interactive) inProgress = null;
+  });
+
   /* Widths below 1 are normalized fractions of the frame diagonal (the form
      this player writes); 1 or more is legacy device pixels. */
   const lineWidthFor = (stroke: AnnotationStroke): number => {

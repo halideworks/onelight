@@ -1,19 +1,23 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
   import { auth } from '$lib/auth.svelte.js';
 
   type Project = { id: string; name: string; status: string; palette: string; my_role?: string };
   let projects = $state<Project[]>([]);
+  /* The layout owns session hydration (one GET /auth/session). Load projects
+     once it reports a signed-in session, exactly once. */
+  let projectsLoaded = false;
 
-  onMount(async () => {
-    await auth.hydrate();
-    if (!auth.signedIn) return;
-    try {
-      projects = (await api<{ items: Project[] }>('/api/v1/projects')).items;
-    } catch {
-      /* The empty state stands in. */
-    }
+  $effect(() => {
+    if (!auth.ready || !auth.signedIn || projectsLoaded) return;
+    projectsLoaded = true;
+    void (async () => {
+      try {
+        projects = (await api<{ items: Project[] }>('/api/v1/projects')).items;
+      } catch {
+        /* The empty state stands in. */
+      }
+    })();
   });
 </script>
 

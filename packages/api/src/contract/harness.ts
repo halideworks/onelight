@@ -2,6 +2,7 @@ import type { Hono } from "hono";
 import type {
   AppConfig,
   IdGen,
+  Mailer,
   MultipartBlobStore,
   PasswordHasher,
 } from "@onelight/core";
@@ -49,6 +50,21 @@ export const travel = async <T>(
   }
 };
 
+/**
+ * In-memory Mailer for the contract suite: captures every message so tests
+ * can pull reset tokens out of the delivered text. Legs without a mailer
+ * (the Workers harness) leave ContractHarness.mailer unset and the suite
+ * seeds token rows directly instead.
+ */
+export class StubMailer implements Mailer {
+  readonly messages: Array<{ to: string; subject: string; text: string }> = [];
+
+  send(message: { to: string; subject: string; text: string }): Promise<void> {
+    this.messages.push(message);
+    return Promise.resolve();
+  }
+}
+
 export interface ContractCapabilities {
   /** A MultipartBlobStore is wired into the app under test. */
   blob: boolean;
@@ -68,6 +84,8 @@ export interface ContractHarness {
   hasher: PasswordHasher;
   config: AppConfig;
   blobStore: MultipartBlobStore | null;
+  /** Present when the leg wires a StubMailer into the app under test. */
+  mailer?: StubMailer;
   teardown?: () => Promise<void> | void;
 }
 

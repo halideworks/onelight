@@ -1,12 +1,16 @@
 <script lang="ts">
+  import '../lib/fonts.css';
   import '../lib/tokens.css';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { auth } from '$lib/auth.svelte.js';
   import { notifications } from '$lib/notifications.svelte.js';
+  import type { Snippet } from 'svelte';
 
-  const PUBLIC_PREFIXES = ['/login', '/setup', '/invite', '/s'];
+  let { children }: { children: Snippet } = $props();
+
+  const PUBLIC_PREFIXES = ['/login', '/setup', '/invite', '/reset', '/s'];
   const isPublic = $derived(
     PUBLIC_PREFIXES.some(
       (prefix) => page.url.pathname === prefix || page.url.pathname.startsWith(`${prefix}/`)
@@ -89,7 +93,7 @@
   </header>
 {/if}
 
-<slot />
+{@render children()}
 
 <style>
   /* App-level defaults live here, not in tokens.css: the token file is a

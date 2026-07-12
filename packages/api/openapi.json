@@ -500,6 +500,150 @@
         }
       }
     },
+    "/api/v1/auth/reset-request": {
+      "post": {
+        "summary": "Request a password reset link. Always 204 so account existence never leaks; rate limited per email and per IP.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  }
+                },
+                "required": [
+                  "email"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No content"
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/reset": {
+      "post": {
+        "summary": "Complete a password reset with a token from the reset email. Revokes every session of the user.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "token",
+                  "password"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No content"
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/session": {
       "get": {
         "responses": {
@@ -3860,6 +4004,12 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "tags": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
                           }
                         },
                         "required": [
@@ -3881,7 +4031,8 @@
                           "carried_from_comment_id",
                           "deleted_at",
                           "created_at",
-                          "edited_at"
+                          "edited_at",
+                          "tags"
                         ],
                         "additionalProperties": false
                       }
@@ -3984,6 +4135,13 @@
                   "internal": {
                     "type": "boolean",
                     "default": false
+                  },
+                  "mentions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 20
                   }
                 },
                 "required": [
@@ -4134,6 +4292,12 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
@@ -4155,7 +4319,8 @@
                     "carried_from_comment_id",
                     "deleted_at",
                     "created_at",
-                    "edited_at"
+                    "edited_at",
+                    "tags"
                   ],
                   "additionalProperties": false
                 }
@@ -4385,6 +4550,12 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
@@ -4406,7 +4577,8 @@
                     "carried_from_comment_id",
                     "deleted_at",
                     "created_at",
-                    "edited_at"
+                    "edited_at",
+                    "tags"
                   ],
                   "additionalProperties": false
                 }
@@ -4795,7 +4967,14 @@
                     "minLength": 1,
                     "maxLength": 10000
                   },
-                  "annotation": {}
+                  "annotation": {},
+                  "mentions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 20
+                  }
                 },
                 "required": [
                   "body_text"
@@ -4945,6 +5124,12 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
@@ -4966,7 +5151,8 @@
                     "carried_from_comment_id",
                     "deleted_at",
                     "created_at",
-                    "edited_at"
+                    "edited_at",
+                    "tags"
                   ],
                   "additionalProperties": false
                 }
@@ -5168,6 +5354,12 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
@@ -5189,7 +5381,8 @@
                     "carried_from_comment_id",
                     "deleted_at",
                     "created_at",
-                    "edited_at"
+                    "edited_at",
+                    "tags"
                   ],
                   "additionalProperties": false
                 }
@@ -5797,7 +5990,8 @@
                     "items": {
                       "type": "string"
                     },
-                    "minItems": 1
+                    "minItems": 1,
+                    "maxItems": 500
                   }
                 },
                 "required": [
@@ -5952,6 +6146,7 @@
                     "items": {
                       "type": "string"
                     },
+                    "maxItems": 1000,
                     "default": []
                   }
                 },
@@ -6298,6 +6493,16 @@
                               },
                               "project_id": {
                                 "type": "string"
+                              },
+                              "frame_in": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
                               }
                             },
                             "required": [
@@ -6306,7 +6511,8 @@
                               "body_text",
                               "asset_id",
                               "version_id",
-                              "project_id"
+                              "project_id",
+                              "frame_in"
                             ],
                             "additionalProperties": false
                           }
@@ -6465,7 +6671,8 @@
                     "items": {
                       "type": "string"
                     },
-                    "minItems": 1
+                    "minItems": 1,
+                    "maxItems": 1000
                   }
                 },
                 "required": [
@@ -6953,7 +7160,23 @@
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "additionalProperties": {}
+                        "properties": {
+                          "share_id": {
+                            "type": "string"
+                          },
+                          "asset_id": {
+                            "type": "string"
+                          },
+                          "sort_order": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "share_id",
+                          "asset_id",
+                          "sort_order"
+                        ],
+                        "additionalProperties": false
                       }
                     }
                   },
@@ -7329,6 +7552,123 @@
         }
       }
     },
+    "/api/v1/shares/{id}/viewers": {
+      "get": {
+        "summary": "Share viewer roster (share owner or project manager). The viewer_key is never on the wire.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "email": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "first_seen_at": {
+                            "type": "integer"
+                          },
+                          "last_seen_at": {
+                            "type": "integer"
+                          },
+                          "user_agent": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "email",
+                          "first_seen_at",
+                          "last_seen_at",
+                          "user_agent"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/webhooks": {
       "post": {
         "requestBody": {
@@ -7351,7 +7691,8 @@
                     "items": {
                       "type": "string"
                     },
-                    "minItems": 1
+                    "minItems": 1,
+                    "maxItems": 50
                   }
                 },
                 "required": [
@@ -7984,9 +8325,6 @@
                         "id": {
                           "type": "string"
                         },
-                        "project_id": {
-                          "type": "string"
-                        },
                         "slug": {
                           "type": "string"
                         },
@@ -8008,16 +8346,6 @@
                             "reel"
                           ]
                         },
-                        "expires_at": {
-                          "anyOf": [
-                            {
-                              "type": "integer"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
                         "allow_download": {
                           "type": "string",
                           "enum": [
@@ -8032,30 +8360,15 @@
                         "show_all_versions": {
                           "type": "boolean"
                         },
-                        "watermark_spec": {
+                        "expires_at": {
                           "anyOf": [
                             {
-                              "type": "object",
-                              "additionalProperties": {}
+                              "type": "integer"
                             },
                             {
                               "type": "null"
                             }
                           ]
-                        },
-                        "brand": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": {}
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "created_by": {
-                          "type": "string"
                         },
                         "revoked_at": {
                           "anyOf": [
@@ -8067,26 +8380,34 @@
                             }
                           ]
                         },
-                        "created_at": {
-                          "type": "integer"
+                        "watermark": {
+                          "type": "boolean"
+                        },
+                        "brand": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": {}
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
                         "id",
-                        "project_id",
                         "slug",
                         "kind",
                         "title",
                         "layout",
-                        "expires_at",
                         "allow_download",
                         "allow_comments",
                         "show_all_versions",
-                        "watermark_spec",
-                        "brand",
-                        "created_by",
+                        "expires_at",
                         "revoked_at",
-                        "created_at"
+                        "watermark",
+                        "brand"
                       ],
                       "additionalProperties": false
                     },
@@ -8168,13 +8489,123 @@
                   "properties": {
                     "share": {
                       "type": "object",
-                      "additionalProperties": {}
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "slug": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "review",
+                            "presentation"
+                          ]
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "layout": {
+                          "type": "string",
+                          "enum": [
+                            "grid",
+                            "list",
+                            "reel"
+                          ]
+                        },
+                        "allow_download": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "proxy",
+                            "original"
+                          ]
+                        },
+                        "allow_comments": {
+                          "type": "boolean"
+                        },
+                        "show_all_versions": {
+                          "type": "boolean"
+                        },
+                        "expires_at": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "revoked_at": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "watermark": {
+                          "type": "boolean"
+                        },
+                        "brand": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": {}
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "slug",
+                        "kind",
+                        "title",
+                        "layout",
+                        "allow_download",
+                        "allow_comments",
+                        "show_all_versions",
+                        "expires_at",
+                        "revoked_at",
+                        "watermark",
+                        "brand"
+                      ],
+                      "additionalProperties": false
                     },
                     "viewer": {
                       "anyOf": [
                         {
                           "type": "object",
-                          "additionalProperties": {}
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "email": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "email"
+                          ],
+                          "additionalProperties": false
                         },
                         {
                           "type": "null"
@@ -8185,7 +8616,44 @@
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "additionalProperties": {}
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "in_review",
+                              "approved",
+                              "changes_requested"
+                            ]
+                          },
+                          "current_version_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sort_order": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "kind",
+                          "status",
+                          "current_version_id",
+                          "sort_order"
+                        ],
+                        "additionalProperties": false
                       }
                     }
                   },
@@ -8677,19 +9145,7 @@
                               "null"
                             ]
                           },
-                          "author_user_id": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
                           "author_name": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
-                          "author_email": {
                             "type": [
                               "string",
                               "null"
@@ -8797,15 +9253,19 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "tags": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
                           }
                         },
                         "required": [
                           "id",
                           "version_id",
                           "parent_id",
-                          "author_user_id",
                           "author_name",
-                          "author_email",
                           "frame_in",
                           "frame_out",
                           "body_text",
@@ -8818,7 +9278,8 @@
                           "carried_from_comment_id",
                           "deleted_at",
                           "created_at",
-                          "edited_at"
+                          "edited_at",
+                          "tags"
                         ],
                         "additionalProperties": false
                       }
@@ -8943,19 +9404,7 @@
                         "null"
                       ]
                     },
-                    "author_user_id": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
                     "author_name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "author_email": {
                       "type": [
                         "string",
                         "null"
@@ -9063,15 +9512,19 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
                     "id",
                     "version_id",
                     "parent_id",
-                    "author_user_id",
                     "author_name",
-                    "author_email",
                     "frame_in",
                     "frame_out",
                     "body_text",
@@ -9084,7 +9537,8 @@
                     "carried_from_comment_id",
                     "deleted_at",
                     "created_at",
-                    "edited_at"
+                    "edited_at",
+                    "tags"
                   ],
                   "additionalProperties": false
                 }
@@ -9196,19 +9650,7 @@
                         "null"
                       ]
                     },
-                    "author_user_id": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
                     "author_name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "author_email": {
                       "type": [
                         "string",
                         "null"
@@ -9316,15 +9758,19 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
                     "id",
                     "version_id",
                     "parent_id",
-                    "author_user_id",
                     "author_name",
-                    "author_email",
                     "frame_in",
                     "frame_out",
                     "body_text",
@@ -9337,7 +9783,8 @@
                     "carried_from_comment_id",
                     "deleted_at",
                     "created_at",
-                    "edited_at"
+                    "edited_at",
+                    "tags"
                   ],
                   "additionalProperties": false
                 }
@@ -9514,19 +9961,7 @@
                         "null"
                       ]
                     },
-                    "author_user_id": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
                     "author_name": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "author_email": {
                       "type": [
                         "string",
                         "null"
@@ -9634,15 +10069,19 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
                     "id",
                     "version_id",
                     "parent_id",
-                    "author_user_id",
                     "author_name",
-                    "author_email",
                     "frame_in",
                     "frame_out",
                     "body_text",
@@ -9655,7 +10094,8 @@
                     "carried_from_comment_id",
                     "deleted_at",
                     "created_at",
-                    "edited_at"
+                    "edited_at",
+                    "tags"
                   ],
                   "additionalProperties": false
                 }
@@ -10819,7 +11259,8 @@
                       ],
                       "additionalProperties": false
                     },
-                    "minItems": 1
+                    "minItems": 1,
+                    "maxItems": 10000
                   },
                   "checksum_crc32c": {
                     "type": "string"
@@ -11945,6 +12386,311 @@
                   },
                   "required": [
                     "items"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Attach a completed upload as the next version of an asset. The new version becomes current; carry_forward copies unresolved comments from the previous current version.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "upload_id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "carry_forward": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                },
+                "required": [
+                  "upload_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "asset": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "folder_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "video",
+                            "audio",
+                            "image",
+                            "pdf",
+                            "file"
+                          ]
+                        },
+                        "current_version_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "in_review",
+                            "approved",
+                            "changes_requested"
+                          ]
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "deleted_at": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "created_at": {
+                          "type": "integer"
+                        },
+                        "updated_at": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "project_id",
+                        "folder_id",
+                        "name",
+                        "kind",
+                        "current_version_id",
+                        "status",
+                        "description",
+                        "tags",
+                        "deleted_at",
+                        "created_at",
+                        "updated_at"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "version": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "asset_id": {
+                          "type": "string"
+                        },
+                        "version_no": {
+                          "type": "integer"
+                        },
+                        "original_filename": {
+                          "type": "string"
+                        },
+                        "size": {
+                          "type": "integer"
+                        },
+                        "checksum_crc32c": {
+                          "type": "string"
+                        },
+                        "uploaded_by": {
+                          "type": "string"
+                        },
+                        "media_info": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        },
+                        "source_timecode_start": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "source_start_frame": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "frame_rate_num": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "frame_rate_den": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "drop_frame": {
+                          "type": "boolean"
+                        },
+                        "duration_frames": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "color": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        },
+                        "transcode_status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "processing",
+                            "ready",
+                            "failed",
+                            "skipped"
+                          ]
+                        },
+                        "created_at": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "asset_id",
+                        "version_no",
+                        "original_filename",
+                        "size",
+                        "checksum_crc32c",
+                        "uploaded_by",
+                        "media_info",
+                        "source_timecode_start",
+                        "source_start_frame",
+                        "frame_rate_num",
+                        "frame_rate_den",
+                        "drop_frame",
+                        "duration_frames",
+                        "color",
+                        "transcode_status",
+                        "created_at"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "job_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "asset",
+                    "version",
+                    "job_id"
                   ],
                   "additionalProperties": false
                 }

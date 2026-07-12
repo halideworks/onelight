@@ -43,7 +43,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+      # mesa-vulkan-drivers supplies lavapipe (software Vulkan) so the qa
+      # HDR tonemap spec can run libplacebo; ubuntu 24.04's ffmpeg 6.1
+      # creates its own Vulkan device when an ICD is present.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core mesa-vulkan-drivers
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @onelight/qa exec playwright install --with-deps chromium firefox
+      - run: pnpm --filter @onelight/qa exec playwright install --with-deps chromium firefox webkit
       - run: pnpm qa

@@ -1,5 +1,6 @@
 import {
   formatTimecode,
+  isDropFrameRate,
   timecodeFromFrames,
   type FrameRate,
 } from "./timecode.js";
@@ -36,6 +37,14 @@ const ENCODED_NEWLINE = "\\n";
 const encodeNewlines = (value: string): string =>
   value.replace(/\r\n|\r|\n/g, ENCODED_NEWLINE);
 
+// XML 1.0 forbids the C0 control characters other than tab, LF, and CR, even
+// as numeric character references, so a raw control byte in a comment would
+// make the FCPXML or xmeml document unparseable. Strip them before escaping.
+// Tab, LF, and CR are preserved (the callers handle newlines themselves).
+const stripXmlControls = (value: string): string =>
+  // eslint-disable-next-line no-control-regex
+  value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
+
 // Resolve exporter sanitization per design doc section 12: ASCII only
 // (transliterate diacritics via NFKD, strip what remains) and a "_" prefix
 // when the marker text would start with a digit (Resolve drops such notes).
@@ -59,9 +68,15 @@ const sourceFrame = (frame: number, options: MarkerOptions): number =>
     ? frame
     : (options.startFrame ?? 0) + frame;
 
+// Drop-frame timecode is only defined at 29.97 and 59.94 fps. A source that
+// is mistagged dropFrame at any other rate is coerced to non-drop here rather
+// than throwing, so the export still succeeds (the label is plain NDF).
+const effectiveDropFrame = (options: MarkerOptions): boolean =>
+  Boolean(options.dropFrame) && isDropFrameRate(options.rate);
+
 const timecodeLabel = (frame: number, options: MarkerOptions): string =>
   formatTimecode(
-    timecodeFromFrames(frame, options.rate, options.dropFrame ?? false),
+    timecodeFromFrames(frame, options.rate, effectiveDropFrame(options)),
   );
 
 // Inclusive frameOut, so a point marker (frameOut null) has duration 1.
@@ -83,7 +98,7 @@ export const exportResolveEdl = (
   const sorted = [...comments].sort(byFrameThenId);
   const lines = [
     `TITLE: ${edlText(options.title ?? "Onelight Comments")}`,
-    `FCM: ${options.dropFrame ? "DROP FRAME" : "NON-DROP FRAME"}`,
+    `FCM: ${effectiveDropFrame(options) ? "DROP FRAME" : "NON-DROP FRAME"}`,
     "",
   ];
   let event = 1;
@@ -150,10 +165,11 @@ export const exportFcpXml = (
   options: MarkerOptions,
 ): string => {
   const escapeAttr = (value: string): string =>
-    value
+    stripXmlControls(value)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/"/g, "&quot;")
+      .replace(/]]>/g, "]]&gt;")
       .replace(/\r\n|\r|\n/g, "&#10;");
   const { num, den } = options.rate;
   const time = (frames: number): string => `${frames * den}/${num}s`;
@@ -176,7 +192,7 @@ export const exportFcpXml = (
     `  <library>`,
     `    <event name="${title}">`,
     `      <project name="${title}">`,
-    `        <sequence format="r1" duration="${time(end)}" tcStart="0s" tcFormat="${options.dropFrame ? "DF" : "NDF"}">`,
+    `        <sequence format="r1" duration="${time(end)}" tcStart="0s" tcFormat="${effectiveDropFrame(options) ? "DF" : "NDF"}">`,
     `          <spine>`,
     `            <gap name="Gap" offset="0s" start="0s" duration="${time(end)}">`,
     ...markers,
@@ -233,7 +249,11 @@ export const exportXmeml = (
   options: MarkerOptions,
 ): string => {
   const escapeText = (value: string): string =>
-    value.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    stripXmlControls(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      // "]]>" is forbidden in XML character data even outside a CDATA section.
+      .replace(/]]>/g, "]]&gt;");
   const timebase = Math.round(options.rate.num / options.rate.den);
   const ntsc = options.rate.den === 1001 ? "TRUE" : "FALSE";
   const sorted = [...comments].sort(byFrameThenId);

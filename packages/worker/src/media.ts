@@ -123,6 +123,11 @@ const findTimecode = (document: ProbeDocument): string | undefined => {
   return candidates.map(asString).find((value) => value !== undefined);
 };
 
+// Drop-frame timecode exists only for the 29.97 (30000/1001) and 59.94
+// (60000/1001) NTSC rates; a ";" on any other rate is a mistag.
+const isNtscDropRate = (num?: number, den?: number): boolean =>
+  den === 1001 && (num === 30000 || num === 60000);
+
 export const normalizeProbe = (
   document: ProbeDocument,
 ): NormalizedMediaInfo => {
@@ -152,11 +157,6 @@ export const normalizeProbe = (
     variableFrameRate,
     colorAssumed,
   };
-  const timecode = findTimecode(document);
-  if (timecode !== undefined) {
-    normalized.sourceTimecodeStart = timecode;
-    normalized.dropFrame = timecode.includes(";");
-  }
   if (probed) {
     const clamped = clampToSupportedRate(probed);
     normalized.frameRateNum = clamped.rate.num;
@@ -165,6 +165,17 @@ export const normalizeProbe = (
       normalized.frameRateClamped = true;
       normalized.probedFrameRate = `${probed.num}/${probed.den}`;
     }
+  }
+  const timecode = findTimecode(document);
+  if (timecode !== undefined) {
+    normalized.sourceTimecodeStart = timecode;
+    // Drop-frame timecode is defined only for the 29.97 and 59.94 NTSC rates.
+    // A ";" separator on any other (commonly mistagged 24/25/30) source is not
+    // drop-frame; honoring it would corrupt frame math and break exports, so
+    // dropFrame is gated on the clamped rate as well as the separator.
+    normalized.dropFrame =
+      timecode.includes(";") &&
+      isNtscDropRate(normalized.frameRateNum, normalized.frameRateDen);
   }
   const rate =
     normalized.frameRateNum && normalized.frameRateDen
@@ -243,11 +254,58 @@ export const isHdrSource = (mediaInfo: MediaInfo): boolean => {
 export const HDR_TONEMAP_FILTER =
   "libplacebo=tonemapping=bt.2390:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=yuv420p";
 
-export const BT709_CONVERT_FILTER =
-  "zscale=matrix=709:primaries=709:transfer=709";
+// vf_libplacebo needs an explicit Vulkan device on the ffmpeg builds we ship:
+// bookworm's 5.1 and even 6.0 abort the tonemap with "Missing vulkan
+// hwdevice" unless a device is created and selected (automatic creation only
+// landed in ffmpeg 6.1). mesa-vulkan-drivers in the worker image provides
+// lavapipe, a software Vulkan implementation, as device 0. These are global
+// options and must precede the input, so every builder that emits the
+// libplacebo tonemap prepends them right after -hide_banner -y.
+export const VULKAN_HWDEVICE_ARGS: ReadonlyArray<string> = [
+  "-init_hw_device",
+  "vulkan=vk:0",
+  "-filter_hw_device",
+  "vk",
+];
+
+// Only HDR sources route through libplacebo, so the Vulkan device is created
+// only then: a plain SDR encode must not pay for (or fail on) device init.
+const tonemapHwDeviceArgs = (mediaInfo: MediaInfo): string[] =>
+  isHdrSource(mediaInfo) ? [...VULKAN_HWDEVICE_ARGS] : [];
+
+// Output half of the SDR BT.709 conversion; the input half is derived per
+// source below so zscale always sees a complete input colorspec.
+const BT709_OUTPUT_PARAMS = "matrix=709:primaries=709:transfer=709";
 
 const bt709ish = (value: string | undefined): boolean =>
   value === undefined || value === "unknown" || value === "bt709";
+
+// A component the probe left blank (undefined or the literal "unknown") falls
+// back to its SD BT.601 default; a tagged component passes through. ffprobe
+// and zscale share these enum spellings.
+const knownColorOr = (value: string | undefined, fallback: string): string =>
+  value !== undefined && value !== "unknown" ? value : fallback;
+
+// zscale rejects a frame whose input colorspec is incomplete ("no path
+// between colorspaces"), which is exactly the common partially-tagged SD case
+// (color_space=smpte170m with transfer and primaries unspecified). Supplying
+// matrixin/transferin/primariesin, each defaulting to the SD BT.601 value
+// when the probe left it blank, gives zscale a complete input spec. A
+// fully-tagged non-709 source overrides these with its own values (a no-op),
+// so this one recipe covers every needsBt709Conversion source.
+export const bt709ConvertFilter = (mediaInfo: MediaInfo): string => {
+  const video = videoStream(mediaInfo);
+  const matrixin = knownColorOr(
+    asString(video?.color_space ?? video?.colorspace),
+    "smpte170m",
+  );
+  const transferin = knownColorOr(asString(video?.color_transfer), "smpte170m");
+  const primariesin = knownColorOr(
+    asString(video?.color_primaries),
+    "smpte170m",
+  );
+  return `zscale=matrixin=${matrixin}:transferin=${transferin}:primariesin=${primariesin}:${BT709_OUTPUT_PARAMS}`;
+};
 
 export const needsBt709Conversion = (mediaInfo: MediaInfo): boolean => {
   if (isHdrSource(mediaInfo)) return false;
@@ -266,7 +324,7 @@ const colorPrefix = (mediaInfo: MediaInfo): string =>
   isHdrSource(mediaInfo)
     ? `${HDR_TONEMAP_FILTER},`
     : needsBt709Conversion(mediaInfo)
-      ? `${BT709_CONVERT_FILTER},`
+      ? `${bt709ConvertFilter(mediaInfo)},`
       : "";
 
 const fpsFilter = (mediaInfo: MediaInfo): string =>
@@ -301,6 +359,7 @@ export const sidecarArgs = (
     return [
       "-hide_banner",
       "-y",
+      ...tonemapHwDeviceArgs(job.mediaInfo),
       "-ss",
       "0",
       "-i",
@@ -319,6 +378,7 @@ export const sidecarArgs = (
     return [
       "-hide_banner",
       "-y",
+      ...tonemapHwDeviceArgs(job.mediaInfo),
       "-i",
       job.sourceKey,
       "-vf",
@@ -609,6 +669,7 @@ export const buildSdrProxyArgs = (
   const args = [
     "-hide_banner",
     "-y",
+    ...tonemapHwDeviceArgs(job.mediaInfo),
     "-i",
     job.sourceKey,
     "-map",

@@ -9,6 +9,7 @@ import type { ContractHarness } from "./contract/index.js";
 import {
   FakeClock,
   MemoryBlobStore,
+  StubMailer,
   registerContractSuite,
 } from "./contract/index.js";
 
@@ -25,6 +26,7 @@ const makeEnv = (): Promise<ContractHarness> => {
   const ids = new UlidGenerator();
   const hasher = new Pbkdf2PasswordHasher();
   const blobStore = new MemoryBlobStore();
+  const mailer = new StubMailer();
   const config = loadConfig({
     PUBLIC_URL: "http://onelight.test",
     SECRET_KEY: "contract-suite-secret-key-with-32-plus-chars",
@@ -37,6 +39,7 @@ const makeEnv = (): Promise<ContractHarness> => {
     config,
     version: "contract-node",
     blobStore,
+    mailer,
   });
   return Promise.resolve({
     app,
@@ -46,6 +49,7 @@ const makeEnv = (): Promise<ContractHarness> => {
     hasher,
     config,
     blobStore,
+    mailer,
     teardown: () => {
       sqlite.close();
     },

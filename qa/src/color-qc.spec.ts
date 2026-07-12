@@ -36,9 +36,9 @@ const engines: Array<{
 }> = [
   { name: "chromium", type: chromium },
   { name: "firefox", type: firefox },
-  /* webkit runs when its Playwright build is installed; CI installs only
-       chromium and firefox (see qa/README.md for the documented gap: real
-       Safari belongs to the manual QC pass). */
+  /* webkit runs when its Playwright build is installed; CI installs all
+       three engines. Playwright webkit is not real Safari (no macOS media
+       stack), so real Safari stays on the manual QC pass, see qa/README.md. */
   { name: "webkit", type: webkit },
 ];
 
