@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
-  import { apiPost, messageFrom } from '$lib/api.js';
+  import { apiPost, getBootstrap, messageFrom } from '$lib/api.js';
   import { auth } from '$lib/auth.svelte.js';
 
   let email = $state('');
@@ -9,14 +9,17 @@
   let error = $state('');
   let busy = $state(false);
   let oidcEnabled = $state(false);
+  let setupRequired = $state(false);
+  let workspaceName = $state<string | null>(null);
 
   onMount(async () => {
-    /* No public endpoint exposes oidc_enabled (GET /workspace requires auth),
-       so probe the OIDC start route: it 302s to the IdP when configured and
-       404s when not. redirect: 'manual' keeps the browser here. */
+    /* GET /api/v1/bootstrap is the public pre-auth surface: OIDC
+       availability, setup state, and the workspace name. */
     try {
-      const response = await fetch('/api/v1/auth/oidc/start', { redirect: 'manual' });
-      oidcEnabled = response.type === 'opaqueredirect' || response.ok;
+      const bootstrap = await getBootstrap();
+      oidcEnabled = bootstrap.oidc_enabled;
+      setupRequired = bootstrap.setup_required;
+      workspaceName = bootstrap.workspace_name;
     } catch {
       oidcEnabled = false;
     }
@@ -43,7 +46,7 @@
 <main class="page">
   <section class="panel">
     <h1>Onelight</h1>
-    <p class="sub">Sign in to your review workspace</p>
+    <p class="sub">{workspaceName ? `Sign in to ${workspaceName}` : 'Sign in to your review workspace'}</p>
     <form onsubmit={submit}>
       <label>Email <input bind:value={email} name="email" type="email" autocomplete="email" required /></label>
       <label>Password <input bind:value={password} name="password" type="password" autocomplete="current-password" required /></label>
@@ -54,7 +57,7 @@
       <div class="divider">or</div>
       <a class="sso" href="/api/v1/auth/oidc/start">Continue with SSO</a>
     {/if}
-    <a class="foot" href="/setup">First run setup</a>
+    {#if setupRequired}<a class="foot" href="/setup">First run setup</a>{/if}
   </section>
 </main>
 

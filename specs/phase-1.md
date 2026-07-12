@@ -187,6 +187,8 @@ Upload URLs are short-lived and scoped to one upload session. All blob reads use
 
 Supersession (2026-07-11 audit): `POST /uploads/:id/complete` returns `202 {upload}` without a `job_id`. The probe job is created when the upload is attached to an asset, because the probe payload carries `asset_id` and `version_id`, which do not exist until `POST /projects/:id/assets`. That endpoint returns the `job_id`. Clients poll `GET /jobs/:id` from there.
 
+Supersession (2026-07-11, Idempotency-Key scope): the header is honored through natural idempotency rather than a key-to-response replay store, which would need schema the phase does not own. `POST /uploads` with an `Idempotency-Key` that matches an existing pending or uploading session created by the same user for the same project, filename, and size returns that original session with `200` instead of opening a duplicate. `POST /uploads/:id/complete` is already idempotent: re-completing a completed session returns `202` with the original result, so the header needs no bookkeeping there. A general response-replay store keyed on the header value is future work.
+
 ## 4. Job behavior
 
 `complete upload -> probe -> plan -> sidecars and proxies` is idempotent. The primary 1080p proxy makes a version ready. Failure of a secondary rendition does not hide the primary proxy, and each rendition can be retried independently. Job claims use one conditional update: queued jobs whose lease expired are reclaimable, `heartbeat_at` extends `lease_expires_at`, and `max_attempts` moves a job to `dead`.

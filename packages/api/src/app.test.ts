@@ -156,6 +156,37 @@ describe("Phase 0 API contract", () => {
     sqlite.close();
   });
 
+  it("serves the pre-setup bootstrap shape publicly", async () => {
+    // The contract suite seeds a completed setup in beforeAll, so the
+    // pre-setup shape is asserted here on a fresh app instead.
+    const { app, sqlite } = makeTestApp();
+    const response = await app.request("/api/v1/bootstrap");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      oidc_enabled: false,
+      setup_required: true,
+      workspace_name: null,
+    });
+    const afterSetup = await app.request("/api/v1/setup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        workspace_name: "Bootstrap WS",
+        name: "Admin",
+        email: "bootstrap@example.com",
+        password: "long-password-value",
+      }),
+    });
+    expect(afterSetup.status).toBe(201);
+    const post = await app.request("/api/v1/bootstrap");
+    expect(await post.json()).toEqual({
+      oidc_enabled: false,
+      setup_required: false,
+      workspace_name: "Bootstrap WS",
+    });
+    sqlite.close();
+  });
+
   it("supports setup, login, project creation, and origin protection", async () => {
     const { app, sqlite } = makeTestApp();
     const setup = await app.request("/api/v1/setup", {

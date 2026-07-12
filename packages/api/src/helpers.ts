@@ -111,6 +111,36 @@ export const commentCursorParam = (
   }
 };
 
+export interface SearchCursor {
+  t: "asset" | "comment";
+  /** Continue after this ULID; absent means the start of the stream. */
+  id?: string;
+}
+
+export const encodeSearchCursor = (t: SearchCursor["t"], id?: string): string =>
+  toBase64Url(JSON.stringify(id ? { t, id } : { t }));
+
+export const searchCursorParam = (
+  value: string | undefined,
+): SearchCursor | undefined => {
+  if (!value) return undefined;
+  try {
+    const decoded = JSON.parse(fromBase64Url(value)) as unknown;
+    const cursor = decoded as SearchCursor;
+    if (
+      !decoded ||
+      typeof decoded !== "object" ||
+      (cursor.t !== "asset" && cursor.t !== "comment") ||
+      (cursor.id !== undefined &&
+        (typeof cursor.id !== "string" || !ULID_PATTERN.test(cursor.id)))
+    )
+      throw new Error("invalid cursor");
+    return cursor.id === undefined ? { t: cursor.t } : cursor;
+  } catch {
+    throw errors.validation("Cursor is invalid.");
+  }
+};
+
 export const getLimit = (value: string | undefined): number => {
   if (!value) return 50;
   const limit = Number(value);

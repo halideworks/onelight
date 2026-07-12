@@ -565,13 +565,32 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
   });
 
   describe("openapi", () => {
-    it("documents every registered /api/v1 route", async () => {
+    interface OpenApiOperation {
+      requestBody?: { content?: Record<string, unknown> };
+      responses: Record<
+        string,
+        { content?: Record<string, { schema?: unknown }> }
+      >;
+    }
+
+    /* Mutating routes that take no JSON body by design; everything else
+       must document a request schema. */
+    const BODYLESS_MUTATIONS = new Set([
+      "post /api/v1/auth/logout",
+      "post /api/v1/comments/{id}/complete",
+      "post /api/v1/uploads/{id}/multipart",
+      "post /api/v1/uploads/{id}/abort",
+      "post /api/v1/assets/{id}/trash",
+      "post /api/v1/assets/{id}/restore",
+    ]);
+
+    it("documents every registered /api/v1 route with schemas", async () => {
       const h = ctx.h();
       const response = await req(h, "/api/v1/openapi.json");
       expect(response.status).toBe(200);
       const body = await json<{
         openapi: string;
-        paths: Record<string, Record<string, unknown>>;
+        paths: Record<string, Record<string, OpenApiOperation>>;
       }>(response);
       expect(body.openapi).toBe("3.1.0");
       const methods = new Set(["get", "post", "put", "patch", "delete"]);
@@ -587,9 +606,57 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
         const path = route.path
           .replace(/:([A-Za-z0-9_]+)/g, "{$1}")
           .replace(/\*/g, "{path}");
-        expect(body.paths[path], `${method} ${path}`).toBeDefined();
-        expect(body.paths[path]?.[method], `${method} ${path}`).toBeDefined();
+        const operation = body.paths[path]?.[method];
+        expect(operation, `${method} ${path}`).toBeDefined();
+        if (!operation) continue;
+        // Every route documents at least one success response, and every
+        // success response that carries a body has a schema (204 and 302
+        // legitimately have none).
+        const successes = Object.entries(operation.responses).filter(
+          ([status]) => status.startsWith("2") || status.startsWith("3"),
+        );
+        expect(successes.length, `${method} ${path}`).toBeGreaterThan(0);
+        for (const [status, success] of successes) {
+          if (status === "204" || status === "302") continue;
+          const content = success.content ?? {};
+          const schemas = Object.values(content).map((entry) => entry.schema);
+          expect(
+            schemas.some((schema) => schema !== undefined),
+            `${method} ${path} ${status} has a response schema`,
+          ).toBe(true);
+        }
+        // Mutating routes document their request schema unless they are
+        // body-less by design.
+        if (
+          ["post", "put", "patch"].includes(method) &&
+          !BODYLESS_MUTATIONS.has(`${method} ${path}`)
+        )
+          expect(
+            operation.requestBody?.content,
+            `${method} ${path} has a request schema`,
+          ).toBeDefined();
       }
+    });
+  });
+
+  describe("bootstrap", () => {
+    it("serves the post-setup shape publicly with only three fields", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const response = await req(h, "/api/v1/bootstrap");
+      expect(response.status).toBe(200);
+      const body = await json<Record<string, unknown>>(response);
+      expect(body).toEqual({
+        oidc_enabled: false,
+        setup_required: false,
+        workspace_name: seed.workspaceName,
+      });
+      // No auth, no cookie, no information beyond those fields.
+      expect(Object.keys(body).sort()).toEqual([
+        "oidc_enabled",
+        "setup_required",
+        "workspace_name",
+      ]);
     });
   });
 };

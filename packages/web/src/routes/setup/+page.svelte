@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { apiPost, messageFrom } from '$lib/api.js';
+  import { onMount } from 'svelte';
+  import { apiPost, getBootstrap, messageFrom } from '$lib/api.js';
   import { auth } from '$lib/auth.svelte.js';
 
   let workspaceName = $state('');
@@ -9,6 +10,16 @@
   let password = $state('');
   let error = $state('');
   let busy = $state(false);
+
+  onMount(async () => {
+    /* Setup runs once; when the bootstrap says it is already complete this
+       page only leads to a 404 on submit, so send visitors to sign in. */
+    try {
+      if (!(await getBootstrap()).setup_required) await goto('/login');
+    } catch {
+      /* Leave the form usable if the bootstrap is unreachable. */
+    }
+  });
 
   const submit = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();

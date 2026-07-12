@@ -10,6 +10,7 @@ export default tseslint.config(
       "**/.svelte-kit/**",
       "**/node_modules/**",
       "**/coverage/**",
+      "qa/.artifacts/**",
       "**/*.config.ts",
       "**/*.config.js",
       "vitest.config.ts",

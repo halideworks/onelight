@@ -11,6 +11,8 @@ NUL/
 .env.*
 !.env.example
 data/
+# synthesized media fixtures and bundled test harness; never committed
+qa/.artifacts/
 *.db
 *.db-shm
 *.db-wal

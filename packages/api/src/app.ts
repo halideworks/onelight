@@ -4,6 +4,7 @@ import {
   desc,
   eq,
   gt,
+  inArray,
   isNull,
   like,
   lt,
@@ -16,7 +17,7 @@ import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
 import { SignJWT, createRemoteJWKSet, jwtVerify } from "jose";
-import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import {
   PALETTES,
   base64UrlEncode,
@@ -74,13 +75,17 @@ import {
   cursorParam,
   encodeCommentCursor,
   encodeCursor,
+  encodeSearchCursor,
   getLimit,
+  searchCursorParam,
   jsonBody,
   mapError,
   parseJsonObject,
   parseJsonValue,
   userFromContext,
 } from "./helpers.js";
+import { bodies, errorEnvelope, routeDocs } from "./schemas.js";
+import type { RouteDoc } from "./schemas.js";
 import type { AppEnv, Variables } from "./types.js";
 import {
   assertWebhookUrlAllowed,
@@ -289,6 +294,94 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         data,
         now,
       );
+  };
+
+  /** First 140 characters of a comment body for notification payloads. */
+  const notificationPreview = (text: string): string =>
+    text.length > 140 ? text.slice(0, 140) : text;
+
+  const projectManagerIds = async (projectId: string): Promise<string[]> =>
+    (
+      await env.db
+        .select({ userId: projectMembers.userId })
+        .from(projectMembers)
+        .where(
+          and(
+            eq(projectMembers.projectId, projectId),
+            eq(projectMembers.role, "manager"),
+          ),
+        )
+        .all()
+    ).map((row: { userId: string }) => row.userId);
+
+  /**
+   * Insert one notification row per recipient. The actor never notifies
+   * themselves and recipients who muted the project are skipped.
+   * notification_preferences.mode (instant/hourly/daily) shapes future email
+   * digests only; in-app rows are always created regardless of mode.
+   */
+  const createNotifications = async (options: {
+    projectId: string;
+    actorUserId: string | null;
+    recipients: Iterable<string | null | undefined>;
+    kind: string;
+    payload: Record<string, unknown>;
+  }) => {
+    const recipients = new Set<string>();
+    for (const candidate of options.recipients)
+      if (candidate) recipients.add(candidate);
+    if (options.actorUserId) recipients.delete(options.actorUserId);
+    if (!recipients.size) return;
+    const prefRows = await env.db
+      .select()
+      .from(notificationPreferences)
+      .where(inArray(notificationPreferences.userId, [...recipients]))
+      .all();
+    const mutedByUser = new Map<string, string[]>(
+      prefRows.map((row: typeof notificationPreferences.$inferSelect) => {
+        const parsed = parseJsonValue(row.mutedProjectsJson);
+        return [
+          row.userId,
+          Array.isArray(parsed) ? (parsed as string[]) : [],
+        ] as const;
+      }),
+    );
+    const now = env.clock.now();
+    for (const userId of recipients) {
+      if (mutedByUser.get(userId)?.includes(options.projectId)) continue;
+      await env.db
+        .insert(notifications)
+        .values({
+          id: env.ids.ulid(),
+          userId,
+          kind: options.kind,
+          payloadJson: JSON.stringify(options.payload),
+          readAt: null,
+          createdAt: now,
+        })
+        .run();
+    }
+  };
+
+  /** Distinct registered-user authors of a thread (parent plus replies). */
+  const threadParticipantIds = async (parentId: string): Promise<string[]> => {
+    const rows = await env.db
+      .select({ authorUserId: comments.authorUserId })
+      .from(comments)
+      .where(
+        and(
+          or(eq(comments.id, parentId), eq(comments.parentId, parentId)),
+          isNull(comments.deletedAt),
+        ),
+      )
+      .all();
+    return [
+      ...new Set(
+        rows
+          .map((row: { authorUserId: string | null }) => row.authorUserId)
+          .filter((id: string | null): id is string => Boolean(id)),
+      ),
+    ];
   };
 
   const hitRateLimit = async (key: string, limit: number, windowMs: number) => {
@@ -538,6 +631,36 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.get("/healthz", (c) => c.json({ status: "ok", version: env.version }));
 
+  // Public pre-auth bootstrap for the web shell: exactly these three fields
+  // and nothing else (no ids, no emails, no settings), so nothing leaks
+  // beyond what the login and setup pages need.
+  api.get("/bootstrap", async (c) => {
+    const existingUsers = await env.db
+      .select({ id: users.id })
+      .from(users)
+      .limit(1)
+      .all();
+    const setupRequired = existingUsers.length === 0;
+    const workspace = setupRequired
+      ? undefined
+      : (
+          await env.db
+            .select({ name: workspaces.name })
+            .from(workspaces)
+            .limit(1)
+            .all()
+        )[0];
+    return c.json({
+      oidc_enabled: Boolean(
+        env.config.OIDC_ISSUER &&
+        env.config.OIDC_CLIENT_ID &&
+        env.config.OIDC_CLIENT_SECRET,
+      ),
+      setup_required: setupRequired,
+      workspace_name: workspace?.name ?? null,
+    });
+  });
+
   api.post("/setup", async (c) => {
     const existing = await env.db
       .select({ id: users.id })
@@ -545,15 +668,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .limit(1)
       .all();
     if (existing.length) throw errors.notFound("Setup is already complete.");
-    const body = await jsonBody(
-      c,
-      z.object({
-        workspace_name: z.string().min(1).max(200),
-        name: z.string().min(1).max(200),
-        email: z.string().email(),
-        password: z.string(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.setup);
     assertPassword(body.password);
     const now = env.clock.now();
     const workspaceId = env.ids.ulid();
@@ -603,10 +718,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   });
 
   api.post("/auth/login", async (c) => {
-    const body = await jsonBody(
-      c,
-      z.object({ email: z.string().email(), password: z.string() }),
-    );
+    const body = await jsonBody(c, bodies.login);
     const ip =
       c.req.header("cf-connecting-ip") ??
       c.req.header("x-forwarded-for") ??
@@ -678,13 +790,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.patch("/workspace", requireAuth, async (c) => {
     const user = userFromContext(c);
     if (user.role !== "admin") throw errors.forbidden();
-    const body = await jsonBody(
-      c,
-      z.object({
-        name: z.string().min(1).max(200).optional(),
-        settings: z.record(z.unknown()).optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.workspacePatch);
     if (body.settings && Object.keys(body.settings).length)
       throw errors.validation(
         "Workspace settings are not available in this phase.",
@@ -742,13 +848,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.patch("/users/me", requireAuth, async (c) => {
     const user = userFromContext(c);
-    const body = await jsonBody(
-      c,
-      z.object({
-        name: z.string().min(1).max(200).optional(),
-        password: z.object({ current: z.string(), new: z.string() }).optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.usersMePatch);
     const update: { name?: string; passwordHash?: string; updatedAt: number } =
       { updatedAt: env.clock.now() };
     if (body.name) update.name = body.name.trim();
@@ -789,13 +889,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.patch("/users/:id", requireAuth, async (c) => {
     const actor = userFromContext(c);
     if (actor.role !== "admin") throw errors.forbidden();
-    const body = await jsonBody(
-      c,
-      z.object({
-        role: z.enum(["admin", "member"]).optional(),
-        disabled: z.boolean().optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.userPatch);
     const targetId = c.req.param("id");
     const target = (
       await env.db
@@ -918,21 +1012,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.post("/invites", requireAuth, async (c) => {
     const actor = userFromContext(c);
     if (actor.role !== "admin") throw errors.forbidden();
-    const body = await jsonBody(
-      c,
-      z.object({
-        email: z.string().email(),
-        role: z.enum(["admin", "member"]).default("member"),
-        project_grants: z
-          .array(
-            z.object({
-              project_id: z.string(),
-              role: z.enum(["manager", "editor", "commenter", "viewer"]),
-            }),
-          )
-          .default([]),
-      }),
-    );
+    const body = await jsonBody(c, bodies.inviteCreate);
     const email = body.email.trim().toLowerCase();
     const existingUser = await env.db
       .select({ id: users.id })
@@ -1100,7 +1180,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       c.req.header("x-forwarded-for") ??
       "unknown";
     await hitRateLimit(`invite_lookup:${ip}`, 20, 5 * 60 * 1000);
-    const body = await jsonBody(c, z.object({ token: z.string().min(1) }));
+    const body = await jsonBody(c, bodies.inviteLookup);
     const invite = await inviteByToken(body.token);
     const workspace = await workspaceFor(invite.workspaceId);
     return c.json({ email: invite.email, workspace_name: workspace.name });
@@ -1112,14 +1192,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       c.req.header("x-forwarded-for") ??
       "unknown";
     await hitRateLimit(`invite_accept:${ip}`, 20, 5 * 60 * 1000);
-    const body = await jsonBody(
-      c,
-      z.object({
-        token: z.string().min(1),
-        name: z.string().min(1).max(200),
-        password: z.string(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.inviteAccept);
     assertPassword(body.password);
     const invite = await inviteByToken(body.token);
     const existing = await env.db
@@ -1214,10 +1287,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.post("/tokens", requireAuth, async (c) => {
     const user = userFromContext(c);
-    const body = await jsonBody(
-      c,
-      z.object({ name: z.string().min(1).max(200) }),
-    );
+    const body = await jsonBody(c, bodies.tokenCreate);
     const raw = `olt_${base62(32)}`;
     const now = env.clock.now();
     const id = env.ids.ulid();
@@ -1312,14 +1382,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.post("/projects", requireAuth, async (c) => {
     const user = userFromContext(c);
-    const body = await jsonBody(
-      c,
-      z.object({
-        name: z.string().min(1).max(200),
-        palette: z.enum(PALETTES).optional(),
-        restricted: z.boolean().default(false),
-      }),
-    );
+    const body = await jsonBody(c, bodies.projectCreate);
     const existing = await env.db
       .select({ id: projects.id })
       .from(projects)
@@ -1418,15 +1481,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         allowArchived: true,
       },
     );
-    const body = await jsonBody(
-      c,
-      z.object({
-        name: z.string().min(1).max(200).optional(),
-        palette: z.enum(PALETTES).optional(),
-        restricted: z.boolean().optional(),
-        status: z.enum(["active", "archived"]).optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.projectPatch);
     await env.db
       .update(projects)
       .set({
@@ -1507,10 +1562,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.put("/projects/:id/members/:userId", requireAuth, async (c) => {
     const actor = userFromContext(c);
     await requireProject(c.req.param("id"), actor, "manager");
-    const body = await jsonBody(
-      c,
-      z.object({ role: z.enum(["manager", "editor", "commenter", "viewer"]) }),
-    );
+    const body = await jsonBody(c, bodies.memberPut);
     const target = (
       await env.db
         .select()
@@ -1683,13 +1735,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.post("/projects/:id/folders", requireAuth, async (c) => {
     const actor = userFromContext(c);
     await requireProject(c.req.param("id"), actor, "editor");
-    const body = await jsonBody(
-      c,
-      z.object({
-        name: z.string().min(1).max(200),
-        parent_id: z.string().nullable().optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.folderCreate);
     await folderDepth(c.req.param("id"), body.parent_id ?? null);
     const now = env.clock.now();
     const id = env.ids.ulid();
@@ -1737,13 +1783,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     )[0];
     if (!folder) throw errors.notFound();
     await requireProject(folder.projectId, actor, "editor");
-    const body = await jsonBody(
-      c,
-      z.object({
-        name: z.string().min(1).max(200).optional(),
-        parent_id: z.string().nullable().optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.folderPatch);
     const parentId =
       body.parent_id === undefined ? folder.parentId : body.parent_id;
     if (parentId === folder.id)
@@ -1914,18 +1954,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       actor,
       "commenter",
     );
-    const body = await jsonBody(
-      c,
-      z.object({
-        frame_in: z.number().int().nonnegative().optional(),
-        frame_out: z.number().int().nonnegative().optional(),
-        body_text: z.string().min(1).max(10000),
-        annotation: z.unknown().optional(),
-        pin_xy: z.unknown().optional(),
-        page_no: z.number().int().positive().optional(),
-        internal: z.boolean().default(false),
-      }),
-    );
+    const body = await jsonBody(c, bodies.commentCreate);
     validateCommentAnchor(body);
     if (
       version.durationFrames !== null &&
@@ -1974,6 +2003,35 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!comment) throw errors.internal();
+    // New top-level comments notify the version uploader and the project
+    // managers (never the commenting actor).
+    const commentedAsset = (
+      await env.db
+        .select()
+        .from(assets)
+        .where(eq(assets.id, version.assetId))
+        .limit(1)
+        .all()
+    )[0];
+    if (commentedAsset)
+      await createNotifications({
+        projectId: commentedAsset.projectId,
+        actorUserId: actor.id,
+        recipients: [
+          version.uploadedBy,
+          ...(await projectManagerIds(commentedAsset.projectId)),
+        ],
+        kind: "comment.created",
+        payload: {
+          project_id: commentedAsset.projectId,
+          asset_id: commentedAsset.id,
+          asset_name: commentedAsset.name,
+          version_id: version.id,
+          comment_id: id,
+          actor_name: actor.name,
+          preview: notificationPreview(body.body_text.trim()),
+        },
+      });
     return c.json(commentWire(comment), 201);
   });
 
@@ -2032,16 +2090,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       "commenter",
     );
     await requireCommentAuthorOrModerator(comment, actor);
-    const body = await jsonBody(
-      c,
-      z.object({
-        frame_in: z.number().int().nonnegative().optional(),
-        frame_out: z.number().int().nonnegative().optional(),
-        body_text: z.string().min(1).max(10000).optional(),
-        annotation: z.unknown().optional(),
-        pin_xy: z.unknown().optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.commentPatch);
     validateCommentAnchor(body);
     await env.db
       .update(comments)
@@ -2205,13 +2254,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const actor = userFromContext(c);
     const parent = await commentForActor(c.req.param("id"), actor, "commenter");
     if (parent.parentId) throw errors.validation("Replies cannot be nested.");
-    const body = await jsonBody(
-      c,
-      z.object({
-        body_text: z.string().min(1).max(10000),
-        annotation: z.unknown().optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.replyCreate);
     const now = env.clock.now();
     const id = env.ids.ulid();
     await env.db
@@ -2251,6 +2294,43 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!reply) throw errors.internal();
+    // Replies notify the parent author and the other thread participants
+    // with a user account (share viewers have none), never the actor.
+    const repliedVersion = (
+      await env.db
+        .select()
+        .from(assetVersions)
+        .where(eq(assetVersions.id, parent.versionId))
+        .limit(1)
+        .all()
+    )[0];
+    const repliedAsset = repliedVersion
+      ? (
+          await env.db
+            .select()
+            .from(assets)
+            .where(eq(assets.id, repliedVersion.assetId))
+            .limit(1)
+            .all()
+        )[0]
+      : undefined;
+    if (repliedAsset)
+      await createNotifications({
+        projectId: repliedAsset.projectId,
+        actorUserId: actor.id,
+        recipients: await threadParticipantIds(parent.id),
+        kind: "comment.reply",
+        payload: {
+          project_id: repliedAsset.projectId,
+          asset_id: repliedAsset.id,
+          asset_name: repliedAsset.name,
+          version_id: parent.versionId,
+          comment_id: id,
+          parent_comment_id: parent.id,
+          actor_name: actor.name,
+          preview: notificationPreview(body.body_text.trim()),
+        },
+      });
     return c.json(commentWire(reply), 201);
   });
 
@@ -2285,10 +2365,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       actor,
       "commenter",
     );
-    const body = await jsonBody(
-      c,
-      z.object({ code: z.string().regex(/^[a-z0-9_]{1,32}$/) }),
-    );
+    const body = await jsonBody(c, bodies.reactionCreate);
     await env.db
       .insert(commentReactions)
       .values({
@@ -2325,7 +2402,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.post("/versions/:id/carry-forward", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const target = await versionForActor(c.req.param("id"), actor, "manager");
-    const body = await jsonBody(c, z.object({ from_version_id: z.string() }));
+    const body = await jsonBody(c, bodies.carryForward);
     const source = await versionForActor(body.from_version_id, actor, "viewer");
     const sourceComments = await env.db
       .select()
@@ -2372,15 +2449,50 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.json({ items: copied });
   });
 
+  /** Approval changes notify the current version uploader and the project
+      managers (never the actor who changed the status). */
+  const notifyApprovalChange = async (options: {
+    asset: typeof assets.$inferSelect;
+    status: string;
+    actorUserId: string | null;
+    actorName: string;
+  }) => {
+    const currentVersion = options.asset.currentVersionId
+      ? (
+          await env.db
+            .select({ uploadedBy: assetVersions.uploadedBy })
+            .from(assetVersions)
+            .where(eq(assetVersions.id, options.asset.currentVersionId))
+            .limit(1)
+            .all()
+        )[0]
+      : undefined;
+    await createNotifications({
+      projectId: options.asset.projectId,
+      actorUserId: options.actorUserId,
+      recipients: [
+        currentVersion?.uploadedBy,
+        ...(await projectManagerIds(options.asset.projectId)),
+      ],
+      kind: "approval.updated",
+      payload: {
+        project_id: options.asset.projectId,
+        asset_id: options.asset.id,
+        asset_name: options.asset.name,
+        ...(options.asset.currentVersionId
+          ? { version_id: options.asset.currentVersionId }
+          : {}),
+        status: options.status,
+        actor_name: options.actorName,
+        preview: `Status set to ${options.status.replace(/_/g, " ")}`,
+      },
+    });
+  };
+
   api.patch("/assets/:id/approval", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const asset = await assetForActor(c.req.param("id"), actor, "manager");
-    const body = await jsonBody(
-      c,
-      z.object({
-        status: z.enum(["none", "in_review", "approved", "changes_requested"]),
-      }),
-    );
+    const body = await jsonBody(c, bodies.approvalPatch);
     await env.db
       .update(assets)
       .set({ status: body.status, updatedAt: env.clock.now() })
@@ -2395,6 +2507,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!updated) throw errors.notFound();
+    await notifyApprovalChange({
+      asset: updated,
+      status: body.status,
+      actorUserId: actor.id,
+      actorName: actor.name,
+    });
     return c.json(assetWire(updated));
   });
 
@@ -2402,6 +2520,77 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const actor = userFromContext(c);
     const limit = getLimit(c.req.query("limit"));
     const cursor = cursorParam(c.req.query("cursor"));
+    // Transcode failures are recorded by the out-of-process worker pump,
+    // which writes version state but never notification rows. Materialize
+    // them at read time for the requesting user when they are the uploader
+    // or a manager of the project, deduplicated by version_id (muted
+    // projects are skipped inside createNotifications). The scan is bounded;
+    // failed versions are rare.
+    const managedProjects = new Set<string>(
+      (
+        await env.db
+          .select({ projectId: projectMembers.projectId })
+          .from(projectMembers)
+          .where(
+            and(
+              eq(projectMembers.userId, actor.id),
+              eq(projectMembers.role, "manager"),
+            ),
+          )
+          .all()
+      ).map((row: { projectId: string }) => row.projectId),
+    );
+    const failedVersions = await env.db
+      .select({ version: assetVersions, asset: assets })
+      .from(assetVersions)
+      .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+      .innerJoin(projects, eq(assets.projectId, projects.id))
+      .where(
+        and(
+          eq(projects.workspaceId, actor.workspaceId),
+          eq(assetVersions.transcodeStatus, "failed"),
+          isNull(assets.deletedAt),
+          isNull(assetVersions.deletedAt),
+        ),
+      )
+      .orderBy(desc(assetVersions.id))
+      .limit(100)
+      .all();
+    for (const row of failedVersions as Array<{
+      version: typeof assetVersions.$inferSelect;
+      asset: typeof assets.$inferSelect;
+    }>) {
+      const isRecipient =
+        row.version.uploadedBy === actor.id ||
+        managedProjects.has(row.asset.projectId);
+      if (!isRecipient) continue;
+      const existing = await env.db
+        .select({ id: notifications.id })
+        .from(notifications)
+        .where(
+          and(
+            eq(notifications.userId, actor.id),
+            eq(notifications.kind, "transcode.failed"),
+            sql`json_extract(${notifications.payloadJson}, '$.version_id') = ${row.version.id}`,
+          ),
+        )
+        .limit(1)
+        .all();
+      if (existing.length) continue;
+      await createNotifications({
+        projectId: row.asset.projectId,
+        actorUserId: null,
+        recipients: [actor.id],
+        kind: "transcode.failed",
+        payload: {
+          project_id: row.asset.projectId,
+          asset_id: row.asset.id,
+          asset_name: row.asset.name,
+          version_id: row.version.id,
+          preview: `Transcode failed for ${row.asset.name}`,
+        },
+      });
+    }
     const rows = await env.db
       .select()
       .from(notifications)
@@ -2432,10 +2621,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.post("/notifications/read", requireAuth, async (c) => {
     const actor = userFromContext(c);
-    const body = await jsonBody(
-      c,
-      z.object({ ids: z.array(z.string()).min(1) }),
-    );
+    const body = await jsonBody(c, bodies.notificationsRead);
     await env.db
       .update(notifications)
       .set({ readAt: env.clock.now() })
@@ -2471,13 +2657,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.patch("/notifications/preferences", requireAuth, async (c) => {
     const actor = userFromContext(c);
-    const body = await jsonBody(
-      c,
-      z.object({
-        mode: z.enum(["instant", "hourly", "daily"]),
-        muted_projects: z.array(z.string()).default([]),
-      }),
-    );
+    const body = await jsonBody(c, bodies.notificationPreferencesPatch);
     await env.db
       .insert(notificationPreferences)
       .values({
@@ -2529,6 +2709,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.body(null, 204);
   });
 
+  // Search: scope=assets|comments|all with keyset cursor pagination. Assets
+  // stream first (id desc), then comments; the cursor carries which stream
+  // it points into so pages never drop or duplicate rows across the seam.
   api.get("/search", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const q = c.req.query("q")?.trim();
@@ -2536,57 +2719,98 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       throw errors.validation(
         "Search query must contain at least two characters.",
       );
+    const scope = c.req.query("scope") ?? "all";
+    if (!["all", "assets", "comments"].includes(scope))
+      throw errors.validation("Search scope must be all, assets, or comments.");
+    const limit = getLimit(c.req.query("limit"));
+    const cursor = searchCursorParam(c.req.query("cursor"));
+    const wantAssets = scope !== "comments";
+    const wantComments = scope !== "assets";
+    if (
+      cursor &&
+      ((cursor.t === "asset" && !wantAssets) ||
+        (cursor.t === "comment" && !wantComments))
+    )
+      throw errors.validation("Cursor does not match the requested scope.");
     const pattern = `%${q}%`;
-    const assetRows = await env.db
-      .select()
-      .from(assets)
-      .innerJoin(projects, eq(assets.projectId, projects.id))
-      .where(
-        and(
-          eq(projects.workspaceId, actor.workspaceId),
-          isNull(assets.deletedAt),
-          like(assets.name, pattern),
-        ),
-      )
-      .limit(100)
-      .all();
-    const commentRows = await env.db
-      .select()
-      .from(comments)
-      .innerJoin(assetVersions, eq(comments.versionId, assetVersions.id))
-      .innerJoin(assets, eq(assetVersions.assetId, assets.id))
-      .innerJoin(projects, eq(assets.projectId, projects.id))
-      .where(
-        and(
-          eq(projects.workspaceId, actor.workspaceId),
-          isNull(comments.deletedAt),
-          like(comments.bodyText, pattern),
-        ),
-      )
-      .limit(100)
-      .all();
-    return c.json({
-      items: [
-        ...assetRows.map((row: { assets: typeof assets.$inferSelect }) => ({
+    const items: Array<Record<string, unknown>> = [];
+    let nextCursor: string | null = null;
+    const matchingComments = (after: string | undefined, take: number) =>
+      env.db
+        .select()
+        .from(comments)
+        .innerJoin(assetVersions, eq(comments.versionId, assetVersions.id))
+        .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+        .innerJoin(projects, eq(assets.projectId, projects.id))
+        .where(
+          and(
+            eq(projects.workspaceId, actor.workspaceId),
+            isNull(comments.deletedAt),
+            like(comments.bodyText, pattern),
+            after ? lt(comments.id, after) : undefined,
+          ),
+        )
+        .orderBy(desc(comments.id))
+        .limit(take)
+        .all();
+    if (wantAssets && (!cursor || cursor.t === "asset")) {
+      const assetRows = await env.db
+        .select()
+        .from(assets)
+        .innerJoin(projects, eq(assets.projectId, projects.id))
+        .where(
+          and(
+            eq(projects.workspaceId, actor.workspaceId),
+            isNull(assets.deletedAt),
+            like(assets.name, pattern),
+            cursor?.id ? lt(assets.id, cursor.id) : undefined,
+          ),
+        )
+        .orderBy(desc(assets.id))
+        .limit(limit + 1)
+        .all();
+      const assetPage = assetRows.slice(0, limit) as Array<{
+        assets: typeof assets.$inferSelect;
+      }>;
+      items.push(
+        ...assetPage.map((row) => ({
           type: "asset",
           id: row.assets.id,
           name: row.assets.name,
           project_id: row.assets.projectId,
         })),
-        ...commentRows.map(
-          (row: {
-            comments: typeof comments.$inferSelect;
-            assets: typeof assets.$inferSelect;
-          }) => ({
-            type: "comment",
-            id: row.comments.id,
-            body_text: row.comments.bodyText,
-            asset_id: row.assets.id,
-            version_id: row.comments.versionId,
-          }),
-        ),
-      ],
-    });
+      );
+      if (assetRows.length > limit) {
+        const last = assetPage[assetPage.length - 1];
+        nextCursor = last ? encodeSearchCursor("asset", last.assets.id) : null;
+      } else if (wantComments && items.length >= limit) {
+        // The asset stream filled the page exactly; the comment stream
+        // starts on the next page if anything matches there.
+        const peek = await matchingComments(undefined, 1);
+        if (peek.length) nextCursor = encodeSearchCursor("comment");
+      }
+    }
+    if (!nextCursor && wantComments && items.length < limit) {
+      const remaining = limit - items.length;
+      const after = cursor?.t === "comment" ? cursor.id : undefined;
+      const commentRows = await matchingComments(after, remaining + 1);
+      const commentPage = commentRows.slice(0, remaining);
+      items.push(
+        ...commentPage.map((row) => ({
+          type: "comment",
+          id: row.comments.id,
+          body_text: row.comments.bodyText,
+          asset_id: row.assets.id,
+          version_id: row.comments.versionId,
+          project_id: row.assets.projectId,
+        })),
+      );
+      if (commentRows.length > remaining) {
+        const last = commentPage[commentPage.length - 1];
+        if (last) nextCursor = encodeSearchCursor("comment", last.comments.id);
+      }
+    }
+    return c.json({ items, next_cursor: nextCursor });
   });
 
   const shareBySlug = async (slug: string) => {
@@ -2696,12 +2920,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     assetId: string,
     versionId: string,
     blobKey: string,
+    disposition?: string,
   ) =>
     new SignJWT({
       share_id: share.id,
       asset_id: assetId,
       version_id: versionId,
       blob_key: blobKey,
+      ...(disposition ? { disposition } : {}),
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
@@ -2713,8 +2939,42 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     assetId: string,
     versionId: string,
     blobKey: string,
+    disposition?: string,
   ) =>
-    `${env.config.PUBLIC_URL.replace(/\/$/, "")}/s/${share.slug}/assets/${assetId}/media/file?token=${encodeURIComponent(await issueMediaToken(share, assetId, versionId, blobKey))}`;
+    `${env.config.PUBLIC_URL.replace(/\/$/, "")}/s/${share.slug}/assets/${assetId}/media/file?token=${encodeURIComponent(await issueMediaToken(share, assetId, versionId, blobKey, disposition))}`;
+
+  /**
+   * The watermarked rendition this share may serve for a version: kind
+   * "watermarked", registered for this share, and carrying the share's
+   * CURRENT watermark_spec_hash in its meta. A spec change invalidates the
+   * old rendition immediately (its hash no longer matches) even before the
+   * superseded row is cleaned up.
+   */
+  const watermarkedRenditionFor = async (
+    share: typeof shares.$inferSelect,
+    versionId: string,
+  ): Promise<typeof renditions.$inferSelect | undefined> => {
+    if (!share.watermarkSpecHash) return undefined;
+    const rows = await env.db
+      .select()
+      .from(renditions)
+      .where(
+        and(
+          eq(renditions.versionId, versionId),
+          eq(renditions.kind, "watermarked"),
+          eq(renditions.shareId, share.id),
+        ),
+      )
+      .all();
+    return rows.find(
+      (rendition: typeof renditions.$inferSelect) =>
+        parseJsonObject(rendition.metaJson).spec_hash ===
+        share.watermarkSpecHash,
+    );
+  };
+
+  const shareIsWatermarked = (share: typeof shares.$inferSelect): boolean =>
+    Boolean(share.watermarkSpecJson && share.watermarkSpecHash);
 
   const attachmentDisposition = (filename: string): string =>
     `attachment; filename="${filename.replace(/[\r\n"]/g, "")}"`;
@@ -2853,23 +3113,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.post("/shares", requireAuth, async (c) => {
     const actor = userFromContext(c);
-    const body = await jsonBody(
-      c,
-      z.object({
-        project_id: z.string(),
-        kind: z.enum(["review", "presentation"]).default("review"),
-        title: z.string().min(1).max(200),
-        layout: z.enum(["grid", "list", "reel"]).default("grid"),
-        passphrase: z.string().min(1).optional(),
-        expires_at: z.number().int().positive().nullable().optional(),
-        allow_download: z.enum(["none", "proxy", "original"]).default("none"),
-        allow_comments: z.boolean().default(true),
-        show_all_versions: z.boolean().default(false),
-        watermark_spec: z.record(z.unknown()).nullable().optional(),
-        brand: z.record(z.unknown()).nullable().optional(),
-        asset_ids: z.array(z.string()).min(1),
-      }),
-    );
+    const body = await jsonBody(c, bodies.shareCreate);
     await requireProject(body.project_id, actor, "manager");
     const allowedAssets = await env.db
       .select({ id: assets.id })
@@ -2989,20 +3233,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     )[0];
     if (!share) throw errors.notFound();
     await requireProject(share.projectId, actor, "manager");
-    const body = await jsonBody(
-      c,
-      z.object({
-        title: z.string().min(1).max(200).optional(),
-        layout: z.enum(["grid", "list", "reel"]).optional(),
-        passphrase: z.string().min(1).nullable().optional(),
-        expires_at: z.number().int().positive().nullable().optional(),
-        allow_download: z.enum(["none", "proxy", "original"]).optional(),
-        allow_comments: z.boolean().optional(),
-        show_all_versions: z.boolean().optional(),
-        watermark_spec: z.record(z.unknown()).nullable().optional(),
-        revoked: z.boolean().optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.sharePatch);
     const watermarkJson =
       body.watermark_spec === undefined
         ? share.watermarkSpecJson
@@ -3078,14 +3309,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.post("/webhooks", requireAuth, async (c) => {
     const actor = userFromContext(c);
     if (actor.role !== "admin") throw errors.forbidden();
-    const body = await jsonBody(
-      c,
-      z.object({
-        url: z.string().url(),
-        secret: z.string().min(16).optional(),
-        events: z.array(z.string()).min(1),
-      }),
-    );
+    const body = await jsonBody(c, bodies.webhookCreate);
     assertWebhookUrlAllowed(body.url);
     const id = env.ids.ulid();
     const secret = body.secret ?? base64UrlEncode(randomBytes(32));
@@ -3150,24 +3374,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     )[0];
     if (!share) throw errors.notFound();
     await requireProject(share.projectId, actor, "viewer");
-    const body = await jsonBody(
-      c,
-      z.object({
-        format: z.enum([
-          "resolve_edl",
-          "avid_txt",
-          "avid_xml",
-          "xmeml",
-          "fcpxml",
-          "csv",
-          "json",
-          "text",
-          "pdf",
-        ]),
-        filters: z.record(z.unknown()).default({}),
-        timecode_base: z.enum(["source", "record_run"]).default("source"),
-      }),
-    );
+    const body = await jsonBody(c, bodies.exportCreate);
     const id = env.ids.ulid();
     await env.db
       .insert(exportJobs)
@@ -3246,14 +3453,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       c.req.header("x-forwarded-for") ??
       "unknown";
     await hitRateLimit(`share_access:${share.id}:${ip}`, 20, 5 * 60 * 1000);
-    const body = await jsonBody(
-      c,
-      z.object({
-        passphrase: z.string().optional(),
-        name: z.string().min(1).max(200).optional(),
-        email: z.string().email().optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.shareAccess);
     if (
       share.passphraseHash &&
       (!body.passphrase ||
@@ -3302,14 +3502,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       c.req.header("x-forwarded-for") ??
       "unknown";
     await hitRateLimit(`share_access:${share.id}:${ip}`, 20, 5 * 60 * 1000);
-    const body = await jsonBody(
-      c,
-      z.object({
-        passphrase: z.string().optional(),
-        name: z.string().min(1).max(200).optional(),
-        email: z.string().email().optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.shareAccess);
     if (
       share.passphraseHash &&
       (!body.passphrase ||
@@ -3361,6 +3554,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const visibleVersions = projection.share.showAllVersions
       ? versions
       : versions.slice(0, 1);
+    const share = projection.share;
+    const watermarked = shareIsWatermarked(share);
+    const proxyKinds = ["proxy_540", "proxy_1080", "proxy_2160"];
     const items = [];
     for (const version of visibleVersions) {
       const versionRenditions = await env.db
@@ -3370,6 +3566,93 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           and(eq(renditions.versionId, version.id), isNull(renditions.shareId)),
         )
         .all();
+      // Playable ladder with signed URLs, watermark-aware: a watermarked
+      // share exposes only the burned rendition for the current spec hash
+      // (currently 1080-based, so the ladder is that single rung); an
+      // unwatermarked share exposes every proxy rung that exists.
+      const sources: Array<{
+        kind: string;
+        url: string;
+        size: number;
+        height: number | null;
+      }> = [];
+      let watermarkState: "ready" | "processing" | null = null;
+      const heightOf = (meta: Record<string, unknown>): number | null =>
+        typeof meta.height === "number" ? meta.height : null;
+      if (watermarked) {
+        const burned = await watermarkedRenditionFor(share, version.id);
+        watermarkState = burned ? "ready" : "processing";
+        if (burned && env.blobStore)
+          sources.push({
+            kind: "watermarked",
+            url: await publicMediaUrl(
+              share,
+              asset.id,
+              version.id,
+              burned.blobKey,
+            ),
+            size: burned.size,
+            height: heightOf(parseJsonObject(burned.metaJson)),
+          });
+      } else if (env.blobStore) {
+        for (const rendition of versionRenditions as Array<
+          typeof renditions.$inferSelect
+        >) {
+          if (!proxyKinds.includes(rendition.kind)) continue;
+          sources.push({
+            kind: rendition.kind,
+            url: await publicMediaUrl(
+              share,
+              asset.id,
+              version.id,
+              rendition.blobKey,
+            ),
+            size: rendition.size,
+            height: heightOf(parseJsonObject(rendition.metaJson)),
+          });
+        }
+      }
+      // Sidecars are watermark-neutral (no footage pixels beyond thumbnails).
+      const spriteRendition = (
+        versionRenditions as Array<typeof renditions.$inferSelect>
+      ).find((rendition) => rendition.kind === "sprite");
+      const peaksRendition = (
+        versionRenditions as Array<typeof renditions.$inferSelect>
+      ).find((rendition) => rendition.kind === "audio_peaks");
+      const spriteMeta = spriteRendition
+        ? parseJsonObject(spriteRendition.metaJson)
+        : {};
+      const vttKey =
+        typeof spriteMeta.vtt_blob_key === "string"
+          ? spriteMeta.vtt_blob_key
+          : undefined;
+      const sidecars = {
+        sprite:
+          spriteRendition && env.blobStore
+            ? {
+                url: await publicMediaUrl(
+                  share,
+                  asset.id,
+                  version.id,
+                  spriteRendition.blobKey,
+                ),
+                vtt_url: vttKey
+                  ? await publicMediaUrl(share, asset.id, version.id, vttKey)
+                  : null,
+              }
+            : null,
+        peaks:
+          peaksRendition && env.blobStore
+            ? {
+                url: await publicMediaUrl(
+                  share,
+                  asset.id,
+                  version.id,
+                  peaksRendition.blobKey,
+                ),
+              }
+            : null,
+      };
       items.push({
         id: version.id,
         version_no: version.versionNo,
@@ -3383,6 +3666,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             size: rendition.size,
           }),
         ),
+        sources,
+        sidecars,
+        watermark: watermarkState,
       });
     }
     return c.json({
@@ -3443,15 +3729,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         candidate.id === c.req.param("assetId"),
     );
     if (!asset || !asset.currentVersionId) throw errors.notFound();
-    const body = await jsonBody(
-      c,
-      z.object({
-        frame_in: z.number().int().nonnegative().optional(),
-        frame_out: z.number().int().nonnegative().optional(),
-        body_text: z.string().min(1).max(10000),
-        annotation: z.unknown().optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.shareCommentCreate);
     validateCommentAnchor(body);
     const now = env.clock.now();
     const id = env.ids.ulid();
@@ -3492,6 +3770,36 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!comment) throw errors.internal();
+    // Share-viewer comments notify the same recipients as member comments;
+    // the actor fields come from the named viewer (who has no user id, so
+    // there is no self to exclude).
+    const commentedVersion = (
+      await env.db
+        .select({ uploadedBy: assetVersions.uploadedBy })
+        .from(assetVersions)
+        .where(eq(assetVersions.id, asset.currentVersionId))
+        .limit(1)
+        .all()
+    )[0];
+    await createNotifications({
+      projectId: share.projectId,
+      actorUserId: null,
+      recipients: [
+        commentedVersion?.uploadedBy,
+        ...(await projectManagerIds(share.projectId)),
+      ],
+      kind: "comment.created",
+      payload: {
+        project_id: share.projectId,
+        asset_id: asset.id,
+        asset_name: asset.name,
+        version_id: asset.currentVersionId,
+        comment_id: id,
+        actor_name:
+          projection.viewer.name ?? projection.viewer.email ?? "Share viewer",
+        preview: notificationPreview(body.body_text.trim()),
+      },
+    });
     return c.json(commentWire(comment), 201);
   });
 
@@ -3524,13 +3832,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       c.req.param("slug"),
       c.req.param("commentId"),
     );
-    const body = await jsonBody(
-      c,
-      z.object({
-        body_text: z.string().min(1).max(10000),
-        annotation: z.unknown().optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.shareCommentPatch);
     validateCommentAnchor(body);
     await env.db
       .update(comments)
@@ -3599,13 +3901,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (!parentAsset || parent.internal)
       throw errors.notFound("Comment was not found.");
     if (parent.parentId) throw errors.validation("Replies cannot be nested.");
-    const body = await jsonBody(
-      c,
-      z.object({
-        body_text: z.string().min(1).max(10000),
-        annotation: z.unknown().optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.shareReplyCreate);
     validateCommentAnchor(body);
     const id = env.ids.ulid();
     await env.db
@@ -3645,6 +3941,25 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!reply) throw errors.internal();
+    // Share-viewer replies notify the registered-user thread participants;
+    // the actor is a viewer without a user id, so no self-exclusion applies.
+    await createNotifications({
+      projectId: share.projectId,
+      actorUserId: null,
+      recipients: await threadParticipantIds(parent.id),
+      kind: "comment.reply",
+      payload: {
+        project_id: share.projectId,
+        asset_id: parentAsset.id,
+        asset_name: parentAsset.name,
+        version_id: parent.versionId,
+        comment_id: id,
+        parent_comment_id: parent.id,
+        actor_name:
+          projection.viewer.name ?? projection.viewer.email ?? "Share viewer",
+        preview: notificationPreview(body.body_text.trim()),
+      },
+    });
     return c.json(commentWire(reply), 201);
   });
 
@@ -3652,13 +3967,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const share = await shareBySlug(c.req.param("slug"));
     const projection = await publicShare(c, share);
     if (!projection.viewer) throw errors.unauthorized();
-    const body = await jsonBody(
-      c,
-      z.object({
-        asset_id: z.string(),
-        status: z.enum(["none", "in_review", "approved", "changes_requested"]),
-      }),
-    );
+    const body = await jsonBody(c, bodies.shareApprovalPatch);
     const asset = projection.assets.find(
       (candidate: PublicShareAsset) => candidate.id === body.asset_id,
     );
@@ -3668,6 +3977,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .set({ status: body.status, updatedAt: env.clock.now() })
       .where(eq(assets.id, asset.id))
       .run();
+    await notifyApprovalChange({
+      asset,
+      status: body.status,
+      actorUserId: null,
+      actorName:
+        projection.viewer.name ?? projection.viewer.email ?? "Share viewer",
+    });
     return c.json({ asset_id: asset.id, status: body.status });
   });
 
@@ -3682,6 +3998,27 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         candidate.id === c.req.param("assetId"),
     );
     if (!asset?.currentVersionId || !env.blobStore) throw errors.notFound();
+    const share = projection.share;
+    if (shareIsWatermarked(share)) {
+      // Watermarked shares serve ONLY the burned rendition registered for
+      // this share under the current spec hash. While it is missing (still
+      // rendering, or the spec just changed) the response is 202
+      // {status: "processing"}; the clean proxy is never a fallback.
+      const watermarked = await watermarkedRenditionFor(
+        share,
+        asset.currentVersionId,
+      );
+      if (!watermarked) return c.json({ status: "processing" }, 202);
+      return c.json({
+        url: await publicMediaUrl(
+          share,
+          asset.id,
+          asset.currentVersionId,
+          watermarked.blobKey,
+        ),
+        expires_at: env.clock.now() + 15 * 60 * 1000,
+      });
+    }
     const rendition = (
       await env.db
         .select()
@@ -3690,6 +4027,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           and(
             eq(renditions.versionId, asset.currentVersionId),
             eq(renditions.kind, "proxy_1080"),
+            isNull(renditions.shareId),
           ),
         )
         .limit(1)
@@ -3698,7 +4036,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (!rendition) throw errors.notFound("A review rendition is not ready.");
     return c.json({
       url: await publicMediaUrl(
-        projection.share,
+        share,
         asset.id,
         asset.currentVersionId,
         rendition.blobKey,
@@ -3707,11 +4045,96 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     });
   });
 
+  // Share downloads, gated by allow_download. A watermarked share never
+  // hands out the clean file in ANY mode: both proxy and original resolve to
+  // the burned rendition (202 while it is still rendering).
+  api.get("/s/:slug/assets/:assetId/download", async (c) => {
+    const projection = await publicShare(
+      c,
+      await shareBySlug(c.req.param("slug")),
+    );
+    if (!projection.viewer) throw errors.unauthorized();
+    const asset = projection.assets.find(
+      (candidate: PublicShareAsset) => candidate.id === c.req.param("assetId"),
+    );
+    if (!asset) throw errors.notFound();
+    const share = projection.share;
+    // The policy answer precedes any storage dependency: disabled downloads
+    // are 403 even when no rendition or blob store exists yet.
+    if (share.allowDownload === "none")
+      throw errors.forbidden("Downloads are disabled for this share.");
+    if (!asset.currentVersionId || !env.blobStore) throw errors.notFound();
+    const version = (
+      await env.db
+        .select()
+        .from(assetVersions)
+        .where(eq(assetVersions.id, asset.currentVersionId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!version) throw errors.notFound();
+    const baseName =
+      version.originalFilename.replace(/\.[^.]+$/, "") || "download";
+    const expiresAt = env.clock.now() + 15 * 60 * 1000;
+    if (shareIsWatermarked(share)) {
+      const watermarked = await watermarkedRenditionFor(share, version.id);
+      if (!watermarked) return c.json({ status: "processing" }, 202);
+      return c.json({
+        url: await publicMediaUrl(
+          share,
+          asset.id,
+          version.id,
+          watermarked.blobKey,
+          attachmentDisposition(`${baseName}-watermarked.mp4`),
+        ),
+        expires_at: expiresAt,
+      });
+    }
+    if (share.allowDownload === "proxy") {
+      const proxy = (
+        await env.db
+          .select()
+          .from(renditions)
+          .where(
+            and(
+              eq(renditions.versionId, version.id),
+              eq(renditions.kind, "proxy_1080"),
+              isNull(renditions.shareId),
+            ),
+          )
+          .limit(1)
+          .all()
+      )[0];
+      if (!proxy) throw errors.notFound("A review rendition is not ready.");
+      return c.json({
+        url: await publicMediaUrl(
+          share,
+          asset.id,
+          version.id,
+          proxy.blobKey,
+          attachmentDisposition(`${baseName}-proxy.mp4`),
+        ),
+        expires_at: expiresAt,
+      });
+    }
+    return c.json({
+      url: await publicMediaUrl(
+        share,
+        asset.id,
+        version.id,
+        version.originalBlobKey,
+        attachmentDisposition(version.originalFilename),
+      ),
+      expires_at: expiresAt,
+    });
+  });
+
   api.get("/s/:slug/assets/:assetId/media/file", async (c) => {
     const share = await shareBySlug(c.req.param("slug"));
     const token = c.req.query("token");
     if (!token || !env.blobStore) throw errors.unauthorized();
     let blobKey: string;
+    let disposition: string | undefined;
     try {
       const verified = await jwtVerify(
         token,
@@ -3724,32 +4147,60 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       )
         throw new Error("Token claims do not match this share asset.");
       blobKey = verified.payload.blob_key;
+      // Downloads carry an attachment disposition in the verified claim;
+      // it is sanitized again before reaching the header.
+      if (typeof verified.payload.disposition === "string")
+        disposition = sanitizeDisposition(verified.payload.disposition);
     } catch {
       throw errors.unauthorized();
     }
-    return serveBlob(c, blobKey);
+    return serveBlob(c, blobKey, disposition);
   });
 
   api.post("/uploads", requireAuth, async (c) => {
     const actor = userFromContext(c);
-    const body = await jsonBody(
-      c,
-      z.object({
-        project_id: z.string(),
-        filename: z.string().min(1).max(500),
-        relative_path: z.string().max(2000).default(""),
-        size: z.number().int().positive(),
-        checksum_crc32c: z
-          .string()
-          .regex(/^[A-Za-z0-9+/=_-]+$/)
-          .optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.uploadCreate);
     await requireProject(body.project_id, actor, "editor");
     if ((body.relative_path ?? "").split(/[\\/]/).includes(".."))
       throw errors.validation("Relative path cannot contain parent segments.");
-    const uploadId = env.ids.ulid();
     const filename = body.filename.replace(/[\\/]/g, "_");
+    // Idempotency-Key (phase-1 section 3, scoped interpretation, supersession
+    // dated 2026-07-11): a keyed create that matches a still-open session by
+    // the same user for the same project, filename, and size replays that
+    // session with 200 instead of opening a duplicate. Complete is naturally
+    // idempotent already (re-complete returns 202 with the original result).
+    // A general key -> response replay store is future work.
+    if (c.req.header("idempotency-key")) {
+      const existing = (
+        await env.db
+          .select()
+          .from(uploadSessions)
+          .where(
+            and(
+              eq(uploadSessions.createdBy, actor.id),
+              eq(uploadSessions.projectId, body.project_id),
+              eq(uploadSessions.clientFilename, filename),
+              eq(uploadSessions.size, body.size),
+              or(
+                eq(uploadSessions.status, "pending"),
+                eq(uploadSessions.status, "uploading"),
+              ),
+            ),
+          )
+          .orderBy(desc(uploadSessions.id))
+          .limit(1)
+          .all()
+      )[0];
+      if (existing)
+        return c.json(
+          {
+            upload: uploadWire(existing),
+            upload_url: `/api/v1/uploads/${existing.id}/multipart`,
+          },
+          200,
+        );
+    }
+    const uploadId = env.ids.ulid();
     const blobKey = `${actor.workspaceId}/${body.project_id}/uploads/${uploadId}/${filename}`;
     const now = env.clock.now();
     await env.db
@@ -3923,25 +4374,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const upload = await findUpload(c.req.param("id"), actor);
     // Re-completing a completed upload is idempotent: return the original
     // result instead of re-driving the blob store (spec phase-1 section 3).
+    // An Idempotency-Key header is accepted and needs no bookkeeping here;
+    // this natural idempotency is the documented scoped interpretation.
     if (upload.status === "completed")
       return c.json({ upload: uploadWire(upload) }, 202);
     if (upload.status === "quarantined" || upload.status === "aborted")
       throw errors.conflict("This upload cannot be completed.");
     const store = requireBlobStore();
-    const body = await jsonBody(
-      c,
-      z.object({
-        parts: z
-          .array(
-            z.object({
-              part_no: z.number().int().positive(),
-              etag: z.string(),
-            }),
-          )
-          .min(1),
-        checksum_crc32c: z.string().optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.uploadComplete);
     if (!upload.uploadId)
       throw errors.validation("Multipart upload is not initialized.");
     const persistedParts = await env.db
@@ -4078,14 +4518,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.post("/projects/:id/assets", requireAuth, async (c) => {
     const actor = userFromContext(c);
     await requireProject(c.req.param("id"), actor, "editor");
-    const body = await jsonBody(
-      c,
-      z.object({
-        name: z.string().max(500).optional(),
-        folder_id: z.string().nullable().optional(),
-        upload_id: z.string(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.assetCreate);
     const upload = await findUpload(body.upload_id, actor);
     if (upload.projectId !== c.req.param("id") || upload.status !== "completed")
       throw errors.validation("Upload must be completed for this project.");
@@ -4247,18 +4680,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.patch("/assets/:id", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const asset = await assetForActor(c.req.param("id"), actor, "editor");
-    const body = await jsonBody(
-      c,
-      z.object({
-        name: z.string().min(1).max(500).optional(),
-        folder_id: z.string().nullable().optional(),
-        status: z
-          .enum(["none", "in_review", "approved", "changes_requested"])
-          .optional(),
-        description: z.string().max(10000).optional(),
-        tags: z.array(z.string().min(1).max(100)).max(100).optional(),
-      }),
-    );
+    const body = await jsonBody(c, bodies.assetPatch);
     await env.db
       .update(assets)
       .set({
@@ -4409,10 +4831,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.patch("/versions/:id/stack", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const version = await versionForActor(c.req.param("id"), actor, "manager");
-    const body = await jsonBody(
-      c,
-      z.object({ version_no: z.number().int().positive() }),
-    );
+    const body = await jsonBody(c, bodies.stackPatch);
     const target = (
       await env.db
         .select()
@@ -4776,14 +5195,126 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.redirect("/", 302);
   });
 
-  // The OpenAPI paths object is generated from the routes registered on the
-  // Hono app (the REST API is a public contract; a hand-maintained map
-  // drifts). Built lazily at first request so every route is registered.
+  // The OpenAPI document is generated from the routes registered on the Hono
+  // app (the REST API is a public contract; a hand-maintained map drifts).
+  // Request and response schemas come from the shared registry in schemas.ts,
+  // whose request entries are the SAME zod objects the routes validate with,
+  // so the document and the validators cannot drift. Built lazily at first
+  // request so every route is registered.
   const openApiMethods = new Set(["get", "post", "put", "patch", "delete"]);
   const toOpenApiPath = (path: string): string =>
     path.replace(/:([A-Za-z0-9_]+)/g, "{$1}").replace(/\*/g, "{path}");
-  let openApiPathsCache: Record<string, Record<string, unknown>> | undefined;
-  const buildOpenApiPaths = (): Record<string, Record<string, unknown>> => {
+  const jsonSchemaFor = (
+    schema: Parameters<typeof zodToJsonSchema>[0],
+  ): Record<string, unknown> => {
+    const converted = zodToJsonSchema(schema, {
+      $refStrategy: "none",
+    }) as Record<string, unknown>;
+    delete converted.$schema;
+    return converted;
+  };
+  const errorRef = (description: string) => ({
+    description,
+    content: {
+      "application/json": {
+        schema: { $ref: "#/components/schemas/Error" },
+      },
+    },
+  });
+  const binaryBody = (contentType: string) => ({
+    content:
+      contentType === "multipart/form-data"
+        ? {
+            [contentType]: {
+              schema: {
+                type: "object",
+                properties: { file: { type: "string", format: "binary" } },
+                required: ["file"],
+              },
+            },
+          }
+        : { [contentType]: { schema: { type: "string", format: "binary" } } },
+  });
+  const operationFor = (
+    routePath: string,
+    method: string,
+    doc: RouteDoc | undefined,
+  ): Record<string, unknown> => {
+    const parameters: Array<Record<string, unknown>> = [];
+    for (const match of routePath.matchAll(/:([A-Za-z0-9_]+)/g))
+      parameters.push({
+        name: match[1],
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      });
+    if (routePath.includes("*"))
+      parameters.push({
+        name: "path",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      });
+    for (const [name, query] of Object.entries(doc?.query ?? {}))
+      parameters.push({
+        name,
+        in: "query",
+        required: Boolean(query.required),
+        description: query.description,
+        schema: { type: "string" },
+      });
+    const responses: Record<string, unknown> = {};
+    if (doc) {
+      for (const [status, response] of Object.entries(doc.responses)) {
+        responses[status] = {
+          description: response.description,
+          ...(response.schema
+            ? {
+                content: {
+                  "application/json": {
+                    schema: jsonSchemaFor(response.schema),
+                  },
+                },
+              }
+            : response.contentType
+              ? binaryBody(response.contentType)
+              : {}),
+        };
+      }
+    } else {
+      responses[
+        method === "post" ? "201" : method === "delete" ? "204" : "200"
+      ] = { description: `${method.toUpperCase()} ${routePath}` };
+    }
+    responses["400"] = errorRef("Validation failure");
+    responses["401"] = errorRef("Authentication required");
+    responses["403"] = errorRef("Forbidden");
+    responses["404"] = errorRef("Not found");
+    return {
+      ...(doc?.summary ? { summary: doc.summary } : {}),
+      ...(parameters.length ? { parameters } : {}),
+      ...(doc?.request
+        ? {
+            requestBody: {
+              required: true,
+              content: {
+                "application/json": { schema: jsonSchemaFor(doc.request) },
+              },
+            },
+          }
+        : doc?.requestContentType
+          ? {
+              requestBody: {
+                required: true,
+                ...binaryBody(doc.requestContentType),
+              },
+            }
+          : {}),
+      responses,
+    };
+  };
+  let openApiDocumentCache: Record<string, unknown> | undefined;
+  const buildOpenApiDocument = (): Record<string, unknown> => {
     const paths: Record<string, Record<string, unknown>> = {};
     for (const route of api.routes) {
       const method = route.method.toLowerCase();
@@ -4792,27 +5323,22 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       const path = toOpenApiPath(`/api/v1${route.path}`);
       const entry = (paths[path] ??= {});
       if (entry[method]) continue;
-      entry[method] = {
-        responses: {
-          [method === "post" ? "201" : method === "delete" ? "204" : "200"]: {
-            description: `${method.toUpperCase()} ${path}`,
-          },
-          "400": { description: "Validation failure" },
-          "401": { description: "Authentication required" },
-          "403": { description: "Forbidden" },
-          "404": { description: "Not found" },
-        },
-      };
+      entry[method] = operationFor(
+        route.path,
+        method,
+        routeDocs[`${route.method} ${route.path}`],
+      );
     }
-    return paths;
-  };
-  api.get("/openapi.json", (c) => {
-    openApiPathsCache ??= buildOpenApiPaths();
-    return c.json({
+    return {
       openapi: "3.1.0",
       info: { title: "Onelight API", version: env.version },
-      paths: openApiPathsCache,
-    });
+      components: { schemas: { Error: jsonSchemaFor(errorEnvelope) } },
+      paths,
+    };
+  };
+  api.get("/openapi.json", (c) => {
+    openApiDocumentCache ??= buildOpenApiDocument();
+    return c.json(openApiDocumentCache);
   });
   const docsHtml =
     '<!doctype html><html><head><title>Onelight API</title></head><body><h1>Onelight API</h1><p>OpenAPI document: <a href="/api/v1/openapi.json">/api/v1/openapi.json</a></p></body></html>';

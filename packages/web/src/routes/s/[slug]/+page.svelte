@@ -4,6 +4,7 @@
     AnnotationStroke,
     FrameAnnotation,
     PendingDrawing,
+    PlayerRendition,
     TimelineMarker,
     WatermarkOverlay
   } from '@onelight/player';
@@ -15,6 +16,7 @@
     kind: 'review' | 'presentation';
     layout: 'grid' | 'list' | 'reel';
     allow_comments: boolean;
+    allow_download: 'none' | 'proxy' | 'original';
     expires_at: number | null;
     watermark_spec: Record<string, unknown> | null;
   };
@@ -34,6 +36,8 @@
       id: string;
       media_info: Record<string, unknown>;
       renditions: Array<{ kind: string; meta: Record<string, unknown> }>;
+      sources: Array<{ kind: string; url: string }>;
+      watermark: 'ready' | 'processing' | null;
     }>;
   };
 
@@ -44,6 +48,9 @@
   let previewRate = $state<{ num: number; den: number } | null>(null);
   let previewDropFrame = $state(false);
   let previewDurationFrames = $state<number | null>(null);
+  let previewRenditions = $state<PlayerRendition[]>([]);
+  let watermarkPending = $state(false);
+  let downloadNote = $state('');
   let comments = $state<Comment[]>([]);
   let passphrase = $state('');
   let viewerName = $state('');
@@ -56,6 +63,9 @@
   let player = $state<Player | null>(null);
   let highlightedId = $state<string | null>(null);
   let pendingDrawing = $state<PendingDrawing | null>(null);
+  /* Bumped whenever the preview changes; in-flight media polls compare it
+     and stand down. */
+  let mediaPollToken = 0;
 
   const slug = $derived(page.params.slug);
 
@@ -79,11 +89,13 @@
       return null;
     };
     const expires = record['expires_at'] ?? record['expiresAt'];
+    const download = record['allow_download'] ?? record['allowDownload'];
     return {
       title: typeof record['title'] === 'string' ? record['title'] : 'Shared review',
       kind: record['kind'] === 'presentation' ? 'presentation' : 'review',
       layout: record['layout'] === 'list' ? 'list' : record['layout'] === 'reel' ? 'reel' : 'grid',
       allow_comments: Boolean(record['allow_comments'] ?? record['allowComments']),
+      allow_download: download === 'proxy' || download === 'original' ? download : 'none',
       expires_at: typeof expires === 'number' ? expires : null,
       watermark_spec: parseSpec()
     };
@@ -218,31 +230,65 @@
     return null;
   };
 
+  /* GET .../media answers 200 {url} or, for watermarked shares whose burned
+     rendition is still rendering, 202 {status: "processing"}. Poll quietly
+     on 202; the clean proxy is never served for those shares. */
+  const fetchMedia = async (asset: Asset, token: number): Promise<void> => {
+    try {
+      const payload = await api<{ url?: string; status?: string }>(
+        `/api/v1/s/${slug}/assets/${asset.id}/media`
+      );
+      if (token !== mediaPollToken) return;
+      if (payload.url) {
+        previewUrl = payload.url;
+        watermarkPending = false;
+        return;
+      }
+      if (payload.status === 'processing') {
+        watermarkPending = true;
+        setTimeout(() => {
+          if (token === mediaPollToken) void fetchMedia(asset, token);
+        }, 4000);
+      }
+    } catch {
+      /* No media yet: the preview shows the empty state. */
+      if (token === mediaPollToken) watermarkPending = false;
+    }
+  };
+
   const openAsset = async (asset: Asset): Promise<void> => {
     selected = asset;
     previewUrl = '';
     previewRate = null;
     previewDropFrame = false;
     previewDurationFrames = null;
+    previewRenditions = [];
+    watermarkPending = false;
+    downloadNote = '';
     comments = [];
     currentFrame = 0;
     highlightedId = null;
     pendingDrawing = null;
+    mediaPollToken += 1;
+    const token = mediaPollToken;
     try {
       const detail = await api<AssetDetail>(`/api/v1/s/${slug}/assets/${asset.id}`);
       previewRate = rateFrom(detail);
-      const info = detail.versions[0]?.media_info ?? {};
+      const version = detail.versions[0];
+      const info = version?.media_info ?? {};
       previewDropFrame = Boolean(info['drop_frame'] ?? info['dropFrame']);
       const frames = info['duration_frames'] ?? info['durationFrames'];
       if (typeof frames === 'number' && frames > 0) previewDurationFrames = frames;
+      /* The detail carries the playable ladder (watermark-aware) directly. */
+      previewRenditions = (version?.sources ?? []).map((source) => ({
+        kind: source.kind,
+        url: source.url
+      }));
+      if (version?.watermark === 'processing') watermarkPending = true;
     } catch {
       /* Rate stays at the player default until known. */
     }
-    try {
-      previewUrl = (await api<{ url: string }>(`/api/v1/s/${slug}/assets/${asset.id}/media`)).url;
-    } catch {
-      /* No media yet: the preview shows the empty state. */
-    }
+    await fetchMedia(asset, token);
     try {
       comments = (await api<{ items: Comment[] }>(`/api/v1/s/${slug}/assets/${asset.id}/comments`)).items;
     } catch {
@@ -251,13 +297,34 @@
   };
 
   const closePreview = (): void => {
+    mediaPollToken += 1;
     selected = null;
     previewUrl = '';
     previewRate = null;
     previewDurationFrames = null;
+    previewRenditions = [];
+    watermarkPending = false;
+    downloadNote = '';
     comments = [];
     pendingDrawing = null;
     highlightedId = null;
+  };
+
+  /* Download affordance, gated on the share's allow_download. A 202 means
+     the watermarked file is still rendering. */
+  const download = async (): Promise<void> => {
+    if (!selected) return;
+    downloadNote = '';
+    try {
+      const payload = await api<{ url?: string; status?: string }>(
+        `/api/v1/s/${slug}/assets/${selected.id}/download`
+      );
+      if (payload.url) window.location.assign(payload.url);
+      else if (payload.status === 'processing')
+        downloadNote = 'Preparing watermarked media. Try again shortly.';
+    } catch (caught) {
+      downloadNote = messageFrom(caught, 'The download is not available.');
+    }
   };
 
   const playerActive = $derived(Boolean(selected && previewUrl && selected.kind === 'video'));
@@ -341,8 +408,12 @@
     <section class="preview" aria-label="Asset preview">
       <div class="preview-bar">
         <h2>{selected.name}</h2>
+        {#if share.allow_download !== 'none'}
+          <button type="button" class="download" onclick={() => void download()}>Download</button>
+        {/if}
         <button type="button" class="close" onclick={closePreview}>Close preview</button>
       </div>
+      {#if downloadNote}<p class="empty" role="status">{downloadNote}</p>{/if}
       {#if playerActive}
         <Player
           bind:this={player}
@@ -352,6 +423,7 @@
           {annotations}
           durationFrames={previewDurationFrames}
           {markers}
+          renditions={previewRenditions}
           allowDrawing={share.allow_comments}
           {watermark}
           onframechange={(frame) => { currentFrame = frame; }}
@@ -360,6 +432,8 @@
         />
       {:else if previewUrl}
         <p class="open-media"><a href={previewUrl}>Open media</a></p>
+      {:else if watermarkPending}
+        <p class="empty" role="status">Preparing watermarked media.</p>
       {:else}
         <p class="empty">A review rendition is not ready.</p>
       {/if}

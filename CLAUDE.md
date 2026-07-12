@@ -10,7 +10,9 @@ CLAUDE.md and AGENTS.md are identical by policy (two agent families work in this
 |---|---|
 | `onelight_design_doc.md` | The product and architecture source of truth: every locked decision, data model, media pipeline, player design, phases with acceptance criteria, UI design language (section 24) |
 | `specs/phase-0.md` .. `specs/phase-3.md` | Implementation-grade specs per phase. Execute exactly; where the implementation legitimately diverged, an explicit supersession note is recorded in the spec (search "Supersession") |
-| `docs/audits/2026-07-11-v1-audit.md` | Full audit of the v1 build: every defect found and fixed, spec supersessions, and the enumerated remaining gaps. Read before claiming v1 is done |
+| `docs/ROADMAP.md` | Execution state: what is built, what blocks the v1.0 tag, the hardening backlog, and the forward phases. Update it when milestones land or scope moves |
+| `docs/audits/2026-07-11-v1-audit.md` | Full audit of the v1 build: every defect found and fixed, spec supersessions, and the same-day remainder-build addendum |
+| `qa/` | Media verification harness: WebCodecs frame-accuracy ground truth, golden-frame color QC, tmcd round-trip. Fixtures are synthesized at test time. See qa/README.md for the seed-reproduction workflow |
 | `docs/research/` | The three deep-research reports (2026-07) the design doc is built on: frame.io feature inventory and competitive landscape, browser playback and transcode pipeline, Cloudflare platform feasibility. Verified facts, URLs, licensing landmines. Consult before re-deriving anything |
 | `mockups/` | Living visual reference (open index.html in a browser). `mockups/tokens.css` is the design-token source; `packages/web/src/lib/tokens.css` is its byte-identical port (prettier-ignored; keep them identical) |
 | `gradients/PALETTES.md` | The Japanese gradient palette catalog with hex codes; the identity/theming color source |
@@ -30,16 +32,19 @@ CLAUDE.md and AGENTS.md are identical by policy (two agent families work in this
 All of these must be green before any change lands. Do not pipe test commands through `tail`/`head` in a way that masks exit codes.
 
 ```
-pnpm typecheck      # tsc -b across all packages
+pnpm typecheck      # tsc -b across all packages (also builds the composite dist test:workers needs)
 pnpm lint           # eslint, no warnings
 pnpm format         # prettier --check
-pnpm test           # Node/better-sqlite3 suite (includes contract, property, golden tests)
-pnpm test:workers   # D1 via @cloudflare/vitest-pool-workers
+pnpm test           # Node/better-sqlite3 suite (contract, property, golden tests)
+pnpm test:workers   # the same contract suite on D1 via @cloudflare/vitest-pool-workers
 pnpm db:check       # migration D1-safety and FK check
+pnpm openapi:check  # committed openapi.json and generated client are not stale
 pnpm web:check      # svelte-check
+pnpm qa             # media verification harness (skips cleanly where ffmpeg/browsers are missing)
 ```
 
-- The contract suite must pass on BOTH better-sqlite3 (Node) and D1 (workers pool) at every step.
+- The contract suite must pass on BOTH better-sqlite3 (Node) and D1 (workers pool) at every step. Every new endpoint or contract change lands with contract tests in packages/api/src/contract/ (both legs run the same suite).
+- OpenAPI is generated: request/response schemas come from the shared zod objects in packages/api/src/schemas.ts (one source of truth with the validators), paths from the registered routes. After API changes run `pnpm openapi:gen` and commit the regenerated openapi.json and api-types.gen.ts; openapi:check fails CI otherwise.
 - Frame accuracy and color correctness are the two credibility-critical domains; their tests (timecode property tests, marker golden fixtures, golden-frame color QC, WebCodecs ground truth) are never skipped or weakened to make CI pass.
 - NLE export formats (Resolve EDL, Avid, xmeml, FCPXML) are byte-exact golden-fixture tested. Never write an export format from memory: capture a real export from the target NLE or use the formats documented in docs/research, and round-trip before shipping.
 - Hand-duplicated artifacts (the embedded D1 migration copies, the tokens.css port) have parity tests; if you add another duplication, add its parity test in the same change.
@@ -61,7 +66,7 @@ pnpm web:check      # svelte-check
 
 ## State of v1 (2026-07-11)
 
-Phases 0-3 are implemented, audited, and repaired; all gates above are green. Known remaining gaps (full list in the audit report): exhaustive endpoint/permission-matrix contract coverage on both backends, Cloudflare target parity for phases 1-3 (no R2/queues wiring), several UI surfaces (notifications, search, admin queue, folder CRUD, timeline markers, rendition switching, annotation drawing), generated OpenAPI client with real schemas, WebCodecs ground truth and Linux media fixture runs, and real-NLE round-trip validation of the export fixtures. David manually validates NLE imports, HDR behavior, and browser color.
+Phases 0-3 are implemented, audited, repaired, and completed through a two-wave remainder build; all gates above are green, including the qa harness executed against real synthesized fixtures on this machine. What blocks the v1.0 tag is enumerated in docs/ROADMAP.md: the Linux verification run (libplacebo tonemap, compose end to end, media-qc CI job with real WebKit), real-NLE import round-trips of the export fixtures, the full-app browser pass against section 24, and HDR pipeline fixtures. David manually validates NLE imports, HDR behavior, and browser color.
 
 ## Context worth knowing
 

@@ -301,6 +301,10 @@ export const seedRendition = async (
     versionId: string;
     kind?: string;
     content?: string;
+    /** Share-scoped rendition; watermarked rows carry share_id. */
+    shareId?: string;
+    /** meta_json payload, e.g. { spec_hash } for watermarked renditions. */
+    meta?: Record<string, unknown>;
   },
 ): Promise<{ id: string; blobKey: string; bytes: Uint8Array }> => {
   const id = h.ids.ulid();
@@ -315,10 +319,10 @@ export const seedRendition = async (
       versionId: options.versionId,
       kind: (options.kind ?? "proxy_1080") as "proxy_1080",
       blobKey,
-      metaJson: "{}",
+      metaJson: JSON.stringify(options.meta ?? {}),
       size: bytes.byteLength,
       checksumSha256: "",
-      shareId: null,
+      shareId: options.shareId ?? null,
       createdAt: h.clock.now(),
     })
     .run();

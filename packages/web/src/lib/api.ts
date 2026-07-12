@@ -1,10 +1,11 @@
 import { goto } from "$app/navigation";
+import type { paths } from "./api-types.gen.js";
 
 /* Thin typed fetch wrapper for the Onelight REST API.
    Unwraps the { error: { code, message } } envelope into a typed ApiError and
    redirects to /login on 401 outside the public surfaces.
-   The spec's generated openapi-typescript client remains future work; this
-   wrapper is the hand-written interim. */
+   The typed helpers at the bottom are built on the generated OpenAPI types
+   (api-types.gen.ts, regenerated with `pnpm openapi:gen`). */
 
 export class ApiError extends Error {
   readonly code: string;
@@ -102,3 +103,81 @@ export const messageFrom = (caught: unknown, fallback: string): string =>
   caught instanceof ApiError || caught instanceof Error
     ? caught.message || fallback
     : fallback;
+
+/* Response types derived from the generated OpenAPI document: one source of
+   truth with the server's zod validators. */
+type JsonOf<T> = T extends { content: { "application/json": infer B } }
+  ? B
+  : never;
+type Get<P extends keyof paths> = paths[P] extends {
+  get: { responses: infer R };
+}
+  ? JsonOf<R[Extract<keyof R, 200 | "200">]>
+  : never;
+
+export type SessionResponse = Get<"/api/v1/auth/session">;
+export type BootstrapResponse = Get<"/api/v1/bootstrap">;
+export type ProjectPage = Get<"/api/v1/projects">;
+export type Project = ProjectPage["items"][number];
+export type AssetPage = Get<"/api/v1/projects/{id}/assets">;
+export type Asset = Get<"/api/v1/assets/{id}">;
+export type VersionList = Get<"/api/v1/assets/{id}/versions">;
+export type Version = VersionList["items"][number];
+export type CommentPage = Get<"/api/v1/versions/{id}/comments">;
+export type Comment = CommentPage["items"][number];
+export type NotificationPage = Get<"/api/v1/notifications">;
+export type SearchPage = Get<"/api/v1/search">;
+export type SearchHit = SearchPage["items"][number];
+export type ShareList = Get<"/api/v1/shares">;
+export type Share = ShareList["items"][number];
+
+/* Typed helpers for the common read paths. Pages may keep hand-rolled calls;
+   these give new code a contract-typed entry point. */
+export const getBootstrap = (): Promise<BootstrapResponse> =>
+  api<BootstrapResponse>("/api/v1/bootstrap", { redirectOn401: false });
+export const getSession = (): Promise<SessionResponse> =>
+  api<SessionResponse>("/api/v1/auth/session", { redirectOn401: false });
+export const listProjects = (cursor?: string): Promise<ProjectPage> =>
+  api<ProjectPage>(
+    `/api/v1/projects${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+  );
+export const getProject = (id: string): Promise<Project> =>
+  api<Project>(`/api/v1/projects/${id}`);
+export const listProjectAssets = (
+  projectId: string,
+  cursor?: string,
+): Promise<AssetPage> =>
+  api<AssetPage>(
+    `/api/v1/projects/${projectId}/assets${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+  );
+export const getAsset = (id: string): Promise<Asset> =>
+  api<Asset>(`/api/v1/assets/${id}`);
+export const listVersions = (assetId: string): Promise<VersionList> =>
+  api<VersionList>(`/api/v1/assets/${assetId}/versions`);
+export const listComments = (
+  versionId: string,
+  cursor?: string,
+): Promise<CommentPage> =>
+  api<CommentPage>(
+    `/api/v1/versions/${versionId}/comments${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+  );
+export const listNotifications = (cursor?: string): Promise<NotificationPage> =>
+  api<NotificationPage>(
+    `/api/v1/notifications?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+  );
+export const searchWorkspace = (options: {
+  q: string;
+  scope?: "all" | "assets" | "comments";
+  limit?: number;
+  cursor?: string;
+}): Promise<SearchPage> => {
+  const params = new URLSearchParams({ q: options.q });
+  if (options.scope) params.set("scope", options.scope);
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.cursor) params.set("cursor", options.cursor);
+  return api<SearchPage>(`/api/v1/search?${params.toString()}`);
+};
+export const listShares = (projectId?: string): Promise<ShareList> =>
+  api<ShareList>(
+    `/api/v1/shares${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
+  );

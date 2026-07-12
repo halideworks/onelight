@@ -19,6 +19,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm openapi:check
       - run: pnpm format
       - run: pnpm test
       - run: pnpm test:workers
@@ -28,3 +29,21 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build -f apps/server/Dockerfile -t onelight .
       - run: docker build -f apps/worker/Dockerfile -t onelight-worker .
+  # Media verification harness: WebCodecs frame-accuracy ground truth,
+  # golden-frame color QC, tmcd round-trip. Independent of the docker job
+  # (not a blocker for it); fixtures are synthesized at test time.
+  media-qc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @onelight/qa exec playwright install --with-deps chromium firefox
+      - run: pnpm qa

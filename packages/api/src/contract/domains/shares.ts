@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { exportJobs } from "@onelight/db/schema";
+import { exportJobs, shares } from "@onelight/db/schema";
 import {
   assertSnakeCaseKeys,
   cookieFrom,
@@ -621,6 +621,366 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
           headers: { range: "bytes=500-" },
         });
         expect(unsatisfiable.status).toBe(416);
+      },
+    );
+  });
+
+  describe("share watermarking", () => {
+    const specHashOf = async (
+      h: ContractHarness,
+      shareId: string,
+    ): Promise<string> => {
+      const row = (
+        await h.db
+          .select({ hash: shares.watermarkSpecHash })
+          .from(shares)
+          .where(eq(shares.id, shareId))
+          .limit(1)
+          .all()
+      )[0];
+      const hash = row?.hash;
+      if (!hash) throw new Error("Share has no watermark spec hash.");
+      return hash;
+    };
+
+    const fetchUrl = async (h: ContractHarness, url: string) => {
+      const parsed = new URL(url);
+      return req(h, parsed.pathname + parsed.search);
+    };
+
+    ctx.itBlob(
+      "serves only the matching watermarked rendition and 202s while pending",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const fixture = await makeShare(h, seed, {
+          watermark_spec: { text: "CONFIDENTIAL", position: "center" },
+        });
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          content: "clean-proxy-bytes",
+        });
+        const viewer = await accessShare(h, fixture.slug);
+        // The clean proxy exists, but the watermarked share must not serve
+        // it: pending means 202, never a fallback.
+        const pending = await req(
+          h,
+          `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/media`,
+          { cookie: viewer.cookie },
+        );
+        expect(pending.status).toBe(202);
+        expect(await json(pending)).toEqual({ status: "processing" });
+        const hash = await specHashOf(h, fixture.shareId);
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          kind: "watermarked",
+          shareId: fixture.shareId,
+          meta: { spec_hash: hash },
+          content: "burned-bytes",
+        });
+        const ready = await req(
+          h,
+          `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/media`,
+          { cookie: viewer.cookie },
+        );
+        expect(ready.status).toBe(200);
+        const { url } = await json<{ url: string }>(ready);
+        const fetched = await fetchUrl(h, url);
+        expect(fetched.status).toBe(200);
+        expect(await fetched.text()).toBe("burned-bytes");
+        // A spec change invalidates the old hash: the stale rendition is no
+        // longer served even before the worker cleans it up.
+        const patched = await req(h, `/api/v1/shares/${fixture.shareId}`, {
+          method: "PATCH",
+          cookie: seed.admin.cookie,
+          json: { watermark_spec: { text: "NEW SPEC", position: "center" } },
+        });
+        expect(patched.status).toBe(200);
+        const stale = await req(
+          h,
+          `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/media`,
+          { cookie: viewer.cookie },
+        );
+        expect(stale.status).toBe(202);
+        // An unwatermarked share is unaffected and still serves the proxy.
+        const plain = await makeShare(h, seed);
+        await seedRendition(h, {
+          versionId: plain.versionId,
+          content: "plain-proxy-bytes",
+        });
+        const plainViewer = await accessShare(h, plain.slug);
+        const plainMedia = await req(
+          h,
+          `/api/v1/s/${plain.slug}/assets/${plain.assetId}/media`,
+          { cookie: plainViewer.cookie },
+        );
+        expect(plainMedia.status).toBe(200);
+        const plainFetched = await fetchUrl(
+          h,
+          (await json<{ url: string }>(plainMedia)).url,
+        );
+        expect(await plainFetched.text()).toBe("plain-proxy-bytes");
+      },
+    );
+
+    ctx.itBlob(
+      "exposes the source ladder and sidecars on the share asset detail",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const fixture = await makeShare(h, seed);
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          kind: "proxy_540",
+          meta: { height: 540 },
+          content: "p540",
+        });
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          kind: "proxy_1080",
+          meta: { height: 1080 },
+          content: "p1080",
+        });
+        const vttKey = `renditions/${fixture.versionId}/sprite.vtt`;
+        const vttBody = new Response(
+          new TextEncoder().encode("WEBVTT\n").buffer,
+        ).body;
+        if (vttBody && h.blobStore)
+          await h.blobStore.putStream(vttKey, vttBody, {});
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          kind: "sprite",
+          meta: { vtt_blob_key: vttKey },
+          content: "sprite-bytes",
+        });
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          kind: "audio_peaks",
+          content: "peaks-bytes",
+        });
+        const viewer = await accessShare(h, fixture.slug);
+        const detail = await json<{
+          versions: Array<{
+            sources: Array<{
+              kind: string;
+              url: string;
+              size: number;
+              height: number | null;
+            }>;
+            sidecars: {
+              sprite: { url: string; vtt_url: string | null } | null;
+              peaks: { url: string } | null;
+            };
+            watermark: string | null;
+          }>;
+        }>(
+          await req(h, `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}`, {
+            cookie: viewer.cookie,
+          }),
+        );
+        const version = detail.versions[0];
+        expect(version).toBeDefined();
+        if (!version) return;
+        expect(version.watermark).toBeNull();
+        const kinds = version.sources.map((source) => source.kind).sort();
+        expect(kinds).toEqual(["proxy_1080", "proxy_540"]);
+        const p540 = version.sources.find(
+          (source) => source.kind === "proxy_540",
+        );
+        expect(p540?.height).toBe(540);
+        const played = await fetchUrl(h, p540?.url ?? "");
+        expect(played.status).toBe(200);
+        expect(await played.text()).toBe("p540");
+        expect(version.sidecars.sprite).not.toBeNull();
+        expect(version.sidecars.sprite?.vtt_url).toBeTruthy();
+        const vtt = await fetchUrl(h, version.sidecars.sprite?.vtt_url ?? "");
+        expect(await vtt.text()).toBe("WEBVTT\n");
+        expect(version.sidecars.peaks).not.toBeNull();
+        const peaks = await fetchUrl(h, version.sidecars.peaks?.url ?? "");
+        expect(await peaks.text()).toBe("peaks-bytes");
+      },
+    );
+
+    ctx.itBlob(
+      "filters the detail ladder to the burned rendition on watermarked shares",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const fixture = await makeShare(h, seed, {
+          watermark_spec: { text: "WM LADDER" },
+        });
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          kind: "proxy_540",
+          content: "clean540",
+        });
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          kind: "proxy_1080",
+          content: "clean1080",
+        });
+        const viewer = await accessShare(h, fixture.slug);
+        const detailPath = `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}`;
+        const pending = await json<{
+          versions: Array<{ sources: unknown[]; watermark: string | null }>;
+        }>(await req(h, detailPath, { cookie: viewer.cookie }));
+        expect(pending.versions[0]?.watermark).toBe("processing");
+        expect(pending.versions[0]?.sources).toEqual([]);
+        const hash = await specHashOf(h, fixture.shareId);
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          kind: "watermarked",
+          shareId: fixture.shareId,
+          meta: { spec_hash: hash },
+          content: "burned-ladder",
+        });
+        const ready = await json<{
+          versions: Array<{
+            sources: Array<{ kind: string; url: string }>;
+            watermark: string | null;
+          }>;
+        }>(await req(h, detailPath, { cookie: viewer.cookie }));
+        expect(ready.versions[0]?.watermark).toBe("ready");
+        const sources = ready.versions[0]?.sources ?? [];
+        expect(sources.map((source) => source.kind)).toEqual(["watermarked"]);
+        const fetched = await fetchUrl(h, sources[0]?.url ?? "");
+        expect(await fetched.text()).toBe("burned-ladder");
+      },
+    );
+  });
+
+  describe("share downloads", () => {
+    it("refuses downloads when allow_download is none", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const fixture = await makeShare(h, seed);
+      const viewer = await accessShare(h, fixture.slug);
+      const denied = await req(
+        h,
+        `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/download`,
+        { cookie: viewer.cookie },
+      );
+      expect(denied.status).toBe(403);
+      const anonymous = await req(
+        h,
+        `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/download`,
+      );
+      expect(anonymous.status).toBe(401);
+    });
+
+    ctx.itBlob("signs the 1080p proxy for allow_download proxy", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const fixture = await makeShare(h, seed, { allow_download: "proxy" });
+      await seedRendition(h, {
+        versionId: fixture.versionId,
+        content: "downloadable-proxy",
+      });
+      const viewer = await accessShare(h, fixture.slug);
+      const issued = await req(
+        h,
+        `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/download`,
+        { cookie: viewer.cookie },
+      );
+      expect(issued.status).toBe(200);
+      const { url } = await json<{ url: string }>(issued);
+      const parsed = new URL(url);
+      const fetched = await req(h, parsed.pathname + parsed.search);
+      expect(fetched.status).toBe(200);
+      expect(await fetched.text()).toBe("downloadable-proxy");
+      const disposition = fetched.headers.get("content-disposition") ?? "";
+      expect(disposition).toContain("attachment");
+      expect(disposition).toContain("-proxy.mp4");
+    });
+
+    ctx.itBlob(
+      "serves the original blob with its filename for allow_download original",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const project = await createProject(h, seed.admin);
+        const media = await seedAssetVersion(h, {
+          workspaceId: seed.workspaceId,
+          projectId: project.id,
+          userId: seed.admin.id,
+          name: "conform-master",
+        });
+        const originalBody = new Response(
+          new TextEncoder().encode("original-camera-bytes").buffer,
+        ).body;
+        if (originalBody && h.blobStore)
+          await h.blobStore.putStream(media.blobKey, originalBody, {});
+        const created = await req(h, "/api/v1/shares", {
+          cookie: seed.admin.cookie,
+          json: {
+            project_id: project.id,
+            title: unique("Original Download"),
+            asset_ids: [media.assetId],
+            allow_download: "original",
+          },
+        });
+        expect(created.status).toBe(201);
+        const share = (await json<{ share: { slug: string } }>(created)).share;
+        const viewer = await accessShare(h, share.slug);
+        const issued = await req(
+          h,
+          `/api/v1/s/${share.slug}/assets/${media.assetId}/download`,
+          { cookie: viewer.cookie },
+        );
+        expect(issued.status).toBe(200);
+        const { url } = await json<{ url: string }>(issued);
+        const parsed = new URL(url);
+        const fetched = await req(h, parsed.pathname + parsed.search);
+        expect(fetched.status).toBe(200);
+        expect(await fetched.text()).toBe("original-camera-bytes");
+        expect(fetched.headers.get("content-disposition")).toBe(
+          'attachment; filename="conform-master.mp4"',
+        );
+      },
+    );
+
+    ctx.itBlob(
+      "never hands the clean file to a watermarked share, even for original",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const fixture = await makeShare(h, seed, {
+          allow_download: "original",
+          watermark_spec: { text: "NO CLEAN FILES" },
+        });
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          content: "clean-proxy",
+        });
+        const viewer = await accessShare(h, fixture.slug);
+        const downloadPath = `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/download`;
+        const pending = await req(h, downloadPath, { cookie: viewer.cookie });
+        expect(pending.status).toBe(202);
+        expect(await json(pending)).toEqual({ status: "processing" });
+        const hash = (
+          await h.db
+            .select({ hash: shares.watermarkSpecHash })
+            .from(shares)
+            .where(eq(shares.id, fixture.shareId))
+            .limit(1)
+            .all()
+        )[0]?.hash;
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          kind: "watermarked",
+          shareId: fixture.shareId,
+          meta: { spec_hash: hash },
+          content: "burned-download",
+        });
+        const issued = await req(h, downloadPath, { cookie: viewer.cookie });
+        expect(issued.status).toBe(200);
+        const { url } = await json<{ url: string }>(issued);
+        const parsed = new URL(url);
+        const fetched = await req(h, parsed.pathname + parsed.search);
+        expect(await fetched.text()).toBe("burned-download");
+        expect(fetched.headers.get("content-disposition")).toContain(
+          "-watermarked.mp4",
+        );
       },
     );
   });

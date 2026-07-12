@@ -1,13 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { goto, replaceState } from '$app/navigation';
+  import { replaceState } from '$app/navigation';
   import { page } from '$app/state';
-  import { api, messageFrom } from '$lib/api.js';
+  import { messageFrom, searchWorkspace } from '$lib/api.js';
+  import type { SearchHit } from '$lib/api.js';
   import { excerpt } from '$lib/format.js';
 
-  type AssetHit = { type: 'asset'; id: string; name: string; project_id: string };
-  type CommentHit = { type: 'comment'; id: string; body_text: string; asset_id: string; version_id: string };
-  type Hit = AssetHit | CommentHit;
   type Scope = 'all' | 'assets' | 'comments';
 
   const PAGE_SIZE = 30;
@@ -20,38 +18,69 @@
   let input = $state<HTMLInputElement | null>(null);
   let q = $state('');
   let scope = $state<Scope>('all');
-  let hits = $state<Hit[]>([]);
+  let hits = $state<SearchHit[]>([]);
+  let nextCursor = $state<string | null>(null);
   let searched = $state('');
-  let shown = $state(PAGE_SIZE);
   let error = $state('');
   let busy = $state(false);
 
-  /* The API returns both result families in one response with no scope or
-     cursor parameters, so scoping and paging happen client-side. */
-  const filtered = $derived(
-    hits.filter((hit) => scope === 'all' || (scope === 'assets' ? hit.type === 'asset' : hit.type === 'comment'))
-  );
-  const visible = $derived(filtered.slice(0, shown));
+  /* Scope and cursor are server-side (GET /search?scope&cursor); the page
+     only accumulates the returned keyset pages. */
+  let requestSeq = 0;
 
   const run = async (query: string): Promise<void> => {
     const trimmed = query.trim();
     if (trimmed.length < 2) {
+      requestSeq += 1;
       hits = [];
+      nextCursor = null;
       searched = '';
       error = '';
       return;
     }
     busy = true;
+    const seq = ++requestSeq;
     try {
-      hits = (await api<{ items: Hit[] }>(`/api/v1/search?q=${encodeURIComponent(trimmed)}`)).items;
+      const result = await searchWorkspace({ q: trimmed, scope, limit: PAGE_SIZE });
+      if (seq !== requestSeq) return;
+      hits = result.items;
+      nextCursor = result.next_cursor;
       searched = trimmed;
-      shown = PAGE_SIZE;
       error = '';
     } catch (caught) {
-      error = messageFrom(caught, 'Search failed.');
+      if (seq === requestSeq) error = messageFrom(caught, 'Search failed.');
     } finally {
-      busy = false;
+      if (seq === requestSeq) busy = false;
     }
+  };
+
+  const loadMore = async (): Promise<void> => {
+    if (!nextCursor || !searched) return;
+    busy = true;
+    const seq = ++requestSeq;
+    try {
+      const result = await searchWorkspace({
+        q: searched,
+        scope,
+        limit: PAGE_SIZE,
+        cursor: nextCursor
+      });
+      if (seq !== requestSeq) return;
+      hits = [...hits, ...result.items];
+      nextCursor = result.next_cursor;
+    } catch (caught) {
+      if (seq === requestSeq) error = messageFrom(caught, 'Search failed.');
+    } finally {
+      if (seq === requestSeq) busy = false;
+    }
+  };
+
+  const syncUrl = (): void => {
+    const params = new URLSearchParams();
+    if (q.trim()) params.set('q', q.trim());
+    if (scope !== 'all') params.set('scope', scope);
+    const query = params.toString();
+    replaceState(query ? `/search?${query}` : '/search', {});
   };
 
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -59,7 +88,7 @@
     clearTimeout(timer);
     timer = setTimeout(() => {
       void run(q);
-      replaceState(q.trim() ? `/search?q=${encodeURIComponent(q.trim())}` : '/search', {});
+      syncUrl();
     }, 300);
   };
 
@@ -67,26 +96,19 @@
     event.preventDefault();
     clearTimeout(timer);
     void run(q);
+    syncUrl();
   };
 
-  /* Comment hits carry asset_id but not project_id; resolve it on demand so
-     the deep link lands in the right review room. */
-  const projectByAsset = new Map<string, string>();
-  const openComment = async (hit: CommentHit): Promise<void> => {
-    try {
-      let projectId = projectByAsset.get(hit.asset_id);
-      if (!projectId) {
-        projectId = (await api<{ project_id: string }>(`/api/v1/assets/${hit.asset_id}`)).project_id;
-        projectByAsset.set(hit.asset_id, projectId);
-      }
-      await goto(`/projects/${projectId}/assets/${hit.asset_id}`);
-    } catch (caught) {
-      error = messageFrom(caught, 'The asset for this comment is not available.');
-    }
+  const setScope = (next: Scope): void => {
+    scope = next;
+    syncUrl();
+    void run(q);
   };
 
   onMount(() => {
     q = page.url.searchParams.get('q') ?? '';
+    const urlScope = page.url.searchParams.get('scope');
+    if (urlScope === 'assets' || urlScope === 'comments') scope = urlScope;
     if (q) void run(q);
     input?.focus();
     const focusSearch = (): void => {
@@ -120,7 +142,7 @@
         type="button"
         class="scope"
         aria-pressed={scope === item.id}
-        onclick={() => { scope = item.id; shown = PAGE_SIZE; }}
+        onclick={() => setScope(item.id)}
       >{item.label}</button>
     {/each}
   </div>
@@ -129,25 +151,25 @@
   <section aria-label="Results" class="results" aria-busy={busy}>
     {#if !searched}
       <p class="empty">Type at least two characters to search asset names and comment text.</p>
-    {:else if filtered.length === 0 && !busy}
+    {:else if hits.length === 0 && !busy}
       <p class="empty">Nothing matched "{searched}".</p>
     {/if}
-    {#each visible as hit (hit.type + hit.id)}
+    {#each hits as hit (hit.type + hit.id)}
       {#if hit.type === 'asset'}
         <a class="hit" href={`/projects/${hit.project_id}/assets/${hit.id}`}>
           <span class="kind">Asset</span>
           <span class="name">{hit.name}</span>
         </a>
       {:else}
-        <button type="button" class="hit" onclick={() => openComment(hit)}>
+        <a class="hit" href={`/projects/${hit.project_id}/assets/${hit.asset_id}`}>
           <span class="kind">Comment</span>
           <span class="name">{excerpt(hit.body_text)}</span>
-        </button>
+        </a>
       {/if}
     {/each}
-    {#if filtered.length > shown}
-      <button type="button" class="more" onclick={() => (shown += PAGE_SIZE)}>
-        Show more ({filtered.length - shown} left)
+    {#if nextCursor}
+      <button type="button" class="more" onclick={() => void loadMore()}>
+        Show more
       </button>
     {/if}
   </section>

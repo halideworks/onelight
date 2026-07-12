@@ -152,6 +152,47 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
       expect(foreignProject.status).toBe(404);
     });
 
+    it("replays upload creation for a repeated Idempotency-Key", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const filename = `${unique("idem")}.mp4`;
+      const payload = {
+        project_id: seed.project.id,
+        filename,
+        size: 2048,
+      };
+      const first = await req(h, "/api/v1/uploads", {
+        cookie: seed.editor.cookie,
+        json: payload,
+        headers: { "idempotency-key": "contract-idem-1" },
+      });
+      expect(first.status).toBe(201);
+      const firstBody = await json<{ upload: { id: string } }>(first);
+      // The retried create returns the original still-open session (scoped
+      // Idempotency-Key semantics, phase-1 section 3 supersession).
+      const replay = await req(h, "/api/v1/uploads", {
+        cookie: seed.editor.cookie,
+        json: payload,
+        headers: { "idempotency-key": "contract-idem-1" },
+      });
+      expect(replay.status).toBe(200);
+      const replayBody = await json<{
+        upload: { id: string };
+        upload_url: string;
+      }>(replay);
+      expect(replayBody.upload.id).toBe(firstBody.upload.id);
+      expect(replayBody.upload_url).toContain(firstBody.upload.id);
+      // Without the header a duplicate create opens a new session.
+      const fresh = await req(h, "/api/v1/uploads", {
+        cookie: seed.editor.cookie,
+        json: payload,
+      });
+      expect(fresh.status).toBe(201);
+      expect(
+        (await json<{ upload: { id: string } }>(fresh)).upload.id,
+      ).not.toBe(firstBody.upload.id);
+    });
+
     ctx.itBlob(
       "initializes multipart idempotently, uploads parts, and lists them",
       async () => {
