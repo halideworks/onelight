@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import Player from '@onelight/player/Player.svelte';
   import { parseSpriteVtt } from '@onelight/player';
+  import { formatTimecode, timecodeFromFrames } from '@onelight/core';
   import type {
     FrameAnnotation,
     PendingDrawing,
@@ -42,6 +43,7 @@
   type Comment = ReviewComment & {
     version_id?: string;
     parent_id?: string | null;
+    created_at?: number;
     author_user_id?: string | null;
     carried_from_comment_id?: string | null;
   };
@@ -62,7 +64,6 @@
   let error = $state('');
   let comments = $state<Comment[]>([]);
   let bodyText = $state('');
-  let frameIn = $state<number | null>(null);
   let commentError = $state('');
   let currentFrame = $state(0);
   let player = $state<Player | null>(null);
@@ -72,7 +73,14 @@
   let pendingDrawing = $state<PendingDrawing | null>(null);
   let members = $state<Member[]>([]);
   let membersFor: string | null = null;
-  let versionsOpen = $state(true);
+  /* Versions are a menu off the header, not a rail: the rail belongs to notes,
+     which are what a reviewer actually does here. */
+  let versionMenuOpen = $state(false);
+  /* The note being replied to, or null for a new thread. */
+  let replyTo = $state<Comment | null>(null);
+  /* A note anchors to the playhead unless the reviewer nudges it; null means
+     "follow the playhead". */
+  let frameOverride = $state<number | null>(null);
   let railError = $state('');
   let copyNotice = $state('');
   let uploadState = $state<UploadState>({ status: 'idle', progress: 0, error: '' });
@@ -107,10 +115,26 @@
 
   const annotations = $derived<FrameAnnotation[]>(annotationsFrom(comments));
 
-  const markers = $derived<TimelineMarker[]>(markersFrom(comments));
+  /* One marker per thread. Replies inherit their parent's frame (the replies
+     endpoint copies frameIn on purpose, so a reply sits at the same moment), so
+     feeding replies in here would stack a second marker on top of the first for
+     every reply in a thread. */
+  const markers = $derived<TimelineMarker[]>(
+    markersFrom(comments.filter((comment) => !comment.parent_id))
+  );
 
   const tagsOf = (comment: Comment): string[] =>
     Array.isArray(comment.tags) ? comment.tags : hashtagsIn(comment.body_text);
+
+  /* Notes speak timecode, not frame indices: "Frame 1487" is not a thing anyone
+     says out loud in a review. The frame is still what is stored and seeked. */
+  const timecodeAt = (frame: number): string => {
+    try {
+      return formatTimecode(timecodeFromFrames(frame, rate ?? { num: 24, den: 1 }, dropFrame));
+    } catch {
+      return String(frame);
+    }
+  };
 
   const visibleComments = $derived(
     comments.filter((comment) => {
@@ -120,6 +144,37 @@
       return activeTag === null || tagsOf(comment).includes(activeTag);
     })
   );
+
+  /* Threads. The list endpoint returns replies alongside their parents (only
+     carry-forward filters to roots), so the nesting is assembled here.
+     Replies are keyed to their parent and ordered oldest first, the way a
+     conversation reads. */
+  const repliesByParent = $derived.by(() => {
+    const map = new Map<string, Comment[]>();
+    for (const comment of comments) {
+      if (!comment.parent_id) continue;
+      const list = map.get(comment.parent_id) ?? [];
+      list.push(comment);
+      map.set(comment.parent_id, list);
+    }
+    for (const list of map.values())
+      list.sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0));
+    return map;
+  });
+  /* Filters apply to threads, not to messages: a reply is never stranded from
+     its parent, and a thread the filter kept keeps all of its replies. */
+  const threads = $derived(visibleComments.filter((comment) => !comment.parent_id));
+  const repliesOf = (comment: Comment): Comment[] => repliesByParent.get(comment.id) ?? [];
+
+  /* The frame a new note will anchor to: a drawing pins its own frame, then any
+     nudge the reviewer made, otherwise wherever the playhead is. This is what
+     replaced the old "At playhead (N)" button -- the anchor simply follows the
+     playhead, so there is nothing to press. */
+  const anchorFrame = $derived(pendingDrawing ? pendingDrawing.frame : (frameOverride ?? currentFrame));
+  const anchorIsPlayhead = $derived(!pendingDrawing && frameOverride === null);
+  const nudgeAnchor = (delta: number): void => {
+    frameOverride = Math.max(0, anchorFrame + delta);
+  };
 
   /* Server list order: (frame_in, else -1) ascending, then id descending. */
   const commentOrder = (a: Comment, b: Comment): number => {
@@ -618,26 +673,33 @@
     const versionId = selectedVersionId;
     if (!versionId || !bodyText.trim()) return;
     const drawing = pendingDrawing;
-    const anchorFrame = drawing
-      ? drawing.frame
-      : typeof frameIn === 'number' && Number.isInteger(frameIn) && frameIn >= 0
-        ? frameIn
-        : null;
+    const parent = replyTo;
+    /* A reply belongs to its parent's moment, not the playhead: it inherits the
+       parent's anchor rather than pinning a second marker on the timeline. */
+    const frame = parent ? null : anchorFrame;
     const mentionIds = [...new Set(picked.filter((entry) => bodyText.includes(`@${entry.name}`)).map((entry) => entry.id))];
     try {
-      const created = await apiPost<Comment>(`/api/v1/versions/${versionId}/comments`, {
-        body_text: bodyText,
-        ...(anchorFrame !== null ? { frame_in: anchorFrame } : {}),
-        ...(drawing ? { annotation: { strokes: drawing.strokes } } : {}),
-        ...(mentionIds.length ? { mentions: mentionIds } : {})
-      });
+      /* Replies have their own endpoint, which owns the parent and the version
+         and refuses to nest a reply under a reply. POST /versions/:id/comments
+         accepts parent_id in its schema and then ignores it, so sending a reply
+         there quietly creates a second top-level thread instead. */
+      const created = await apiPost<Comment>(
+        parent ? `/api/v1/comments/${parent.id}/replies` : `/api/v1/versions/${versionId}/comments`,
+        {
+          body_text: bodyText,
+          ...(frame !== null ? { frame_in: frame } : {}),
+          ...(drawing ? { annotation: { strokes: drawing.strokes } } : {}),
+          ...(mentionIds.length ? { mentions: mentionIds } : {})
+        }
+      );
       /* An SSE echo of this comment may already have refetched the list. */
       if (!comments.some((comment) => comment.id === created.id))
         comments = [...comments, created].sort(commentOrder);
       const versionNo = versions.find((version) => version.id === versionId)?.version_no;
       if (versionNo) versionNoByComment[created.id] = versionNo;
       bodyText = '';
-      frameIn = null;
+      frameOverride = null;
+      replyTo = null;
       commentError = '';
       picked = [];
       mentionQuery = null;
@@ -709,9 +771,60 @@
           Carry open notes
         </label>
       </span>
-      <button type="button" aria-pressed={versionsOpen} onclick={() => { versionsOpen = !versionsOpen; }}>
-        Versions
-      </button>
+      <!-- Versions: a menu that states which version you are looking at, rather
+           than a rail competing with the notes for the same space. -->
+      <div class="vmenu">
+        <button
+          type="button"
+          class="vtrigger"
+          aria-haspopup="menu"
+          aria-expanded={versionMenuOpen}
+          onclick={() => { versionMenuOpen = !versionMenuOpen; }}
+        >
+          <span class="tc vtrigger-no">v{selectedVersion?.version_no ?? '—'}</span>
+          {#if asset && selectedVersion && selectedVersion.id === asset.current_version_id}
+            <span class="vtrigger-current">Current</span>
+          {/if}
+          <span class="caret" aria-hidden="true">▾</span>
+        </button>
+        {#if versionMenuOpen}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div
+            class="vpanel"
+            role="menu"
+            tabindex="-1"
+            onmouseleave={() => { versionMenuOpen = false; }}
+          >
+            {#if versions.length === 0}<p class="empty">No versions.</p>{/if}
+            {#each versions as version (version.id)}
+              <div class="vrow" class:active={version.id === selectedVersionId}>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="vpick"
+                  aria-current={version.id === selectedVersionId ? 'true' : undefined}
+                  onclick={() => { versionMenuOpen = false; void selectVersion(version.id, { fromUser: true }); }}
+                >
+                  <span class="vline">
+                    <span class="vno tc">v{version.version_no}</span>
+                    {#if asset && version.id === asset.current_version_id}<span class="vcurrent">Current</span>{/if}
+                    {#if TRANSCODE_LABELS[version.transcode_status]}
+                      <span class="vstate" class:failed={version.transcode_status === 'failed'}>
+                        {TRANSCODE_LABELS[version.transcode_status]}
+                      </span>
+                    {/if}
+                  </span>
+                  <span class="vmeta">{memberName(version.uploaded_by)} · {whenRelative(version.created_at)}</span>
+                </button>
+                {#if asset && version.id !== asset.current_version_id}
+                  <button type="button" class="quiet setcur" onclick={() => void setCurrent(version)}>Set current</button>
+                {/if}
+              </div>
+            {/each}
+            {#if railError}<p class="error-text" role="alert">{railError}</p>{/if}
+          </div>
+        {/if}
+      </div>
       <label class="approval">Approval
         <select value={asset.status} onchange={(event) => updateApproval((event.currentTarget as HTMLSelectElement).value)}>
           <option value="none">No decision</option>
@@ -736,7 +849,7 @@
   {#if error}
     <p class="error" role="alert">{error}</p>
   {:else if asset}
-    <div class="content" class:with-rail={versionsOpen}>
+    <div class="content">
       <div class="maincol">
         {#if source}
           <Player
@@ -772,6 +885,10 @@
         {:else}
           <p class="empty stage-empty">A review proxy is not ready yet.</p>
         {/if}
+      </div>
+      <!-- The rail is notes, and it is always here. Notes used to sit under the
+           player, so writing one meant scrolling the footage off screen. -->
+      <aside class="rail">
         <section class="notes" aria-label="Review notes">
           <div class="notes-head">
             <h2>Notes</h2>
@@ -797,17 +914,35 @@
               </button>
             </div>
           {/if}
-          {#if visibleComments.length === 0}
-            <p class="empty">{comments.length === 0 ? 'No notes yet.' : 'No notes match this filter.'}</p>
-          {/if}
-          {#each visibleComments as comment (comment.id)}
-            <article id={`note-${comment.id}`} class:completed={comment.completed_at} class:highlighted={highlightedId === comment.id}>
-              <div>
+          {#snippet note(comment: Comment, isReply: boolean)}
+            <!-- The whole note seeks to its frame. Buttons and links inside stop
+                 the event, so Resolve and #tag still do their own thing.
+                 svelte-ignore is deliberate: this is a convenience click over a
+                 region that already exposes the same seek on a real button. -->
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <article
+              id={`note-${comment.id}`}
+              class:completed={comment.completed_at}
+              class:highlighted={highlightedId === comment.id}
+              class:reply={isReply}
+              class:seekable={comment.frame_in !== null}
+              onclick={(event) => {
+                if ((event.target as HTMLElement).closest('button, a, textarea, input')) return;
+                seekToComment(comment);
+              }}
+            >
+              <div class="note-body">
                 <span class="head">
                   <strong>{comment.author_name ?? 'Reviewer'}</strong>
-                  {#if comment.frame_in !== null}
-                    <button type="button" class="chip tc" onclick={() => seekToComment(comment)} aria-label={`Go to frame ${comment.frame_in}`}>
-                      Frame {comment.frame_in}{comment.frame_out !== null && comment.frame_out > comment.frame_in ? ` to ${comment.frame_out}` : ''}
+                  {#if comment.frame_in !== null && !isReply}
+                    <button
+                      type="button"
+                      class="chip tc"
+                      onclick={() => seekToComment(comment)}
+                      aria-label={`Go to frame ${comment.frame_in}`}
+                    >
+                      {timecodeAt(comment.frame_in)}{comment.frame_out !== null && comment.frame_out > comment.frame_in ? ` – ${timecodeAt(comment.frame_out)}` : ''}
                     </button>
                   {/if}
                   {#if comment.annotation}<span class="drawn">Drawing</span>{/if}
@@ -824,29 +959,52 @@
                     {/if}
                   {/each}
                 </p>
+                <span class="note-actions">
+                  {#if !isReply}
+                    <button type="button" class="linky" onclick={() => { replyTo = comment; composerEl?.focus(); }}>Reply</button>
+                  {/if}
+                  {#if !comment.completed_at}
+                    <button type="button" class="linky" onclick={() => completeComment(comment.id)}>Resolve</button>
+                  {:else}
+                    <span class="resolved">Resolved</span>
+                  {/if}
+                </span>
               </div>
-              {#if !comment.completed_at}
-                <button type="button" onclick={() => completeComment(comment.id)}>Resolve</button>
-              {:else}
-                <span class="resolved">Resolved</span>
-              {/if}
             </article>
-          {/each}
-          <form onsubmit={addComment}>
-            <div class="anchor-row">
-              <label>Frame <input type="number" min="0" step="1" bind:value={frameIn} disabled={pendingDrawing !== null} /></label>
-              {#if source && !pendingDrawing}
-                <button type="button" class="quiet tc" onclick={() => { frameIn = currentFrame; }}>At playhead ({currentFrame})</button>
-              {/if}
-              {#if pendingDrawing}
-                <span class="drawing-chip">Drawing attached at frame <span class="tc">{pendingDrawing.frame}</span></span>
-                <button type="button" class="quiet" onclick={discardDrawing}>Discard drawing</button>
-              {/if}
-            </div>
-            <label>
-              Note
+          {/snippet}
+
+          <!-- The composer leads the rail: writing a note is the point of this
+               screen, and it must never be a scroll away. -->
+          <form class="composer-form" onsubmit={addComment}>
+            {#if replyTo}
+              <div class="replying">
+                <span>Replying to <strong>{replyTo.author_name ?? 'Reviewer'}</strong></span>
+                <button type="button" class="linky" onclick={() => { replyTo = null; }}>Cancel</button>
+              </div>
+            {:else}
+              <div class="anchor-row">
+                {#if pendingDrawing}
+                  <span class="drawing-chip">Drawing at <span class="tc">{timecodeAt(pendingDrawing.frame)}</span></span>
+                  <button type="button" class="linky" onclick={discardDrawing}>Discard</button>
+                {:else}
+                  <span class="stepper">
+                    <button type="button" onclick={() => nudgeAnchor(-1)} aria-label="One frame earlier">◂</button>
+                    <span class="tc anchor-tc" aria-live="off">{timecodeAt(anchorFrame)}</span>
+                    <button type="button" onclick={() => nudgeAnchor(1)} aria-label="One frame later">▸</button>
+                  </span>
+                  {#if anchorIsPlayhead}
+                    <span class="anchor-hint">follows the playhead</span>
+                  {:else}
+                    <button type="button" class="linky" onclick={() => { frameOverride = null; }}>Follow playhead</button>
+                  {/if}
+                {/if}
+              </div>
+            {/if}
+            <label class="sr-label">
+              <span class="sr-only">Note</span>
               <span class="composer">
                 <textarea
+                  placeholder={replyTo ? 'Write a reply' : 'Write a note at this frame'}
                   bind:this={composerEl}
                   bind:value={bodyText}
                   maxlength="10000"
@@ -876,45 +1034,25 @@
                 {/if}
               </span>
             </label>
-            <button type="submit" class="primary">Add note</button>
+            <button type="submit" class="primary">{replyTo ? 'Reply' : 'Add note'}</button>
           </form>
           {#if commentError}<p class="error" role="alert">{commentError}</p>{/if}
+
+          <div class="thread-list">
+            {#if threads.length === 0}
+              <p class="empty">{comments.length === 0 ? 'No notes yet.' : 'No notes match this filter.'}</p>
+            {/if}
+            {#each threads as comment (comment.id)}
+              <div class="thread">
+                {@render note(comment, false)}
+                {#each repliesOf(comment) as reply (reply.id)}
+                  {@render note(reply, true)}
+                {/each}
+              </div>
+            {/each}
+          </div>
         </section>
-      </div>
-      {#if versionsOpen}
-        <aside class="rail" aria-label="Versions">
-          <h2>Versions</h2>
-          {#if versions.length === 0}
-            <p class="empty">No versions.</p>
-          {/if}
-          {#each versions as version (version.id)}
-            <div class="vrow" class:active={version.id === selectedVersionId}>
-              <button
-                type="button"
-                class="vpick"
-                aria-current={version.id === selectedVersionId ? 'true' : undefined}
-                onclick={() => void selectVersion(version.id, { fromUser: true })}
-              >
-                <span class="vline">
-                  <span class="vno tc">v{version.version_no}</span>
-                  {#if asset && version.id === asset.current_version_id}<span class="vcurrent">Current</span>{/if}
-                  {#if TRANSCODE_LABELS[version.transcode_status]}
-                    <span class="vstate" class:failed={version.transcode_status === 'failed'}>
-                      {TRANSCODE_LABELS[version.transcode_status]}
-                    </span>
-                  {/if}
-                </span>
-                <span class="vmeta">{memberName(version.uploaded_by)}</span>
-                <span class="vmeta" title={whenAbsolute(version.created_at)}>{whenRelative(version.created_at)}</span>
-              </button>
-              {#if asset && version.id !== asset.current_version_id}
-                <button type="button" class="quiet setcur" onclick={() => void setCurrent(version)}>Set current</button>
-              {/if}
-            </div>
-          {/each}
-          {#if railError}<p class="error-text" role="alert">{railError}</p>{/if}
-        </aside>
-      {/if}
+      </aside>
     </div>
   {:else}
     <p class="empty loading">Loading asset.</p>
@@ -930,6 +1068,14 @@
   .topbar a:hover { color: var(--n-800); }
   h1 { margin: 0; font-family: var(--font-ui); font-size: var(--text-16); font-weight: 500; color: var(--n-900); }
   .vbadge { color: var(--n-600); font-size: var(--text-13); font-weight: 600; }
+
+  /* Versions menu: says which version you are on, and opens the rest. */
+  .vmenu { position: relative; }
+  .vtrigger { display: inline-flex; align-items: center; gap: 8px; }
+  .vtrigger-no { font-weight: 600; color: var(--n-900); }
+  .vtrigger-current { color: var(--n-600); font-size: var(--text-11); }
+  .caret { color: var(--n-600); font-size: 10px; }
+  .vpanel { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 280px; padding: 6px; background: var(--n-150); border-radius: var(--radius-lg); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); }
   .grow { flex: 1; }
   .approval { display: flex; align-items: center; gap: 8px; color: var(--n-600); font-size: var(--text-13); }
   select, input, textarea { border: 0; border-radius: var(--radius); background: var(--n-200); color: var(--n-900); padding: 8px 10px; }
@@ -944,9 +1090,14 @@
   .carry-opt input { width: auto; padding: 0; accent-color: var(--n-700); }
   .upload-status { margin: 0; padding: 8px var(--pad-2); background: var(--n-150); color: var(--n-800); font-size: var(--text-13); }
 
-  .content { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; }
-  .content.with-rail { grid-template-columns: minmax(0, 1fr) 232px; }
-  .maincol { min-width: 0; }
+  /* Stage left, notes right, both full height: the notes rail scrolls on its
+     own so the footage never leaves the screen to write a note. The rail is
+     clamped rather than fixed so it stays usable on a laptop. */
+  .content { display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 420px); align-items: stretch; height: calc(100vh - 52px); }
+  .maincol { min-width: 0; overflow-y: auto; }
+  @media (max-width: 900px) {
+    .content { grid-template-columns: minmax(0, 1fr); height: auto; }
+  }
   .stage-empty { padding: 18vh 0; text-align: center; background: var(--n-000); margin: 0; }
   .empty { color: var(--n-600); }
   .loading { padding: 32px var(--pad-3); }
@@ -958,7 +1109,7 @@
   .copy-note { color: var(--n-600); font-size: var(--text-13); }
 
   /* ---- version rail ---- */
-  .rail { padding: var(--pad-2); background: var(--n-100); min-height: 100%; }
+  .rail { display: flex; flex-direction: column; min-height: 0; background: var(--n-100); }
   .rail h2 { margin: 0 0 10px; font-size: var(--text-13); font-weight: 600; color: var(--n-900); }
   .vrow { display: grid; gap: 2px; margin-bottom: 2px; border-radius: var(--radius); }
   .vrow.active { background: var(--n-200); }
@@ -973,7 +1124,33 @@
   .setcur { justify-self: start; margin: 0 0 8px 10px; padding: 3px 8px; font-size: var(--text-13); }
 
   /* ---- notes ---- */
-  .notes { max-width: 820px; margin: 0 auto; padding: var(--pad-3) var(--pad-2) var(--pad-4); }
+  .notes { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: var(--pad-2); gap: 10px; }
+  /* The list scrolls; the head and composer above it do not. */
+  .thread-list { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
+  .thread { margin-bottom: 10px; }
+  .composer-form { display: grid; gap: 8px; padding: 10px; background: var(--n-150); border-radius: var(--radius); }
+  .sr-label { display: grid; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+  /* Frame anchor: a styled stepper, not a number input with browser spinners.
+     There is no "At playhead" button because the anchor already is the
+     playhead until you nudge it. */
+  .stepper { display: inline-flex; align-items: center; gap: 2px; background: var(--n-200); border-radius: var(--radius); padding: 2px; }
+  .stepper button { background: none; padding: 3px 7px; font-size: var(--text-13); line-height: 1; color: var(--n-700); }
+  .stepper button:hover { background: var(--n-300); color: var(--n-900); }
+  .anchor-tc { padding: 0 6px; color: var(--n-900); font-weight: 600; }
+  .anchor-hint { color: var(--n-500); font-size: var(--text-11); }
+  .replying { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--n-700); }
+  .replying strong { color: var(--n-900); font-weight: 600; }
+  .linky { background: none; padding: 0; color: var(--n-600); font-size: var(--text-13); font-weight: 500; }
+  .linky:hover { background: none; color: var(--n-900); text-decoration: underline; }
+
+  /* A reply is indented and quieter: the thread reads as one conversation. */
+  .notes article.reply { margin-left: 14px; padding-left: 10px; box-shadow: inset 2px 0 0 var(--n-300); background: none; }
+  .notes article.reply:hover { background: var(--n-150); }
+  .notes article.seekable { cursor: pointer; }
+  .note-body { flex: 1; min-width: 0; }
+  .note-actions { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
   .notes-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
   .notes h2 { margin: 0; font-size: var(--text-13); font-weight: 600; color: var(--n-900); }
   .filters { display: flex; gap: 2px; background: var(--n-150); border-radius: var(--radius); padding: 2px; }
@@ -1005,7 +1182,6 @@
   .notes form { display: grid; gap: 12px; margin-top: var(--pad-3); padding: var(--pad-2); background: var(--n-100); border-radius: var(--radius); }
   .notes form label { display: grid; gap: 8px; color: var(--n-600); font-size: var(--text-13); }
   .anchor-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .anchor-row label { align-self: end; }
   .drawing-chip { color: var(--n-800); font-size: var(--text-13); }
   .drawing-chip .tc { font-variant-numeric: tabular-nums; }
   .composer { position: relative; display: grid; }
@@ -1015,8 +1191,6 @@
   .mention-menu button.active, .mention-menu button:hover { background: var(--n-400); }
   .mention-menu strong { color: var(--n-900); font-weight: 600; font-size: var(--text-13); }
   .mention-menu span { color: var(--n-600); font-size: var(--text-13); }
-  .notes form input { background: var(--n-150); width: 120px; }
-  .notes form input:disabled { color: var(--n-500); }
 
   button { border: 0; border-radius: var(--radius); background: var(--n-200); color: var(--n-800); padding: 8px 12px; font-size: var(--text-13); font-weight: 500; }
   button:hover { background: var(--n-300); color: var(--n-900); }
@@ -1028,5 +1202,4 @@
   button[aria-pressed='true'] { background: var(--n-400); color: var(--n-900); }
   .tc { font-variant-numeric: tabular-nums; }
   button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px solid var(--n-800); outline-offset: 2px; }
-  @media (max-width: 900px) { .content.with-rail { grid-template-columns: 1fr; } .rail { min-height: 0; } }
 </style>

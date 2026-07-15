@@ -177,6 +177,9 @@ importers:
 
   packages/web:
     dependencies:
+      '@onelight/core':
+        specifier: workspace:^
+        version: link:../core
       '@onelight/player':
         specifier: workspace:*
         version: link:../player
