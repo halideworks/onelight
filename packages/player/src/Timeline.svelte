@@ -70,7 +70,45 @@
   /* ---- filmstrip lane (sprite sheet tiles across the width) ---- */
   const FILM_LANE_HEIGHT = 36;
   const showFilmstrip = $derived(Boolean(filmstrip && filmstrip.cues.length > 0));
-  const sheet = $derived(filmstrip ? spriteSheetSize(filmstrip.cues) : { width: 0, height: 0 });
+
+  /* The sheet's real pixel size, measured from the image rather than inferred
+     from the cues.
+
+     It cannot be inferred: the worker tiles with tile=10x10, which always emits
+     a full 10x10 canvas and pads the cells it did not fill. A clip with fewer
+     than 100 cues therefore has a sheet taller than its cues reach -- 48 cues
+     occupy 5 rows (max y+h = 450) of a sheet that is really 900 tall. Scaling
+     background-size to that inferred 450 squashed the sheet 2:1 and stacked two
+     rows of the grid inside every tile.
+
+     Measuring also keeps this correct for any future grid shape, and costs
+     nothing: the browser fetches the same URL for background-image, so this
+     resolves from cache. */
+  let measuredSheet = $state<{ width: number; height: number } | null>(null);
+  $effect(() => {
+    const url = filmstrip?.url;
+    measuredSheet = null;
+    if (!url) return;
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled && image.naturalWidth > 0 && image.naturalHeight > 0)
+        measuredSheet = {
+          width: image.naturalWidth,
+          height: image.naturalHeight
+        };
+    };
+    image.src = url;
+    return () => {
+      cancelled = true;
+    };
+  });
+  /* Until it is measured, the cue-implied size is the best guess available --
+     and it is exact whenever the grid is full. */
+  const sheet = $derived(
+    measuredSheet ??
+      (filmstrip ? spriteSheetSize(filmstrip.cues) : { width: 0, height: 0 })
+  );
   const tiles = $derived(
     filmstrip && laneWidth > 0
       ? filmstripTiles({

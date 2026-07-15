@@ -80,8 +80,18 @@ export const parseSpriteVtt = (text: string): SpriteCue[] => {
   return cues.sort((a, b) => a.start - b.start);
 };
 
-/* Total sheet size implied by the cue rectangles, for CSS background-size
-   scaling without loading the image first. */
+/* Total sheet size implied by the cue rectangles.
+
+   This is a LOWER BOUND, not the sheet's size, and it is exact only when the
+   grid is full. The worker tiles with tile=10x10, which always emits a full
+   10x10 canvas and pads the cells it did not fill, so a clip with fewer than
+   100 cues has a sheet taller than its cues reach: 48 cues occupy 5 rows
+   (max y+h = 450) of a sheet that is really 900 tall.
+
+   Scaling CSS background-size by this value therefore squashes the sheet and
+   stacks several rows of the grid inside every tile. Measure the image instead
+   -- Timeline.svelte and web's ScrubThumb.svelte both load it and read
+   naturalWidth/naturalHeight -- and use this only as a pre-load fallback. */
 export const spriteSheetSize = (
   cues: SpriteCue[],
 ): { width: number; height: number } => {
