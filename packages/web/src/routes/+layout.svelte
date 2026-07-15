@@ -6,9 +6,12 @@
   import { page } from '$app/state';
   import { auth } from '$lib/auth.svelte.js';
   import { notifications } from '$lib/notifications.svelte.js';
+  import NotificationsPanel from '$lib/NotificationsPanel.svelte';
   import type { Snippet } from 'svelte';
 
   let { children }: { children: Snippet } = $props();
+
+  let notificationsOpen = $state(false);
 
   const PUBLIC_PREFIXES = ['/login', '/setup', '/invite', '/reset', '/s'];
   const isPublic = $derived(
@@ -74,10 +77,11 @@
       <a href="/search" aria-current={current('/search')}>Search</a>
       <a href="/settings" aria-current={current('/settings')}>Settings</a>
     </nav>
-    <a
+    <button
+      type="button"
       class="bell"
-      href="/notifications"
-      aria-current={current('/notifications')}
+      onclick={() => (notificationsOpen = !notificationsOpen)}
+      aria-expanded={notificationsOpen}
       aria-label={notifications.unread > 0
         ? `Notifications, ${notifications.unread} unread`
         : 'Notifications'}
@@ -89,19 +93,42 @@
       {#if notifications.unread > 0}
         <span class="badge tc">{notifications.unread > 99 ? '99+' : notifications.unread}</span>
       {/if}
-    </a>
+    </button>
   </header>
+  <NotificationsPanel bind:open={notificationsOpen} />
 {/if}
 
-{@render children()}
+<!-- display: contents, so this wrapper adds no box and changes no layout; it
+     exists only to hand --topbar-h down to the page. Custom properties still
+     inherit through it, and because it mirrors `chrome`, the offset tracks
+     whether the header is really rendered rather than guessing from the route.
+     That matters for `/`, which is dual-mode: the signed-out hero has no
+     header and must stay a full 100vh. -->
+<div class="pages" class:bare={!chrome}>
+  {@render children()}
+</div>
 
 <style>
   /* App-level defaults live here, not in tokens.css: the token file is a
      verbatim port of mockups/tokens.css (phase-0 T19). */
   :global(body) {
+    /* The topbar is static, so it stacks above the page rather than overlaying
+       it: a page asking for 100vh would make the document 100vh + this and
+       scroll by exactly this much with nothing in the overflow. Pages subtract
+       it via calc(100vh - var(--topbar-h, 0px)). Declared here so the height
+       and the offset are one number and cannot drift. */
+    --topbar-h: 52px;
     min-height: 100vh;
     background: var(--ink-000);
     color: var(--ink-text);
+  }
+  .pages {
+    display: contents;
+  }
+  /* No header rendered (login, setup, invite, reset, share links, the review
+     room, and the signed-out hero) -- there is nothing to subtract. */
+  .pages.bare {
+    --topbar-h: 0px;
   }
   :global(input),
   :global(textarea),
@@ -115,7 +142,7 @@
     align-items: center;
     gap: 28px;
     padding: 0 clamp(24px, 4vw, 40px);
-    height: 52px;
+    height: var(--topbar-h);
     background: var(--ink-000);
     font-size: var(--text-13);
   }
@@ -140,17 +167,20 @@
   nav a[aria-current='page'] {
     color: var(--ink-text);
   }
+  /* An icon button, so it opts out of the app's filled-button convention. */
   .bell {
     position: relative;
     display: inline-flex;
     align-items: center;
     padding: 8px;
     margin: -8px;
+    border: 0;
     border-radius: var(--radius);
+    background: none;
     color: var(--ink-text-dim);
   }
   .bell:hover,
-  .bell[aria-current='page'] {
+  .bell[aria-expanded='true'] {
     color: var(--ink-text);
   }
   .badge {
@@ -167,7 +197,8 @@
     text-align: center;
     line-height: 1.3;
   }
-  a:focus-visible {
+  a:focus-visible,
+  button:focus-visible {
     outline: 1px solid var(--accent-bright);
     outline-offset: 2px;
   }

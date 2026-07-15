@@ -6,6 +6,7 @@ import type { MediaInfo, TranscodeJob } from "@onelight/core";
 import {
   DEFAULT_WATERMARK_FONTFILE,
   HDR_TONEMAP_FILTER,
+  VAAPI_DEVICE_ENV,
   VULKAN_HWDEVICE_ARGS,
   bt709ConvertFilter,
   buildHdrAv1Args,
@@ -15,6 +16,7 @@ import {
   buildStillArgs,
   buildWatermarkArgs,
   buildWatermarkFilter,
+  canUseVaapi,
   clampToSupportedRate,
   escapeDrawtextValue,
   needsBt709Conversion,
@@ -244,6 +246,123 @@ describe("SDR proxy recipe", () => {
     expect(
       hasDevice(buildHdrHevcArgs(jobOf(hdrMediaInfo("smpte2084")), "hdr.mp4")),
     ).toBe(false);
+  });
+});
+
+describe("VAAPI (QuickSync) hardware encode", () => {
+  const NODE = "/dev/dri/renderD128";
+  const tokens = {
+    email: "client@example.com",
+    name: "Client Name",
+    share: "Cut 04 review",
+    date: "2026-07-11",
+  };
+
+  it("stays on libx264 when no device is configured", () => {
+    const args = buildSdrProxyArgs(jobOf(mediaInfoOf()), "proxy.mp4", 1080);
+    expect(flag(args, "-c:v")).toBe("libx264");
+    expect(flag(args, "-vf")).toBe(
+      "scale=-2:1080,fps=24000/1001,format=yuv420p",
+    );
+    expect(args).not.toContain("-vaapi_device");
+  });
+
+  it("encodes on the GPU when a device is configured", () => {
+    const args = buildSdrProxyArgs(
+      jobOf(mediaInfoOf()),
+      "proxy.mp4",
+      1080,
+      NODE,
+    );
+    expect(flag(args, "-c:v")).toBe("h264_vaapi");
+    expect(flag(args, "-vaapi_device")).toBe(NODE);
+    // The device is a global option: it has to precede the input.
+    expect(args.indexOf("-vaapi_device")).toBeLessThan(args.indexOf("-i"));
+    // hwupload replaces the software pixel-format stage.
+    expect(flag(args, "-vf")).toBe(
+      "scale=-2:1080,fps=24000/1001,format=nv12,hwupload",
+    );
+    // Alder Lake-N exposes only the low-power entrypoint, and CQP is the rate
+    // control it supports -- CRF has no VAAPI equivalent.
+    expect(flag(args, "-low_power")).toBe("1");
+    expect(flag(args, "-rc_mode")).toBe("CQP");
+    expect(flag(args, "-qp")).toBe("18");
+    expect(args).not.toContain("-crf");
+    // x264-only options must not be handed to a VAAPI encoder.
+    expect(args).not.toContain("-preset");
+    expect(args).not.toContain("-sc_threshold");
+    // The frames are GPU surfaces by this point, not software yuv420p.
+    expect(args).not.toContain("-pix_fmt");
+  });
+
+  it("keys QP on ladder height exactly as CRF does", () => {
+    for (const entry of [
+      { height: 2160, qp: "19" },
+      { height: 1080, qp: "18" },
+      { height: 540, qp: "21" },
+    ]) {
+      const args = buildSdrProxyArgs(
+        jobOf(mediaInfoOf()),
+        "proxy.mp4",
+        entry.height,
+        NODE,
+      );
+      expect(flag(args, "-qp")).toBe(entry.qp);
+    }
+  });
+
+  it("keeps the BT.709 tags and GOP structure on the hardware path", () => {
+    const args = buildSdrProxyArgs(
+      jobOf(mediaInfoOf()),
+      "proxy.mp4",
+      1080,
+      NODE,
+    );
+    expect(flag(args, "-colorspace")).toBe("bt709");
+    expect(flag(args, "-color_primaries")).toBe("bt709");
+    expect(flag(args, "-color_trc")).toBe("bt709");
+    expect(flag(args, "-color_range")).toBe("tv");
+    expect(flag(args, "-g")).toBe("24");
+    expect(flag(args, "-keyint_min")).toBe("24");
+  });
+
+  // An HDR source tonemaps through libplacebo on -filter_hw_device vk, and
+  // hwupload would follow that device and hand Vulkan frames to h264_vaapi.
+  it("refuses the GPU for HDR sources even when a device is configured", () => {
+    for (const transfer of ["smpte2084", "arib-std-b67"]) {
+      const job = jobOf(hdrMediaInfo(transfer));
+      expect(canUseVaapi(job.mediaInfo, NODE)).toBe(false);
+      const args = buildSdrProxyArgs(job, "proxy.mp4", 1080, NODE);
+      expect(flag(args, "-c:v")).toBe("libx264");
+      expect(args).not.toContain("-vaapi_device");
+      expect(args).not.toContain("hwupload");
+      // The Vulkan tonemap device is still created, untouched by any of this.
+      expect(args.join(" ")).toContain(VULKAN_HWDEVICE_ARGS.join(" "));
+    }
+    expect(canUseVaapi(mediaInfoOf(), NODE)).toBe(true);
+    expect(canUseVaapi(mediaInfoOf(), undefined)).toBe(false);
+  });
+
+  it("burns watermarks on the GPU too, still copying audio", () => {
+    const args = buildWatermarkArgs(
+      "/blobs/proxy_1080.mp4",
+      "/blobs/wm.mp4",
+      { text: "{share}", position: "br" },
+      tokens,
+      { num: 24000, den: 1001 },
+      DEFAULT_WATERMARK_FONTFILE,
+      NODE,
+    );
+    expect(flag(args, "-c:v")).toBe("h264_vaapi");
+    expect(flag(args, "-vaapi_device")).toBe(NODE);
+    expect(flag(args, "-vf")).toContain(",format=nv12,hwupload");
+    expect(flag(args, "-c:a")).toBe("copy");
+    expect(flag(args, "-colorspace")).toBe("bt709");
+    expect(args[args.length - 1]).toBe("/blobs/wm.mp4");
+  });
+
+  it("names the env var the deployment actually sets", () => {
+    expect(VAAPI_DEVICE_ENV).toBe("ONELIGHT_VAAPI_DEVICE");
   });
 
   it("converts non-709 SDR sources to BT.709 before tagging", () => {

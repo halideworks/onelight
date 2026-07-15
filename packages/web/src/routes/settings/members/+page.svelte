@@ -71,7 +71,7 @@
 
 <style>
   /* App world, no borders: rows and fields separate by value step. */
-  .page { min-height: 100vh; padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
+  .page { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
   a { color: var(--ink-text-dim); }
   h1 { margin: 48px 0 28px; font-family: var(--font-display); font-size: clamp(40px, 7vw, 72px); font-weight: 700; letter-spacing: -0.02em; }
   h2 { margin: 44px 0 12px; font-size: var(--text-16); }

@@ -10,7 +10,8 @@ RUN pnpm --filter @onelight/core build \
   && pnpm --filter @onelight/db build \
   && pnpm --filter @onelight/worker build \
   && pnpm --filter @onelight/api build \
-  && pnpm --filter @onelight/server build
+  && pnpm --filter @onelight/server build \
+  && pnpm --filter @onelight/player build
 RUN pnpm --filter @onelight/web build
 
 FROM node:22-bookworm-slim
