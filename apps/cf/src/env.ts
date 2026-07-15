@@ -11,5 +11,6 @@ export interface Env {
   OIDC_CLIENT_SECRET?: string;
   OIDC_AUTO_PROVISION?: string;
   OIDC_ALLOWED_DOMAINS?: string;
+  ONELIGHT_ALLOWED_ORIGINS?: string;
   ASSETS?: Fetcher;
 }

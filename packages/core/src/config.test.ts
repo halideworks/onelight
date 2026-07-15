@@ -47,3 +47,61 @@ describe("config boolean env parsing", () => {
     );
   });
 });
+
+describe("allowed origins", () => {
+  it("always allows PUBLIC_URL's own origin, with no extra configuration", () => {
+    expect(loadConfig({ ...base }).allowedOrigins).toEqual([
+      "http://localhost:3000",
+    ]);
+  });
+
+  it("adds the configured origins alongside PUBLIC_URL's", () => {
+    const config = loadConfig({
+      ...base,
+      PUBLIC_URL: "https://review.example.com",
+      ONELIGHT_ALLOWED_ORIGINS:
+        "http://192.168.1.52:3000, https://review.internal.example.com",
+    });
+    expect(config.allowedOrigins).toEqual([
+      "https://review.example.com",
+      "http://192.168.1.52:3000",
+      "https://review.internal.example.com",
+    ]);
+  });
+
+  it("normalises through URL, so a trailing slash or path is not a new origin", () => {
+    expect(
+      loadConfig({
+        ...base,
+        ONELIGHT_ALLOWED_ORIGINS:
+          "https://a.example.com/,https://b.example.com/ignored/path",
+      }).allowedOrigins,
+    ).toEqual([
+      "http://localhost:3000",
+      "https://a.example.com",
+      "https://b.example.com",
+    ]);
+  });
+
+  // A typo here is otherwise only discovered by someone who cannot log in.
+  it("rejects an unparseable origin at startup rather than at request time", () => {
+    expect(() =>
+      loadConfig({ ...base, ONELIGHT_ALLOWED_ORIGINS: "review.example.com" }),
+    ).toThrow(/not a valid origin/);
+    expect(() =>
+      loadConfig({
+        ...base,
+        ONELIGHT_ALLOWED_ORIGINS: "https://ok.example.com,nope",
+      }),
+    ).toThrow(/not a valid origin/);
+  });
+
+  it("treats an empty or blank list as no extra origins", () => {
+    expect(
+      loadConfig({ ...base, ONELIGHT_ALLOWED_ORIGINS: "" }).allowedOrigins,
+    ).toEqual(["http://localhost:3000"]);
+    expect(
+      loadConfig({ ...base, ONELIGHT_ALLOWED_ORIGINS: " , ," }).allowedOrigins,
+    ).toEqual(["http://localhost:3000"]);
+  });
+});

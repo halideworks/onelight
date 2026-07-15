@@ -171,10 +171,22 @@ export const requireOrigin =
       Object.keys(cookies).some((name) => name.startsWith("ol_share_"));
     if (!carriesCookieCredential) return next();
     const candidate = c.req.header("origin") ?? c.req.header("referer");
-    if (
-      !candidate ||
-      new URL(candidate).origin !== new URL(env.config.PUBLIC_URL).origin
-    )
+    if (!candidate || !isAllowedOrigin(candidate, env.config.allowedOrigins))
       throw errors.forbidden("The request origin is not allowed.");
     await next();
   };
+
+/* allowedOrigins is PUBLIC_URL's origin plus any ONELIGHT_ALLOWED_ORIGINS, so
+   a deployment reachable by more than one name (LAN address before DNS exists,
+   a tailnet host, a second domain) can accept those without PUBLIC_URL --
+   which also seeds every absolute URL the app mints -- having to lie.
+   An unparseable candidate is rejected rather than thrown on: "Origin: null"
+   from a sandboxed iframe is exactly what this check exists to stop, and it
+   must not become a 500. */
+const isAllowedOrigin = (candidate: string, allowed: string[]): boolean => {
+  try {
+    return allowed.includes(new URL(candidate).origin);
+  } catch {
+    return false;
+  }
+};
