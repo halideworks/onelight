@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { days, sha256Hex } from "@onelight/core";
+import { days, loadConfig, sha256Hex } from "@onelight/core";
 import { rateLimits, sessions } from "@onelight/db/schema";
+import { createApp } from "../../app.js";
 import {
   assertSnakeCaseKeys,
   errorCode,
@@ -225,6 +226,51 @@ export const registerAuthDomain = (ctx: SuiteContext): void => {
         method: "DELETE",
         cookie: seed.editor.cookie,
       });
+    });
+
+    /* PUBLIC_URL is both the origin users arrive from and the base for every
+       absolute URL the app mints. A deployment reachable by a second name (the
+       LAN address before public DNS exists, a tailnet host) cannot express that
+       with PUBLIC_URL alone, and the symptom is a login that 403s with no
+       obvious cause. ONELIGHT_ALLOWED_ORIGINS widens the CSRF rule and nothing
+       else -- so this checks the listed origin passes AND that an unlisted one
+       is still refused by the same app. */
+    it("accepts an origin from ONELIGHT_ALLOWED_ORIGINS, and still refuses others", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const LAN = "http://192.168.1.52:3000";
+      const widened = createApp({
+        db: h.db,
+        hasher: h.hasher,
+        clock: h.clock,
+        ids: h.ids,
+        config: loadConfig({
+          PUBLIC_URL: h.config.PUBLIC_URL,
+          SECRET_KEY: h.config.SECRET_KEY,
+          ONELIGHT_ALLOWED_ORIGINS: LAN,
+        }),
+        version: "contract-origins",
+      });
+      const patch = async (origin: string): Promise<Response> =>
+        widened.request("/api/v1/users/me", {
+          method: "PATCH",
+          headers: {
+            cookie: seed.editor.cookie,
+            origin,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ name: "Origin Test" }),
+        });
+      expect((await patch(LAN)).status).toBe(200);
+      expect((await patch(new URL(h.config.PUBLIC_URL).origin)).status).toBe(
+        200,
+      );
+      expect((await patch("http://evil.example")).status).toBe(403);
+      // A near-miss must not pass: this is a strict origin match, not a prefix.
+      expect((await patch("http://192.168.1.52:3001")).status).toBe(403);
+      expect(
+        (await patch("http://192.168.1.52:3000.evil.example")).status,
+      ).toBe(403);
     });
 
     it("rate limits login per email with Retry-After and resets by window", async () => {

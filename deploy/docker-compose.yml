@@ -12,6 +12,14 @@ services:
       DATABASE_PATH: /data/onelight.db
       BLOB_ROOT: /data/blobs
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Compose only passes what is named here, so a setting documented in
+      # .env.example but missing from this list is silently ignored no matter
+      # what the operator puts in .env.
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      # Extra origins the CSRF check accepts. Needed whenever the deployment is
+      # reached by a name PUBLIC_URL does not carry -- otherwise login fails
+      # with "The request origin is not allowed."
+      ONELIGHT_ALLOWED_ORIGINS: ${ONELIGHT_ALLOWED_ORIGINS:-}
       ONELIGHT_WORKSPACE_NAME: ${ONELIGHT_WORKSPACE_NAME:-Onelight}
       WORKER_URL: ${WORKER_URL:-http://onelight-worker:8080}
       WORKER_SECRET: ${WORKER_SECRET:?WORKER_SECRET is required}

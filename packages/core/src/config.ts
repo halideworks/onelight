@@ -42,6 +42,15 @@ const configSchema = z
     OIDC_ALLOWED_DOMAINS: z.string().optional(),
     COOKIE_SECURE: booleanEnv,
     TRUST_PROXY: booleanEnvDefaultFalse,
+    /* Extra origins the CSRF check accepts, comma separated. PUBLIC_URL's own
+       origin is always allowed and never needs listing. This exists because
+       PUBLIC_URL is one value doing two jobs: it is both the origin users are
+       expected to arrive from and the base for every absolute URL the app
+       mints. Reaching a deployment by any other name -- the LAN address while
+       the public DNS is not up yet, a tailnet host, a second domain -- then
+       fails every cookie-carrying POST with "The request origin is not
+       allowed." while looking, from the browser, like a broken login. */
+    ONELIGHT_ALLOWED_ORIGINS: z.string().optional(),
   })
   .superRefine((value, ctx) => {
     const oidc = [
@@ -56,11 +65,34 @@ const configSchema = z
           "OIDC_ISSUER, OIDC_CLIENT_ID, and OIDC_CLIENT_SECRET must be set together.",
       });
     }
+    /* Fail at startup rather than at the first blocked request: a typo here is
+       only ever discovered by someone unable to log in. */
+    for (const origin of splitList(value.ONELIGHT_ALLOWED_ORIGINS)) {
+      try {
+        new URL(origin);
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["ONELIGHT_ALLOWED_ORIGINS"],
+          message: `"${origin}" is not a valid origin. Use a full scheme and host, e.g. https://review.example.com or http://192.168.1.52:3000.`,
+        });
+      }
+    }
   });
+
+const splitList = (value: string | undefined): string[] =>
+  value
+    ? value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    : [];
 
 export type AppConfig = z.infer<typeof configSchema> & {
   cookieSecure: boolean;
   oidcAllowedDomains: string[];
+  /* Every origin the CSRF check accepts: PUBLIC_URL's own, plus any extras. */
+  allowedOrigins: string[];
 };
 
 export const loadConfig = (
@@ -76,5 +108,14 @@ export const loadConfig = (
           .map((domain) => domain.trim().toLowerCase())
           .filter(Boolean)
       : [],
+    /* Normalised through URL so "https://x.com/" and "https://x.com" are the
+       same entry, and so comparison is against an origin rather than a string
+       the operator happened to type. */
+    allowedOrigins: [
+      new URL(parsed.PUBLIC_URL).origin,
+      ...splitList(parsed.ONELIGHT_ALLOWED_ORIGINS).map(
+        (origin) => new URL(origin).origin,
+      ),
+    ],
   };
 };
