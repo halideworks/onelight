@@ -14,13 +14,14 @@
     <a href="/settings/members"><strong>Members</strong><span>Users, invites, and roles</span></a>
     <a href="/settings/tokens"><strong>API tokens</strong><span>Command-line tools and integrations</span></a>
     <a href="/settings/sessions"><strong>Sessions</strong><span>Browsers signed in to your account</span></a>
+    <a href="/settings/notifications"><strong>Notifications</strong><span>Email delivery and muted projects</span></a>
     {#if auth.user?.role === 'admin'}
       <a href="/settings/jobs"><strong>Job queue</strong><span>Transcodes, probes, and background work</span></a>
     {/if}
   </nav>
 </main>
 <style>
-  .page { min-height: 100vh; padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
+  .page { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
   h1 { margin: 0 0 32px; font-family: var(--font-display); font-size: var(--text-56); font-weight: 700; letter-spacing: -0.02em; }
   nav { display: grid; gap: 2px; max-width: 560px; }
   a { display: grid; gap: 4px; padding: 16px 14px; margin: 0 -14px; border-radius: var(--radius); color: var(--ink-text); text-decoration: none; }

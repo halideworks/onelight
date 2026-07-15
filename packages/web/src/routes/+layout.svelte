@@ -6,9 +6,12 @@
   import { page } from '$app/state';
   import { auth } from '$lib/auth.svelte.js';
   import { notifications } from '$lib/notifications.svelte.js';
+  import NotificationsPanel from '$lib/NotificationsPanel.svelte';
   import type { Snippet } from 'svelte';
 
   let { children }: { children: Snippet } = $props();
+
+  let notificationsOpen = $state(false);
 
   const PUBLIC_PREFIXES = ['/login', '/setup', '/invite', '/reset', '/s'];
   const isPublic = $derived(
@@ -74,10 +77,11 @@
       <a href="/search" aria-current={current('/search')}>Search</a>
       <a href="/settings" aria-current={current('/settings')}>Settings</a>
     </nav>
-    <a
+    <button
+      type="button"
       class="bell"
-      href="/notifications"
-      aria-current={current('/notifications')}
+      onclick={() => (notificationsOpen = !notificationsOpen)}
+      aria-expanded={notificationsOpen}
       aria-label={notifications.unread > 0
         ? `Notifications, ${notifications.unread} unread`
         : 'Notifications'}
@@ -89,8 +93,9 @@
       {#if notifications.unread > 0}
         <span class="badge tc">{notifications.unread > 99 ? '99+' : notifications.unread}</span>
       {/if}
-    </a>
+    </button>
   </header>
+  <NotificationsPanel bind:open={notificationsOpen} />
 {/if}
 
 <!-- display: contents, so this wrapper adds no box and changes no layout; it
@@ -162,17 +167,20 @@
   nav a[aria-current='page'] {
     color: var(--ink-text);
   }
+  /* An icon button, so it opts out of the app's filled-button convention. */
   .bell {
     position: relative;
     display: inline-flex;
     align-items: center;
     padding: 8px;
     margin: -8px;
+    border: 0;
     border-radius: var(--radius);
+    background: none;
     color: var(--ink-text-dim);
   }
   .bell:hover,
-  .bell[aria-current='page'] {
+  .bell[aria-expanded='true'] {
     color: var(--ink-text);
   }
   .badge {
@@ -189,7 +197,8 @@
     text-align: center;
     line-height: 1.3;
   }
-  a:focus-visible {
+  a:focus-visible,
+  button:focus-visible {
     outline: 1px solid var(--accent-bright);
     outline-offset: 2px;
   }
