@@ -67,6 +67,21 @@
   let reverseSpeed = $state(0);
   let reverseTimer: ReturnType<typeof setInterval> | null = null;
   let rvfcStarted = false;
+  /* The transport chrome is ours, not the browser's. Native controls duplicated
+     a transport this player already has -- and does better: frame steps, JKL
+     shuttle, in/out, a filmstrip scrubber -- while putting their own scrubber,
+     timer and focus ring right against the footage, in a room the design doc
+     requires to stay strictly neutral. */
+  let frameBox = $state<HTMLDivElement | null>(null);
+  let muted = $state(false);
+  let volume = $state(1);
+  let fullscreen = $state(false);
+  /* Reverse is emulated by a timer with the element paused, so "playing" is not
+     video.paused: it is either shuttle direction being live. */
+  const playing = $derived(forwardSpeed > 0 || reverseSpeed > 0);
+  const shuttleLabel = $derived(
+    reverseSpeed > 1 ? `${String(reverseSpeed)}x rev` : forwardSpeed > 1 ? `${String(forwardSpeed)}x` : ''
+  );
 
   const rateSupported = $derived(
     SUPPORTED_RATES.some((candidate) => candidate.num === rate.num && candidate.den === rate.den)
@@ -392,6 +407,20 @@
     jumpTo(frame + amount);
   };
 
+  /* Fullscreen the frame box, not the video element: the annotation overlay and
+     watermark are siblings of the <video> and have to come with it. */
+  const toggleFullscreen = (): void => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void frameBox?.requestFullscreen?.().catch(() => undefined);
+  };
+  $effect(() => {
+    const sync = (): void => {
+      fullscreen = document.fullscreenElement === frameBox;
+    };
+    document.addEventListener('fullscreenchange', sync);
+    return () => document.removeEventListener('fullscreenchange', sync);
+  });
+
   const pausePlayback = (): void => {
     if (!video) return;
     cancelPendingRestore();
@@ -510,11 +539,12 @@
 <svelte:window onkeydown={handleKeydown} />
 <section class="player" aria-label="Review player">
   <div class="stage" style:background={surroundColor}>
-    <div class="frame-box">
+    <div class="frame-box" bind:this={frameBox}>
       <video
         bind:this={video}
         src={currentSrc || src}
-        controls={!drawMode}
+        bind:muted
+        bind:volume
         playsinline
         ontimeupdate={hasRvfc ? undefined : handleTimeUpdate}
         onloadedmetadata={handleLoadedMetadata}
@@ -553,16 +583,69 @@
     </div>
   </div>
   <div class="transport">
-    <div class="transport-row">
-      <button type="button" onclick={() => step(-1)} disabled={seekLocked} aria-label="Previous frame">Previous frame</button>
-      <button type="button" onclick={() => step(1)} disabled={seekLocked} aria-label="Next frame">Next frame</button>
+    <div class="transport-row main">
+      <!-- Shuttle and step, in the order an editor's hand expects: J K L with
+           frame steps either side of the playhead. Icons, not sentences: these
+           are pressed hundreds of times an hour. -->
+      <div class="cluster">
+        <button type="button" class="icon" onclick={playReverse} aria-label="Play reverse (J)" title="Reverse — J">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10L2 8zM14 3v10L8 8z" /></svg>
+        </button>
+        <button type="button" class="icon step" onclick={() => step(-1)} disabled={seekLocked} aria-label="Previous frame" title="Previous frame — ←">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11 3v10L4 8z" /><rect x="2" y="3" width="1.6" height="10" /></svg>
+        </button>
+        <button type="button" class="icon play" onclick={() => (playing ? pausePlayback() : playForward())} aria-label={playing ? 'Pause (K)' : 'Play (L)'} title={playing ? 'Pause — K' : 'Play — L'}>
+          {#if playing}
+            <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3" width="3.4" height="10" /><rect x="9.1" y="3" width="3.4" height="10" /></svg>
+          {:else}
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3l9 5-9 5z" /></svg>
+          {/if}
+        </button>
+        <button type="button" class="icon step" onclick={() => step(1)} disabled={seekLocked} aria-label="Next frame" title="Next frame — →">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3v10l7-5z" /><rect x="12.4" y="3" width="1.6" height="10" /></svg>
+        </button>
+        {#if shuttleLabel}<span class="shuttle tc">{shuttleLabel}</span>{/if}
+      </div>
+
       <span class="readout">
         {#if timecode}<span class="tc tc-main">{timecode}</span>{/if}
         <span class="tc tc-sub">{frame} fr&nbsp; {rateLabel}{dropFrame && isDropFrameRate(rate) ? ' DF' : ''}</span>
       </span>
-      <button type="button" onclick={() => { inFrame = frame; }} aria-label="Set loop in">Set in</button>
-      <button type="button" onclick={() => { outFrame = frame; }} aria-label="Set loop out">Set out</button>
-      <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }}>Loop</button>
+
+      <div class="cluster">
+        <button type="button" onclick={() => { inFrame = frame; }} aria-label="Set loop in">Set in</button>
+        <button type="button" onclick={() => { outFrame = frame; }} aria-label="Set loop out">Set out</button>
+        <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }}>Loop</button>
+      </div>
+
+      <span class="grow"></span>
+
+      <div class="cluster">
+        <button type="button" class="icon" aria-pressed={muted} onclick={() => { muted = !muted; }} aria-label={muted ? 'Unmute' : 'Mute'}>
+          {#if muted || volume === 0}
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3L4 6H2v4h2l3 3z" /><path d="M10.5 6.5l3 3M13.5 6.5l-3 3" stroke="currentColor" stroke-width="1.3" fill="none" /></svg>
+          {:else}
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3L4 6H2v4h2l3 3z" /><path d="M9.5 5.8a3 3 0 0 1 0 4.4M11.6 4a5.6 5.6 0 0 1 0 8" stroke="currentColor" stroke-width="1.3" fill="none" /></svg>
+          {/if}
+        </button>
+        <input
+          class="vol"
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          bind:value={volume}
+          oninput={() => { if (volume > 0) muted = false; }}
+          aria-label="Volume"
+        />
+        <button type="button" class="icon" onclick={toggleFullscreen} aria-pressed={fullscreen} aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}>
+          {#if fullscreen}
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2v4H2M10 14v-4h4" stroke="currentColor" stroke-width="1.4" fill="none" /></svg>
+          {:else}
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M14 10v4h-4" stroke="currentColor" stroke-width="1.4" fill="none" /></svg>
+          {/if}
+        </button>
+      </div>
     </div>
     <div class="transport-row settings">
       {#if allowDrawing}
@@ -665,6 +748,28 @@
   .watermark:not(.tiled)[data-position='center'] { align-items: center; justify-content: center; }
   .transport { padding-top: 12px; font-family: var(--font-ui, system-ui); }
   .transport-row { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
+  /* The main row is a real transport: clusters, not a sentence of buttons. */
+  .transport-row.main { justify-content: flex-start; gap: 16px; }
+  .cluster { display: flex; align-items: center; gap: 2px; }
+  .cluster > button + button { margin-left: 0; }
+  .grow { flex: 1; }
+  /* Icon buttons: square, quiet, and the same value step as everything else in
+     the room. No accent colour -- this chrome sits next to the frame. */
+  .icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; }
+  .icon svg { width: 16px; height: 16px; fill: currentColor; }
+  .icon.play { width: 38px; height: 38px; background: var(--n-300, #2e2e2e); color: var(--n-900, #e9e9e9); }
+  .icon.play:hover { background: var(--n-400, #3d3d3d); }
+  .icon.step svg { opacity: 0.9; }
+  .shuttle { margin-left: 6px; color: var(--n-700, #9a9a9a); font-size: 12px; font-weight: 600; }
+  /* Volume: a neutral track, no accent fill. */
+  .vol { width: 84px; height: 3px; appearance: none; background: var(--n-300, #2e2e2e); border-radius: 2px; padding: 0; }
+  .vol::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; border-radius: 50%; background: var(--n-800, #c4c4c4); }
+  .vol::-moz-range-thumb { width: 11px; height: 11px; border: 0; border-radius: 50%; background: var(--n-800, #c4c4c4); }
+  .vol:hover::-webkit-slider-thumb { background: var(--n-900, #e9e9e9); }
+  .vol:hover::-moz-range-thumb { background: var(--n-900, #e9e9e9); }
+  /* Fullscreen puts the frame box on a black field, not a grey one. */
+  .frame-box:fullscreen { display: grid; place-items: center; width: 100vw; height: 100vh; background: #000000; }
+  .frame-box:fullscreen video { max-height: 100vh; max-width: 100vw; }
   .transport-row.settings { margin-top: 10px; justify-content: flex-start; }
   .grow { flex: 1; }
   .readout { display: grid; text-align: center; gap: 2px; }
