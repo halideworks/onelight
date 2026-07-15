@@ -81,6 +81,33 @@
   /* A note anchors to the playhead unless the reviewer nudges it; null means
      "follow the playhead". */
   let frameOverride = $state<number | null>(null);
+  /* The player's loop in/out, mirrored here. A note covering a range wants
+     exactly those two numbers, so setting in/out on the timeline is the range
+     UI -- there is no second set of controls to learn or keep in sync. */
+  let playerRange = $state<{ in: number | null; out: number | null }>({ in: null, out: null });
+  /* The rail can be folded away to give the picture the whole window. Open by
+     default: notes are the job. */
+  let notesOpen = $state(true);
+  const NOTES_OPEN_KEY = 'onelight.notes.open';
+  $effect(() => {
+    try {
+      notesOpen = localStorage.getItem(NOTES_OPEN_KEY) !== '0';
+    } catch {
+      /* Storage can be unavailable; the rail stays open. */
+    }
+  });
+  const setNotesOpen = (open: boolean): void => {
+    notesOpen = open;
+    try {
+      localStorage.setItem(NOTES_OPEN_KEY, open ? '1' : '0');
+    } catch {
+      /* Non-persistent, still applied for the session. */
+    }
+  };
+  /* Renaming happens in place on the title: PATCH /assets/:id already takes a
+     name, and nothing in the UI ever offered it. */
+  let renaming = $state(false);
+  let renameText = $state('');
   let railError = $state('');
   let copyNotice = $state('');
   let uploadState = $state<UploadState>({ status: 'idle', progress: 0, error: '' });
@@ -166,14 +193,42 @@
   const threads = $derived(visibleComments.filter((comment) => !comment.parent_id));
   const repliesOf = (comment: Comment): Comment[] => repliesByParent.get(comment.id) ?? [];
 
-  /* The frame a new note will anchor to: a drawing pins its own frame, then any
-     nudge the reviewer made, otherwise wherever the playhead is. This is what
-     replaced the old "At playhead (N)" button -- the anchor simply follows the
-     playhead, so there is nothing to press. */
-  const anchorFrame = $derived(pendingDrawing ? pendingDrawing.frame : (frameOverride ?? currentFrame));
-  const anchorIsPlayhead = $derived(!pendingDrawing && frameOverride === null);
+  /* A range note when the player has both in and out set, and the range is a
+     real span. Otherwise the note is a single frame. */
+  const rangeActive = $derived(
+    playerRange.in !== null && playerRange.out !== null && playerRange.out > playerRange.in
+  );
+
+  /* The frame a new note will anchor to: a range's in point, then a drawing's
+     own frame, then any nudge the reviewer made, otherwise wherever the
+     playhead is. This is what replaced the old "At playhead (N)" button -- the
+     anchor simply follows the playhead, so there is nothing to press. */
+  const anchorFrame = $derived(
+    rangeActive
+      ? (playerRange.in as number)
+      : pendingDrawing
+        ? pendingDrawing.frame
+        : (frameOverride ?? currentFrame)
+  );
+  const anchorIsPlayhead = $derived(!rangeActive && !pendingDrawing && frameOverride === null);
   const nudgeAnchor = (delta: number): void => {
     frameOverride = Math.max(0, anchorFrame + delta);
+  };
+
+  const renameAsset = async (event: SubmitEvent): Promise<void> => {
+    event.preventDefault();
+    const name = renameText.trim();
+    if (!asset || !name || name === asset.name) {
+      renaming = false;
+      return;
+    }
+    try {
+      asset = await apiPatch<Asset>(`/api/v1/assets/${asset.id}`, { name });
+      renaming = false;
+      error = '';
+    } catch (caught) {
+      error = messageFrom(caught, 'The name could not be changed.');
+    }
   };
 
   /* Server list order: (frame_in, else -1) ascending, then id descending. */
@@ -688,6 +743,9 @@
         {
           body_text: bodyText,
           ...(frame !== null ? { frame_in: frame } : {}),
+          /* A range note carries the player's out point too. Replies inherit
+             their parent's span, so they never send one. */
+          ...(!parent && rangeActive ? { frame_out: playerRange.out as number } : {}),
           ...(drawing ? { annotation: { strokes: drawing.strokes } } : {}),
           ...(mentionIds.length ? { mentions: mentionIds } : {})
         }
@@ -754,7 +812,28 @@
   <header class="topbar">
     <a href={`/projects/${projectId}`}>Back to project</a>
     {#if asset}
-      <h1>{asset.name}</h1>
+      <!-- Rename in place. PATCH /assets/:id has always taken a name; nothing
+           in the UI ever offered it, so a mis-named upload stayed mis-named. -->
+      {#if renaming}
+        <form class="rename" onsubmit={renameAsset}>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            bind:value={renameText}
+            aria-label="Media name"
+            maxlength="500"
+            autofocus
+            onkeydown={(event) => { if (event.key === 'Escape') renaming = false; }}
+            onblur={() => { renaming = false; }}
+          />
+          <button type="submit">Save</button>
+        </form>
+      {:else}
+        <h1>
+          <button type="button" class="renametrigger" onclick={() => { renameText = asset?.name ?? ''; renaming = true; }} title="Rename">
+            {asset.name}
+          </button>
+        </h1>
+      {/if}
       {#if selectedVersion}<span class="vbadge tc">v{selectedVersion.version_no}</span>{/if}
       <span class="grow"></span>
       <span class="upload-new">
@@ -849,7 +928,7 @@
   {#if error}
     <p class="error" role="alert">{error}</p>
   {:else if asset}
-    <div class="content">
+    <div class="content" class:notes-closed={!notesOpen}>
       <div class="maincol">
         {#if source}
           <Player
@@ -874,12 +953,15 @@
             }}
             onmarkerselect={(id) => highlightComment(id)}
             ondrawingchange={(drawing) => { pendingDrawing = drawing; }}
+            onrangechange={(range) => { playerRange = range; }}
+            onshare={() => void copyFrameLink()}
           />
-          <div class="framebar">
-            <span class="tc frame-readout">Frame {currentFrame}</span>
-            <button type="button" class="quiet" onclick={() => void copyFrameLink()}>Copy link at this frame</button>
-            {#if copyNotice}<span class="copy-note" role="status">{copyNotice}</span>{/if}
-          </div>
+          <!-- The frame readout used to be repeated here under the player, next
+               to the copy button, costing a row of vertical space to say what
+               the transport already says. Copy moved into the transport; only
+               the confirmation is left, and only while it has something to
+               say. -->
+          {#if copyNotice}<p class="copy-note" role="status">{copyNotice}</p>{/if}
         {:else if selectedVersion && (selectedVersion.transcode_status === 'pending' || selectedVersion.transcode_status === 'processing')}
           <p class="empty stage-empty">Transcoding this version. The proxy appears when it is ready.</p>
         {:else}
@@ -973,17 +1055,29 @@
             </article>
           {/snippet}
 
-          <!-- The composer leads the rail: writing a note is the point of this
-               screen, and it must never be a scroll away. -->
-          <form class="composer-form" onsubmit={addComment}>
+          <!-- One composer, rendered where the writing is happening: beneath the
+               thread when replying, pinned to the foot of the rail otherwise.
+               Only ever one at a time, so there is a single textarea to focus
+               and no question about which box a keystroke lands in. -->
+          {#snippet composerForm()}
+          <form class="composer-form" class:inline={replyTo !== null} onsubmit={addComment}>
             {#if replyTo}
               <div class="replying">
-                <span>Replying to <strong>{replyTo.author_name ?? 'Reviewer'}</strong></span>
+                <span>Reply to <strong>{replyTo.author_name ?? 'Reviewer'}</strong></span>
                 <button type="button" class="linky" onclick={() => { replyTo = null; }}>Cancel</button>
               </div>
             {:else}
               <div class="anchor-row">
-                {#if pendingDrawing}
+                {#if rangeActive}
+                  <!-- The player's loop in/out IS the range: no second set of
+                       controls, and the timeline already draws the span. -->
+                  <span class="stepper range" title="From the player's in and out points">
+                    <span class="tc anchor-tc">{timecodeAt(playerRange.in as number)}</span>
+                    <span class="rangedash" aria-hidden="true">–</span>
+                    <span class="tc anchor-tc">{timecodeAt(playerRange.out as number)}</span>
+                  </span>
+                  <span class="anchor-hint">{(playerRange.out as number) - (playerRange.in as number) + 1} frames</span>
+                {:else if pendingDrawing}
                   <span class="drawing-chip">Drawing at <span class="tc">{timecodeAt(pendingDrawing.frame)}</span></span>
                   <button type="button" class="linky" onclick={discardDrawing}>Discard</button>
                 {:else}
@@ -1037,6 +1131,7 @@
             <button type="submit" class="primary">{replyTo ? 'Reply' : 'Add note'}</button>
           </form>
           {#if commentError}<p class="error" role="alert">{commentError}</p>{/if}
+          {/snippet}
 
           <div class="thread-list">
             {#if threads.length === 0}
@@ -1048,11 +1143,35 @@
                 {#each repliesOf(comment) as reply (reply.id)}
                   {@render note(reply, true)}
                 {/each}
+                <!-- The reply box belongs under the thread it answers, not at
+                     the other end of the rail. -->
+                {#if replyTo && (replyTo.id === comment.id || replyTo.parent_id === comment.id)}
+                  {@render composerForm()}
+                {/if}
               </div>
             {/each}
           </div>
+
+          <!-- New notes compose at the foot of the rail and stay there: the list
+               scrolls behind it, so the box never leaves the screen. -->
+          {#if !replyTo}
+            <div class="composer-dock">
+              {@render composerForm()}
+            </div>
+          {/if}
         </section>
       </aside>
+      <!-- Fold the rail away to give the picture the window. -->
+      <button
+        type="button"
+        class="railtoggle"
+        aria-expanded={notesOpen}
+        onclick={() => setNotesOpen(!notesOpen)}
+        title={notesOpen ? 'Hide notes' : 'Show notes'}
+      >
+        <span aria-hidden="true">{notesOpen ? '›' : '‹'}</span>
+        <span class="sr-only">{notesOpen ? 'Hide notes' : 'Show notes'}</span>
+      </button>
     </div>
   {:else}
     <p class="empty loading">Loading asset.</p>
@@ -1067,6 +1186,10 @@
   .topbar a { color: var(--n-600); font-size: var(--text-13); text-decoration: none; }
   .topbar a:hover { color: var(--n-800); }
   h1 { margin: 0; font-family: var(--font-ui); font-size: var(--text-16); font-weight: 500; color: var(--n-900); }
+  .renametrigger { background: none; padding: 2px 6px; margin: 0 -6px; color: inherit; font: inherit; border-radius: var(--radius); }
+  .renametrigger:hover { background: var(--n-200); }
+  .rename { display: flex; align-items: center; gap: 6px; }
+  .rename input { font-size: var(--text-16); min-width: 260px; }
   .vbadge { color: var(--n-600); font-size: var(--text-13); font-weight: 600; }
 
   /* Versions menu: says which version you are on, and opens the rest. */
@@ -1092,11 +1215,22 @@
 
   /* Stage left, notes right, both full height: the notes rail scrolls on its
      own so the footage never leaves the screen to write a note. The rail is
-     clamped rather than fixed so it stays usable on a laptop. */
-  .content { display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 420px); align-items: stretch; height: calc(100vh - 52px); }
+     clamped rather than fixed so it stays usable on a laptop, and it folds away
+     when the picture wants the window. The grid animates, so the rail slides
+     rather than blinking out. */
+  .content { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 420px); align-items: stretch; height: calc(100vh - 52px); transition: grid-template-columns 180ms ease; }
+  .content.notes-closed { grid-template-columns: minmax(0, 1fr) 0px; }
+  .content.notes-closed .rail { overflow: hidden; }
   .maincol { min-width: 0; overflow-y: auto; }
+  /* The handle rides the rail's edge. */
+  .railtoggle { position: absolute; top: 10px; right: 0; z-index: 5; width: 22px; height: 34px; padding: 0; border-radius: var(--radius) 0 0 var(--radius); background: var(--n-200); color: var(--n-700); font-size: 14px; line-height: 1; }
+  .railtoggle:hover { background: var(--n-300); color: var(--n-900); }
+  @media (prefers-reduced-motion: reduce) {
+    .content { transition: none; }
+  }
   @media (max-width: 900px) {
-    .content { grid-template-columns: minmax(0, 1fr); height: auto; }
+    .content, .content.notes-closed { grid-template-columns: minmax(0, 1fr); height: auto; }
+    .railtoggle { display: none; }
   }
   .stage-empty { padding: 18vh 0; text-align: center; background: var(--n-000); margin: 0; }
   .empty { color: var(--n-600); }
@@ -1104,8 +1238,6 @@
   .error { padding: 12px var(--pad-2); margin: 0; color: var(--warn); }
   .error-text { color: var(--warn); font-size: var(--text-13); }
 
-  .framebar { display: flex; align-items: center; gap: 12px; padding: 0 16px 8px; }
-  .frame-readout { color: var(--n-600); font-size: var(--text-13); }
   .copy-note { color: var(--n-600); font-size: var(--text-13); }
 
   /* ---- version rail ---- */
@@ -1125,10 +1257,16 @@
 
   /* ---- notes ---- */
   .notes { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: var(--pad-2); gap: 10px; }
-  /* The list scrolls; the head and composer above it do not. */
+  /* The list scrolls between a fixed head and a docked composer. */
   .thread-list { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
   .thread { margin-bottom: 10px; }
+  /* Same 10px inset as a note, so note text and composer text share a left edge. */
   .composer-form { display: grid; gap: 8px; padding: 10px; background: var(--n-150); border-radius: var(--radius); }
+  /* Docked, so the list scrolls behind it and the box is always there. */
+  .composer-dock { position: sticky; bottom: 0; padding-top: 8px; background: var(--n-100); }
+  /* A reply composes under its thread, indented to the same line as the replies
+     it is joining. */
+  .composer-form.inline { margin: 2px 0 0 14px; background: var(--n-200); }
   .sr-label { display: grid; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
@@ -1139,6 +1277,8 @@
   .stepper button { background: none; padding: 3px 7px; font-size: var(--text-13); line-height: 1; color: var(--n-700); }
   .stepper button:hover { background: var(--n-300); color: var(--n-900); }
   .anchor-tc { padding: 0 6px; color: var(--n-900); font-weight: 600; }
+  .stepper.range { padding: 4px 2px; }
+  .rangedash { color: var(--n-600); }
   .anchor-hint { color: var(--n-500); font-size: var(--text-11); }
   .replying { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--n-700); }
   .replying strong { color: var(--n-900); font-weight: 600; }
@@ -1159,7 +1299,7 @@
   .tagfilter { margin-left: auto; background: var(--n-300); color: var(--n-900); font-weight: 600; padding: 4px 10px; }
   .tagfilter span { color: var(--n-600); font-weight: 400; margin-left: 6px; }
   .carry-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 12px; margin: 0 0 12px; background: var(--n-150); border-radius: var(--radius); color: var(--n-800); }
-  .notes article { display: flex; justify-content: space-between; gap: 20px; padding: 12px; margin: 0 -12px 2px; border-radius: var(--radius); }
+  .notes article { display: flex; justify-content: space-between; gap: 20px; padding: 10px; margin: 0 0 2px; border-radius: var(--radius); }
   .notes article:hover { background: var(--n-150); }
   .notes article.highlighted { background: var(--n-200); }
   .notes article div { flex: 1; }
@@ -1179,8 +1319,7 @@
   .tag { display: inline; border: 0; border-radius: 2px; background: var(--n-150); color: var(--n-900); font-weight: 600; font-size: inherit; padding: 0 3px; cursor: pointer; }
   .tag:hover { background: var(--n-300); }
 
-  .notes form { display: grid; gap: 12px; margin-top: var(--pad-3); padding: var(--pad-2); background: var(--n-100); border-radius: var(--radius); }
-  .notes form label { display: grid; gap: 8px; color: var(--n-600); font-size: var(--text-13); }
+  .composer-form label { display: grid; gap: 8px; color: var(--n-600); font-size: var(--text-13); }
   .anchor-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .drawing-chip { color: var(--n-800); font-size: var(--text-13); }
   .drawing-chip .tc { font-variant-numeric: tabular-nums; }

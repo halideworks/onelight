@@ -35,7 +35,9 @@
     onframechange = undefined,
     onmarkerselect = undefined,
     ondrawingchange = undefined,
-    onplaystate = undefined
+    onplaystate = undefined,
+    onshare = undefined,
+    onrangechange = undefined
   }: {
     src: string;
     rate?: { num: number; den: number };
@@ -53,6 +55,12 @@
     onmarkerselect?: ((markerId: string, frame: number) => void) | undefined;
     ondrawingchange?: ((drawing: PendingDrawing | null) => void) | undefined;
     onplaystate?: ((playing: boolean) => void) | undefined;
+    /* The page owns the URL; the player only knows which frame you are on. */
+    onshare?: ((frame: number) => void) | undefined;
+    /* In/out already exist here for looping. A note that covers a range wants
+       exactly the same two numbers, so they are published rather than
+       reinvented in a second piece of UI. */
+    onrangechange?: ((range: { in: number | null; out: number | null }) => void) | undefined;
   } = $props();
 
   let video: HTMLVideoElement | undefined = $state();
@@ -73,6 +81,14 @@
      timer and focus ring right against the footage, in a room the design doc
      requires to stay strictly neutral. */
   let frameBox = $state<HTMLDivElement | null>(null);
+  /* Fullscreen targets the stage, not the frame box: the box has to keep
+     hugging the picture (the annotation canvas is inset:0 on it, so any
+     letterboxing inside the box would put drawings off the footage), and the
+     stage is what centres it and paints the surround. */
+  let stage = $state<HTMLDivElement | null>(null);
+  /* 16/9 until the first metadata arrives, so the stage has a shape to reserve
+     instead of collapsing and then jumping. */
+  let aspect = $state(16 / 9);
   let muted = $state(false);
   let volume = $state(1);
   let fullscreen = $state(false);
@@ -82,6 +98,10 @@
   const shuttleLabel = $derived(
     reverseSpeed > 1 ? `${String(reverseSpeed)}x rev` : forwardSpeed > 1 ? `${String(forwardSpeed)}x` : ''
   );
+
+  $effect(() => {
+    onrangechange?.({ in: inFrame, out: outFrame });
+  });
 
   const rateSupported = $derived(
     SUPPORTED_RATES.some((candidate) => candidate.num === rate.num && candidate.den === rate.den)
@@ -304,6 +324,12 @@
 
   const handleLoadedMetadata = (): void => {
     if (!video) return;
+    /* The picture's own shape, which every rendition of a version shares. The
+       stage is sized from this rather than from the decoded pixels, so
+       switching 540 to 1080 rescales the picture inside a box that does not
+       move. */
+    if (video.videoWidth > 0 && video.videoHeight > 0)
+      aspect = video.videoWidth / video.videoHeight;
     hasRvfc = 'requestVideoFrameCallback' in video;
     if (hasRvfc && !rvfcStarted) {
       rvfcStarted = true;
@@ -408,15 +434,16 @@
     jumpTo(frame + amount);
   };
 
-  /* Fullscreen the frame box, not the video element: the annotation overlay and
-     watermark are siblings of the <video> and have to come with it. */
+  /* Fullscreen the stage: it carries the surround and centres the frame box,
+     and the frame box must stay exactly the size of the picture so the
+     annotation canvas (inset:0 on it) keeps landing on the footage. */
   const toggleFullscreen = (): void => {
     if (document.fullscreenElement) void document.exitFullscreen();
-    else void frameBox?.requestFullscreen?.().catch(() => undefined);
+    else void stage?.requestFullscreen?.().catch(() => undefined);
   };
   $effect(() => {
     const sync = (): void => {
-      fullscreen = document.fullscreenElement === frameBox;
+      fullscreen = document.fullscreenElement === stage;
     };
     document.addEventListener('fullscreenchange', sync);
     return () => document.removeEventListener('fullscreenchange', sync);
@@ -539,7 +566,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 <section class="player" aria-label="Review player">
-  <div class="stage" style:background={surroundColor}>
+  <div class="stage" bind:this={stage} style:background={surroundColor} style:--ar={String(aspect)}>
     <div class="frame-box" bind:this={frameBox}>
       <video
         bind:this={video}
@@ -585,6 +612,14 @@
   </div>
   <div class="transport">
     <div class="transport-row main">
+      <!-- Timecode left, transport centred on the stage, range right: a deck
+           reads this way, and the play button wants to be on the centre line
+           rather than wherever the row happens to start. -->
+      <span class="readout">
+        {#if timecode}<span class="tc tc-main">{timecode}</span>{/if}
+        <span class="tc tc-sub">{frame} fr&nbsp; {rateLabel}{dropFrame && isDropFrameRate(rate) ? ' DF' : ''}</span>
+      </span>
+
       <!-- Shuttle and step, in the order an editor's hand expects: J K L with
            frame steps either side of the playhead. Icons, not sentences: these
            are pressed hundreds of times an hour. -->
@@ -608,20 +643,20 @@
         {#if shuttleLabel}<span class="shuttle tc">{shuttleLabel}</span>{/if}
       </div>
 
-      <span class="readout">
-        {#if timecode}<span class="tc tc-main">{timecode}</span>{/if}
-        <span class="tc tc-sub">{frame} fr&nbsp; {rateLabel}{dropFrame && isDropFrameRate(rate) ? ' DF' : ''}</span>
-      </span>
-
       <div class="cluster">
         <button type="button" onclick={() => { inFrame = frame; }} aria-label="Set loop in">Set in</button>
         <button type="button" onclick={() => { outFrame = frame; }} aria-label="Set loop out">Set out</button>
         <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }}>Loop</button>
       </div>
+    </div>
 
-      <span class="grow"></span>
-
+    <div class="transport-row aside">
       <div class="cluster">
+        {#if onshare}
+          <button type="button" class="linky" onclick={() => onshare?.(frame)}>Copy link at this frame</button>
+        {/if}
+      </div>
+      <div class="cluster volume">
         <button type="button" class="icon" aria-pressed={muted} onclick={() => { muted = !muted; }} aria-label={muted ? 'Unmute' : 'Mute'}>
           {#if muted || volume === 0}
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3L4 6H2v4h2l3 3z" /><path d="M10.5 6.5l3 3M13.5 6.5l-3 3" stroke="currentColor" stroke-width="1.3" fill="none" /></svg>
@@ -722,9 +757,18 @@
   /* Review room world: strictly neutral, R=G=B, no gradients, no tinted
      chrome. The stage background is the surround control's territory. */
   .player { background: var(--n-050, #101010); color: var(--n-800, #c4c4c4); padding: 16px; }
+  /* The stage reserves the picture's shape and the frame box fills it, so the
+     box is exactly the picture: no letterboxing inside it, which is what keeps
+     the annotation canvas (inset:0 on the box) on the footage.
+
+     Sized by min(available width, height budget x aspect), so it is as large as
+     it can be and -- because every rendition of a version shares an aspect --
+     identical for 540 and 1080. Switching quality rescales the picture without
+     moving the box, which is what it looked like before: the 540 proxy is
+     960px wide and simply rendered smaller. */
   .stage { display: grid; place-items: center; min-height: 120px; }
-  .frame-box { position: relative; max-width: 100%; }
-  video { display: block; max-width: 100%; max-height: 72vh; background: #000000; }
+  .frame-box { position: relative; width: min(100%, calc(72vh * var(--ar, 1.7778))); }
+  video { display: block; width: 100%; height: auto; background: #000000; }
   .watermark {
     position: absolute;
     inset: 0;
@@ -749,11 +793,20 @@
   .watermark:not(.tiled)[data-position='center'] { align-items: center; justify-content: center; }
   .transport { padding-top: 12px; font-family: var(--font-ui, system-ui); }
   .transport-row { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
-  /* The main row is a real transport: clusters, not a sentence of buttons. */
-  .transport-row.main { justify-content: flex-start; gap: 16px; }
+  /* Transport centred, the way a deck is. Three tracks: the outer two take equal
+     space and the middle one holds the controls, so the play button sits on the
+     centre line of the stage no matter how wide the side clusters get. */
+  .transport-row.main { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; }
+  .transport-row.main > .readout { justify-self: start; }
+  .transport-row.main > .cluster:first-of-type { justify-self: center; }
+  .transport-row.main > .cluster:last-of-type { justify-self: end; }
+  /* Secondary row: things that are not the transport do not compete with it. */
+  .transport-row.aside { justify-content: space-between; margin-top: 8px; gap: 16px; }
   .cluster { display: flex; align-items: center; gap: 2px; }
-  .cluster > button + button { margin-left: 0; }
-  .grow { flex: 1; }
+  /* Volume and fullscreen are different jobs and should not read as one
+     control: the slider needs air before the screen button. */
+  .cluster.volume { gap: 8px; }
+  .cluster.volume .vol { margin-right: 10px; }
   /* Icon buttons: square, quiet, and the same value step as everything else in
      the room. No accent colour -- this chrome sits next to the frame. */
   .icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; }
@@ -768,9 +821,12 @@
   .vol::-moz-range-thumb { width: 11px; height: 11px; border: 0; border-radius: 50%; background: var(--n-800, #c4c4c4); }
   .vol:hover::-webkit-slider-thumb { background: var(--n-900, #e9e9e9); }
   .vol:hover::-moz-range-thumb { background: var(--n-900, #e9e9e9); }
-  /* Fullscreen puts the frame box on a black field, not a grey one. */
-  .frame-box:fullscreen { display: grid; place-items: center; width: 100vw; height: 100vh; background: #000000; }
-  .frame-box:fullscreen video { max-height: 100vh; max-width: 100vw; }
+  /* Fullscreen: the stage fills the screen and keeps painting the surround, and
+     the picture grows until it hits whichever edge binds first -- full width on
+     a wide screen, full height on a tall one. The frame box still hugs the
+     picture, so drawings stay on the footage. */
+  .stage:fullscreen { width: 100vw; height: 100vh; }
+  .stage:fullscreen .frame-box { width: min(100vw, calc(100vh * var(--ar, 1.7778))); }
   .transport-row.settings { margin-top: 10px; justify-content: flex-start; }
   .grow { flex: 1; }
   .readout { display: grid; text-align: center; gap: 2px; }
