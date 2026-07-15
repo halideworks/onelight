@@ -86,7 +86,7 @@
 
 <style>
   /* App world, no borders: rows separate by value step. */
-  .page { min-height: 100vh; padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
+  .page { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
   a { color: var(--ink-text-dim); }
   h1 { margin: 48px 0 12px; font-family: var(--font-display); font-size: clamp(40px, 7vw, 72px); font-weight: 700; letter-spacing: -0.02em; }
   .lede { max-width: 560px; margin: 0 0 32px; color: var(--ink-text-dim); }

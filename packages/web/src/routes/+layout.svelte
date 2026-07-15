@@ -93,15 +93,37 @@
   </header>
 {/if}
 
-{@render children()}
+<!-- display: contents, so this wrapper adds no box and changes no layout; it
+     exists only to hand --topbar-h down to the page. Custom properties still
+     inherit through it, and because it mirrors `chrome`, the offset tracks
+     whether the header is really rendered rather than guessing from the route.
+     That matters for `/`, which is dual-mode: the signed-out hero has no
+     header and must stay a full 100vh. -->
+<div class="pages" class:bare={!chrome}>
+  {@render children()}
+</div>
 
 <style>
   /* App-level defaults live here, not in tokens.css: the token file is a
      verbatim port of mockups/tokens.css (phase-0 T19). */
   :global(body) {
+    /* The topbar is static, so it stacks above the page rather than overlaying
+       it: a page asking for 100vh would make the document 100vh + this and
+       scroll by exactly this much with nothing in the overflow. Pages subtract
+       it via calc(100vh - var(--topbar-h, 0px)). Declared here so the height
+       and the offset are one number and cannot drift. */
+    --topbar-h: 52px;
     min-height: 100vh;
     background: var(--ink-000);
     color: var(--ink-text);
+  }
+  .pages {
+    display: contents;
+  }
+  /* No header rendered (login, setup, invite, reset, share links, the review
+     room, and the signed-out hero) -- there is nothing to subtract. */
+  .pages.bare {
+    --topbar-h: 0px;
   }
   :global(input),
   :global(textarea),
@@ -115,7 +137,7 @@
     align-items: center;
     gap: 28px;
     padding: 0 clamp(24px, 4vw, 40px);
-    height: 52px;
+    height: var(--topbar-h);
     background: var(--ink-000);
     font-size: var(--text-13);
   }

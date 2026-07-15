@@ -189,7 +189,7 @@
 
 <style>
   /* App world, no borders: separation by value step and space. */
-  .page { min-height: 100vh; padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
+  .page { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
   h1 { margin: 0 0 24px; font-family: var(--font-display); font-size: clamp(40px, 7vw, 72px); font-weight: 700; letter-spacing: -0.02em; }
   input { width: min(560px, 100%); border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 12px 14px; font-size: var(--text-14); }
   input::placeholder { color: var(--ink-text-dim); }

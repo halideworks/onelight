@@ -1148,7 +1148,7 @@
 <style>
   /* App world: dark ink base, the project's palette as the header wash.
      Separation by value step and space, not borders. */
-  .room { min-height: 100vh; background: var(--ink-000); color: var(--ink-text); font-size: var(--text-13); }
+  .room { min-height: calc(100vh - var(--topbar-h, 0px)); background: var(--ink-000); color: var(--ink-text); font-size: var(--text-13); }
   .wash { padding: var(--pad-3) var(--pad-4) var(--pad-4); background-size: 100% 300%; background-position: 50% 0%; }
   .washrow { display: flex; gap: 16px; }
   .washrow a { color: rgba(250, 248, 244, 0.72); font-size: var(--text-13); text-decoration: none; }
