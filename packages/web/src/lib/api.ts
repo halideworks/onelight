@@ -134,6 +134,8 @@ export type SessionResponse = Get<"/api/v1/auth/session">;
 export type BootstrapResponse = Get<"/api/v1/bootstrap">;
 export type ProjectPage = Get<"/api/v1/projects">;
 export type Project = ProjectPage["items"][number];
+export type ProjectCreateBody = PostBody<"/api/v1/projects">;
+export type ProjectCreated = Created<"/api/v1/projects">;
 export type AssetPage = Get<"/api/v1/projects/{id}/assets">;
 export type Asset = Get<"/api/v1/assets/{id}">;
 export type VersionList = Get<"/api/v1/assets/{id}/versions">;
@@ -177,6 +179,9 @@ export const listProjects = (cursor?: string): Promise<ProjectPage> =>
   );
 export const getProject = (id: string): Promise<Project> =>
   api<Project>(`/api/v1/projects/${id}`);
+export const createProject = (
+  body: ProjectCreateBody,
+): Promise<ProjectCreated> => apiPost<ProjectCreated>("/api/v1/projects", body);
 export const listProjectAssets = (
   projectId: string,
   cursor?: string,
