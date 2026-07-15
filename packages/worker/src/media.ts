@@ -273,6 +273,67 @@ export const VULKAN_HWDEVICE_ARGS: ReadonlyArray<string> = [
 const tonemapHwDeviceArgs = (mediaInfo: MediaInfo): string[] =>
   isHdrSource(mediaInfo) ? [...VULKAN_HWDEVICE_ARGS] : [];
 
+// Intel QuickSync (VAAPI) hardware H.264 encode. Opt-in per host through
+// ONELIGHT_VAAPI_DEVICE (a render node such as /dev/dri/renderD128) rather than
+// autodetected, because the node only exists where the container was actually
+// handed the GPU: an unset variable must degrade to software rather than fail
+// the job. Unset is the portable default and the path CI exercises.
+export const VAAPI_DEVICE_ENV = "ONELIGHT_VAAPI_DEVICE";
+
+// An HDR source tonemaps through libplacebo, which requires -filter_hw_device
+// vk. hwupload targets that same filter device, so it would hand Vulkan frames
+// to h264_vaapi and abort. The Vulkan device shipped here is lavapipe, a
+// software implementation that cannot share surfaces with the GPU's VAAPI, so
+// there is no cheap hwmap interop either. HDR therefore stays on the software
+// encoder, which is also where its libplacebo tonemap already spends its time.
+export const canUseVaapi = (
+  mediaInfo: MediaInfo,
+  device: string | undefined,
+): boolean => Boolean(device) && !isHdrSource(mediaInfo);
+
+// Uploading to the GPU replaces the software pixel-format stage: nv12 is what
+// the Intel encoder consumes.
+const VAAPI_UPLOAD_FILTER = "format=nv12,hwupload";
+
+// -vaapi_device is shorthand for -init_hw_device vaapi=va:<node> plus
+// -filter_hw_device va, which is what points hwupload at the GPU. It is a
+// global option, so like the Vulkan args it must precede the input.
+const vaapiHwDeviceArgs = (device: string): string[] => [
+  "-vaapi_device",
+  device,
+];
+
+// The Alder Lake-N family (the N150 here) exposes only VAEntrypointEncSliceLP,
+// so the low-power encoder is the only one that exists; ffmpeg falls back to it
+// unprompted today, but saying so keeps the failure legible on parts that
+// expose both entrypoints. CQP is the rate control the LP entrypoint supports:
+// it has no CRF, so the software ladder's CRF is reused as the QP, trading a
+// little file size for the same perceptual target. libx264's -preset and
+// -sc_threshold have no VAAPI equivalent and are omitted rather than passed and
+// ignored, and -pix_fmt is dropped because the frames are VAAPI surfaces by
+// then, not software yuv420p.
+const vaapiVideoArgs = (quality: string): string[] => [
+  "-c:v",
+  "h264_vaapi",
+  "-low_power",
+  "1",
+  "-rc_mode",
+  "CQP",
+  "-qp",
+  quality,
+];
+
+const softwareVideoArgs = (quality: string): string[] => [
+  "-c:v",
+  "libx264",
+  "-preset",
+  "medium",
+  "-crf",
+  quality,
+  "-pix_fmt",
+  "yuv420p",
+];
+
 // Output half of the SDR BT.709 conversion; the input half is derived per
 // source below so zscale always sees a complete input colorspec.
 const BT709_OUTPUT_PARAMS = "matrix=709:primaries=709:transfer=709";
@@ -582,11 +643,16 @@ export const buildWatermarkArgs = (
   tokens: WatermarkTokens,
   rate?: { num: number; den: number },
   fontfile = DEFAULT_WATERMARK_FONTFILE,
+  vaapiDevice = process.env[VAAPI_DEVICE_ENV],
 ): string[] => {
   const gop = rate ? Math.max(1, Math.round(rate.num / rate.den)) : 24;
+  // The source here is our own finished proxy, which is always SDR BT.709, so
+  // there is no HDR case to exclude: the device alone decides.
+  const hardware = Boolean(vaapiDevice);
   return [
     "-hide_banner",
     "-y",
+    ...(hardware ? vaapiHwDeviceArgs(vaapiDevice as string) : []),
     "-i",
     source,
     "-map",
@@ -594,21 +660,15 @@ export const buildWatermarkArgs = (
     "-map",
     "0:a:0?",
     "-vf",
-    `${buildWatermarkFilter(spec, tokens, fontfile)},format=yuv420p`,
-    "-c:v",
-    "libx264",
-    "-preset",
-    "medium",
-    "-crf",
-    "18",
-    "-pix_fmt",
-    "yuv420p",
+    `${buildWatermarkFilter(spec, tokens, fontfile)},${
+      hardware ? VAAPI_UPLOAD_FILTER : "format=yuv420p"
+    }`,
+    ...(hardware ? vaapiVideoArgs("18") : softwareVideoArgs("18")),
     "-g",
     String(gop),
     "-keyint_min",
     String(gop),
-    "-sc_threshold",
-    "0",
+    ...(hardware ? [] : ["-sc_threshold", "0"]),
     "-colorspace",
     "bt709",
     "-color_primaries",
@@ -661,15 +721,21 @@ export const buildSdrProxyArgs = (
   job: TranscodeJob,
   outputPath: string,
   height: number,
+  vaapiDevice = process.env[VAAPI_DEVICE_ENV],
 ): string[] => {
   // Ladder numbers are heights; -2 keeps the derived width even.
   const scale =
     height > 0 ? `scale=-2:${height}` : "scale=trunc(iw/2)*2:trunc(ih/2)*2";
-  const filters = `${colorPrefix(job.mediaInfo)}${scale},${fpsFilter(job.mediaInfo)},format=yuv420p`;
+  const hardware = canUseVaapi(job.mediaInfo, vaapiDevice);
+  const quality = height >= 2160 ? "19" : height <= 540 ? "21" : "18";
+  const filters = `${colorPrefix(job.mediaInfo)}${scale},${fpsFilter(job.mediaInfo)},${
+    hardware ? VAAPI_UPLOAD_FILTER : "format=yuv420p"
+  }`;
   const args = [
     "-hide_banner",
     "-y",
     ...tonemapHwDeviceArgs(job.mediaInfo),
+    ...(hardware ? vaapiHwDeviceArgs(vaapiDevice as string) : []),
     "-i",
     job.sourceKey,
     "-map",
@@ -678,20 +744,12 @@ export const buildSdrProxyArgs = (
     "0:a:0?",
     "-vf",
     filters,
-    "-c:v",
-    "libx264",
-    "-preset",
-    "medium",
-    "-crf",
-    height >= 2160 ? "19" : height <= 540 ? "21" : "18",
-    "-pix_fmt",
-    "yuv420p",
+    ...(hardware ? vaapiVideoArgs(quality) : softwareVideoArgs(quality)),
     "-g",
     String(gopSize(job.mediaInfo)),
     "-keyint_min",
     String(gopSize(job.mediaInfo)),
-    "-sc_threshold",
-    "0",
+    ...(hardware ? [] : ["-sc_threshold", "0"]),
     "-colorspace",
     "bt709",
     "-color_primaries",
