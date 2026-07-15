@@ -42,7 +42,7 @@
   --n-700: #9a9a9a;
   --n-800: #c4c4c4;
   --n-900: #e9e9e9;
-  --grey-18: #7a7a7a; /* 18% reflectance viewing surround */
+  --grey-18: #767676; /* 18% reflectance viewing surround: linear 0.18 through the sRGB transfer curve is 0.4613 -> 118/255. #7a7a7a was ~19.6%. */
 
   /* App-world base. Barely warm ink, from the dark stops of the library. */
   --ink-000: #0d1117;   /* derived from sumimai #101C28 pulled toward neutral */

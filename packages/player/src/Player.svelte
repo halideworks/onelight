@@ -158,7 +158,7 @@
   };
   /* All three surrounds are R=G=B: near-black, 18% grey, true black. */
   const surroundColor = $derived(
-    surround === 'grey18' ? 'var(--grey-18, #7a7a7a)' : surround === 'black' ? '#000000' : 'var(--n-000, #0a0a0a)'
+    surround === 'grey18' ? 'var(--grey-18, #767676)' : surround === 'black' ? '#000000' : 'var(--n-000, #0a0a0a)'
   );
 
   /* ---- timeline lane visibility, persisted per user ---- */

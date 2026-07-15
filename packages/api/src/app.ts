@@ -3397,6 +3397,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   ) =>
     `${env.config.PUBLIC_URL.replace(/\/$/, "")}/api/v1/media/${blobKey.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(await issuePrivateMediaToken(versionId, blobKey, disposition))}`;
 
+  /* These must match what the worker actually writes. The sidecars are PNG
+     (media.ts writes poster.png, sprite.png, audio_peaks.png) and were served
+     as image/jpeg, and audio_peaks was not listed at all -- so the waveform
+     fell through to application/octet-stream, which no browser will render. */
   const renditionKindContentTypes: Record<string, string> = {
     proxy_2160: "video/mp4",
     proxy_1080: "video/mp4",
@@ -3404,8 +3408,26 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     hdr_hevc: "video/mp4",
     hdr_av1: "video/mp4",
     watermarked: "video/mp4",
-    poster: "image/jpeg",
-    sprite: "image/jpeg",
+    poster: "image/png",
+    sprite: "image/png",
+    audio_peaks: "image/png",
+    still_tiles: "image/png",
+  };
+
+  /* Last resort before application/octet-stream: the key's own extension. A
+     rendition kind added to the worker but forgotten above should still serve
+     as something a browser can display, rather than silently download. */
+  const extensionContentTypes: Record<string, string> = {
+    mp4: "video/mp4",
+    m4a: "audio/mp4",
+    mp3: "audio/mpeg",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    gif: "image/gif",
+    pdf: "application/pdf",
+    vtt: "text/vtt",
   };
 
   const blobContentType = async (key: string): Promise<string> => {
@@ -3432,7 +3454,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       const mapped = renditionKindContentTypes[rendition.kind];
       if (mapped) return mapped;
     }
-    return "application/octet-stream";
+    const extension = key.split(".").pop()?.toLowerCase();
+    return (
+      (extension ? extensionContentTypes[extension] : undefined) ??
+      "application/octet-stream"
+    );
   };
 
   const parseRangeHeader = (
