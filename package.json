@@ -9,7 +9,7 @@
   "scripts": {
     "build": "pnpm -r --if-present build",
     "dev": "pnpm --filter @onelight/server dev",
-    "lint": "eslint .",
+    "lint": "pnpm typecheck && eslint .",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "test": "vitest run",

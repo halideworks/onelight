@@ -17,8 +17,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
+      # typecheck first: it builds the .d.ts that type-aware linting reads.
       - run: pnpm typecheck
+      - run: pnpm lint
       - run: pnpm openapi:check
       - run: pnpm format
       - run: pnpm test
