@@ -767,8 +767,8 @@
 
 <svelte:head><title>{project?.name ?? 'Project'} | Onelight</title></svelte:head>
 
-<main class="room">
-  <header class="wash" style={`background-image: ${wash};`}>
+<main class="room" style={`background-image: ${wash};`}>
+  <header class="wash">
     <div class="washrow">
       <a href="/">Projects</a>
       <span class="grow"></span>
@@ -1148,8 +1148,22 @@
 <style>
   /* App world: dark ink base, the project's palette as the header wash.
      Separation by value step and space, not borders. */
-  .room { min-height: calc(100vh - var(--topbar-h, 0px)); background: var(--ink-000); color: var(--ink-text); font-size: var(--text-13); }
-  .wash { padding: var(--pad-3) var(--pad-4) var(--pad-4); background-size: 100% 300%; background-position: 50% 0%; }
+  /* The palette washes the whole room, not a band across the top. It used to be
+     a header-only strip showing the top third of the gradient (100% 300% at
+     50% 0%), so a project's colour was a stripe you scrolled past. Fixed
+     attachment holds the wash still while content moves over it.
+
+     The veil is not decoration. Every palette runs dark to light by design, so
+     a full-height wash ends in cream -- and this is a dark app whose body text
+     is --ink-text. Washing the page without it turned the lower half into light
+     grey on cream. The veil stays clear at the top, where the wash does its
+     work behind the title, and deepens to near-ink by the content, so colour
+     reaches the whole page and text contrast never depends on where in the
+     gradient a paragraph happens to land. */
+  .room { position: relative; min-height: calc(100vh - var(--topbar-h, 0px)); background-color: var(--ink-000); background-size: 100% 100%; background-attachment: fixed; color: var(--ink-text); font-size: var(--text-13); }
+  .room::before { content: ''; position: fixed; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(13, 17, 23, 0.05) 0%, rgba(13, 17, 23, 0.45) 26%, rgba(13, 17, 23, 0.88) 58%, rgba(13, 17, 23, 0.95) 100%); }
+  .room > :global(*) { position: relative; }
+  .wash { padding: var(--pad-3) var(--pad-4) var(--pad-4); }
   .washrow { display: flex; gap: 16px; }
   .washrow a { color: rgba(250, 248, 244, 0.72); font-size: var(--text-13); text-decoration: none; }
   .washrow a:hover { color: rgba(250, 248, 244, 0.96); }

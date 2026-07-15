@@ -2,9 +2,30 @@
   import { goto } from '$app/navigation';
   import { api, createProject, messageFrom } from '$lib/api.js';
   import { auth } from '$lib/auth.svelte.js';
+  import { washFor } from '$lib/washes.js';
 
   type Project = { id: string; name: string; status: string; palette: string; my_role?: string };
   let projects = $state<Project[]>([]);
+
+  /* Grid or list, remembered per user: a wall of thumbnails is right for a few
+     projects, a list is right for forty. */
+  const VIEW_KEY = 'onelight.projects.view';
+  let view = $state<'grid' | 'list'>('grid');
+  $effect(() => {
+    try {
+      if (localStorage.getItem(VIEW_KEY) === 'list') view = 'list';
+    } catch {
+      /* Storage can be unavailable; the default view stands. */
+    }
+  });
+  const setView = (next: 'grid' | 'list'): void => {
+    view = next;
+    try {
+      localStorage.setItem(VIEW_KEY, next);
+    } catch {
+      /* Non-persistent, still applied for the session. */
+    }
+  };
   /* The layout owns session hydration (one GET /auth/session). Load projects
      once it reports a signed-in session, exactly once. */
   let projectsLoaded = false;
@@ -45,14 +66,18 @@
 
 <svelte:head><title>Onelight</title></svelte:head>
 
-<main class="shell">
+<main class="shell" class:signed-in={auth.signedIn}>
   <p class="eyebrow">One-light dailies</p>
+  <!-- Signed out this is a hero and earns its size. Signed in it is a page
+       heading over a list you came here to use, so it stops shouting. -->
   <h1>{auth.signedIn ? 'Choose a project.' : 'Review work with the frame still in view.'}</h1>
-  <p class="lede">A self-hosted review room for post-production teams.</p>
+  {#if !auth.signedIn}
+    <p class="lede">A self-hosted review room for post-production teams.</p>
+  {/if}
   {#if auth.signedIn}
     <section class="projects" aria-label="Projects">
-      {#if projects.length === 0}<p class="empty">No projects yet. Name one to start.</p>{/if}
-      {#each projects as project (project.id)}<a class="project" href={`/projects/${project.id}`}><span>{project.name}</span><small>{project.my_role ?? 'viewer'}</small></a>{/each}
+      <!-- Creating a project leads: it is the one thing a new workspace must
+           do, and it used to be stranded under the list. -->
       <form class="newproject" onsubmit={create}>
         <input
           bind:value={newProjectName}
@@ -66,6 +91,31 @@
         </button>
       </form>
       {#if createError}<p class="error" role="alert">{createError}</p>{/if}
+
+      <div class="listhead">
+        <span class="count">{projects.length} {projects.length === 1 ? 'project' : 'projects'}</span>
+        <div class="viewtoggle" role="group" aria-label="Project view">
+          <button type="button" aria-pressed={view === 'grid'} onclick={() => setView('grid')}>Grid</button>
+          <button type="button" aria-pressed={view === 'list'} onclick={() => setView('list')}>List</button>
+        </div>
+      </div>
+
+      {#if projects.length === 0}<p class="empty">No projects yet. Name one to start.</p>{/if}
+
+      <div class="projectlist" class:grid={view === 'grid'}>
+        {#each projects as project (project.id)}
+          <a class="project" href={`/projects/${project.id}`}>
+            <!-- The project's own palette is its thumbnail: assigned at
+                 creation, so every project already has one and the page needs
+                 no extra request to show it. -->
+            <span class="thumb" style={`background-image: ${washFor(project.palette)};`} aria-hidden="true"></span>
+            <span class="meta">
+              <span class="name">{project.name}</span>
+              <small>{project.my_role ?? 'viewer'}</small>
+            </span>
+          </a>
+        {/each}
+      </div>
     </section>
   {:else if auth.ready}
     <nav aria-label="Primary"><a href="/login">Sign in</a><a href="/setup">First run setup</a></nav>
@@ -74,23 +124,51 @@
 
 <style>
   .shell { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 12vh 9vw; background: linear-gradient(180deg, var(--sumimai-a) 0%, var(--sumimai-m) 55%, var(--sumimai-b) 105%); }
+  /* Signed in this is a working page, not a landing page: less air, no hero. */
+  .shell.signed-in { padding: 6vh 9vw; }
   .eyebrow { margin: 0 0 24px; color: rgba(255, 255, 255, 0.65); font-size: var(--text-13); }
   h1 { max-width: 760px; margin: 0; font-family: var(--font-display); font-size: clamp(42px, 8vw, 92px); line-height: 0.98; }
+  /* The heading over a list you came here to use does not need to be 92px. */
+  .signed-in h1 { font-size: clamp(24px, 3vw, 34px); line-height: 1.1; margin: 0 0 24px; }
   .lede { max-width: 460px; margin: 32px 0 48px; font-size: 19px; }
   nav { display: flex; gap: 24px; }
   a { color: inherit; text-decoration: none; }
   nav a { border-bottom: 1px solid rgba(255, 255, 255, 0.7); padding-bottom: 5px; }
   a:focus-visible { outline: 2px solid var(--accent-bright); outline-offset: 4px; }
-  .projects { display: grid; gap: 2px; max-width: 640px; }
-  .project { display: flex; justify-content: space-between; gap: 24px; padding: 16px 14px; margin: 0 -14px; border-radius: var(--radius); background: rgba(13, 17, 23, 0.35); }
-  .project:hover { background: rgba(13, 17, 23, 0.55); }
-  .project small { color: rgba(255, 255, 255, 0.65); }
-  .empty { color: rgba(255, 255, 255, 0.65); }
-  .newproject { display: flex; gap: 6px; margin-top: 14px; }
-  .newproject input { flex: 1; min-width: 0; border: 0; border-radius: var(--radius); background: rgba(13, 17, 23, 0.35); color: var(--ink-text); padding: 9px 12px; font-size: var(--text-13); }
+
+  /* One column shared by the form and the rows, so their edges line up: the
+     form used to be inset by the row's negative margin. */
+  .projects { max-width: 640px; }
+  .newproject { display: flex; gap: 6px; }
+  .newproject input { flex: 1; min-width: 0; border: 0; border-radius: var(--radius); background: rgba(13, 17, 23, 0.35); color: var(--ink-text); padding: 10px 14px; font-size: var(--text-13); }
   .newproject input::placeholder { color: rgba(255, 255, 255, 0.65); }
-  .newproject button { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 9px 16px; font-size: var(--text-13); font-weight: 600; }
+  .newproject button { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 10px 16px; font-size: var(--text-13); font-weight: 600; white-space: nowrap; }
   .newproject button:hover { background: var(--accent-bright); }
   .newproject button:disabled { opacity: 0.5; cursor: default; }
+
+  .listhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 28px 0 10px; }
+  .count { color: rgba(255, 255, 255, 0.65); font-size: var(--text-13); }
+  .viewtoggle { display: flex; gap: 2px; padding: 2px; border-radius: var(--radius); background: rgba(13, 17, 23, 0.35); }
+  .viewtoggle button { border: 0; border-radius: 2px; background: none; color: rgba(255, 255, 255, 0.65); padding: 4px 10px; font-size: var(--text-12); font-weight: 500; }
+  .viewtoggle button:hover { color: #fff; }
+  .viewtoggle button[aria-pressed='true'] { background: rgba(13, 17, 23, 0.55); color: #fff; }
+
+  .projectlist { display: grid; gap: 2px; }
+  .projectlist.grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+
+  /* List row: thumbnail as a small swatch. */
+  .project { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: var(--radius); background: rgba(13, 17, 23, 0.35); }
+  .project:hover { background: rgba(13, 17, 23, 0.55); }
+  .meta { flex: 1; min-width: 0; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .project small { color: rgba(255, 255, 255, 0.65); }
+  .thumb { flex: none; width: 34px; height: 24px; border-radius: 2px; background-size: 100% 100%; }
+
+  /* Grid card: the thumbnail leads and the name sits under it. */
+  .grid .project { flex-direction: column; align-items: stretch; gap: 0; padding: 0; overflow: hidden; }
+  .grid .thumb { width: 100%; height: 104px; border-radius: 0; }
+  .grid .meta { padding: 10px 12px; }
+
+  .empty { color: rgba(255, 255, 255, 0.65); }
   .error { margin: 12px 0 0; color: var(--warn); font-size: var(--text-13); }
 </style>
