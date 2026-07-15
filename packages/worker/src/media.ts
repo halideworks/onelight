@@ -295,10 +295,26 @@ export const canUseVaapi = (
 // the Intel encoder consumes.
 const VAAPI_UPLOAD_FILTER = "format=nv12,hwupload";
 
+// Decode on the GPU too. H.264 decode is normative, so this is bit-exact:
+// verified on an N150 by encoding the same source both ways -- identical md5
+// of the file AND of every decoded frame. It is pure savings, and it is the
+// larger half of them, because software decode of a high-bitrate source costs
+// more CPU than the encode ever did. Without -hwaccel_output_format the frames
+// are downloaded to system memory, so every existing software filter (swscale,
+// zscale, libplacebo) still sees exactly what it saw before: no resampler
+// changes, no colour changes.
+const vaapiDecodeArgs = (device: string): string[] => [
+  "-hwaccel",
+  "vaapi",
+  "-hwaccel_device",
+  device,
+];
+
 // -vaapi_device is shorthand for -init_hw_device vaapi=va:<node> plus
 // -filter_hw_device va, which is what points hwupload at the GPU. It is a
 // global option, so like the Vulkan args it must precede the input.
 const vaapiHwDeviceArgs = (device: string): string[] => [
+  ...vaapiDecodeArgs(device),
   "-vaapi_device",
   device,
 ];
@@ -411,24 +427,45 @@ export const spriteInterval = (mediaInfo: MediaInfo): number =>
 export const SPRITE_TILE_WIDTH = 160;
 export const SPRITE_TILE_HEIGHT = 90;
 
+/* Frame 0 is the worst possible thumbnail: real footage opens on black, a
+   slate, a countdown, or bars, so every poster looked identical and told you
+   nothing about the clip. Seek 10% in, and let the thumbnail filter pick the
+   most representative frame of the next 100 rather than whatever lands under
+   the playhead. Short clips (or an unknown duration) stay at the start, where
+   10% is not far enough in to matter. */
+export const posterSeekSeconds = (mediaInfo: MediaInfo): number => {
+  const duration = durationSeconds(mediaInfo);
+  return duration > 0 ? Math.min(duration * 0.1, 60) : 0;
+};
+
+export const POSTER_THUMBNAIL_WINDOW = 100;
+
 export const sidecarArgs = (
   job: TranscodeJob,
   outputPath: string,
   kind: string,
+  vaapiDevice = process.env[VAAPI_DEVICE_ENV],
 ): string[] | undefined => {
+  /* Sidecars encode nothing on the GPU, but they still decode the source --
+     the sprite reads every frame of it -- so the decoder is worth moving even
+     here. */
+  const decodeArgs = canUseVaapi(job.mediaInfo, vaapiDevice)
+    ? vaapiDecodeArgs(vaapiDevice as string)
+    : [];
   if (kind === "poster")
     return [
       "-hide_banner",
       "-y",
       ...tonemapHwDeviceArgs(job.mediaInfo),
+      ...decodeArgs,
       "-ss",
-      "0",
+      String(posterSeekSeconds(job.mediaInfo)),
       "-i",
       job.sourceKey,
       "-frames:v",
       "1",
       "-vf",
-      `${colorPrefix(job.mediaInfo)}scale=640:-2:force_original_aspect_ratio=decrease`,
+      `${colorPrefix(job.mediaInfo)}thumbnail=${String(POSTER_THUMBNAIL_WINDOW)},scale=640:-2:force_original_aspect_ratio=decrease`,
       "-q:v",
       "2",
       outputPath,
@@ -440,6 +477,7 @@ export const sidecarArgs = (
       "-hide_banner",
       "-y",
       ...tonemapHwDeviceArgs(job.mediaInfo),
+      ...decodeArgs,
       "-i",
       job.sourceKey,
       "-vf",

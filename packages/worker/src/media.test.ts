@@ -6,6 +6,7 @@ import type { MediaInfo, TranscodeJob } from "@onelight/core";
 import {
   DEFAULT_WATERMARK_FONTFILE,
   HDR_TONEMAP_FILTER,
+  POSTER_THUMBNAIL_WINDOW,
   VAAPI_DEVICE_ENV,
   VULKAN_HWDEVICE_ARGS,
   bt709ConvertFilter,
@@ -23,6 +24,7 @@ import {
   normalizeProbe,
   parseRational,
   planRenditions,
+  posterSeekSeconds,
   primaryRenditionKinds,
   probeArgs,
   renderWatermarkText,
@@ -365,6 +367,89 @@ describe("VAAPI (QuickSync) hardware encode", () => {
     expect(VAAPI_DEVICE_ENV).toBe("ONELIGHT_VAAPI_DEVICE");
   });
 
+  // Decoding is the larger half of the cost on a high-bitrate source, and
+  // h264 decode is normative, so this is free correctness-wise.
+  it("decodes on the GPU as well as encoding there", () => {
+    const args = buildSdrProxyArgs(
+      jobOf(mediaInfoOf()),
+      "proxy.mp4",
+      1080,
+      NODE,
+    );
+    expect(flag(args, "-hwaccel")).toBe("vaapi");
+    expect(flag(args, "-hwaccel_device")).toBe(NODE);
+    expect(args.indexOf("-hwaccel")).toBeLessThan(args.indexOf("-i"));
+    // No -hwaccel_output_format: frames come back to system memory so every
+    // software filter still sees what it saw before.
+    expect(args).not.toContain("-hwaccel_output_format");
+  });
+
+  // The sprite reads every frame of the source, so it pays full decode cost
+  // even though it encodes nothing on the GPU.
+  it("decodes sidecars on the GPU too, and only when the source is not HDR", () => {
+    const sdr = jobOf(mediaInfoOf({ durationFrames: 240 }));
+    for (const kind of ["poster", "sprite"]) {
+      const args = sidecarArgs(sdr, `${kind}.png`, kind, NODE) ?? [];
+      expect(flag(args, "-hwaccel"), kind).toBe("vaapi");
+      expect(args.indexOf("-hwaccel")).toBeLessThan(args.indexOf("-i"));
+    }
+    // Unset device: unchanged, software all the way.
+    expect(sidecarArgs(sdr, "poster.png", "poster") ?? []).not.toContain(
+      "-hwaccel",
+    );
+    // HDR keeps its libplacebo path and does not mix in a VAAPI decoder.
+    const hdr = jobOf({ ...hdrMediaInfo("smpte2084"), durationFrames: 240 });
+    expect(sidecarArgs(hdr, "poster.png", "poster", NODE) ?? []).not.toContain(
+      "-hwaccel",
+    );
+  });
+});
+
+describe("poster frame selection", () => {
+  // Frame 0 is black, a slate, or bars on real footage: every poster looked
+  // the same and told you nothing about the clip.
+  it("seeks 10% in rather than grabbing frame 0", () => {
+    const job = jobOf(
+      mediaInfoOf({ durationFrames: 2400, frameRateNum: 24, frameRateDen: 1 }),
+    );
+    expect(posterSeekSeconds(job.mediaInfo)).toBeCloseTo(10, 5);
+    const args = sidecarArgs(job, "poster.png", "poster") ?? [];
+    expect(flag(args, "-ss")).toBe("10");
+    // Fast seek: -ss belongs before -i.
+    expect(args.indexOf("-ss")).toBeLessThan(args.indexOf("-i"));
+  });
+
+  it("picks a representative frame instead of whatever lands on the seek", () => {
+    const args =
+      sidecarArgs(
+        jobOf(mediaInfoOf({ durationFrames: 240 })),
+        "p.png",
+        "poster",
+      ) ?? [];
+    expect(flag(args, "-vf")).toContain(
+      `thumbnail=${String(POSTER_THUMBNAIL_WINDOW)},`,
+    );
+    expect(flag(args, "-frames:v")).toBe("1");
+  });
+
+  it("caps the seek so a long clip does not poster a minute in", () => {
+    expect(
+      posterSeekSeconds(
+        mediaInfoOf({
+          durationFrames: 24 * 3600,
+          frameRateNum: 24,
+          frameRateDen: 1,
+        }),
+      ),
+    ).toBe(60);
+  });
+
+  it("stays at the start when the duration is unknown or the clip is short", () => {
+    expect(posterSeekSeconds(mediaInfoOf())).toBe(0);
+    const args = sidecarArgs(jobOf(mediaInfoOf()), "p.png", "poster") ?? [];
+    expect(flag(args, "-ss")).toBe("0");
+  });
+
   it("converts non-709 SDR sources to BT.709 before tagging", () => {
     const bt601 = mediaInfoOf({
       streams: [
@@ -480,7 +565,7 @@ describe("sidecars", () => {
     const job = jobOf({ ...hdrMediaInfo("arib-std-b67"), durationFrames: 240 });
     const poster = sidecarArgs(job, "poster.png", "poster");
     expect(flag(poster ?? [], "-vf")).toBe(
-      `${HDR_TONEMAP_FILTER},scale=640:-2:force_original_aspect_ratio=decrease`,
+      `${HDR_TONEMAP_FILTER},thumbnail=100,scale=640:-2:force_original_aspect_ratio=decrease`,
     );
     const sprite = sidecarArgs(job, "sprite.png", "sprite");
     expect(
