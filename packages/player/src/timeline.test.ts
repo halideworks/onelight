@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { frameAtCurrentTime, mediaTimeForFrameMiddle } from "./frame-clock.js";
+import { frameAtCurrentTime, mediaTimeInsideFrame } from "./frame-clock.js";
 import { frameForX, spanForRange, xForFrame } from "./timeline.js";
 
 /* The timeline is frame-indexed, so the math is rate-independent, but the
@@ -67,7 +67,7 @@ describe("timeline position math", () => {
     const width = 977;
     for (const x of [0, 0.4, width / 3, width / 2, width - 0.4, width]) {
       const frame = frameForX(x, duration, width);
-      const seekTime = mediaTimeForFrameMiddle(frame, RATE);
+      const seekTime = mediaTimeInsideFrame(frame, RATE);
       expect(frameAtCurrentTime(seekTime, RATE)).toBe(frame);
     }
   });

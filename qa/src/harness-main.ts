@@ -6,7 +6,7 @@ import { ALL_FORMATS, Input, UrlSource, VideoSampleSink } from "mediabunny";
 import {
   frameAtCurrentTime,
   frameAtMediaTime,
-  mediaTimeForFrameMiddle,
+  mediaTimeInsideFrame,
 } from "../../packages/player/src/frame-clock.js";
 import { decodeStripe } from "./stripe.js";
 import type {
@@ -64,7 +64,7 @@ const seekAndRead = (frame: number): Promise<SeekReading> =>
         stripeValue: decodeStripe(image.data, image.width, image.height),
       });
     });
-    video.currentTime = mediaTimeForFrameMiddle(frame, rate);
+    video.currentTime = mediaTimeInsideFrame(frame, rate);
   });
 
 /* WebCodecs path: mediabunny demuxes the MP4 and drives VideoDecoder; the
@@ -103,7 +103,7 @@ const webcodecsRead = async (
   frame: number,
 ): Promise<WebCodecsReading> => {
   const sink = await sinkFor(url);
-  const sample = await sink.getSample(mediaTimeForFrameMiddle(frame, clipRate));
+  const sample = await sink.getSample(mediaTimeInsideFrame(frame, clipRate));
   if (!sample) throw new Error(`no decoded sample for frame ${frame}`);
   try {
     offscreen.width = sample.displayWidth;

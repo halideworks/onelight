@@ -71,7 +71,7 @@ Plus:
 The design doc acceptance: frame counter matches at 20 random seeks across
 all supported rates. For each rate clip, 20 distinct seeded-random frames:
 
-1. Video path: seek to the frame middle (`mediaTimeForFrameMiddle`), read
+1. Video path: seek a quarter into the frame (`mediaTimeInsideFrame`), read
    the next rVFC `mediaTime`, and assert that the stripe decoded from the
    presented pixels equals frame mod 256 and that `frameAtMediaTime` and
    `frameAtCurrentTime` both name the requested frame.

@@ -3,7 +3,7 @@
     frameAtCurrentTime,
     frameAtMediaTime,
     frameDuration,
-    mediaTimeForFrameMiddle
+    mediaTimeInsideFrame
   } from './frame-clock.js';
   import {
     SUPPORTED_RATES,
@@ -131,7 +131,7 @@
   };
 
   /* Rendition switching preserves the current frame: capture frame and play
-     state, swap src, then loadedmetadata seeks back to the frame middle and
+     state, swap src, then loadedmetadata seeks back into the frame and
      restores playback. */
   $effect(() => {
     void quality;
@@ -284,7 +284,7 @@
       onframechange?.(next);
     }
     if (loop && video && inFrame !== null && outFrame !== null && inFrame < outFrame && next >= outFrame) {
-      video.currentTime = mediaTimeForFrameMiddle(inFrame, rate);
+      video.currentTime = mediaTimeInsideFrame(inFrame, rate);
     }
   };
 
@@ -348,7 +348,8 @@
      playhead backward after the pointer settles. */
   let seekGeneration = 0;
 
-  /* Seek to frame middle. With rVFC, verify the presented mediaTime maps to
+  /* Seek a quarter into the frame (see SEEK_POSITION_IN_FRAME). With rVFC,
+     verify the presented mediaTime maps to
      the target frame and re-seek once if it does not. */
   const seekFrame = (targetFrame: number): void => {
     if (!video || video.readyState === 0) {
@@ -357,7 +358,7 @@
     }
     const next = boundedFrame(targetFrame);
     const generation = ++seekGeneration;
-    video.currentTime = mediaTimeForFrameMiddle(next, rate);
+    video.currentTime = mediaTimeInsideFrame(next, rate);
     if (hasRvfc) {
       let retried = false;
       const verify = (_now: number, metadata: VideoFrameCallbackMetadata): void => {
@@ -367,7 +368,7 @@
         if (isVerifyStale(generation, seekGeneration)) return;
         if (frameAtMediaTime(metadata.mediaTime, rate) !== next) {
           retried = true;
-          video.currentTime = mediaTimeForFrameMiddle(next, rate);
+          video.currentTime = mediaTimeInsideFrame(next, rate);
         }
       };
       video.requestVideoFrameCallback(verify);
@@ -453,7 +454,7 @@
           if (!video) return;
           const nextTime = video.currentTime - reverseSpeed * frameDuration(rate);
           if (nextTime <= 0) {
-            video.currentTime = mediaTimeForFrameMiddle(0, rate);
+            video.currentTime = mediaTimeInsideFrame(0, rate);
             stopReverse();
           } else {
             video.currentTime = nextTime;
