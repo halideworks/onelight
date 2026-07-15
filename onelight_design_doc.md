@@ -641,7 +641,9 @@ Budget: one slow ambient behavior per page, plus fast hover responses. The proje
 
 ### 24.6 Color tokens
 
-- Review room neutral scale: `#0a0a0a` to `#e9e9e9`, plus `#7a7a7a` as the 18% surround.
+- Review room neutral scale: `#0a0a0a` to `#e9e9e9`, plus `#767676` as the 18% surround
+  (linear 0.18 through the sRGB transfer curve is 0.4613, i.e. 118/255; the `#7a7a7a` this
+  originally specified is ~19.6% and was the source of the wrong value in the code).
 - App world base: near-neutral ink blues derived from the palette library's dark stops (`#0d1117` family).
 - Single app accent: rokusho verdigris `#48929B` (primary actions, focus, links). Functional colors desaturated: ok `#6f8f6f`, note `#b09566`, warn `#a5605a`, info `#6f83a0`.
 
