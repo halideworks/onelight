@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
 
@@ -755,34 +755,28 @@ export const writeSpriteVtt = async (
   return vttPath;
 };
 
-export const buildSdrProxyArgs = (
+// Ladder numbers are heights; -2 keeps the derived width even.
+const ladderScale = (height: number): string =>
+  height > 0 ? `scale=-2:${height}` : "scale=trunc(iw/2)*2:trunc(ih/2)*2";
+
+const ladderQuality = (height: number): string =>
+  height >= 2160 ? "19" : height <= 540 ? "21" : "18";
+
+const SPRITE_TILE_FILTER = `scale=${SPRITE_TILE_WIDTH}:${SPRITE_TILE_HEIGHT}:force_original_aspect_ratio=decrease,pad=${SPRITE_TILE_WIDTH}:${SPRITE_TILE_HEIGHT}:(ow-iw)/2:(oh-ih)/2`;
+
+/* Everything after the filter for one proxy output: encoder, GOP, colorimetry,
+   audio, faststart, timecode, path. Shared so the one-pass builder below cannot
+   drift from the single-output recipe. */
+const sdrProxyOutputTail = (
   job: TranscodeJob,
   outputPath: string,
   height: number,
-  vaapiDevice = process.env[VAAPI_DEVICE_ENV],
+  hardware: boolean,
 ): string[] => {
-  // Ladder numbers are heights; -2 keeps the derived width even.
-  const scale =
-    height > 0 ? `scale=-2:${height}` : "scale=trunc(iw/2)*2:trunc(ih/2)*2";
-  const hardware = canUseVaapi(job.mediaInfo, vaapiDevice);
-  const quality = height >= 2160 ? "19" : height <= 540 ? "21" : "18";
-  const filters = `${colorPrefix(job.mediaInfo)}${scale},${fpsFilter(job.mediaInfo)},${
-    hardware ? VAAPI_UPLOAD_FILTER : "format=yuv420p"
-  }`;
   const args = [
-    "-hide_banner",
-    "-y",
-    ...tonemapHwDeviceArgs(job.mediaInfo),
-    ...(hardware ? vaapiHwDeviceArgs(vaapiDevice as string) : []),
-    "-i",
-    job.sourceKey,
-    "-map",
-    "0:v:0",
-    "-map",
-    "0:a:0?",
-    "-vf",
-    filters,
-    ...(hardware ? vaapiVideoArgs(quality) : softwareVideoArgs(quality)),
+    ...(hardware
+      ? vaapiVideoArgs(ladderQuality(height))
+      : softwareVideoArgs(ladderQuality(height))),
     "-g",
     String(gopSize(job.mediaInfo)),
     "-keyint_min",
@@ -816,6 +810,109 @@ export const buildSdrProxyArgs = (
     );
   args.push(outputPath);
   return args;
+};
+
+export const COMBINABLE_PROXY_KINDS = ["proxy_2160", "proxy_1080", "proxy_540"];
+
+/* One decode, every SDR video rendition.
+
+   runTranscode spawns one ffmpeg per rendition, so a 31 Mbps source was decoded
+   from scratch for proxy_1080, again for proxy_540, and again for the sprite,
+   which reads every frame. Decoding is the dominant cost of each of those
+   passes, so paying it N times is most of why a job felt slow.
+
+   This emits them all from a single decode with a split. Filters per branch are
+   character-for-character what the single-output builders emit, so the outputs
+   are the same files, just produced once.
+
+   HDR is excluded: it tonemaps through libplacebo on a Vulkan filter device and
+   is a different recipe per output, not a shared prefix.
+
+   Returns undefined when there is nothing to save (fewer than two combinable
+   outputs), and the caller treats any failure as "just encode them one by one" —
+   this is an optimisation, never a new failure mode. */
+export const buildCombinedSdrArgs = (
+  job: TranscodeJob,
+  outputs: Array<{ kind: string; path: string; height?: number }>,
+  vaapiDevice = process.env[VAAPI_DEVICE_ENV],
+): string[] | undefined => {
+  if (isHdrSource(job.mediaInfo)) return undefined;
+  const proxies = outputs.filter((o) =>
+    COMBINABLE_PROXY_KINDS.includes(o.kind),
+  );
+  const sprite = outputs.find((o) => o.kind === "sprite");
+  const branches = proxies.length + (sprite ? 1 : 0);
+  if (branches < 2) return undefined;
+
+  const hardware = canUseVaapi(job.mediaInfo, vaapiDevice);
+  const labels = proxies.map((_, index) => `p${String(index)}`);
+  if (sprite) labels.push("sp");
+
+  // The colour conversion is identical for every branch, so it happens once,
+  // before the split.
+  const chains = [
+    `[0:v]${colorPrefix(job.mediaInfo)}split=${String(labels.length)}${labels
+      .map((l) => `[${l}]`)
+      .join("")}`,
+    ...proxies.map(
+      (output, index) =>
+        `[${labels[index] as string}]${ladderScale(output.height ?? 1080)},${fpsFilter(
+          job.mediaInfo,
+        )},${hardware ? VAAPI_UPLOAD_FILTER : "format=yuv420p"}[v${String(index)}]`,
+    ),
+    ...(sprite
+      ? [
+          `[sp]fps=1/${String(spriteInterval(job.mediaInfo))},${SPRITE_TILE_FILTER},tile=10x10[vsp]`,
+        ]
+      : []),
+  ];
+
+  const args = [
+    "-hide_banner",
+    "-y",
+    ...(hardware ? vaapiHwDeviceArgs(vaapiDevice as string) : []),
+    "-i",
+    job.sourceKey,
+    "-filter_complex",
+    chains.join(";"),
+  ];
+  proxies.forEach((output, index) => {
+    args.push("-map", `[v${String(index)}]`, "-map", "0:a:0?");
+    args.push(
+      ...sdrProxyOutputTail(job, output.path, output.height ?? 1080, hardware),
+    );
+  });
+  if (sprite)
+    args.push("-map", "[vsp]", "-frames:v", "1", "-q:v", "3", sprite.path);
+  return args;
+};
+
+export const buildSdrProxyArgs = (
+  job: TranscodeJob,
+  outputPath: string,
+  height: number,
+  vaapiDevice = process.env[VAAPI_DEVICE_ENV],
+): string[] => {
+  const scale = ladderScale(height);
+  const hardware = canUseVaapi(job.mediaInfo, vaapiDevice);
+  const filters = `${colorPrefix(job.mediaInfo)}${scale},${fpsFilter(job.mediaInfo)},${
+    hardware ? VAAPI_UPLOAD_FILTER : "format=yuv420p"
+  }`;
+  return [
+    "-hide_banner",
+    "-y",
+    ...tonemapHwDeviceArgs(job.mediaInfo),
+    ...(hardware ? vaapiHwDeviceArgs(vaapiDevice as string) : []),
+    "-i",
+    job.sourceKey,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a:0?",
+    "-vf",
+    filters,
+    ...sdrProxyOutputTail(job, outputPath, height, hardware),
+  ];
 };
 
 export const buildHdrAv1Args = (
@@ -1037,6 +1134,59 @@ export const runTranscode = async (
 ): Promise<TranscodeRunResult> => {
   const renditions: TranscodeRunResult["renditions"] = [];
   const failures: TranscodeRunResult["failures"] = [];
+
+  /* Fast path: emit every SDR video rendition from one decode instead of
+     decoding the source once per rendition. Only outputs that do not already
+     exist are worth producing, and each lands at a temp name that is renamed on
+     success, so a crash never leaves a truncated file at a final path -- the
+     same contract the per-output loop keeps.
+
+     Any failure here is swallowed on purpose: the loop below then encodes each
+     rendition exactly as it always did. This can make a job faster; it must
+     never make one fail. */
+  const pending: Array<{ kind: string; path: string; height?: number }> = [];
+  for (const output of outputPaths)
+    if (!(await fileReady(output.path))) pending.push(output);
+  const combined = buildCombinedSdrArgs(
+    job,
+    pending.map((output) => ({
+      ...output,
+      path: path.join(
+        path.dirname(output.path),
+        `.tmp-combined-${path.basename(output.path)}`,
+      ),
+    })),
+  );
+  if (combined) {
+    const temps = pending
+      .filter(
+        (output) =>
+          COMBINABLE_PROXY_KINDS.includes(output.kind) ||
+          output.kind === "sprite",
+      )
+      .map((output) => ({
+        final: output.path,
+        temp: path.join(
+          path.dirname(output.path),
+          `.tmp-combined-${path.basename(output.path)}`,
+        ),
+      }));
+    try {
+      await mkdir(path.dirname(temps[0]?.final ?? job.sourceKey), {
+        recursive: true,
+      });
+      await runProcess(ffmpeg, combined);
+      for (const { temp, final } of temps) await rename(temp, final);
+    } catch (error) {
+      console.warn(
+        `[onelight-worker] one-pass encode failed for job ${job.id}, falling back to one ffmpeg per rendition: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      for (const { temp } of temps) await rm(temp, { force: true });
+    }
+  }
+
   for (const output of outputPaths) {
     try {
       await mkdir(path.dirname(output.path), { recursive: true });

@@ -13,6 +13,7 @@ import {
   buildHdrAv1Args,
   buildHdrHevcArgs,
   buildPdfPagesArgs,
+  buildCombinedSdrArgs,
   buildSdrProxyArgs,
   buildStillArgs,
   buildWatermarkArgs,
@@ -402,6 +403,97 @@ describe("VAAPI (QuickSync) hardware encode", () => {
     expect(sidecarArgs(hdr, "poster.png", "poster", NODE) ?? []).not.toContain(
       "-hwaccel",
     );
+  });
+});
+
+describe("one-pass SDR encode", () => {
+  const outputs = [
+    { kind: "proxy_1080", path: "/out/proxy_1080.mp4", height: 1080 },
+    { kind: "proxy_540", path: "/out/proxy_540.mp4", height: 540 },
+    { kind: "sprite", path: "/out/sprite.png" },
+    { kind: "poster", path: "/out/poster.png" },
+    { kind: "audio_peaks", path: "/out/audio_peaks.png" },
+  ];
+
+  it("decodes once and splits to every video rendition", () => {
+    const args = buildCombinedSdrArgs(jobOf(mediaInfoOf()), outputs) ?? [];
+    expect(args.filter((a) => a === "-i")).toHaveLength(1);
+    const graph = flag(args, "-filter_complex") ?? "";
+    expect(graph).toContain("split=3[p0][p1][sp]");
+    // Each branch is character-for-character the single-output recipe.
+    expect(graph).toContain(
+      "[p0]scale=-2:1080,fps=24000/1001,format=yuv420p[v0]",
+    );
+    expect(graph).toContain(
+      "[p1]scale=-2:540,fps=24000/1001,format=yuv420p[v1]",
+    );
+    expect(graph).toContain("[sp]fps=1/");
+    expect(graph).toContain("tile=10x10[vsp]");
+    expect(args).toContain("/out/proxy_1080.mp4");
+    expect(args).toContain("/out/proxy_540.mp4");
+    expect(args).toContain("/out/sprite.png");
+    // Poster and waveform are not video branches: they stay separate.
+    expect(args).not.toContain("/out/poster.png");
+    expect(args).not.toContain("/out/audio_peaks.png");
+  });
+
+  it("keeps each output's own quality, colour tags and audio", () => {
+    const args = buildCombinedSdrArgs(jobOf(mediaInfoOf()), outputs) ?? [];
+    expect(args.filter((a) => a === "-crf")).toHaveLength(2);
+    expect(args).toContain("18");
+    expect(args).toContain("21");
+    expect(args.filter((a) => a === "-c:a")).toHaveLength(2);
+    expect(args.filter((a) => a === "-colorspace")).toHaveLength(2);
+    expect(args.filter((a) => a === "0:a:0?")).toHaveLength(2);
+  });
+
+  it("uses the GPU for the whole pass when a device is configured", () => {
+    const args =
+      buildCombinedSdrArgs(
+        jobOf(mediaInfoOf()),
+        outputs,
+        "/dev/dri/renderD128",
+      ) ?? [];
+    expect(flag(args, "-hwaccel")).toBe("vaapi");
+    expect(flag(args, "-vaapi_device")).toBe("/dev/dri/renderD128");
+    const graph = flag(args, "-filter_complex") ?? "";
+    expect(graph.match(/hwupload/g)).toHaveLength(2);
+    expect(args.filter((a) => a === "h264_vaapi")).toHaveLength(2);
+  });
+
+  it("declines when there is nothing to save", () => {
+    expect(
+      buildCombinedSdrArgs(jobOf(mediaInfoOf()), [
+        outputs[0] as (typeof outputs)[0],
+      ]),
+    ).toBeUndefined();
+    expect(
+      buildCombinedSdrArgs(jobOf(mediaInfoOf()), [
+        { kind: "poster", path: "/out/poster.png" },
+        { kind: "audio_peaks", path: "/out/audio_peaks.png" },
+      ]),
+    ).toBeUndefined();
+  });
+
+  // HDR is a different recipe per output (libplacebo on a Vulkan filter
+  // device), not a shared prefix, so it keeps one ffmpeg per rendition.
+  it("declines for HDR sources", () => {
+    expect(
+      buildCombinedSdrArgs(jobOf(hdrMediaInfo("smpte2084")), outputs),
+    ).toBeUndefined();
+  });
+
+  it("applies the colour conversion once, before the split", () => {
+    const sdr601 = mediaInfoOf({
+      streams: [{ codec_type: "video", color_space: "smpte170m" }],
+    });
+    const graph =
+      flag(
+        buildCombinedSdrArgs(jobOf(sdr601), outputs) ?? [],
+        "-filter_complex",
+      ) ?? "";
+    expect(graph.match(/zscale=/g)).toHaveLength(1);
+    expect(graph.indexOf("zscale=")).toBeLessThan(graph.indexOf("split="));
   });
 });
 
