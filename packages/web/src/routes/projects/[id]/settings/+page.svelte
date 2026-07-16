@@ -23,6 +23,7 @@
     my_role?: string;
   };
   type Asset = { id: string; name: string; kind: string; current_version_id?: string | null };
+  type CoverUpload = { id: string; filename: string; url: string; current: boolean };
   type Member = { user: { id: string; name: string; email: string }; role: string };
   type User = { id: string; name: string; email: string };
 
@@ -54,6 +55,8 @@
      show: audio and PDFs are excluded, not filtered out of a list they were
      never in. */
   let coverAssets = $state<Asset[]>([]);
+  /* Pictures uploaded here, kept as options once something else is chosen. */
+  let coverUploads = $state<CoverUpload[]>([]);
   let coverUploading = $state(false);
   let coverProgress = $state(0);
   let coverPreview = $state<string | null>(null);
@@ -65,7 +68,8 @@
   onMount(() => {
     void (async () => {
       try {
-        const [loadedProject, loadedMembers, loadedUsers, loadedAssets] = await Promise.all([
+        const [loadedProject, loadedMembers, loadedUsers, loadedAssets, loadedCovers] =
+          await Promise.all([
           api<Project>(`/api/v1/projects/${projectId}`),
           api<{ items: Member[] }>(`/api/v1/projects/${projectId}/members`),
           /* Everyone in the workspace, so someone can actually be added --
@@ -73,6 +77,9 @@
           api<{ items: User[] }>('/api/v1/users').catch(() => ({ items: [] as User[] })),
           api<{ items: Asset[] }>(`/api/v1/projects/${projectId}/assets`).catch(() => ({
             items: [] as Asset[]
+          })),
+          api<{ items: CoverUpload[] }>(`/api/v1/projects/${projectId}/covers`).catch(() => ({
+            items: [] as CoverUpload[]
           }))
         ]);
         project = loadedProject;
@@ -82,6 +89,7 @@
         coverAssets = loadedAssets.items.filter(
           (asset) => asset.kind === 'video' || asset.kind === 'image'
         );
+        coverUploads = loadedCovers.items;
         loaded = true;
       } catch (caught) {
         error = messageFrom(caught, 'This project could not be loaded.');
@@ -201,6 +209,31 @@
     coverNote = 'Still processing. The cover appears when it finishes.';
   };
 
+  const useUploadedCover = async (upload: CoverUpload): Promise<void> => {
+    coverNote = '';
+    await patch({ cover_upload_id: upload.id }, 'Cover saved');
+  };
+
+  const forgetUploadedCover = async (upload: CoverUpload): Promise<void> => {
+    const confirmed = await askConfirm({
+      title: `Remove ${upload.filename}?`,
+      body: upload.current
+        ? 'It is the current cover, so the project goes back to its generated one.'
+        : 'It stops being offered here. Nothing else uses it.',
+      confirmLabel: 'Remove',
+      danger: true
+    });
+    if (!confirmed) return;
+    try {
+      await apiDelete(`/api/v1/projects/${projectId}/covers/${upload.id}`);
+      coverUploads = coverUploads.filter((entry) => entry.id !== upload.id);
+      if (upload.current) project = await api<Project>(`/api/v1/projects/${projectId}`);
+      error = '';
+    } catch (caught) {
+      error = messageFrom(caught, 'That picture could not be removed.');
+    }
+  };
+
   const setCover = async (assetId: string | null): Promise<void> => {
     coverNote = '';
     await patch({ cover_asset_id: assetId }, assetId ? 'Cover saved' : 'Cover reset');
@@ -240,6 +273,9 @@
       project = await apiPost<Project>(`/api/v1/projects/${projectId}/cover`, {
         upload_id: uploadId
       });
+      coverUploads = (
+        await api<{ items: CoverUpload[] }>(`/api/v1/projects/${projectId}/covers`)
+      ).items;
       saved = 'Cover saved';
       setTimeout(() => {
         if (saved === 'Cover saved') saved = '';
@@ -369,6 +405,35 @@
           {#if coverNote}<p class="covernote" aria-live="polite">{coverNote}</p>{/if}
         </div>
       </div>
+      {#if coverUploads.length > 0}
+        <p class="sub pick">Pictures you have uploaded.</p>
+        <div class="coverpick">
+          {#each coverUploads as upload (upload.id)}
+            <span class="pickwrap">
+              <button
+                type="button"
+                class="pickone"
+                class:active={upload.current}
+                disabled={!isManager}
+                aria-pressed={upload.current}
+                title={upload.filename}
+                onclick={() => void useUploadedCover(upload)}
+              >
+                <img src={upload.url} alt="" loading="lazy" />
+              </button>
+              {#if isManager}
+                <button
+                  type="button"
+                  class="pickdrop"
+                  aria-label={`Remove ${upload.filename}`}
+                  title="Remove"
+                  onclick={() => void forgetUploadedCover(upload)}
+                >×</button>
+              {/if}
+            </span>
+          {/each}
+        </div>
+      {/if}
       {#if coverAssets.length > 0}
         <p class="sub pick">Or pick something already here.</p>
         <div class="coverpick">
@@ -551,5 +616,11 @@
   .pickone img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .pickfallback { display: grid; place-items: center; width: 100%; height: 100%; padding: 4px; color: var(--ink-text-dim); font-size: var(--text-12); overflow: hidden; }
   .pickone.active { outline: 2px solid var(--accent-bright); outline-offset: -2px; }
+  .pickwrap { position: relative; display: block; }
+  /* Removing an option should be possible without being the first thing the
+     pointer finds: it appears on hover, over the corner of its own picture. */
+  .pickdrop { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; display: none; place-items: center; border: 0; border-radius: 50%; background: rgba(6, 9, 14, 0.82); color: #fff; font-size: 13px; line-height: 1; padding: 0; }
+  .pickwrap:hover .pickdrop, .pickdrop:focus-visible { display: grid; }
+  .pickdrop:hover { background: var(--warn); }
   .pickone:not(.active):hover { outline: 1px solid var(--ink-400, var(--ink-300)); outline-offset: -1px; }
 </style>

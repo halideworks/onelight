@@ -97,6 +97,9 @@ export const bodies = {
     /* An asset id in this project, or null to fall back to the generated
        palette cover. */
     cover_asset_id: z.string().nullable().optional(),
+    /* A picture already uploaded to this project (GET /projects/:id/covers).
+       Mutually exclusive with cover_asset_id. */
+    cover_upload_id: z.string().optional(),
   }),
   memberPut: z.object({ role: projectRole }),
   folderCreate: z.object({
@@ -361,6 +364,9 @@ const searchAssetHit = z.object({
   id: z.string(),
   name: z.string(),
   project_id: z.string(),
+  /* Lets a result draw its poster without a request per hit. */
+  current_version_id: z.string().nullable(),
+  updated_at: timestamp,
 });
 
 const searchCommentHit = z.object({
@@ -372,6 +378,7 @@ const searchCommentHit = z.object({
   project_id: z.string(),
   /* Anchor frame for ?f= deep links; null for unanchored comments. */
   frame_in: z.number().int().nullable(),
+  updated_at: timestamp,
 });
 
 const searchProjectHit = z.object({
@@ -379,6 +386,8 @@ const searchProjectHit = z.object({
   id: z.string(),
   name: z.string(),
   palette: z.string(),
+  cover_url: z.string().nullable(),
+  updated_at: timestamp,
 });
 
 const searchPersonHit = z.object({
@@ -386,6 +395,7 @@ const searchPersonHit = z.object({
   id: z.string(),
   name: z.string(),
   email: z.string(),
+  updated_at: timestamp,
 });
 
 const searchShareHit = z.object({
@@ -394,6 +404,7 @@ const searchShareHit = z.object({
   title: z.string(),
   slug: z.string(),
   project_id: z.string(),
+  updated_at: timestamp,
 });
 
 const searchHit = z.discriminatedUnion("type", [
@@ -815,6 +826,26 @@ export const routeDocs: Record<string, RouteDoc> = {
       "Set a completed image upload as the project cover. The picture is not registered as an asset.",
     request: bodies.projectCoverPut,
     responses: { "200": ok(project) },
+  },
+  "GET /projects/:id/covers": {
+    summary: "Pictures uploaded as covers for this project.",
+    responses: {
+      "200": ok(
+        list(
+          z.object({
+            id: z.string(),
+            filename: z.string(),
+            url: z.string(),
+            current: z.boolean(),
+            created_at: timestamp,
+          }),
+        ),
+      ),
+    },
+  },
+  "DELETE /projects/:id/covers/:uploadId": {
+    summary: "Forget an uploaded cover.",
+    responses: { "204": noContent },
   },
   "DELETE /projects/:id": { responses: { "204": noContent } },
   "GET /projects/:id/events": {
