@@ -2425,6 +2425,18 @@
                           "palette": {
                             "type": "string"
                           },
+                          "cover_asset_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "cover_url": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "restricted": {
                             "type": "boolean"
                           },
@@ -2452,6 +2464,8 @@
                           "name",
                           "status",
                           "palette",
+                          "cover_asset_id",
+                          "cover_url",
                           "restricted",
                           "created_by",
                           "created_at",
@@ -2583,6 +2597,18 @@
                     "palette": {
                       "type": "string"
                     },
+                    "cover_asset_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cover_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "restricted": {
                       "type": "boolean"
                     },
@@ -2610,6 +2636,8 @@
                     "name",
                     "status",
                     "palette",
+                    "cover_asset_id",
+                    "cover_url",
                     "restricted",
                     "created_by",
                     "created_at",
@@ -2699,6 +2727,18 @@
                     "palette": {
                       "type": "string"
                     },
+                    "cover_asset_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cover_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "restricted": {
                       "type": "boolean"
                     },
@@ -2726,6 +2766,8 @@
                     "name",
                     "status",
                     "palette",
+                    "cover_asset_id",
+                    "cover_url",
                     "restricted",
                     "created_by",
                     "created_at",
@@ -2825,6 +2867,12 @@
                       "active",
                       "archived"
                     ]
+                  },
+                  "cover_asset_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "additionalProperties": false
@@ -2856,6 +2904,18 @@
                     "palette": {
                       "type": "string"
                     },
+                    "cover_asset_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cover_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "restricted": {
                       "type": "boolean"
                     },
@@ -2883,6 +2943,8 @@
                     "name",
                     "status",
                     "palette",
+                    "cover_asset_id",
+                    "cover_url",
                     "restricted",
                     "created_by",
                     "created_at",
@@ -7897,6 +7959,219 @@
         }
       }
     },
+    "/api/v1/shares/{id}/assets": {
+      "post": {
+        "summary": "Add assets to an existing share. Assets already in it are skipped.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "asset_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 1000
+                  }
+                },
+                "required": [
+                  "asset_ids"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "share": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "slug": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "review",
+                            "presentation"
+                          ]
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "layout": {
+                          "type": "string",
+                          "enum": [
+                            "grid",
+                            "list",
+                            "reel"
+                          ]
+                        },
+                        "expires_at": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "allow_download": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "proxy",
+                            "original"
+                          ]
+                        },
+                        "allow_comments": {
+                          "type": "boolean"
+                        },
+                        "show_all_versions": {
+                          "type": "boolean"
+                        },
+                        "watermark_spec": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": {}
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "brand": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": {}
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "created_by": {
+                          "type": "string"
+                        },
+                        "revoked_at": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "created_at": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "project_id",
+                        "slug",
+                        "kind",
+                        "title",
+                        "layout",
+                        "expires_at",
+                        "allow_download",
+                        "allow_comments",
+                        "show_all_versions",
+                        "watermark_spec",
+                        "brand",
+                        "created_by",
+                        "revoked_at",
+                        "created_at"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "added": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "share",
+                    "added"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/webhooks": {
       "post": {
         "requestBody": {
@@ -11915,6 +12190,15 @@
             "in": "query",
             "required": false,
             "description": "Filter by folder.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "share_id",
+            "in": "query",
+            "required": false,
+            "description": "Filter to the assets in one of this project's shares.",
             "schema": {
               "type": "string"
             }

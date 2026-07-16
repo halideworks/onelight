@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { askConfirm } from '$lib/confirm.svelte.js';
   import { page } from '$app/state';
   import {
     api,
@@ -273,7 +274,15 @@
   };
 
   const revoke = async (share: Share): Promise<void> => {
-    if (!confirm(`Revoke "${share.title}"? The link stops working immediately and cannot be reopened.`)) return;
+    if (
+      !(await askConfirm({
+        title: `Revoke "${share.title}"?`,
+        body: 'The link stops working immediately and cannot be reopened.',
+        confirmLabel: 'Revoke',
+        danger: true
+      }))
+    )
+      return;
     listError = '';
     try {
       await revokeShare(share.id);

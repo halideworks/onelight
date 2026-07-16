@@ -1844,6 +1844,8 @@ export interface paths {
                                 /** @enum {string} */
                                 status: "active" | "archived";
                                 palette: string;
+                                cover_asset_id: string | null;
+                                cover_url: string | null;
                                 restricted: boolean;
                                 created_by: string;
                                 created_at: number;
@@ -1925,6 +1927,8 @@ export interface paths {
                             /** @enum {string} */
                             status: "active" | "archived";
                             palette: string;
+                            cover_asset_id: string | null;
+                            cover_url: string | null;
                             restricted: boolean;
                             created_by: string;
                             created_at: number;
@@ -2008,6 +2012,8 @@ export interface paths {
                             /** @enum {string} */
                             status: "active" | "archived";
                             palette: string;
+                            cover_asset_id: string | null;
+                            cover_url: string | null;
                             restricted: boolean;
                             created_by: string;
                             created_at: number;
@@ -2133,6 +2139,7 @@ export interface paths {
                         restricted?: boolean;
                         /** @enum {string} */
                         status?: "active" | "archived";
+                        cover_asset_id?: string | null;
                     };
                 };
             };
@@ -2149,6 +2156,8 @@ export interface paths {
                             /** @enum {string} */
                             status: "active" | "archived";
                             palette: string;
+                            cover_asset_id: string | null;
+                            cover_url: string | null;
                             restricted: boolean;
                             created_by: string;
                             created_at: number;
@@ -5102,6 +5111,112 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/shares/{id}/assets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add assets to an existing share. Assets already in it are skipped. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        asset_ids: string[];
+                    };
+                };
+            };
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            share: {
+                                id: string;
+                                project_id: string;
+                                slug: string;
+                                /** @enum {string} */
+                                kind: "review" | "presentation";
+                                title: string;
+                                /** @enum {string} */
+                                layout: "grid" | "list" | "reel";
+                                expires_at: number | null;
+                                /** @enum {string} */
+                                allow_download: "none" | "proxy" | "original";
+                                allow_comments: boolean;
+                                show_all_versions: boolean;
+                                watermark_spec: {
+                                    [key: string]: unknown;
+                                } | null;
+                                brand: {
+                                    [key: string]: unknown;
+                                } | null;
+                                created_by: string;
+                                revoked_at: number | null;
+                                created_at: number;
+                            };
+                            added: number;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/webhooks": {
         parameters: {
             query?: never;
@@ -7472,6 +7587,8 @@ export interface paths {
                     cursor?: string;
                     /** @description Filter by folder. */
                     folder_id?: string;
+                    /** @description Filter to the assets in one of this project's shares. */
+                    share_id?: string;
                 };
                 header?: never;
                 path: {

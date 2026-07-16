@@ -184,6 +184,50 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return rows[0]?.role;
   };
 
+  /* The cover picture is the poster rendition of one of the project's own
+     assets, so a cover costs no new storage and no new pipeline -- the poster
+     was already generated when the asset was uploaded. Resolving returns null
+     for a cover whose asset was deleted, whose current version is gone, or
+     whose poster has not been produced yet; each of those is a normal state,
+     and the client draws the generated palette cover instead. */
+  const coverUrlFor = async (
+    project: typeof projects.$inferSelect,
+  ): Promise<string | null> => {
+    if (!project.coverAssetId) return null;
+    const row = (
+      await env.db
+        .select({
+          versionId: renditions.versionId,
+          blobKey: renditions.blobKey,
+        })
+        .from(assets)
+        .innerJoin(assetVersions, eq(assetVersions.id, assets.currentVersionId))
+        .innerJoin(
+          renditions,
+          and(
+            eq(renditions.versionId, assetVersions.id),
+            eq(renditions.kind, "poster"),
+            isNull(renditions.shareId),
+          ),
+        )
+        .where(
+          and(
+            eq(assets.id, project.coverAssetId),
+            // A cover must live in the project it covers: a stale id from
+            // another project must not leak a frame across a permission
+            // boundary.
+            eq(assets.projectId, project.id),
+            isNull(assets.deletedAt),
+            isNull(assetVersions.deletedAt),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (!row) return null;
+    return privateMediaUrl(row.versionId, row.blobKey);
+  };
+
   const projectWire = async (
     project: typeof projects.$inferSelect,
     userId: string,
@@ -199,6 +243,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       name: project.name,
       status: project.status,
       palette: project.palette,
+      cover_asset_id: project.coverAssetId,
+      cover_url: await coverUrlFor(project),
       restricted: Boolean(project.restricted),
       created_by: project.createdBy,
       created_at: project.createdAt,
@@ -1796,11 +1842,35 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       },
     );
     const body = await jsonBody(c, bodies.projectPatch);
+    if (body.cover_asset_id) {
+      // Validated here rather than trusted: the wire read filters a bad cover
+      // out silently, which would turn a typo into a cover that never appears
+      // and never explains itself.
+      const cover = (
+        await env.db
+          .select({ id: assets.id })
+          .from(assets)
+          .where(
+            and(
+              eq(assets.id, body.cover_asset_id),
+              eq(assets.projectId, project.id),
+              isNull(assets.deletedAt),
+            ),
+          )
+          .limit(1)
+          .all()
+      )[0];
+      if (!cover)
+        throw errors.validation("cover_asset_id must name an asset in this project.");
+    }
     await env.db
       .update(projects)
       .set({
         ...(body.name ? { name: body.name.trim() } : {}),
         ...(body.palette ? { palette: body.palette } : {}),
+        ...(body.cover_asset_id === undefined
+          ? {}
+          : { coverAssetId: body.cover_asset_id }),
         ...(body.restricted === undefined
           ? {}
           : { restricted: body.restricted }),
@@ -3772,6 +3842,72 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.json(shareWire(updated));
   });
 
+  /* Add assets to a share that already exists. Without this, putting one more
+     clip in front of a client meant building a second share with a second link
+     -- so the project page could only ever offer "create a share", never "add
+     to that one". */
+  api.post("/shares/:id/assets", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const share = (
+      await env.db
+        .select()
+        .from(shares)
+        .where(eq(shares.id, c.req.param("id")))
+        .limit(1)
+        .all()
+    )[0];
+    if (!share) throw errors.notFound();
+    await requireProject(share.projectId, actor, "manager");
+    const body = await jsonBody(c, bodies.shareAssetsAdd);
+    const allowed = new Set(
+      (
+        await env.db
+          .select({ id: assets.id })
+          .from(assets)
+          .where(
+            and(eq(assets.projectId, share.projectId), isNull(assets.deletedAt)),
+          )
+          .all()
+      ).map((asset: { id: string }) => asset.id),
+    );
+    if (body.asset_ids.some((id) => !allowed.has(id)))
+      throw errors.validation("Every shared asset must belong to the project.");
+    const existing = await env.db
+      .select({ assetId: shareAssets.assetId, sortOrder: shareAssets.sortOrder })
+      .from(shareAssets)
+      .where(eq(shareAssets.shareId, share.id))
+      .all();
+    const present = new Set(
+      existing.map((link: { assetId: string }) => link.assetId),
+    );
+    // Adding what is already there is a no-op, not a conflict: this runs from a
+    // multi-select where an overlap with the share's contents is ordinary.
+    let sortOrder = existing.reduce(
+      (highest: number, link: { sortOrder: number }) =>
+        Math.max(highest, link.sortOrder + 1),
+      0,
+    );
+    let added = 0;
+    for (const assetId of body.asset_ids) {
+      if (present.has(assetId)) continue;
+      await env.db
+        .insert(shareAssets)
+        .values({ shareId: share.id, assetId, sortOrder })
+        .run();
+      present.add(assetId);
+      sortOrder += 1;
+      added += 1;
+    }
+    if (added > 0)
+      await audit(
+        actor.workspaceId,
+        actor.id,
+        "share.update",
+        `share:${share.id}`,
+      );
+    return c.json({ share: shareWire(share), added });
+  });
+
   api.delete("/shares/:id", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const share = (
@@ -5170,6 +5306,24 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const limit = getLimit(c.req.query("limit"));
     const cursor = cursorParam(c.req.query("cursor"));
     const folderId = c.req.query("folder_id");
+    /* A share reads as a folder in the browser rail, so it filters the same
+       list the same way -- one endpoint, one paging rule, one permission
+       check, rather than a second asset list that only shares use. The share
+       must belong to this project; otherwise the filter would be a way to read
+       one project's asset rows through another's permission check. */
+    const shareId = c.req.query("share_id");
+    if (shareId) {
+      const share = (
+        await env.db
+          .select({ projectId: shares.projectId })
+          .from(shares)
+          .where(eq(shares.id, shareId))
+          .limit(1)
+          .all()
+      )[0];
+      if (!share || share.projectId !== c.req.param("id"))
+        throw errors.notFound("Share was not found.");
+    }
     const rows = await env.db
       .select()
       .from(assets)
@@ -5178,6 +5332,15 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           eq(assets.projectId, c.req.param("id")),
           isNull(assets.deletedAt),
           folderId ? eq(assets.folderId, folderId) : undefined,
+          shareId
+            ? inArray(
+                assets.id,
+                env.db
+                  .select({ id: shareAssets.assetId })
+                  .from(shareAssets)
+                  .where(eq(shareAssets.shareId, shareId)),
+              )
+            : undefined,
           cursor ? lt(assets.id, cursor) : undefined,
         ),
       )

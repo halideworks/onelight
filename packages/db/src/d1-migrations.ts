@@ -35,6 +35,15 @@ const commentsHaveSelfFks = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes("carried_from_comment_id TEXT REFERENCES"));
 };
 
+const projectsHaveCover = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='projects'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("cover_asset_id"));
+};
+
 const assetVersionsHaveFailureNotified = async (
   binding: D1Database,
 ): Promise<boolean> => {
@@ -164,6 +173,11 @@ export const d1Migrations: D1Migration[] = [
       "CREATE INDEX asset_versions_failed_idx ON asset_versions(id) WHERE transcode_status = 'failed' AND failure_notified_at IS NULL",
       "CREATE INDEX notifications_user_id_idx ON notifications(user_id, id)",
     ],
+  },
+  {
+    name: "0007_project_cover.sql",
+    applied: projectsHaveCover,
+    statements: ["ALTER TABLE projects ADD COLUMN cover_asset_id TEXT"],
   },
 ];
 

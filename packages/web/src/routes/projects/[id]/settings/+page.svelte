@@ -2,7 +2,12 @@
   import { onMount } from 'svelte';
   import { PALETTES } from '@onelight/core';
   import { page } from '$app/state';
-  import { api, apiDelete, apiPatch, apiPut, messageFrom } from '$lib/api.js';
+  import { goto } from '$app/navigation';
+  import { api, apiDelete, apiPatch, apiPost, apiPut, messageFrom } from '$lib/api.js';
+  import { askConfirm } from '$lib/confirm.svelte.js';
+  import { createMediaCache } from '$lib/asset-media.svelte.js';
+  import { uploadFile } from '$lib/upload.js';
+  import ProjectCover from '$lib/ProjectCover.svelte';
   import { washFor } from '$lib/washes.js';
   import { auth } from '$lib/auth.svelte.js';
 
@@ -12,9 +17,13 @@
     palette: string;
     status: string;
     restricted: boolean;
+    cover_asset_id?: string | null;
+    cover_url?: string | null;
     my_role?: string;
   };
+  type Asset = { id: string; name: string; kind: string; current_version_id?: string | null };
   type Member = { user: { id: string; name: string; email: string }; role: string };
+  type User = { id: string; name: string; email: string };
 
   const ROLES = ['manager', 'editor', 'commenter', 'viewer'] as const;
   /* What each role can actually do, in the words a person would use. A role
@@ -30,6 +39,9 @@
 
   let project = $state<Project | null>(null);
   let members = $state<Member[]>([]);
+  let workspaceUsers = $state<User[]>([]);
+  let addUserId = $state('');
+  let addRole = $state<string>('commenter');
   let error = $state('');
   let saved = $state('');
   let loaded = $state(false);
@@ -37,18 +49,36 @@
   let name = $state('');
   let renaming = $state(false);
 
+  /* Only pictures make sense as a cover, and only ones that have a frame to
+     show: audio and PDFs are excluded, not filtered out of a list they were
+     never in. */
+  let coverAssets = $state<Asset[]>([]);
+  let coverUploading = $state(false);
+  let coverNote = $state('');
+  const media = createMediaCache();
+
   const isManager = $derived(project?.my_role === 'manager' || auth.user?.role === 'admin');
 
   onMount(() => {
     void (async () => {
       try {
-        const [loadedProject, loadedMembers] = await Promise.all([
+        const [loadedProject, loadedMembers, loadedUsers, loadedAssets] = await Promise.all([
           api<Project>(`/api/v1/projects/${projectId}`),
-          api<{ items: Member[] }>(`/api/v1/projects/${projectId}/members`)
+          api<{ items: Member[] }>(`/api/v1/projects/${projectId}/members`),
+          /* Everyone in the workspace, so someone can actually be added --
+             including yourself, if you removed your own grant. */
+          api<{ items: User[] }>('/api/v1/users').catch(() => ({ items: [] as User[] })),
+          api<{ items: Asset[] }>(`/api/v1/projects/${projectId}/assets`).catch(() => ({
+            items: [] as Asset[]
+          }))
         ]);
         project = loadedProject;
         name = loadedProject.name;
         members = loadedMembers.items;
+        workspaceUsers = loadedUsers.items;
+        coverAssets = loadedAssets.items.filter(
+          (asset) => asset.kind === 'video' || asset.kind === 'image'
+        );
         loaded = true;
       } catch (caught) {
         error = messageFrom(caught, 'This project could not be loaded.');
@@ -97,14 +127,107 @@
     }
   };
 
+  /* Everyone in the workspace who has no role here yet. */
+  const addable = $derived(
+    workspaceUsers
+      .filter((user) => !members.some((member) => member.user.id === user.id))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  );
+
+  const addMember = async (event: SubmitEvent): Promise<void> => {
+    event.preventDefault();
+    const user = addable.find((candidate) => candidate.id === addUserId);
+    if (!user) return;
+    try {
+      await apiPut(`/api/v1/projects/${projectId}/members/${user.id}`, { role: addRole });
+      members = [...members, { user, role: addRole }];
+      addUserId = '';
+      error = '';
+      saved = `${user.name} added as ${addRole}`;
+    } catch (caught) {
+      error = messageFrom(caught, 'That person could not be added.');
+    }
+  };
+
   const removeMember = async (member: Member): Promise<void> => {
+    /* Removing yourself is allowed -- a manager may genuinely be leaving -- but
+       it is a door that locks behind you on a restricted project, so it says so
+       rather than just doing it. */
+    const isSelf = member.user.id === auth.user?.id;
+    const locksOut = isSelf && project?.restricted === true && auth.user?.role !== 'admin';
+    const confirmed = await askConfirm({
+      title: isSelf ? 'Remove your own access?' : `Remove ${member.user.name}?`,
+      body: isSelf
+        ? locksOut
+          ? 'This project is restricted, so you will lose access to it immediately and will not be able to add yourself back. A workspace admin, or another manager, would have to.'
+          : 'You will lose your role here. The project is not restricted, so you can still open it as a workspace member.'
+        : `${member.user.name} loses their role on this project. Their notes stay.`,
+      confirmLabel: isSelf ? 'Remove my access' : 'Remove',
+      danger: true
+    });
+    if (!confirmed) return;
     try {
       await apiDelete(`/api/v1/projects/${projectId}/members/${member.user.id}`);
       members = members.filter((entry) => entry.user.id !== member.user.id);
       error = '';
       saved = `${member.user.name} removed`;
+      if (locksOut) await goto('/');
     } catch (caught) {
       error = messageFrom(caught, 'That member could not be removed.');
+    }
+  };
+
+  /* A cover set from a just-uploaded file has no poster yet -- the transcode
+     that makes one runs after the upload returns. Rather than show the
+     generated cover and look like the choice was ignored, re-read the project
+     until the poster lands, and say so while waiting. */
+  const awaitPoster = async (): Promise<void> => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        const fresh = await api<Project>(`/api/v1/projects/${projectId}`);
+        project = fresh;
+        if (fresh.cover_url) {
+          coverNote = '';
+          return;
+        }
+      } catch {
+        return;
+      }
+    }
+    coverNote = 'Still processing. The cover appears when it finishes.';
+  };
+
+  const setCover = async (assetId: string | null): Promise<void> => {
+    await patch({ cover_asset_id: assetId }, assetId ? 'Cover saved' : 'Cover reset');
+    if (assetId && !project?.cover_url) {
+      coverNote = 'Processing the picture…';
+      void awaitPoster();
+    }
+  };
+
+  const uploadCover = async (event: Event): Promise<void> => {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file || !projectId) return;
+    coverUploading = true;
+    coverNote = '';
+    try {
+      /* An uploaded cover is an asset like any other: same upload path, same
+         poster, and it stays in the project rather than living in a second
+         kind of storage that only covers use. */
+      const uploadId = await uploadFile({ projectId, file, relativePath: file.name });
+      const asset = await apiPost<Asset>(`/api/v1/projects/${projectId}/assets`, {
+        upload_id: uploadId,
+        name: file.name
+      });
+      coverAssets = [asset, ...coverAssets];
+      await setCover(asset.id);
+    } catch (caught) {
+      error = messageFrom(caught, 'That picture could not be uploaded.');
+    } finally {
+      coverUploading = false;
     }
   };
 
@@ -120,7 +243,6 @@
       <span class="grow"></span>
       {#if saved}<span class="saved" aria-live="polite">{saved}</span>{/if}
     </div>
-    <p class="eyebrow">{project?.palette ?? ''}</p>
     <h1>Settings</h1>
   </header>
 
@@ -131,6 +253,7 @@
       <p class="hint">Only a project manager can change these.</p>
     {/if}
 
+    <div class="panels">
     <section class="panel" aria-label="Name">
       <h2>Name</h2>
       {#if renaming}
@@ -195,11 +318,70 @@
       </label>
     </section>
 
-    <section class="panel" aria-label="People">
+    <section class="panel wide" aria-label="Cover">
+      <h2>Cover</h2>
+      <p class="sub">The picture on the projects page. Without one, the project draws its own from its colour and name.</p>
+      <div class="coverrow">
+        <span class="coverpreview"><ProjectCover {project} /></span>
+        <div class="coveractions">
+          <label class="uploadlabel" class:disabled={!isManager || coverUploading}>
+            <input type="file" accept="image/*,video/*" disabled={!isManager || coverUploading} onchange={(event) => void uploadCover(event)} />
+            <span>{coverUploading ? 'Uploading…' : 'Upload a picture'}</span>
+          </label>
+          {#if project.cover_asset_id}
+            <button type="button" class="quiet" disabled={!isManager} onclick={() => void setCover(null)}>Use the generated cover</button>
+          {/if}
+          {#if coverNote}<p class="covernote" aria-live="polite">{coverNote}</p>{/if}
+        </div>
+      </div>
+      {#if coverAssets.length > 0}
+        <p class="sub pick">Or pick something already here.</p>
+        <div class="coverpick">
+          {#each coverAssets as asset (asset.id)}
+            {@const entry = media.entries[asset.id]}
+            <button
+              type="button"
+              class="pickone"
+              class:active={project.cover_asset_id === asset.id}
+              disabled={!isManager}
+              aria-pressed={project.cover_asset_id === asset.id}
+              title={asset.name}
+              use:media.observe={asset}
+              onclick={() => void setCover(asset.id)}
+            >
+              {#if entry?.media?.posterUrl}
+                <img src={entry.media.posterUrl} alt="" loading="lazy" />
+              {:else}
+                <span class="pickfallback">{asset.name}</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </section>
+
+    <section class="panel wide" aria-label="People">
       <h2>People</h2>
       <p class="sub">Workspace members are added from <a href="/settings/members">workspace settings</a>; roles here are per project.</p>
       {#if members.length === 0}
         <p class="empty">No one has a role on this project yet.</p>
+      {/if}
+      {#if isManager}
+        <form class="addform" onsubmit={addMember}>
+          <select bind:value={addUserId} aria-label="Person to add">
+            <option value="" disabled>Add someone…</option>
+            {#each addable as user (user.id)}
+              <option value={user.id}>{user.name} — {user.email}</option>
+            {/each}
+          </select>
+          <select bind:value={addRole} aria-label="Role for the new member">
+            {#each ROLES as role (role)}<option value={role}>{role}</option>{/each}
+          </select>
+          <button type="submit" disabled={!addUserId}>Add</button>
+        </form>
+        {#if addable.length === 0}
+          <p class="empty">Everyone in the workspace already has a role here.</p>
+        {/if}
       {/if}
       <ul class="members">
         {#each members as member (member.user.id)}
@@ -219,11 +401,12 @@
               </select>
               <small class="rolenote">{ROLE_NOTES[member.role]}</small>
             </span>
-            <button type="button" class="quiet" disabled={!isManager} onclick={() => void removeMember(member)}>Remove</button>
+            <button type="button" class="danger" disabled={!isManager} onclick={() => void removeMember(member)}>Remove</button>
           </li>
         {/each}
       </ul>
     </section>
+    </div>
   {:else if loaded}
     <p class="empty">This project could not be loaded.</p>
   {/if}
@@ -239,11 +422,18 @@
   .washrow a:hover { color: rgba(250, 248, 244, 0.96); }
   .grow { flex: 1; }
   .saved { color: var(--ok); font-size: var(--text-13); }
-  .eyebrow { margin: 24px 0 4px; color: var(--ink-text-dim); font-size: var(--text-13); }
   h1 { margin: 0; font-family: var(--font-display); font-size: clamp(24px, 3vw, 34px); font-weight: 700; letter-spacing: -0.02em; }
 
-  .panel { max-width: 720px; margin: 0 var(--pad-4) 2px; padding: var(--pad-2); background: var(--ink-100); border-radius: var(--radius); }
-  .panel:first-of-type { border-radius: var(--radius-lg) var(--radius-lg) var(--radius) var(--radius); }
+  /* Two columns on a wide screen. A settings page in a 720px strip down the
+     left of a 2560px display is a column of air; the panels are independent, so
+     they can sit side by side and be read at once instead of scrolled past. */
+  /* The narrow panels fill one row across the screen and the two that hold
+     something wide -- the cover picker, the member list -- take the full width
+     underneath. A 340px track let four columns form and left Name and Colour
+     stranded in the corner with two empty tracks beside them. */
+  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 2px; align-items: start; margin: 0 var(--pad-4); }
+  .panel { padding: var(--pad-2); background: var(--ink-100); border-radius: var(--radius); }
+  .panel.wide { grid-column: 1 / -1; }
   h2 { margin: 0 0 4px; font-size: var(--text-13); font-weight: 600; color: var(--ink-text); }
   .sub { margin: 0 0 12px; color: var(--ink-text-dim); }
   .sub a { color: var(--ink-text); }
@@ -266,6 +456,13 @@
 
   .members { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
   .members li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 8px; margin: 0 -8px; border-radius: var(--radius); }
+  .addform { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+  .addform select { min-width: 0; }
+  .addform select:first-child { flex: 1; max-width: 420px; }
+  /* Red, and only here: this is the one control on the page that takes
+     something away. */
+  button.danger { background: var(--warn); color: #12080a; }
+  button.danger:hover { filter: brightness(1.12); }
   .members li:hover { background: var(--ink-200); }
   .who { display: grid; gap: 2px; min-width: 0; }
   .who small { color: var(--ink-text-dim); }
@@ -280,4 +477,25 @@
   .hint, .empty { margin: 0 var(--pad-4) 12px; color: var(--ink-text-dim); }
   .error { margin: 0 var(--pad-4) 12px; color: var(--warn); }
   button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+
+  /* Cover */
+  .coverrow { display: flex; align-items: flex-start; gap: 16px; }
+  .coverpreview { flex: none; width: 200px; height: 118px; border-radius: var(--radius); overflow: hidden; display: grid; }
+  .coverpreview :global(.cover) { width: 100%; height: 100%; }
+  .coveractions { display: grid; gap: 8px; align-content: start; }
+  /* The file input itself is unstylable across browsers; the label is the
+     button, and the input is the part that never shows. */
+  .uploadlabel { display: inline-flex; align-items: center; border-radius: var(--radius); background: var(--ink-200); padding: 8px 14px; font-size: var(--text-13); font-weight: 600; cursor: pointer; }
+  .uploadlabel:hover { background: var(--ink-300); }
+  .uploadlabel.disabled { opacity: 0.5; cursor: default; }
+  .uploadlabel input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .uploadlabel:focus-within { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  .covernote { margin: 0; color: var(--ink-text-dim); font-size: var(--text-12); }
+  .sub.pick { margin-top: 14px; }
+  .coverpick { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; }
+  .pickone { position: relative; aspect-ratio: 16 / 9; border: 0; border-radius: 2px; overflow: hidden; background: var(--ink-200); padding: 0; }
+  .pickone img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .pickfallback { display: grid; place-items: center; width: 100%; height: 100%; padding: 4px; color: var(--ink-text-dim); font-size: var(--text-12); overflow: hidden; }
+  .pickone.active { outline: 2px solid var(--accent-bright); outline-offset: -2px; }
+  .pickone:not(.active):hover { outline: 1px solid var(--ink-400, var(--ink-300)); outline-offset: -1px; }
 </style>

@@ -7,6 +7,7 @@
   import { auth } from '$lib/auth.svelte.js';
   import { notifications } from '$lib/notifications.svelte.js';
   import NotificationsPanel from '$lib/NotificationsPanel.svelte';
+  import ConfirmHost from '$lib/ConfirmHost.svelte';
   import type { Snippet } from 'svelte';
 
   let { children }: { children: Snippet } = $props();
@@ -54,11 +55,39 @@
     if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
     if (!chrome || isTyping(event.target)) return;
     event.preventDefault();
-    if (page.url.pathname === '/search') {
-      window.dispatchEvent(new CustomEvent('onelight:focus-search'));
-    } else {
-      void goto('/search');
+    /* The field is in the nav now, so "/" focuses it here rather than
+       navigating somewhere to find one. */
+    searchEl?.focus();
+    searchEl?.select();
+  };
+
+  let searchEl = $state<HTMLInputElement | null>(null);
+  let searchText = $state('');
+  /* Keep the field in step with the URL: arriving on /search?q=x, or going
+     back, should not leave the box saying something else. */
+  $effect(() => {
+    if (page.url.pathname === '/search') searchText = page.url.searchParams.get('q') ?? '';
+  });
+
+  let searchDebounce: ReturnType<typeof setTimeout> | null = null;
+  const runSearch = (replace: boolean): void => {
+    const query = searchText.trim();
+    if (!query) {
+      if (page.url.pathname === '/search') void goto('/search', { replaceState: replace, keepFocus: true });
+      return;
     }
+    void goto(`/search?q=${encodeURIComponent(query)}`, { replaceState: replace, keepFocus: true });
+  };
+  /* Typing navigates, but only once you have paused: a keystroke per history
+     entry would make Back useless. Already on /search, each update replaces. */
+  const searchAsYouType = (): void => {
+    if (searchDebounce !== null) clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => runSearch(page.url.pathname === '/search'), 260);
+  };
+  const submitSearch = (event: SubmitEvent): void => {
+    event.preventDefault();
+    if (searchDebounce !== null) clearTimeout(searchDebounce);
+    runSearch(false);
   };
 
   const current = (path: string): 'page' | undefined =>
@@ -74,9 +103,25 @@
     <a class="wordmark" href="/">Onelight</a>
     <nav aria-label="Primary">
       <a href="/" aria-current={current('/')}>Projects</a>
-      <a href="/search" aria-current={current('/search')}>Search</a>
       <a href="/settings" aria-current={current('/settings')}>Settings</a>
     </nav>
+    <!-- Search is a field, not a link to a field. Typing here goes to /search
+         with the query already in the URL, so the results page is a real
+         address you can share or reload rather than somewhere you land empty
+         and start again. -->
+    <form class="navsearch" role="search" onsubmit={submitSearch}>
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" stroke-linecap="round" />
+      </svg>
+      <input
+        bind:this={searchEl}
+        bind:value={searchText}
+        type="search"
+        placeholder="Search"
+        aria-label="Search assets and comments"
+        oninput={searchAsYouType}
+      />
+    </form>
     <button
       type="button"
       class="bell"
@@ -97,6 +142,7 @@
   </header>
   <NotificationsPanel bind:open={notificationsOpen} />
 {/if}
+<ConfirmHost />
 
 <!-- display: contents, so this wrapper adds no box and changes no layout; it
      exists only to hand --topbar-h down to the page. Custom properties still
@@ -156,7 +202,14 @@
   nav {
     display: flex;
     gap: 20px;
-    flex: 1;
+  }
+  .navsearch { flex: 1; display: flex; align-items: center; gap: 6px; max-width: 420px; margin-left: 8px; padding: 0 10px; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text-dim); }
+  .navsearch:focus-within { background: var(--ink-300); color: var(--ink-text); outline: 1px solid var(--accent-bright); outline-offset: 1px; }
+  .navsearch input { flex: 1; min-width: 0; border: 0; background: none; color: var(--ink-text); padding: 7px 0; font-size: var(--text-13); }
+  .navsearch input:focus-visible { outline: none; }
+  .navsearch input::placeholder { color: var(--ink-text-dim); }
+  @media (max-width: 720px) {
+    .navsearch { display: none; }
   }
   nav a {
     color: var(--ink-text-dim);
@@ -183,6 +236,9 @@
   .bell[aria-expanded='true'] {
     color: var(--ink-text);
   }
+  /* Unread is a flag, not decoration. The accent is the app's ordinary
+     interactive colour and sat unnoticed on the bell; a warm badge reads as
+     "something is waiting" at a glance. */
   .badge {
     position: absolute;
     top: -3px;
@@ -190,8 +246,8 @@
     min-width: 16px;
     padding: 1px 4px;
     border-radius: 8px;
-    background: var(--accent);
-    color: #0b1214;
+    background: var(--note);
+    color: #14100a;
     font-size: var(--text-11);
     font-weight: 600;
     text-align: center;

@@ -94,6 +94,9 @@ export const bodies = {
     palette: z.enum(PALETTES).optional(),
     restricted: z.boolean().optional(),
     status: z.enum(["active", "archived"]).optional(),
+    /* An asset id in this project, or null to fall back to the generated
+       palette cover. */
+    cover_asset_id: z.string().nullable().optional(),
   }),
   memberPut: z.object({ role: projectRole }),
   folderCreate: z.object({
@@ -154,6 +157,9 @@ export const bodies = {
     show_all_versions: z.boolean().optional(),
     watermark_spec: z.record(z.unknown()).nullable().optional(),
     revoked: z.boolean().optional(),
+  }),
+  shareAssetsAdd: z.object({
+    asset_ids: z.array(z.string()).min(1).max(1000),
   }),
   webhookCreate: z.object({
     url: z.string().url(),
@@ -272,6 +278,11 @@ const project = z.object({
   name: z.string(),
   status: z.enum(["active", "archived"]),
   palette: z.string(),
+  cover_asset_id: z.string().nullable(),
+  /* Null when the project has no cover, or when its cover asset has been
+     deleted or has not finished producing a poster: the client falls back to
+     the generated palette cover in all three cases. */
+  cover_url: z.string().nullable(),
   restricted: z.boolean(),
   created_by: z.string(),
   created_at: timestamp,
@@ -899,6 +910,13 @@ export const routeDocs: Record<string, RouteDoc> = {
     request: bodies.sharePatch,
     responses: { "200": ok(share) },
   },
+  "POST /shares/:id/assets": {
+    summary: "Add assets to an existing share. Assets already in it are skipped.",
+    request: bodies.shareAssetsAdd,
+    responses: {
+      "200": ok(z.object({ share, added: z.number().int() })),
+    },
+  },
   "DELETE /shares/:id": { responses: { "204": noContent } },
   "GET /shares/:id/viewers": {
     summary:
@@ -1046,7 +1064,11 @@ export const routeDocs: Record<string, RouteDoc> = {
   "DELETE /uploads/:id": { responses: { "204": noContent } },
   "POST /uploads/:id/abort": { responses: { "204": noContent } },
   "GET /projects/:id/assets": {
-    query: { ...paging, folder_id: { description: "Filter by folder." } },
+    query: {
+      ...paging,
+      folder_id: { description: "Filter by folder." },
+      share_id: { description: "Filter to the assets in one of this project's shares." },
+    },
     responses: { "200": ok(page(asset)) },
   },
   "POST /projects/:id/assets": {
