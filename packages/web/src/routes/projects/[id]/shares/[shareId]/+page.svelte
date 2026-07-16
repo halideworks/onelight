@@ -1,0 +1,599 @@
+<script lang="ts">
+  import { page } from '$app/state';
+  import { api, listShareViewers, messageFrom, revokeShare, updateShare } from '$lib/api.js';
+  import type { Share, SharePatchBody, ShareViewer, WatermarkSpec } from '$lib/api.js';
+  import { askConfirm } from '$lib/confirm.svelte.js';
+  import { copyText } from '$lib/clipboard.js';
+  import { createMediaCache } from '$lib/asset-media.svelte.js';
+  import { whenAbsolute, whenRelative } from '$lib/format.js';
+  import { pageWashFor } from '$lib/washes.js';
+
+  /* One share, one page. The old flow was a list of every share with a dialog
+     of twenty settings behind an Edit button: to change one thing about one
+     share you had to find it, open the dialog, and hold the whole form in your
+     head. Here the share's link leads -- copying it is the page's number one
+     job -- and each setting sits in its own panel and saves as it changes. */
+
+  type Project = { id: string; name: string; palette: string };
+  type Asset = { id: string; name: string; kind: string; current_version_id?: string | null };
+
+  const projectId = $derived(page.params.id);
+  const shareId = $derived(page.params.shareId);
+
+  let project = $state<Project | null>(null);
+  let share = $state<Share | null>(null);
+  let assets = $state<Asset[]>([]);
+  let viewers = $state<ShareViewer[] | null>(null);
+  let pageError = $state('');
+  let error = $state('');
+  let saved = $state('');
+  let copied = $state(false);
+
+  const media = createMediaCache();
+  const observeMedia = media.observe;
+  const wash = $derived(pageWashFor(project?.palette));
+
+  const shareUrl = $derived(
+    share ? `${typeof location === 'undefined' ? '' : location.origin}/s/${share.slug}` : ''
+  );
+  const expired = $derived(Boolean(share?.expires_at && share.expires_at <= Date.now()));
+  const dead = $derived(Boolean(share?.revoked_at) || expired);
+
+  const load = async (id: string): Promise<void> => {
+    project = null; share = null; assets = []; viewers = null;
+    pageError = ''; error = ''; saved = '';
+    try {
+      const [loadedShare, loadedProject] = await Promise.all([
+        api<Share>(`/api/v1/shares/${id}`),
+        api<Project>(`/api/v1/projects/${projectId}`)
+      ]);
+      if (id !== shareId) return;
+      share = loadedShare;
+      project = loadedProject;
+    } catch (caught) {
+      pageError = messageFrom(caught, 'This share is not available.');
+      return;
+    }
+    try {
+      const loaded = await api<{ items: Asset[] }>(
+        `/api/v1/projects/${projectId}/assets?share_id=${encodeURIComponent(id)}&limit=200`
+      );
+      if (id === shareId) assets = loaded.items;
+    } catch {
+      /* The contents panel reports the empty list itself. */
+    }
+    try {
+      const roster = await listShareViewers(id);
+      if (id === shareId) viewers = roster.items;
+    } catch {
+      viewers = null;
+    }
+  };
+
+  $effect(() => {
+    const id = shareId;
+    if (id) void load(id);
+  });
+
+  /* Every setting saves as it changes, the way project settings do: there is
+     no draft state worth defending, and a Save button under one select is
+     furniture. The watermark is the one exception below. */
+  const patch = async (body: SharePatchBody, note: string): Promise<void> => {
+    if (!share) return;
+    try {
+      share = await updateShare(share.id, body);
+      error = '';
+      saved = note;
+      setTimeout(() => {
+        if (saved === note) saved = '';
+      }, 1600);
+    } catch (caught) {
+      error = messageFrom(caught, 'That change could not be saved.');
+    }
+  };
+
+  const copyUrl = async (): Promise<void> => {
+    if (!(await copyText(shareUrl))) {
+      error = 'The link could not be copied. Copy it from the address shown.';
+      return;
+    }
+    error = '';
+    copied = true;
+    setTimeout(() => {
+      copied = false;
+    }, 2000);
+  };
+
+  /* ---- title, renamed in place ---- */
+
+  let renaming = $state(false);
+  let renameValue = $state('');
+
+  const focusInput = (element: HTMLInputElement): void => {
+    element.focus();
+    element.select();
+  };
+
+  const commitRename = async (): Promise<void> => {
+    const next = renameValue.trim();
+    renaming = false;
+    if (!share || !next || next === share.title) return;
+    await patch({ title: next }, 'Name saved');
+  };
+
+  /* ---- expiry and passphrase ---- */
+
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  const toLocalInput = (ms: number): string => {
+    const date = new Date(ms);
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  };
+
+  const onExpiryChange = (value: string): void => {
+    const ms = value ? new Date(value).getTime() : null;
+    void patch({ expires_at: ms }, ms ? 'Expiry saved' : 'Expiry removed');
+  };
+
+  let passphrase = $state('');
+
+  const setPassphrase = async (event: SubmitEvent): Promise<void> => {
+    event.preventDefault();
+    const next = passphrase.trim();
+    if (!next) return;
+    await patch({ passphrase: next }, 'Passphrase set');
+    passphrase = '';
+  };
+
+  const clearPassphrase = async (): Promise<void> => {
+    await patch({ passphrase: null }, 'Passphrase removed');
+  };
+
+  /* ---- watermark ---- */
+
+  /* The one setting with an Apply button: changing the spec re-renders every
+     clip in the share, so it must not fire per slider tick. */
+  const specOf = (current: Share | null): WatermarkSpec | null =>
+    current?.watermark_spec ? (current.watermark_spec as WatermarkSpec) : null;
+
+  let wmOpen = $state(false);
+  let wmText = $state('{share} {date}');
+  let wmPosition = $state<'tl' | 'tr' | 'bl' | 'br' | 'center' | 'tile'>('br');
+  let wmOpacity = $state(0.4);
+  let wmSize = $state(0.03);
+  let wmBox = $state(false);
+
+  /* Seed the controls from the share whenever it (re)loads. */
+  $effect(() => {
+    const spec = specOf(share);
+    wmOpen = spec !== null;
+    if (spec) {
+      wmText = typeof spec.text === 'string' ? spec.text : '{share} {date}';
+      wmPosition = spec.position ?? 'br';
+      wmOpacity = typeof spec.opacity === 'number' ? spec.opacity : 0.4;
+      wmSize = typeof spec.size === 'number' ? spec.size : 0.03;
+      wmBox = spec.box === true;
+    }
+  });
+
+  const wmDirty = $derived.by(() => {
+    const spec = specOf(share);
+    if (!wmOpen) return spec !== null;
+    if (!spec) return true;
+    return (
+      (typeof spec.text === 'string' ? spec.text : '{share} {date}') !== wmText.trim() ||
+      (spec.position ?? 'br') !== wmPosition ||
+      (typeof spec.opacity === 'number' ? spec.opacity : 0.4) !== wmOpacity ||
+      (typeof spec.size === 'number' ? spec.size : 0.03) !== wmSize ||
+      (spec.box === true) !== wmBox
+    );
+  });
+
+  const applyWatermark = async (): Promise<void> => {
+    await patch(
+      {
+        watermark_spec: wmOpen
+          ? {
+              text: wmText.trim() || '{share} {date}',
+              position: wmPosition,
+              opacity: wmOpacity,
+              size: wmSize,
+              box: wmBox
+            }
+          : null
+      },
+      wmOpen ? 'Watermark applied' : 'Watermark removed'
+    );
+  };
+
+  /* ---- revoke ---- */
+
+  const revoke = async (): Promise<void> => {
+    if (!share) return;
+    if (
+      !(await askConfirm({
+        title: `Revoke "${share.title}"?`,
+        body: 'The link stops working immediately and cannot be reopened.',
+        confirmLabel: 'Revoke',
+        danger: true
+      }))
+    )
+      return;
+    try {
+      await revokeShare(share.id);
+      share = { ...share, revoked_at: Date.now() };
+      error = '';
+    } catch (caught) {
+      error = messageFrom(caught, 'The share could not be revoked.');
+    }
+  };
+</script>
+
+<svelte:head><title>{share?.title ?? 'Share'} | {project?.name ?? 'Project'} | Onelight</title></svelte:head>
+
+<main class="room" style={`background-image: ${wash};`}>
+  <header class="wash">
+    <nav class="crumbs" aria-label="Breadcrumb">
+      <a href="/">Projects</a>
+      <span aria-hidden="true">/</span>
+      <a href={`/projects/${projectId}`}>{project?.name ?? 'Project'}</a>
+      <span aria-hidden="true">/</span>
+      <a href={`/projects/${projectId}/shares`}>Shares</a>
+    </nav>
+    {#if share}
+      <div class="titlerow">
+        {#if renaming}
+          <input
+            class="titleedit"
+            bind:value={renameValue}
+            use:focusInput
+            aria-label={`Rename ${share.title}`}
+            maxlength="200"
+            onkeydown={(event) => {
+              if (event.key === 'Enter') void commitRename();
+              else if (event.key === 'Escape') renaming = false;
+            }}
+            onblur={() => void commitRename()}
+          />
+        {:else}
+          <h1>
+            <button
+              type="button"
+              class="titletext"
+              title="Click to rename"
+              onclick={() => {
+                renameValue = share?.title ?? '';
+                renaming = true;
+              }}
+            >{share.title}</button>
+          </h1>
+        {/if}
+      </div>
+      <p class="chips">
+        <span class="chip">{share.kind}</span>
+        <span class="chip dim">{share.layout}</span>
+        {#if share.revoked_at !== null}
+          <span class="chip warn">Revoked</span>
+        {:else if expired}
+          <span class="chip warn">Expired</span>
+        {/if}
+        {#if viewers}
+          <span class="chip dim">{viewers.length} {viewers.length === 1 ? 'viewer' : 'viewers'}</span>
+        {/if}
+        {#if saved}<span class="saved" aria-live="polite">{saved}</span>{/if}
+      </p>
+    {/if}
+  </header>
+
+  {#if pageError}
+    <p class="error page-error" role="alert">{pageError}</p>
+  {:else if share}
+    <div class="body">
+      {#if error}<p class="error" role="alert">{error}</p>{/if}
+
+      <!-- The link is what a share is. It leads, at full width, with the one
+           accent button on the page beside it. -->
+      <section class="linkcard" class:dead aria-label="Share link">
+        <span class="url tc">{shareUrl}</span>
+        <span class="linkacts">
+          <button type="button" class="copy" onclick={() => void copyUrl()}>
+            {copied ? 'Copied' : 'Copy link'}
+          </button>
+          <a class="openlink" href={shareUrl} target="_blank" rel="noopener">Open</a>
+        </span>
+        {#if dead}
+          <p class="deadnote" role="status">
+            {share.revoked_at !== null
+              ? 'This share is revoked: the link no longer opens.'
+              : 'This share has expired: the link no longer opens.'}
+          </p>
+        {/if}
+      </section>
+
+      <div class="panels">
+        <section class="panel" aria-label="Viewing">
+          <h2>Viewing</h2>
+          <label class="field">Layout
+            <select
+              value={share.layout}
+              onchange={(event) => void patch({ layout: event.currentTarget.value as Share['layout'] }, 'Layout saved')}
+            >
+              <option value="grid">Grid</option>
+              <option value="list">List</option>
+              <option value="reel">Reel</option>
+            </select>
+          </label>
+          <label class="field">Downloads
+            <select
+              value={share.allow_download}
+              onchange={(event) => void patch({ allow_download: event.currentTarget.value as Share['allow_download'] }, 'Downloads saved')}
+            >
+              <option value="none">Not allowed</option>
+              <option value="proxy">Proxy only</option>
+              <option value="original">Original files</option>
+            </select>
+          </label>
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={share.allow_comments}
+              onchange={(event) => void patch({ allow_comments: event.currentTarget.checked }, 'Comments saved')}
+            />
+            Allow comments
+          </label>
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={share.show_all_versions}
+              onchange={(event) => void patch({ show_all_versions: event.currentTarget.checked }, 'Versions saved')}
+            />
+            Show all versions, not just the current one
+          </label>
+        </section>
+
+        <section class="panel" aria-label="Access">
+          <h2>Access</h2>
+          <label class="field">Expires
+            <input
+              type="datetime-local"
+              value={share.expires_at === null ? '' : toLocalInput(share.expires_at)}
+              onchange={(event) => onExpiryChange(event.currentTarget.value)}
+            />
+          </label>
+          <form class="field" onsubmit={setPassphrase}>
+            <span class="fieldname">Passphrase</span>
+            <span class="passrow">
+              <input
+                type="text"
+                bind:value={passphrase}
+                placeholder="Set a new passphrase"
+                autocomplete="off"
+                aria-label="New passphrase"
+              />
+              <button type="submit" class="quiet" disabled={!passphrase.trim()}>Set</button>
+            </span>
+            <!-- The wire never says whether one is set: the hash stays on the
+                 server. So the controls speak in verbs, not state. -->
+            <button type="button" class="quiet clearpass" onclick={() => void clearPassphrase()}>
+              Remove any passphrase
+            </button>
+          </form>
+        </section>
+
+        <section class="panel wide" aria-label="Watermark">
+          <h2>Watermark</h2>
+          <label class="check">
+            <input type="checkbox" bind:checked={wmOpen} />
+            Burn a watermark into playback
+          </label>
+          {#if wmOpen}
+            <p class="wmnote">
+              Every clip in this share is re-encoded with the watermark burned in. That takes a
+              few minutes per clip, and the share shows each one as it finishes. Applying a new
+              text or position re-renders them all again.
+            </p>
+            <div class="pair">
+              <label class="field">Text template
+                <input bind:value={wmText} />
+              </label>
+              <label class="field">Position
+                <select bind:value={wmPosition}>
+                  <option value="tl">Top left</option>
+                  <option value="tr">Top right</option>
+                  <option value="bl">Bottom left</option>
+                  <option value="br">Bottom right</option>
+                  <option value="center">Center</option>
+                  <option value="tile">Tiled</option>
+                </select>
+              </label>
+            </div>
+            <p class="hint">
+              Tokens: {'{share}'} and {'{date}'}. The burned text is the same for everyone;
+              each viewer's name and email are drawn live on top of it.
+            </p>
+            <div class="pair">
+              <label class="field">Opacity
+                <span class="rangewrap">
+                  <input type="range" min="0.05" max="1" step="0.05" bind:value={wmOpacity} />
+                  <span class="tc rangeval">{Math.round(wmOpacity * 100)}%</span>
+                </span>
+              </label>
+              <label class="field">Size, fraction of frame height
+                <span class="rangewrap">
+                  <input type="range" min="0.01" max="0.2" step="0.01" bind:value={wmSize} />
+                  <span class="tc rangeval">{Math.round(wmSize * 100)}%</span>
+                </span>
+              </label>
+            </div>
+            <label class="check">
+              <input type="checkbox" bind:checked={wmBox} />
+              Backing box
+            </label>
+          {/if}
+          {#if wmDirty}
+            <div class="wmapply">
+              <button type="button" onclick={() => void applyWatermark()}>
+                {wmOpen ? 'Apply watermark' : 'Remove watermark'}
+              </button>
+              <span class="hint">Re-renders every clip in the share.</span>
+            </div>
+          {/if}
+        </section>
+
+        <section class="panel wide" aria-label="In this share">
+          <h2>In this share</h2>
+          {#if assets.length === 0}
+            <p class="empty">Nothing is in this share yet. Add assets from the project page: select them and right-click, or drag them onto the share in the rail.</p>
+          {:else}
+            <div class="contents">
+              {#each assets as asset (asset.id)}
+                {@const entry = media.entries[asset.id]}
+                <a
+                  class="content"
+                  href={`/projects/${projectId}/assets/${asset.id}`}
+                  title={asset.name}
+                  use:observeMedia={asset}
+                >
+                  {#if entry?.media?.posterUrl}
+                    <img src={entry.media.posterUrl} alt="" loading="lazy" />
+                  {:else}
+                    <span class="contentblank" aria-hidden="true"></span>
+                  {/if}
+                  <span class="contentname">{asset.name}</span>
+                </a>
+              {/each}
+            </div>
+          {/if}
+        </section>
+
+        <section class="panel wide" aria-label="Viewers">
+          <h2>Viewers</h2>
+          {#if viewers === null}
+            <p class="empty">The viewer roster is not available.</p>
+          {:else if viewers.length === 0}
+            <p class="empty">Nobody has opened this share yet.</p>
+          {:else}
+            <table>
+              <thead>
+                <tr><th>Name</th><th>Email</th><th>First seen</th><th>Last seen</th></tr>
+              </thead>
+              <tbody>
+                {#each viewers as viewer (viewer.id)}
+                  <tr title={viewer.user_agent ?? ''}>
+                    <td>{viewer.name ?? 'Unnamed'}</td>
+                    <td>{viewer.email ?? ''}</td>
+                    <td class="tc" title={whenAbsolute(viewer.first_seen_at)}>{whenRelative(viewer.first_seen_at)}</td>
+                    <td class="tc" title={whenAbsolute(viewer.last_seen_at)}>{whenRelative(viewer.last_seen_at)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+        </section>
+
+        {#if share.revoked_at === null}
+          <section class="panel wide dangerzone" aria-label="Revoke">
+            <div class="dangerrow">
+              <span>
+                <strong>Revoke this share</strong>
+                <small>The link stops working immediately and cannot be reopened.</small>
+              </span>
+              <button type="button" class="danger" onclick={() => void revoke()}>Revoke</button>
+            </div>
+          </section>
+        {/if}
+      </div>
+    </div>
+  {/if}
+</main>
+
+<style>
+  /* The same room as the project and its settings: ink base, the project's
+     wash resolving into it at the same height. */
+  .room { position: relative; min-height: calc(100vh - var(--topbar-h, 0px)); background-color: var(--ink-000); background-repeat: no-repeat; color: var(--ink-text); font-size: var(--text-13); padding-bottom: var(--pad-4); }
+  .room::before { content: ''; position: fixed; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(13, 17, 23, 0.05) 0%, rgba(13, 17, 23, 0.45) 26%, rgba(13, 17, 23, 0.88) 58%, rgba(13, 17, 23, 0.95) 100%); }
+  .room > :global(*) { position: relative; }
+  .wash { padding: var(--pad-3) var(--pad-4) var(--pad-3); }
+  .crumbs { display: flex; gap: 8px; color: rgba(250, 248, 244, 0.72); }
+  .crumbs a { color: inherit; font-size: var(--text-13); text-decoration: none; }
+  .crumbs a:hover { color: rgba(250, 248, 244, 0.96); }
+  .titlerow { margin-top: var(--pad-3); }
+  h1 { margin: 0; font-family: var(--font-display); font-size: clamp(2rem, 5vw, var(--text-56)); font-weight: 700; letter-spacing: -0.02em; color: rgba(250, 248, 244, 0.96); }
+  /* The name is editable where it is shown; a rename behind a dialog was the
+     old page's mistake. */
+  .titletext { border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit; padding: 0 10px; margin: 0 -10px; border-radius: var(--radius); cursor: text; text-align: left; }
+  .titletext:hover { background: rgba(13, 17, 23, 0.35); }
+  .titletext:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  .titleedit { width: min(720px, 90%); border: 0; border-radius: var(--radius); background: rgba(13, 17, 23, 0.55); color: rgba(250, 248, 244, 0.96); padding: 0 10px; margin: 0 -10px; font-family: var(--font-display); font-size: clamp(2rem, 5vw, var(--text-56)); font-weight: 700; letter-spacing: -0.02em; }
+  .titleedit:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  .chips { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; }
+  .chip { padding: 2px 8px; border-radius: 9px; background: rgba(13, 17, 23, 0.5); color: rgba(250, 248, 244, 0.9); font-size: var(--text-12); font-weight: 500; }
+  .chip.dim { color: rgba(250, 248, 244, 0.62); }
+  .chip.warn { color: var(--warn); }
+  .saved { color: var(--ok); font-size: var(--text-13); }
+
+  .body { padding: 0 var(--pad-4); max-width: 1100px; display: grid; gap: 10px; }
+
+  /* ---- the link card ---- */
+  .linkcard { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 18px 20px; border-radius: var(--radius-lg); background: linear-gradient(180deg, color-mix(in oklab, var(--ink-100) 82%, var(--ink-200)) 0%, var(--ink-100) 52%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 2px rgba(0, 0, 0, 0.28); }
+  .linkcard .url { flex: 1 1 320px; min-width: 0; color: var(--ink-text); font-size: var(--text-14); overflow-wrap: anywhere; }
+  .linkcard.dead .url { color: var(--ink-text-dim); text-decoration: line-through; }
+  .linkacts { display: flex; align-items: center; gap: 8px; }
+  .copy { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 10px 18px; font-size: var(--text-13); font-weight: 600; }
+  .copy:hover { background: var(--accent-bright); }
+  .openlink { border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 10px 14px; font-size: var(--text-13); font-weight: 500; text-decoration: none; }
+  .openlink:hover { background: var(--ink-300); }
+  .deadnote { flex-basis: 100%; margin: 0; color: var(--warn); }
+
+  /* ---- panels ---- */
+  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 10px; align-items: start; }
+  .panel { padding: var(--pad-2); border-radius: var(--radius-lg); background: linear-gradient(180deg, color-mix(in oklab, var(--ink-100) 88%, var(--ink-200)) 0%, var(--ink-100) 46%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 1px 2px rgba(0, 0, 0, 0.28); display: grid; gap: 10px; align-content: start; }
+  .panel.wide { grid-column: 1 / -1; }
+  /* Panel names, plain case: the anti-slop list bans uppercase-tracked
+     microcopy, and a heading does not need to shout to be a heading. */
+  .panel h2 { margin: 0; color: var(--ink-text); font-size: var(--text-13); font-weight: 600; }
+
+  .field { display: grid; gap: 6px; color: var(--ink-text-dim); font-weight: 500; }
+  .fieldname { color: var(--ink-text-dim); font-weight: 500; }
+  .field input, .field select { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 10px; font: inherit; font-size: var(--text-13); }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: end; }
+  .check { display: flex; align-items: center; gap: 10px; color: var(--ink-text); }
+  .check input { accent-color: var(--accent); margin: 0; }
+  .passrow { display: flex; gap: 6px; }
+  .passrow input { flex: 1; min-width: 0; }
+  .clearpass { justify-self: start; }
+  .rangewrap { display: flex; align-items: center; gap: 12px; }
+  .rangewrap input[type='range'] { flex: 1; accent-color: var(--accent); padding: 0; background: none; }
+  .rangeval { min-width: 44px; color: var(--ink-text); font-variant-numeric: tabular-nums; }
+  .wmnote { margin: 0; padding: 9px 11px; border-radius: var(--radius); background: color-mix(in oklab, var(--note) 14%, var(--ink-200)); color: var(--ink-text); font-size: var(--text-12); line-height: 1.5; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--note) 30%, transparent); }
+  .wmapply { display: flex; align-items: center; gap: 12px; }
+  .hint { margin: 0; color: var(--ink-text-dim); font-size: var(--text-12); }
+
+  /* ---- contents ---- */
+  .contents { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 8px; }
+  .content { display: grid; gap: 5px; color: var(--ink-text-dim); text-decoration: none; }
+  .content img, .contentblank { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; border-radius: var(--radius); background: var(--ink-200); }
+  .content:hover { color: var(--ink-text); }
+  .contentname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-12); }
+
+  table { width: 100%; border-collapse: collapse; font-size: var(--text-13); }
+  th { text-align: left; padding: 6px 10px 6px 0; color: var(--ink-text-dim); font-weight: 500; }
+  td { padding: 6px 10px 6px 0; }
+  td.tc { font-variant-numeric: tabular-nums; }
+
+  .dangerzone { background: linear-gradient(180deg, color-mix(in oklab, var(--warn) 7%, var(--ink-100)) 0%, var(--ink-100) 60%); }
+  .dangerrow { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .dangerrow span { display: grid; gap: 2px; }
+  .dangerrow small { color: var(--ink-text-dim); }
+
+  button { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 8px 14px; font-size: var(--text-13); font-weight: 600; }
+  button:hover { background: var(--accent-bright); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.quiet { background: var(--ink-200); color: var(--ink-text); font-weight: 500; }
+  button.quiet:hover { background: var(--ink-300); }
+  button.danger { background: var(--warn); color: #12080a; }
+  button.danger:hover { filter: brightness(1.12); }
+  .empty { margin: 0; color: var(--ink-text-dim); }
+  .error { margin: 0; color: var(--warn); }
+  .page-error { padding: 0 var(--pad-4); }
+  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+</style>

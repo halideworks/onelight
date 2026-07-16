@@ -51,6 +51,11 @@
   let name = $state('');
   let renaming = $state(false);
 
+  const focusInput = (element: HTMLInputElement): void => {
+    element.focus();
+    element.select();
+  };
+
   /* Only pictures make sense as a cover, and only ones that have a frame to
      show: audio and PDFs are excluded, not filtered out of a list they were
      never in. */
@@ -114,15 +119,14 @@
     }
   };
 
-  const rename = async (event: SubmitEvent): Promise<void> => {
-    event.preventDefault();
+  const commitRename = async (): Promise<void> => {
     const next = name.trim();
+    renaming = false;
     if (!next || next === project?.name) {
-      renaming = false;
+      name = project?.name ?? '';
       return;
     }
     await patch({ name: next }, 'Name saved');
-    renaming = false;
   };
 
   const setRole = async (member: Member, role: string): Promise<void> => {
@@ -298,12 +302,16 @@
 
 <main class="room" style={`background-image: ${wash};`}>
   <header class="wash">
+    <nav class="crumbs" aria-label="Breadcrumb">
+      <a href="/">Projects</a>
+      <span aria-hidden="true">/</span>
+      <a href={`/projects/${projectId}`}>{project?.name ?? 'Project'}</a>
+    </nav>
     <div class="washrow">
-      <a href={`/projects/${projectId}`}>Back to project</a>
+      <h1>Settings</h1>
       <span class="grow"></span>
       {#if saved}<span class="saved" aria-live="polite">{saved}</span>{/if}
     </div>
-    <h1>Settings</h1>
   </header>
 
   {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -314,74 +322,12 @@
     {/if}
 
     <div class="panels">
-    <section class="panel" aria-label="Name">
-      <h2>Name</h2>
-      {#if renaming}
-        <form class="renameform" onsubmit={rename}>
-          <input bind:value={name} aria-label="Project name" maxlength="200" />
-          <button type="submit">Save</button>
-          <button type="button" class="quiet" onclick={() => { name = project?.name ?? ''; renaming = false; }}>Cancel</button>
-        </form>
-      {:else}
-        <div class="row">
-          <span class="value">{project.name}</span>
-          <button type="button" class="quiet" disabled={!isManager} onclick={() => { renaming = true; }}>Rename</button>
-        </div>
-      {/if}
-    </section>
-
-    <section class="panel" aria-label="Colour">
-      <h2>Colour</h2>
-      <p class="sub">The project's wash, and its thumbnail on the projects page.</p>
-      <div class="swatches" role="group" aria-label="Project colour">
-        {#each PALETTES as palette (palette)}
-          <button
-            type="button"
-            class="swatch"
-            class:active={project.palette === palette}
-            disabled={!isManager}
-            aria-pressed={project.palette === palette}
-            aria-label={palette}
-            title={palette}
-            style={`background-image: ${washFor(palette)};`}
-            onclick={() => void patch({ palette }, 'Colour saved')}
-          ></button>
-        {/each}
-      </div>
-    </section>
-
-    <section class="panel" aria-label="Access">
-      <h2>Access</h2>
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={project.restricted}
-          disabled={!isManager}
-          onchange={(event) => void patch({ restricted: event.currentTarget.checked }, 'Access saved')}
-        />
-        <span>
-          <strong>Restricted</strong>
-          <small>Only people granted a role below can open this project. Otherwise everyone in the workspace can.</small>
-        </span>
-      </label>
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={project.status === 'archived'}
-          disabled={!isManager}
-          onchange={(event) => void patch({ status: event.currentTarget.checked ? 'archived' : 'active' }, 'Status saved')}
-        />
-        <span>
-          <strong>Archived</strong>
-          <small>Read-only: no uploads, no new notes. Nothing is deleted.</small>
-        </span>
-      </label>
-    </section>
-
-    <section class="panel wide" aria-label="Cover">
-      <h2>Cover</h2>
-      <p class="sub">The picture on the projects page. Without one, the project draws its own from its colour and name.</p>
-      <div class="coverrow">
+    <!-- What the project looks like, composed as one thing: its picture, its
+         name, its colour. These were three panels -- one of them a single line
+         of text floating in a box -- when together they are one subject: the
+         identity every other page draws from. -->
+    <section class="panel wide identity" aria-label="Identity">
+      <div class="idgrid">
         <span class="coverpreview">
           {#if coverPreview}
             <img src={coverPreview} alt="" />
@@ -392,17 +338,57 @@
             <ProjectCover {project} />
           {/if}
         </span>
-        <div class="coveractions">
-          <label class="uploadlabel" class:disabled={!isManager || coverUploading}>
-            <!-- Only what a browser will actually draw: a TIFF or an EXR would
-                 upload happily and then never appear. -->
-            <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={!isManager || coverUploading} onchange={(event) => void uploadCover(event)} />
-            <span>{coverUploading ? `Uploading ${Math.round(coverProgress * 100)}%` : 'Upload a picture'}</span>
-          </label>
-          {#if project.cover_kind !== 'generated'}
-            <button type="button" class="quiet" disabled={!isManager} onclick={() => void setCover(null)}>Use the generated cover</button>
+        <div class="idmain">
+          {#if renaming}
+            <input
+              class="nameedit"
+              bind:value={name}
+              use:focusInput
+              aria-label="Project name"
+              maxlength="200"
+              onkeydown={(event) => {
+                if (event.key === 'Enter') void commitRename();
+                else if (event.key === 'Escape') { name = project?.name ?? ''; renaming = false; }
+              }}
+              onblur={() => void commitRename()}
+            />
+          {:else}
+            <button
+              type="button"
+              class="nametext"
+              title={isManager ? 'Click to rename' : undefined}
+              disabled={!isManager}
+              onclick={() => { name = project?.name ?? ''; renaming = true; }}
+            >{project.name}</button>
           {/if}
-          {#if coverNote}<p class="covernote" aria-live="polite">{coverNote}</p>{/if}
+          <div class="swatches" role="group" aria-label="Project colour">
+            {#each PALETTES as palette (palette)}
+              <button
+                type="button"
+                class="swatch"
+                class:active={project.palette === palette}
+                disabled={!isManager}
+                aria-pressed={project.palette === palette}
+                aria-label={palette}
+                title={palette}
+                style={`background-image: ${washFor(palette)};`}
+                onclick={() => void patch({ palette }, 'Colour saved')}
+              ></button>
+            {/each}
+          </div>
+          <p class="sub">The colour is the project's wash on every page, and its generated cover. The picture, when one is set, fronts the projects page instead.</p>
+          <div class="coveractions">
+            <label class="uploadlabel" class:disabled={!isManager || coverUploading}>
+              <!-- Only what a browser will actually draw: a TIFF or an EXR would
+                   upload happily and then never appear. -->
+              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={!isManager || coverUploading} onchange={(event) => void uploadCover(event)} />
+              <span>{coverUploading ? `Uploading ${Math.round(coverProgress * 100)}%` : 'Upload a picture'}</span>
+            </label>
+            {#if project.cover_kind !== 'generated'}
+              <button type="button" class="quiet" disabled={!isManager} onclick={() => void setCover(null)}>Use the generated cover</button>
+            {/if}
+            {#if coverNote}<p class="covernote" aria-live="polite">{coverNote}</p>{/if}
+          </div>
         </div>
       </div>
       {#if coverUploads.length > 0}
@@ -460,7 +446,35 @@
       {/if}
     </section>
 
-    <section class="panel wide" aria-label="People">
+    <section class="panel" aria-label="Access">
+      <h2>Access</h2>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={project.restricted}
+          disabled={!isManager}
+          onchange={(event) => void patch({ restricted: event.currentTarget.checked }, 'Access saved')}
+        />
+        <span>
+          <strong>Restricted</strong>
+          <small>Only people granted a role below can open this project. Otherwise everyone in the workspace can.</small>
+        </span>
+      </label>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={project.status === 'archived'}
+          disabled={!isManager}
+          onchange={(event) => void patch({ status: event.currentTarget.checked ? 'archived' : 'active' }, 'Status saved')}
+        />
+        <span>
+          <strong>Archived</strong>
+          <small>Read-only: no uploads, no new notes. Nothing is deleted.</small>
+        </span>
+      </label>
+    </section>
+
+    <section class="panel" aria-label="People">
       <h2>People</h2>
       <p class="sub">Workspace members are added from <a href="/settings/members">workspace settings</a>; roles here are per project.</p>
       {#if members.length === 0}
@@ -495,16 +509,23 @@
                 value={member.role}
                 disabled={!isManager}
                 aria-label={`Role for ${member.user.name}`}
+                title={ROLE_NOTES[member.role]}
                 onchange={(event) => void setRole(member, event.currentTarget.value)}
               >
                 {#each ROLES as role (role)}<option value={role}>{role}</option>{/each}
               </select>
-              <small class="rolenote">{ROLE_NOTES[member.role]}</small>
             </span>
-            <button type="button" class="danger" disabled={!isManager} onclick={() => void removeMember(member)}>Remove</button>
+            <!-- Quiet until meant: a filled red button on every row made the
+                 list read as a demolition plan. -->
+            <button type="button" class="quiet remove" disabled={!isManager} onclick={() => void removeMember(member)}>Remove</button>
           </li>
         {/each}
       </ul>
+      <p class="rolelegend">
+        {#each ROLES as role, index (role)}
+          <span><strong>{role}</strong> {ROLE_NOTES[role].toLowerCase()}</span>{#if index < ROLES.length - 1}<span class="sep" aria-hidden="true"></span>{/if}
+        {/each}
+      </p>
     </section>
     </div>
   {:else if loaded}
@@ -517,21 +538,17 @@
   .room::before { content: ''; position: fixed; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(13, 17, 23, 0.05) 0%, rgba(13, 17, 23, 0.45) 26%, rgba(13, 17, 23, 0.88) 58%, rgba(13, 17, 23, 0.95) 100%); }
   .room > :global(*) { position: relative; }
   .wash { padding: var(--pad-3) var(--pad-4) var(--pad-4); }
-  .washrow { display: flex; gap: 16px; align-items: center; }
-  .washrow a { color: rgba(250, 248, 244, 0.72); font-size: var(--text-13); text-decoration: none; }
-  .washrow a:hover { color: rgba(250, 248, 244, 0.96); }
+  .crumbs { display: flex; gap: 8px; color: rgba(250, 248, 244, 0.72); }
+  .crumbs a { color: inherit; font-size: var(--text-13); text-decoration: none; }
+  .crumbs a:hover { color: rgba(250, 248, 244, 0.96); }
+  .washrow { display: flex; gap: 16px; align-items: baseline; }
   .grow { flex: 1; }
   .saved { color: var(--ok); font-size: var(--text-13); }
-  h1 { margin: 0; font-family: var(--font-display); font-size: clamp(24px, 3vw, 34px); font-weight: 700; letter-spacing: -0.02em; }
+  h1 { margin: var(--pad-3) 0 0; font-family: var(--font-display); font-size: clamp(2rem, 5vw, var(--text-56)); font-weight: 700; letter-spacing: -0.02em; color: rgba(250, 248, 244, 0.96); }
 
-  /* Two columns on a wide screen. A settings page in a 720px strip down the
-     left of a 2560px display is a column of air; the panels are independent, so
-     they can sit side by side and be read at once instead of scrolled past. */
-  /* The narrow panels fill one row across the screen and the two that hold
-     something wide -- the cover picker, the member list -- take the full width
-     underneath. A 340px track let four columns form and left Name and Colour
-     stranded in the corner with two empty tracks beside them. */
-  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 10px; align-items: start; margin: 0 var(--pad-4); }
+  /* The identity panel leads at full width; Access and People divide the row
+     under it, weighted toward the list that grows. */
+  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 10px; align-items: start; margin: 0 var(--pad-4); max-width: 1100px; }
   /* Panels as surfaces rather than holes. At one flat fill and a 2px gap they
      merged into a single dark mass -- five settings reading as one slab, which
      is the "heavy" part. A light from above (one highlight along the top edge,
@@ -545,23 +562,31 @@
       inset 0 1px 0 rgba(255, 255, 255, 0.045),
       0 1px 2px rgba(0, 0, 0, 0.28);
   }
-  /* The heading names a panel; it should not weigh the same as its contents. */
-  .panel h2 { color: var(--ink-text-dim); text-transform: uppercase; letter-spacing: 0.07em; font-size: var(--text-11); }
   .panel.wide { grid-column: 1 / -1; }
+  /* Panel names in plain case: the anti-slop list bans uppercase-tracked
+     microcopy, and a heading does not need to shout to be a heading. */
   h2 { margin: 0 0 4px; font-size: var(--text-13); font-weight: 600; color: var(--ink-text); }
   .sub { margin: 0 0 12px; color: var(--ink-text-dim); }
   .sub a { color: var(--ink-text); }
-  .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-  .value { color: var(--ink-text); font-size: var(--text-16); }
-  .renameform { display: flex; gap: 6px; }
-  .renameform input { flex: 1; min-width: 0; }
   input, select { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 10px; font: inherit; }
+
+  /* ---- identity ---- */
+  .identity { padding: var(--pad-3); }
+  .idgrid { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: var(--pad-3); align-items: start; }
+  @media (max-width: 900px) { .idgrid { grid-template-columns: 1fr; } }
+  .idmain { display: grid; gap: 14px; justify-items: start; }
+  /* The name at display size, edited where it is shown. */
+  .nametext { border: 0; background: none; color: var(--ink-text); font-family: var(--font-display); font-size: clamp(24px, 3vw, 34px); font-weight: 700; letter-spacing: -0.02em; padding: 2px 8px; margin: -2px -8px; border-radius: var(--radius); cursor: text; text-align: left; }
+  .nametext:hover:not(:disabled) { background: var(--ink-200); }
+  .nametext:disabled { cursor: default; }
+  .nameedit { width: 100%; max-width: 560px; border: 0; border-radius: var(--radius); background: var(--ink-300); color: var(--ink-text); padding: 2px 8px; margin: -2px -8px; font-family: var(--font-display); font-size: clamp(24px, 3vw, 34px); font-weight: 700; letter-spacing: -0.02em; }
 
   /* Ten swatches painted in the actual wash: the colour is the label. */
   .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
-  .swatch { width: 56px; height: 36px; padding: 0; border: 0; border-radius: var(--radius); background-size: 100% 100%; }
+  .swatch { width: 64px; height: 40px; padding: 0; border: 0; border-radius: var(--radius); background-size: 100% 100%; }
   .swatch.active { box-shadow: 0 0 0 2px var(--ink-100), 0 0 0 4px var(--accent-bright); }
   .swatch:disabled { opacity: 0.5; cursor: default; }
+  .idmain .sub { margin: 0; }
 
   .check { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; }
   .check input { margin: 2px 0 0; accent-color: var(--accent); }
@@ -573,15 +598,19 @@
   .addform { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
   .addform select { min-width: 0; }
   .addform select:first-child { flex: 1; max-width: 420px; }
-  /* Red, and only here: this is the one control on the page that takes
-     something away. */
-  button.danger { background: var(--warn); color: #12080a; }
-  button.danger:hover { filter: brightness(1.12); }
   .members li:hover { background: var(--ink-200); }
   .who { display: grid; gap: 2px; min-width: 0; }
   .who small { color: var(--ink-text-dim); }
-  .rolecell { display: grid; gap: 2px; justify-items: end; }
-  .rolenote { color: var(--ink-text-dim); font-size: var(--text-11); }
+  .rolecell { display: grid; justify-items: end; }
+  /* Removing someone is a real action, not the row's theme: quiet until
+     pointed at, and only then does it say what it costs. */
+  button.remove { color: var(--ink-text-dim); }
+  button.remove:hover:not(:disabled) { background: var(--warn); color: #12080a; }
+  /* One legend under the list instead of a note per row saying the same
+     four sentences over and over. */
+  .rolelegend { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0 0; color: var(--ink-text-dim); font-size: var(--text-12); }
+  .rolelegend strong { color: var(--ink-text); font-weight: 600; }
+  .rolelegend .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--ink-300); }
 
   button { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 8px 14px; font-size: var(--text-13); font-weight: 600; }
   button:hover { background: var(--accent-bright); }
@@ -593,15 +622,14 @@
   button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
 
   /* Cover */
-  .coverrow { display: flex; align-items: flex-start; gap: 16px; }
-  .coverpreview { position: relative; flex: none; width: 200px; height: 118px; border-radius: var(--radius); overflow: hidden; display: grid; }
+  .coverpreview { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: var(--radius); overflow: hidden; display: grid; }
   .coverpreview > img { width: 100%; height: 100%; object-fit: cover; }
   /* Progress over the picture being uploaded, not a spinner beside it: the
      thing that is happening is happening to this image. */
   .coverbusy { position: absolute; inset: auto 0 0 0; height: 3px; background: rgba(0, 0, 0, 0.45); }
   .coverbusy .bar { display: block; height: 100%; transform-origin: 0 50%; background: var(--accent-bright); transition: transform 120ms linear; }
   .coverpreview :global(.cover) { width: 100%; height: 100%; }
-  .coveractions { display: grid; gap: 8px; align-content: start; }
+  .coveractions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   /* The file input itself is unstylable across browsers; the label is the
      button, and the input is the part that never shows. */
   .uploadlabel { display: inline-flex; align-items: center; border-radius: var(--radius); background: var(--ink-200); padding: 8px 14px; font-size: var(--text-13); font-weight: 600; cursor: pointer; }

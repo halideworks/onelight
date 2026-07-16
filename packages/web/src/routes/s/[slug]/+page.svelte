@@ -581,12 +581,18 @@
 
 {#if error && !share && !locked}
   <main class="shell" style={`background-image: ${wash};`}><p role="alert">{error}</p></main>
-{:else if locked}
+{:else if locked || (share && !viewerIdentity)}
+  <!-- Two ways to arrive here. A 401 means a passphrase is required and the
+       form asks for it. A passphrase-less share loads fine but issues no
+       viewer, and every asset read needs one -- so it prompts for the name
+       alone. It used to show the tiles instead, and each one failed to open. -->
   <main class="shell access" style={`background-image: ${wash};`}>
-    <p class="eyebrow">Shared review</p>
-    <h1>Enter the review room.</h1>
+    <p class="eyebrow">{share?.kind === 'presentation' ? 'Presentation' : 'Shared review'}</p>
+    <h1>{share ? share.title : 'Enter the review room.'}</h1>
     <form onsubmit={access}>
-      <label>Passphrase <input type="password" bind:value={passphrase} /></label>
+      {#if locked}
+        <label>Passphrase <input type="password" bind:value={passphrase} /></label>
+      {/if}
       <label>Your name <input bind:value={viewerName} required /></label>
       <label>Email <input type="email" bind:value={viewerEmail} /></label>
       {#if error}<p class="error" role="alert">{error}</p>{/if}

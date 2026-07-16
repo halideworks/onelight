@@ -61,6 +61,33 @@ and Chromium:
   matches the landing path's shape (`apps/server/src/share-shell.ts`, unit
   tested). This is why a rig that fetches a download URL cannot reproduce it.
 
+The same day, the manager's side of shares was rebuilt around one idea: a share
+is a page, not a row in a dialog.
+
+- **Every share has its own page**, `/projects/:id/shares/:shareId`: the link
+  as the headline with the one accent Copy button on the page, the title
+  renamed in place, each setting in a panel that saves as it changes (the
+  watermark keeps an explicit Apply, because applying re-renders every clip),
+  the contents as posters, the viewer roster, and revoke at the bottom.
+- **The shares list is an index of doors**: each card opens the share's page;
+  copying the link is the one action that stays on the card. The old page put
+  every setting of every share behind one twenty-field Edit dialog.
+- **The rail navigates**: clicking a share opens its page (its contents used to
+  be browsed in the project grid, a worse copy of the same information), and
+  right-click works on the rail's own rows -- folders get New folder inside,
+  Rename, Delete; shares get Copy link, Share settings, Open as a viewer,
+  Revoke; the Shares heading gets New folder. `selectedShare` and the grid's
+  share browsing went away with it.
+- **Project settings got recomposed**: identity is one panel -- cover at
+  poster size, the name renamed in place at display size, the palette as the
+  identity moment -- with Access and People beside each other under it. The
+  uppercase-tracked panel headings (anti-slop list) are gone, the per-row role
+  sentence collapsed into one legend, and Remove is quiet until pointed at.
+- **A passphrase-less share now prompts for the viewer's name** (no passphrase
+  field). It used to render the tiles with no viewer issued, and every asset
+  failed to open; the access form appears whenever there is no viewer, and
+  asks only for what the share actually requires.
+
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
 1. First green run of the integration and media-qc CI jobs on Linux: this exercises compose end to end, the HDR libplacebo tonemap on lavapipe (the new -init_hw_device vulkan flag), the zscale 601-to-709 conversion on partially-tagged sources, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Most of what used to be manual is now automated here; it just needs to run on a Linux runner with Docker.
@@ -80,7 +107,7 @@ and Chromium:
 - A true tiled watermark grid (v1 approximates with three diagonal placements); watermarked sprite sidecars (the scrubber filmstrip on a watermarked share currently shows clean low-res frames).
 - Per-share branding: `brand_json` is written by share create/patch and read by the internal projections, but no public projection exposes it and the share page draws the default wash for everyone. Design doc section 11 wants palette or two custom hexes plus a logo. This is what makes a presentation the client's rather than ours.
 - Share viewer approval: `PATCH /s/:slug/approval` is implemented, viewer-authenticated, and notifies the project, but nothing in the share UI calls it, so a client cannot approve or request changes from the room they were sent. The presentation kind is where that decision belongs.
-- A passphrase-less share never prompts for a viewer name: the bootstrap returns assets with `viewer: null`, the access form only appears on a 401, and opening an asset then fails. Either prompt unconditionally or let a nameless viewer read.
+- Removing an asset from a share: `POST /shares/:id/assets` adds, nothing removes. The share page's contents panel is where the control belongs once the endpoint exists.
 - True Media Composer marker XML once a captured real MC export exists (avid_xml currently emits the MC text format; see the phase-3 supersession note).
 - A public unfurl-image route so share OG tags can carry og:image (all media URLs are signed today, so no image is emitted).
 

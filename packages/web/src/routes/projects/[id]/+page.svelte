@@ -4,6 +4,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api, apiDelete, apiPatch, apiPost, createAssetVersion, messageFrom } from '$lib/api.js';
+  import { copyText } from '$lib/clipboard.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import AssetSelect from '$lib/AssetSelect.svelte';
   import ScrubThumb from '$lib/ScrubThumb.svelte';
@@ -86,13 +87,17 @@
      assets move. */
   let folderAssets = $state<Record<string, Asset[]>>({});
   let selectedFolder = $state<string | null>(null);
-  /* A share is browsed like a folder, so it shares the rail and the grid, but
-     it is not a folder: an asset lives in exactly one folder and in any number
-     of shares. Two selections, one visible at a time. */
-  let selectedShare = $state<string | null>(null);
   let shares = $state<Share[]>([]);
   let shareError = $state('');
   let shareMenu = $state<{ x: number; y: number; ids: string[] } | null>(null);
+  /* The right-click menu for the rail's own rows: a folder, a share, or the
+     Shares heading. Kept apart from the asset menu the way the drags are kept
+     apart: different subjects, different verbs. */
+  type RowMenu =
+    | { x: number; y: number; kind: 'folder'; id: string }
+    | { x: number; y: number; kind: 'share'; id: string }
+    | { x: number; y: number; kind: 'sharesroot' };
+  let rowMenu = $state<RowMenu | null>(null);
   let shareChoice = $state('');
   let focusedRow = $state('root');
   let renaming = $state<string | null>(null);
@@ -108,24 +113,19 @@
   const media = createMediaCache();
   const observeMedia = media.observe;
 
-  /* One place decides what the grid is showing: a folder, a share, or
-     everything. */
+  /* One place decides what the grid is showing: a folder, or everything. A
+     share's contents live on the share's own page now. */
   const listSuffix = (): string =>
-    selectedShare
-      ? `&share_id=${encodeURIComponent(selectedShare)}`
-      : selectedFolder
-        ? `&folder_id=${encodeURIComponent(selectedFolder)}`
-        : '';
+    selectedFolder ? `&folder_id=${encodeURIComponent(selectedFolder)}` : '';
 
   const loadAssets = async (id: string): Promise<void> => {
     const folder = selectedFolder;
-    const share = selectedShare;
     const suffix = listSuffix();
     try {
       const loaded = await api<{ items: Asset[]; next_cursor: string | null }>(
         `/api/v1/projects/${id}/assets?limit=100${suffix}`
       );
-      if (id !== projectId || folder !== selectedFolder || share !== selectedShare) return;
+      if (id !== projectId || folder !== selectedFolder) return;
       assets = loaded.items;
       nextCursor = loaded.next_cursor;
       selected = selected.filter((entry) => loaded.items.some((asset) => asset.id === entry));
@@ -140,13 +140,12 @@
     if (!id || !cursor || loadingMore) return;
     loadingMore = true;
     const folder = selectedFolder;
-    const share = selectedShare;
     const suffix = listSuffix();
     try {
       const loaded = await api<{ items: Asset[]; next_cursor: string | null }>(
         `/api/v1/projects/${id}/assets?limit=100&cursor=${encodeURIComponent(cursor)}${suffix}`
       );
-      if (id !== projectId || folder !== selectedFolder || share !== selectedShare) return;
+      if (id !== projectId || folder !== selectedFolder) return;
       const known = new Set(assets.map((asset) => asset.id));
       assets = [...assets, ...loaded.items.filter((asset) => !known.has(asset.id))];
       nextCursor = loaded.next_cursor;
@@ -209,7 +208,7 @@
   const load = async (id: string): Promise<void> => {
     project = null; assets = []; nextCursor = null; error = ''; listError = ''; queue = [];
     nodes = {}; rootIds = []; selectedFolder = null; focusedRow = 'root';
-    selectedShare = null; shares = []; shareError = ''; shareMenu = null;
+    shares = []; shareError = ''; shareMenu = null; rowMenu = null;
     renaming = null; treeError = ''; newFolderName = '';
     selected = []; anchor = null; batch = { running: false, label: '', done: 0, total: 0, errors: [] };
     try {
@@ -366,7 +365,6 @@
 
   const select = async (id: string | null): Promise<void> => {
     selectedFolder = id;
-    selectedShare = null;
     selected = [];
     anchor = null;
     if (id) await expand(id);
@@ -374,13 +372,11 @@
     if (project_) await loadAssets(project_);
   };
 
-  const selectShare = async (id: string): Promise<void> => {
-    selectedShare = id;
-    selectedFolder = null;
-    selected = [];
-    anchor = null;
-    const project_ = projectId;
-    if (project_) await loadAssets(project_);
+  /* A share row is a door to the share's own page: the link, the settings,
+     what is in it, who has opened it. Browsing its contents in this grid was
+     a worse copy of that page. */
+  const openShare = (id: string): void => {
+    void goto(`/projects/${projectId}/shares/${id}`);
   };
 
   const loadShares = async (id: string): Promise<void> => {
@@ -410,7 +406,6 @@
         result.added === 0
           ? `Already in ${share?.title ?? 'that share'}.`
           : `Added ${result.added} to ${share?.title ?? 'the share'}.`;
-      if (selectedShare === shareId && projectId) await loadAssets(projectId);
     } catch (caught) {
       shareError = messageFrom(caught, 'Those assets could not be shared.');
     }
@@ -481,6 +476,92 @@
 
   const closeShareMenu = (): void => {
     shareMenu = null;
+    rowMenu = null;
+  };
+
+  /* ---- the rail's own right-click menus ---- */
+
+  const openRowMenu = (event: MouseEvent, target: RowMenu['kind'], id?: string): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    rowMenu =
+      target === 'sharesroot'
+        ? { x: event.clientX, y: event.clientY, kind: 'sharesroot' }
+        : { x: event.clientX, y: event.clientY, kind: target, id: id ?? '' };
+  };
+
+  /* Reads the menu's subject and closes it, in that order, for the same
+     reason takeMenuIds exists: the template's {@const} is a derived view of
+     rowMenu, so closing first would read from null. */
+  const takeRowMenu = (): RowMenu | null => {
+    const taken = rowMenu;
+    rowMenu = null;
+    return taken;
+  };
+
+  const menuNewFolderIn = async (parentId: string | null, tree: 'assets' | 'shares'): Promise<void> => {
+    const id = projectId;
+    if (!id) return;
+    const name = await askText({
+      title: parentId ? `New folder in ${nodes[parentId]?.folder.name ?? 'folder'}` : 'New folder of shares',
+      label: 'Folder name',
+      placeholder: tree === 'shares' ? 'Client selects' : 'Dailies',
+      confirmLabel: 'Create'
+    });
+    if (!name) return;
+    treeError = '';
+    try {
+      await apiPost(`/api/v1/projects/${id}/folders`, {
+        name,
+        parent_id: parentId,
+        kind: tree
+      });
+    } catch (caught) {
+      treeError = messageFrom(caught, 'The folder could not be created.');
+      return;
+    }
+    if (parentId) {
+      const parent = nodes[parentId];
+      if (parent) nodes[parentId] = { ...parent, expanded: true };
+    }
+    try {
+      await loadChildren(parentId, tree);
+    } catch {
+      /* The next expand reloads. */
+    }
+  };
+
+  const shareLinkOf = (share: Share): string =>
+    `${typeof location === 'undefined' ? '' : location.origin}/s/${share.slug}`;
+
+  const menuCopyShareLink = async (shareId: string): Promise<void> => {
+    const share = shares.find((entry) => entry.id === shareId);
+    if (!share) return;
+    shareError = (await copyText(shareLinkOf(share)))
+      ? `Link to ${share.title} copied.`
+      : 'The link could not be copied.';
+  };
+
+  const menuRevokeShare = async (shareId: string): Promise<void> => {
+    const share = shares.find((entry) => entry.id === shareId);
+    if (!share) return;
+    if (
+      !(await askConfirm({
+        title: `Revoke "${share.title}"?`,
+        body: 'The link stops working immediately and cannot be reopened.',
+        confirmLabel: 'Revoke',
+        danger: true
+      }))
+    )
+      return;
+    shareError = '';
+    try {
+      await apiDelete(`/api/v1/shares/${shareId}`);
+      /* The rail lists live shares only, so a revoked one leaves it. */
+      shares = shares.filter((entry) => entry.id !== shareId);
+    } catch (caught) {
+      shareError = messageFrom(caught, 'The share could not be revoked.');
+    }
   };
 
   /* Reads the menu's assets and closes it, in that order. `{@const menu = ...}`
@@ -852,7 +933,7 @@
     } else if (event.key === 'Enter') {
       event.preventDefault();
       if (asset) void goto(assetHref(asset.id));
-      else if (row.kind === 'share') void selectShare(id);
+      else if (row.kind === 'share') openShare(id);
       else if (row.kind === 'sharesroot') sharesOpen = !sharesOpen;
       else void select(row.kind === 'root' ? null : id);
     } else if (event.key === 'F2') {
@@ -869,22 +950,15 @@
     element.select();
   };
 
-  /* Which tree the New folder field is about to add to. Selecting a share or a
-     folder of shares means you are working in shares; otherwise assets. */
+  /* Which tree the New folder field is about to add to: a selected folder of
+     shares means you are working in shares; otherwise assets. A folder of
+     shares can also be made from the Shares heading's right-click menu. */
   const newFolderTree = $derived<'assets' | 'shares'>(
-    selectedShare
-      ? 'shares'
-      : selectedFolder
-        ? (nodes[selectedFolder]?.folder.kind ?? 'assets')
-        : 'assets'
+    selectedFolder ? (nodes[selectedFolder]?.folder.kind ?? 'assets') : 'assets'
   );
 
   const selectedName = $derived(
-    selectedShare
-      ? (shares.find((share) => share.id === selectedShare)?.title ?? 'Share')
-      : selectedFolder
-        ? (nodes[selectedFolder]?.folder.name ?? 'Folder')
-        : 'All assets'
+    selectedFolder ? (nodes[selectedFolder]?.folder.name ?? 'Folder') : 'All assets'
   );
 
   /* ---- view mode, sorting, selection ---- */
@@ -1426,8 +1500,8 @@
         <form class="newfolder" onsubmit={createFolder}>
           <input
             bind:value={newFolderName}
-            placeholder={selectedFolder || selectedShare ? `New folder in ${selectedName}` : 'New folder'}
-            aria-label={selectedFolder || selectedShare ? `New folder in ${selectedName}` : 'New folder at the top level'}
+            placeholder={selectedFolder ? `New folder in ${selectedName}` : 'New folder'}
+            aria-label={selectedFolder ? `New folder in ${selectedName}` : 'New folder at the top level'}
             maxlength="200"
           />
           <button type="submit" class="quiet" disabled={!newFolderName.trim()}>Create</button>
@@ -1439,11 +1513,11 @@
               <div
                 id="tree-row-root"
                 class="row root"
-                class:selected={selectedFolder === null && !selectedShare}
+                class:selected={selectedFolder === null}
                 class:droptarget={dropTarget === 'root'}
                 role="treeitem"
                 aria-level="1"
-                aria-selected={selectedFolder === null && !selectedShare}
+                aria-selected={selectedFolder === null}
                 tabindex={focusedRow === 'root' ? 0 : -1}
                 onclick={() => select(null)}
                 onkeydown={onTreeKeydown}
@@ -1473,6 +1547,7 @@
                 ondragover={onShareRootDragOver}
                 ondragleave={() => (dropTarget = dropTarget === 'shares-root' ? null : dropTarget)}
                 ondrop={onShareRootDrop}
+                oncontextmenu={(event) => openRowMenu(event, 'sharesroot')}
               >
                 <button
                   type="button"
@@ -1516,17 +1591,17 @@
                 <div
                   id={`tree-row-${row.id}`}
                   class="row sharerow"
-                  class:selected={selectedShare === share.id}
                   class:droptarget={dropTarget === `share:${share.id}`}
                   role="treeitem"
                   aria-level={row.depth + 1}
-                  aria-selected={selectedShare === share.id}
+                  aria-selected="false"
                   tabindex={focusedRow === row.id ? 0 : -1}
                   style={`padding-left: ${10 + row.depth * 14}px;`}
                   draggable="true"
-                  onclick={() => void selectShare(share.id)}
+                  onclick={() => openShare(share.id)}
                   onkeydown={onTreeKeydown}
                   onfocus={() => (focusedRow = row.id)}
+                  oncontextmenu={(event) => openRowMenu(event, 'share', share.id)}
                   ondragstart={(event) => beginShareDrag(event, share.id)}
                   ondragend={() => { draggingShare = null; dropTarget = null; }}
                   ondragover={(event) => onShareDragOver(event, share.id)}
@@ -1536,7 +1611,7 @@
                   <span class="ic dot" aria-hidden="true"></span>
                   <span class="name">{share.title}</span>
                   <span class="acts">
-                    <a class="act" href={`/projects/${projectId}/shares`} onclick={(event) => event.stopPropagation()}>Settings</a>
+                    <button type="button" class="act" tabindex="-1" aria-label={`Copy link to ${share.title}`} onclick={(event) => { event.stopPropagation(); void menuCopyShareLink(share.id); }}>Copy link</button>
                   </span>
                 </div>
               {/if}
@@ -1559,6 +1634,7 @@
                   ondblclick={() => startRename(row.id)}
                   onkeydown={onTreeKeydown}
                   onfocus={() => (focusedRow = row.id)}
+                  oncontextmenu={(event) => openRowMenu(event, 'folder', row.id)}
                   ondragstart={(event) => onDragStart(event, row.id)}
                   ondragend={() => { dragging = null; dropTarget = null; }}
                   ondragover={(event) => onDragOver(event, row.id)}
@@ -2000,6 +2076,65 @@
   </div>
 {/if}
 
+<!-- The rail's own right-click menu: folders and shares get their verbs where
+     a file manager keeps them, same dismissal rules as the asset menu. -->
+{#if rowMenu}
+  {@const menu = rowMenu}
+  <div
+    class="menuveil"
+    role="presentation"
+    onclick={closeShareMenu}
+    oncontextmenu={(event) => { event.preventDefault(); closeShareMenu(); }}
+  ></div>
+  <div
+    class="ctxmenu"
+    role="menu"
+    tabindex="-1"
+    aria-label={menu.kind === 'share' ? 'Share actions' : 'Folder actions'}
+    style={`left: ${menu.x}px; top: ${menu.y}px;`}
+    use:keepOnScreen
+  >
+    {#if menu.kind === 'sharesroot'}
+      <p class="ctxhead">Shares</p>
+      <button type="button" role="menuitem" onclick={() => { takeRowMenu(); void menuNewFolderIn(null, 'shares'); }}>
+        New folder…
+      </button>
+      <button type="button" role="menuitem" onclick={() => { takeRowMenu(); void goto(`/projects/${projectId}/shares`); }}>
+        All shares
+      </button>
+    {:else if menu.kind === 'folder'}
+      {@const node = nodes[menu.id]}
+      <p class="ctxhead">{node?.folder.name ?? 'Folder'}</p>
+      <button type="button" role="menuitem" onclick={() => { const taken = takeRowMenu(); if (taken?.kind === 'folder') void menuNewFolderIn(taken.id, kindOf(taken.id)); }}>
+        New folder inside…
+      </button>
+      <button type="button" role="menuitem" onclick={() => { const taken = takeRowMenu(); if (taken?.kind === 'folder') startRename(taken.id); }}>
+        Rename
+      </button>
+      <div class="ctxsep"></div>
+      <button type="button" role="menuitem" class="danger" onclick={() => { const taken = takeRowMenu(); if (taken?.kind === 'folder') void removeFolder(taken.id); }}>
+        Delete folder
+      </button>
+    {:else}
+      {@const share = shares.find((entry) => entry.id === menu.id)}
+      <p class="ctxhead">{share?.title ?? 'Share'}</p>
+      <button type="button" role="menuitem" onclick={() => { const taken = takeRowMenu(); if (taken?.kind === 'share') void menuCopyShareLink(taken.id); }}>
+        Copy link
+      </button>
+      <button type="button" role="menuitem" onclick={() => { const taken = takeRowMenu(); if (taken?.kind === 'share') openShare(taken.id); }}>
+        Share settings
+      </button>
+      <button type="button" role="menuitem" onclick={() => { const taken = takeRowMenu(); const found = shares.find((entry) => entry.id === (taken?.kind === 'share' ? taken.id : '')); if (found) window.open(shareLinkOf(found), '_blank', 'noopener'); }}>
+        Open as a viewer
+      </button>
+      <div class="ctxsep"></div>
+      <button type="button" role="menuitem" class="danger" onclick={() => { const taken = takeRowMenu(); if (taken?.kind === 'share') void menuRevokeShare(taken.id); }}>
+        Revoke…
+      </button>
+    {/if}
+  </div>
+{/if}
+
 <style>
   /* App world: dark ink base, the project's palette as the header wash.
      Separation by value step and space, not borders. */
@@ -2080,7 +2215,6 @@
   .act:hover { background: var(--ink-300); color: var(--ink-text); }
   .rename { flex: 1; min-width: 0; border: 0; border-radius: 2px; background: var(--ink-300); color: var(--ink-text); padding: 3px 6px; font-size: var(--text-13); }
   .sharenote { margin: 8px 0 0; color: var(--ink-text-dim); font-size: var(--text-12); }
-  a.act { text-decoration: none; }
 
   /* The way out of a folder. Invisible until something is being dragged, then
      it is the largest target in the rail -- the opposite of hunting for one
