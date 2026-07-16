@@ -137,6 +137,23 @@ A fourth pass, on David's design notes:
   storage, where the number means nothing). The storage page shows free of
   total with a fill bar, and its copy was rewritten plainly.
 
+And a fifth, finishing the presentation and the details around it:
+
+- **The presentation player sheds the NLE grey.** The player paints itself
+  entirely in the neutral token scale, so the presentation room re-maps that
+  scale in its container: the slabs go transparent, the picture floats on the
+  brand wash, controls and timecode turn cream on translucent ink, and the
+  scrub track reads in cream. Review rooms never enter the branch.
+- **Comments off silences the timeline too**: the share room no longer loads
+  comments at all when the share disallows them, so markers and annotations
+  cannot appear on the seek bar. The poll stops with it.
+- **Share assets carry `duration_seconds`** (from the current version's
+  probe, camelCase or snake), and the landing captions show a clock. List
+  rows are cards.
+- **Select focus outlines are dead globally**: one rule in the layout kills
+  select:focus and select:focus-visible everywhere; pages style focus as a
+  background value step.
+
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
 1. First green run of the integration and media-qc CI jobs on Linux: this exercises compose end to end, the HDR libplacebo tonemap on lavapipe (the new -init_hw_device vulkan flag), the zscale 601-to-709 conversion on partially-tagged sources, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Most of what used to be manual is now automated here; it just needs to run on a Linux runner with Docker.

@@ -4714,13 +4714,54 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return urls;
   };
 
+  // Running time per asset, from the current version's probe. The stored
+  // media_info keeps the probe's camelCase keys; older rows may carry snake.
+  const durationsFor = async (
+    shareAssets: PublicShareAsset[],
+  ): Promise<Map<string, number>> => {
+    const seconds = new Map<string, number>();
+    const versionIds = shareAssets
+      .map((asset) => asset.currentVersionId)
+      .filter((id): id is string => Boolean(id));
+    if (!versionIds.length) return seconds;
+    const versions = (await env.db
+      .select()
+      .from(assetVersions)
+      .where(inArray(assetVersions.id, versionIds))
+      .all()) as Array<typeof assetVersions.$inferSelect>;
+    const byVersion = new Map(versions.map((row) => [row.id, row]));
+    for (const asset of shareAssets) {
+      const version = asset.currentVersionId
+        ? byVersion.get(asset.currentVersionId)
+        : undefined;
+      if (!version) continue;
+      const info = parseJsonObject(version.mediaInfoJson);
+      const frames = info.durationFrames ?? info.duration_frames;
+      const num = info.frameRateNum ?? info.frame_rate_num;
+      const den = info.frameRateDen ?? info.frame_rate_den;
+      if (
+        typeof frames === "number" &&
+        frames > 0 &&
+        typeof num === "number" &&
+        num > 0 &&
+        typeof den === "number" &&
+        den > 0
+      )
+        seconds.set(asset.id, (frames * den) / num);
+    }
+    return seconds;
+  };
+
   // The one client-safe asset projection for a share, used by both the
   // bootstrap and the assets list so the two cannot drift apart.
   const publicShareAssetsWire = async (
     share: typeof shares.$inferSelect,
     shareAssets: PublicShareAsset[],
   ) => {
-    const posters = await posterUrlsFor(share, shareAssets);
+    const [posters, seconds] = await Promise.all([
+      posterUrlsFor(share, shareAssets),
+      durationsFor(shareAssets),
+    ]);
     return shareAssets.map((asset) => ({
       id: asset.id,
       name: asset.name,
@@ -4728,6 +4769,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       status: asset.status,
       current_version_id: asset.currentVersionId,
       poster_url: posters.get(asset.id) ?? null,
+      duration_seconds: seconds.get(asset.id) ?? null,
       sort_order: asset.sort_order,
     }));
   };

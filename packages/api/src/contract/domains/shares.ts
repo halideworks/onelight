@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { exportJobs, shares } from "@onelight/db/schema";
+import { assetVersions, exportJobs, shares } from "@onelight/db/schema";
 import {
   assertSnakeCaseKeys,
   cookieFrom,
@@ -191,6 +191,39 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
       }>(assets);
       expect(assetsBody.items).toHaveLength(1);
       expect(assertSnakeCaseKeys(assetsBody)).toEqual([]);
+    });
+
+    it("carries the running time once the current version is probed", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const fixture = await makeShare(h, seed);
+      const viewer = await accessShare(h, fixture.slug);
+      const listed = async (): Promise<Record<string, unknown>> => {
+        const response = await req(h, `/api/v1/s/${fixture.slug}/assets`, {
+          cookie: viewer.cookie,
+        });
+        expect(response.status).toBe(200);
+        const body = await json<{ items: Array<Record<string, unknown>> }>(
+          response,
+        );
+        return body.items[0] as Record<string, unknown>;
+      };
+      // Unprobed media has no length to report: null, never a guess.
+      expect((await listed()).duration_seconds).toBeNull();
+      await h.db
+        .update(assetVersions)
+        .set({
+          mediaInfoJson: JSON.stringify({
+            durationFrames: 240,
+            frameRateNum: 24000,
+            frameRateDen: 1001,
+          }),
+        })
+        .where(eq(assetVersions.id, fixture.versionId))
+        .run();
+      const probed = (await listed()).duration_seconds;
+      expect(typeof probed).toBe("number");
+      expect(probed).toBeCloseTo((240 * 1001) / 24000, 5);
     });
 
     it("round-trips the brand to the public wire and rejects junk", async () => {

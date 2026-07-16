@@ -181,6 +181,12 @@
   :global(select) {
     font: inherit;
   }
+  /* Dropdowns never wear a focus ring, whatever the browser's heuristic:
+     every page styles select focus as a background value step instead. */
+  :global(select:focus),
+  :global(select:focus-visible) {
+    outline: none;
+  }
 
   /* Topbar: separation by value step, no border line. */
   .topbar {

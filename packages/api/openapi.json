@@ -9946,6 +9946,12 @@
                               "null"
                             ]
                           },
+                          "duration_seconds": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
                           "sort_order": {
                             "type": "integer"
                           }
@@ -9957,6 +9963,7 @@
                           "status",
                           "current_version_id",
                           "poster_url",
+                          "duration_seconds",
                           "sort_order"
                         ],
                         "additionalProperties": false
@@ -10071,6 +10078,12 @@
                               "null"
                             ]
                           },
+                          "duration_seconds": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
                           "sort_order": {
                             "type": "integer"
                           }
@@ -10082,6 +10095,7 @@
                           "status",
                           "current_version_id",
                           "poster_url",
+                          "duration_seconds",
                           "sort_order"
                         ],
                         "additionalProperties": false

@@ -606,6 +606,9 @@ const publicShareAsset = z.object({
      current version, and where no blob store is configured: the client falls
      back to a text tile in all three cases. */
   poster_url: z.string().nullable(),
+  /* Running time from the current version's probe; null until probed or for
+     stills. */
+  duration_seconds: z.number().nullable(),
   sort_order: z.number().int(),
 });
 

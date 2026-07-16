@@ -41,6 +41,7 @@
     status: string;
     sort_order: number;
     poster_url: string | null;
+    duration_seconds: number | null;
   };
   type Comment = ReviewComment;
   type AssetDetail = {
@@ -106,6 +107,16 @@
      off there is nothing to read and nothing to write, and an empty panel
      titled Comments was furniture. The picture takes the whole room. */
   const railOpen = $derived(Boolean(share?.allow_comments));
+
+  /* Running time as a clock: 1:23, or 1:02:03 past the hour. */
+  const clock = (seconds: number): string => {
+    const total = Math.round(seconds);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = total % 60;
+    const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
+    return `${h > 0 ? `${h}:` : ''}${mm}:${String(sec).padStart(2, '0')}`;
+  };
 
   /* An approval state is agency language, so it stays out of a presentation.
      "none" has no chip in the app and has none here. */
@@ -411,10 +422,14 @@
       /* Rate stays at the player default until known. */
     }
     await fetchMedia(asset, token);
-    try {
-      comments = (await api<{ items: Comment[] }>(`/api/v1/s/${slug}/assets/${asset.id}/comments`)).items;
-    } catch {
-      /* Comments stay empty. */
+    /* With comments off there is nothing to draw: no rail, and no markers or
+       annotations on the timeline either. They all derive from this list. */
+    if (share?.allow_comments) {
+      try {
+        comments = (await api<{ items: Comment[] }>(`/api/v1/s/${slug}/assets/${asset.id}/comments`)).items;
+      } catch {
+        /* Comments stay empty. */
+      }
     }
   };
 
@@ -538,7 +553,7 @@
   $effect(() => {
     const current = selected;
     const currentSlug = slug;
-    if (!current || !currentSlug) return;
+    if (!current || !currentSlug || !share?.allow_comments) return;
     const timer = setInterval(() => {
       if (document.visibilityState !== 'visible') return;
       void (async () => {
@@ -659,9 +674,10 @@
           </span>
           <span class="caption">
             <span class="name">{asset.name}</span>
-            {#if !presenting && STATUS_LABEL[asset.status]}
-              <small class="status">{STATUS_LABEL[asset.status]}</small>
-            {/if}
+            <small class="status">
+              {#if asset.duration_seconds !== null}<span class="tc">{clock(asset.duration_seconds)}</span>{/if}
+              {#if !presenting && STATUS_LABEL[asset.status]}{asset.duration_seconds !== null ? ' ' : ''}{STATUS_LABEL[asset.status]}{/if}
+            </small>
           </span>
         </button>
       {/each}
@@ -933,6 +949,27 @@
   /* The picture gets a proscenium: inset from the walls, never wall to wall. */
   .presenting .maincol { padding: 0 clamp(16px, 5vw, 96px); }
   .presenting .maincol > :global(.player) { border-radius: var(--radius-lg); overflow: hidden; }
+  /* The instrument sheds the NLE grey. The player paints itself entirely in
+     the neutral scale, so re-mapping that scale inside this container turns
+     its slabs transparent (the wash shows through, the picture floats on the
+     gradient) and its controls to cream on translucent ink. Review rooms
+     never enter this branch; their neutrality is untouched. */
+  .presenting .maincol {
+    --n-000: transparent;
+    --n-050: transparent;
+    --n-100: transparent;
+    /* The scrub track reads in cream: translucent ink vanished into the
+       wash, and an invisible seek bar is a control that does not exist. */
+    --n-150: rgba(250, 248, 244, 0.14);
+    --n-200: rgba(13, 17, 23, 0.5);
+    --n-300: rgba(13, 17, 23, 0.66);
+    --n-400: rgba(13, 17, 23, 0.85);
+    --n-500: rgba(250, 248, 244, 0.42);
+    --n-600: rgba(250, 248, 244, 0.6);
+    --n-700: rgba(250, 248, 244, 0.75);
+    --n-800: rgba(250, 248, 244, 0.9);
+    --n-900: #faf8f4;
+  }
   .presenting .empty, .presenting .open-media { color: var(--ink-text-dim); text-align: center; padding: var(--pad-4); }
   .presenting .reelname { color: var(--ink-text-dim); }
   .presenting .reeltile:hover .reelname, .presenting .reeltile.current .reelname { color: var(--ink-text); }

@@ -6261,6 +6261,7 @@ export interface paths {
                                 status: "none" | "in_review" | "approved" | "changes_requested";
                                 current_version_id: string | null;
                                 poster_url: string | null;
+                                duration_seconds: number | null;
                                 sort_order: number;
                             }[];
                         };
@@ -6345,6 +6346,7 @@ export interface paths {
                                 status: "none" | "in_review" | "approved" | "changes_requested";
                                 current_version_id: string | null;
                                 poster_url: string | null;
+                                duration_seconds: number | null;
                                 sort_order: number;
                             }[];
                         };
