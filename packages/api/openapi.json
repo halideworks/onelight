@@ -4888,6 +4888,33 @@
                             "items": {
                               "type": "string"
                             }
+                          },
+                          "attachments": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "filename": {
+                                  "type": "string"
+                                },
+                                "size": {
+                                  "type": "integer"
+                                },
+                                "content_type": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "filename",
+                                "size",
+                                "content_type"
+                              ],
+                              "additionalProperties": false
+                            }
                           }
                         },
                         "required": [
@@ -5176,6 +5203,33 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "attachments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "filename": {
+                            "type": "string"
+                          },
+                          "size": {
+                            "type": "integer"
+                          },
+                          "content_type": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "filename",
+                          "size",
+                          "content_type"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
@@ -5433,6 +5487,33 @@
                       "type": "array",
                       "items": {
                         "type": "string"
+                      }
+                    },
+                    "attachments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "filename": {
+                            "type": "string"
+                          },
+                          "size": {
+                            "type": "integer"
+                          },
+                          "content_type": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "filename",
+                          "size",
+                          "content_type"
+                        ],
+                        "additionalProperties": false
                       }
                     }
                   },
@@ -6008,6 +6089,33 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "attachments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "filename": {
+                            "type": "string"
+                          },
+                          "size": {
+                            "type": "integer"
+                          },
+                          "content_type": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "filename",
+                          "size",
+                          "content_type"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
@@ -6238,6 +6346,33 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "attachments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "filename": {
+                            "type": "string"
+                          },
+                          "size": {
+                            "type": "integer"
+                          },
+                          "content_type": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "filename",
+                          "size",
+                          "content_type"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
@@ -6465,6 +6600,33 @@
                       "type": "array",
                       "items": {
                         "type": "string"
+                      }
+                    },
+                    "attachments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "filename": {
+                            "type": "string"
+                          },
+                          "size": {
+                            "type": "integer"
+                          },
+                          "content_type": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "filename",
+                          "size",
+                          "content_type"
+                        ],
+                        "additionalProperties": false
                       }
                     }
                   },
@@ -10855,6 +11017,33 @@
                             "items": {
                               "type": "string"
                             }
+                          },
+                          "attachments": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "filename": {
+                                  "type": "string"
+                                },
+                                "size": {
+                                  "type": "integer"
+                                },
+                                "content_type": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "filename",
+                                "size",
+                                "content_type"
+                              ],
+                              "additionalProperties": false
+                            }
                           }
                         },
                         "required": [
@@ -11114,6 +11303,33 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "attachments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "filename": {
+                            "type": "string"
+                          },
+                          "size": {
+                            "type": "integer"
+                          },
+                          "content_type": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "filename",
+                          "size",
+                          "content_type"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
@@ -11360,6 +11576,33 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "attachments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "filename": {
+                            "type": "string"
+                          },
+                          "size": {
+                            "type": "integer"
+                          },
+                          "content_type": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "filename",
+                          "size",
+                          "content_type"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
@@ -11451,6 +11694,215 @@
         "responses": {
           "204": {
             "description": "No content"
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/s/{slug}/comments/{commentId}/attachments": {
+      "post": {
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "commentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                },
+                "required": [
+                  "file"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "comment_id": {
+                      "type": "string"
+                    },
+                    "filename": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "comment_id",
+                    "filename",
+                    "size"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/s/{slug}/comments/{commentId}/attachments/{attachmentId}": {
+      "get": {
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "commentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attachmentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string"
+                    },
+                    "expires_at": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "url",
+                    "expires_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
           },
           "400": {
             "description": "Validation failure",
@@ -11670,6 +12122,33 @@
                       "type": "array",
                       "items": {
                         "type": "string"
+                      }
+                    },
+                    "attachments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "filename": {
+                            "type": "string"
+                          },
+                          "size": {
+                            "type": "integer"
+                          },
+                          "content_type": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "filename",
+                          "size",
+                          "content_type"
+                        ],
+                        "additionalProperties": false
                       }
                     }
                   },

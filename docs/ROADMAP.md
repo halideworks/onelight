@@ -175,6 +175,27 @@ A sixth pass: identity and addresses.
   dot, dark ring, grows under the pointer), the track is taller with the
   played side bright, so it reads as a seek bar before anyone touches it.
 
+A seventh pass: notes become a working surface everywhere.
+
+- **Comment attachments are live across the board.** The internal trio
+  (POST/GET/DELETE, built earlier for the report path) now reaches the wire:
+  comment lists carry `attachments`, and share viewers get their own routes
+  (`POST /s/:slug/comments/:commentId/attachments`, ownership-gated like
+  editing; `GET .../attachments/:attachmentId`, visible-comment-gated,
+  share-scoped signed URLs). Both composers attach files (25 MB, chips with
+  remove before posting), both threads show them as chips that resolve
+  short-lived signed URLs. Contract-tested both legs, verified in the
+  browser both rooms.
+- **The scrub drags like glass**: the handle rides the pointer while seeks
+  coalesce to one per animation frame, and the preview holds after release
+  until the video catches up, so nothing snaps back.
+- **The showtime composer speaks client**: anchors read as timecode, the
+  button says Post note, and the rail hosts the drawing controls (draw
+  toggle plus pen/arrow/box) through the player's new setDraw API -- the
+  full instrument keeps its own controls, simple chrome never shows them.
+- Attachment thumbnails for images (inline previews instead of chips) are
+  the natural next step; viewer-side attachment deletion has no endpoint.
+
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
 1. First green run of the integration and media-qc CI jobs on Linux: this exercises compose end to end, the HDR libplacebo tonemap on lavapipe (the new -init_hw_device vulkan flag), the zscale 601-to-709 conversion on partially-tagged sources, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Most of what used to be manual is now automated here; it just needs to run on a Linux runner with Docker.

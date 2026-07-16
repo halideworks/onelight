@@ -851,6 +851,32 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     tags: extractHashtags(comment.bodyText),
   });
 
+  /* A comment's files, in bulk: one query for a whole thread, so listing
+     comments never costs a query per row. */
+  const attachmentWire = (row: typeof commentAttachments.$inferSelect) => ({
+    id: row.id,
+    filename: row.filename,
+    size: row.size,
+    content_type: row.contentType,
+  });
+  const attachmentsFor = async (
+    commentIds: string[],
+  ): Promise<Map<string, ReturnType<typeof attachmentWire>[]>> => {
+    const grouped = new Map<string, ReturnType<typeof attachmentWire>[]>();
+    if (!commentIds.length) return grouped;
+    const rows = (await env.db
+      .select()
+      .from(commentAttachments)
+      .where(inArray(commentAttachments.commentId, commentIds))
+      .all()) as Array<typeof commentAttachments.$inferSelect>;
+    for (const row of rows) {
+      const list = grouped.get(row.commentId) ?? [];
+      list.push(attachmentWire(row));
+      grouped.set(row.commentId, list);
+    }
+    return grouped;
+  };
+
   // Public (share viewer) projection of a comment: drops author_email and
   // author_user_id so external viewers never learn the registered identity
   // behind a comment. author_name is the only author field exposed.
@@ -2755,10 +2781,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .all();
     const page = rows.slice(0, limit);
     const last = page[page.length - 1];
+    const attached = await attachmentsFor(
+      page.map((comment: typeof comments.$inferSelect) => comment.id),
+    );
     return c.json({
-      items: page.map((comment: typeof comments.$inferSelect) =>
-        commentWire(comment),
-      ),
+      items: page.map((comment: typeof comments.$inferSelect) => ({
+        ...commentWire(comment),
+        attachments: attached.get(comment.id) ?? [],
+      })),
       next_cursor:
         rows.length > limit && last
           ? encodeCommentCursor(last.frameIn ?? -1, last.id)
@@ -5107,10 +5137,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       )
       .orderBy(asc(comments.frameIn), desc(comments.id))
       .all();
+    const attached = await attachmentsFor(
+      rows.map((comment: typeof comments.$inferSelect) => comment.id),
+    );
     return c.json({
-      items: rows.map((comment: typeof comments.$inferSelect) =>
-        publicCommentWire(comment),
-      ),
+      items: rows.map((comment: typeof comments.$inferSelect) => ({
+        ...publicCommentWire(comment),
+        attachments: attached.get(comment.id) ?? [],
+      })),
     });
   });
 
@@ -5284,6 +5318,128 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     });
     return c.body(null, 204);
   });
+
+  /* A viewer's files on their own note: same ownership rule as editing it,
+     same cap and shape as the internal attachment route. */
+  api.post("/s/:slug/comments/:commentId/attachments", async (c) => {
+    const { share, comment } = await shareCommentForViewer(
+      c,
+      c.req.param("slug"),
+      c.req.param("commentId"),
+    );
+    if (!share.allowComments)
+      throw errors.forbidden("Comments are disabled for this share.");
+    if (!env.blobStore || !c.req.raw.body)
+      throw errors.internal("Blob storage is not configured.");
+    const maxAttachmentBytes = 25 * 1024 * 1024;
+    const declaredLength = c.req.header("content-length");
+    if (!declaredLength)
+      throw errors.validation(
+        "Attachment uploads require a content-length header.",
+      );
+    if (Number(declaredLength) > maxAttachmentBytes + 1_048_576)
+      throw errors.payloadTooLarge();
+    const form = await c.req.parseBody();
+    const candidate = form.file;
+    if (!candidate || typeof candidate === "string")
+      throw errors.validation("A file field is required.");
+    const file = candidate as File;
+    if (file.size > maxAttachmentBytes) throw errors.payloadTooLarge();
+    const project = (
+      await env.db
+        .select({ workspaceId: projects.workspaceId })
+        .from(projects)
+        .where(eq(projects.id, share.projectId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!project) throw errors.notFound();
+    const attachmentId = env.ids.ulid();
+    const filename =
+      file.name.replace(/[\\/]/g, "_").slice(0, 500) || "attachment";
+    const blobKey = `${project.workspaceId}/comments/${comment.id}/${attachmentId}-${filename}`;
+    const stream = new Response(file.stream()).body;
+    if (!stream)
+      throw errors.internal("Attachment stream could not be opened.");
+    await env.blobStore.putStream(blobKey, stream, {
+      contentType: file.type || "application/octet-stream",
+      size: file.size,
+    });
+    await env.db
+      .insert(commentAttachments)
+      .values({
+        id: attachmentId,
+        commentId: comment.id,
+        blobKey,
+        filename,
+        size: file.size,
+        contentType: file.type || "application/octet-stream",
+        checksumSha256: "",
+      })
+      .run();
+    return c.json(
+      { id: attachmentId, comment_id: comment.id, filename, size: file.size },
+      201,
+    );
+  });
+
+  /* Any viewer of the share can open a visible note's files: visibility is
+     the share's own comment rule (current version, never internal), and the
+     URL is share-scoped and short-lived like every other media link here. */
+  api.get(
+    "/s/:slug/comments/:commentId/attachments/:attachmentId",
+    async (c) => {
+      const projection = await publicShare(
+        c,
+        await shareBySlug(c.req.param("slug")),
+      );
+      if (!projection.viewer) throw errors.unauthorized();
+      const comment = (
+        await env.db
+          .select()
+          .from(comments)
+          .where(
+            and(
+              eq(comments.id, c.req.param("commentId")),
+              isNull(comments.deletedAt),
+              eq(comments.internal, false),
+            ),
+          )
+          .limit(1)
+          .all()
+      )[0];
+      if (!comment) throw errors.notFound();
+      const asset = projection.assets.find(
+        (candidate: typeof assets.$inferSelect & { sort_order: number }) =>
+          candidate.currentVersionId === comment.versionId,
+      );
+      if (!asset) throw errors.notFound();
+      const attachment = (
+        await env.db
+          .select()
+          .from(commentAttachments)
+          .where(
+            and(
+              eq(commentAttachments.id, c.req.param("attachmentId")),
+              eq(commentAttachments.commentId, comment.id),
+            ),
+          )
+          .limit(1)
+          .all()
+      )[0];
+      if (!attachment || !env.blobStore) throw errors.notFound();
+      return c.json({
+        url: await publicMediaUrl(
+          projection.share,
+          asset.id,
+          comment.versionId,
+          attachment.blobKey,
+          attachmentDisposition(attachment.filename),
+        ),
+        expires_at: env.clock.now() + 15 * 60 * 1000,
+      });
+    },
+  );
 
   api.post("/s/:slug/comments/:commentId/replies", async (c) => {
     const share = await shareBySlug(c.req.param("slug"));

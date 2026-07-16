@@ -36,6 +36,7 @@
     onframechange = undefined,
     onmarkerselect = undefined,
     ondrawingchange = undefined,
+    ondrawmodechange = undefined,
     onplaystate = undefined,
     onshare = undefined,
     onrangechange = undefined,
@@ -66,6 +67,8 @@
     onframechange?: ((frame: number) => void) | undefined;
     onmarkerselect?: ((markerId: string, frame: number) => void) | undefined;
     ondrawingchange?: ((drawing: PendingDrawing | null) => void) | undefined;
+    /* Fires when draw mode or the active tool changes, whoever changed it. */
+    ondrawmodechange?: ((on: boolean, tool: 'pen' | 'arrow' | 'rect') => void) | undefined;
     onplaystate?: ((playing: boolean) => void) | undefined;
     /* The page owns the URL; the player only knows which frame you are on. */
     onshare?: ((frame: number) => void) | undefined;
@@ -232,14 +235,41 @@
 
   let scrubEl = $state<HTMLDivElement | null>(null);
   let scrubbing = $state(false);
-  const scrubPct = $derived(
-    durationFrames && durationFrames > 1 ? Math.min(1, Math.max(0, frame / (durationFrames - 1))) : 0
-  );
+  /* The bar and handle track the POINTER while dragging, not the video:
+     seeks land asynchronously and unevenly, and a handle that waits for them
+     stutters behind the finger. The preview holds after release until the
+     seek catches up, so there is no snap-back. */
+  let scrubPreview = $state<number | null>(null);
+  let scrubTargetFrame: number | null = null;
+  let scrubRaf: number | null = null;
+  const scrubPct = $derived.by(() => {
+    const shown = scrubPreview ?? frame;
+    return durationFrames && durationFrames > 1
+      ? Math.min(1, Math.max(0, shown / (durationFrames - 1)))
+      : 0;
+  });
+  $effect(() => {
+    void frame;
+    if (!scrubbing) scrubPreview = null;
+  });
+  /* One seek per animation frame: every pointer move updates the target, and
+     the newest target wins when the frame ticks. */
+  const scrubApply = (): void => {
+    scrubRaf = null;
+    if (scrubTargetFrame !== null) {
+      const target = scrubTargetFrame;
+      scrubTargetFrame = null;
+      jumpTo(target);
+    }
+  };
   const scrubSeek = (event: PointerEvent): void => {
     if (!scrubEl || !durationFrames || durationFrames < 2) return;
     const box = scrubEl.getBoundingClientRect();
     const pct = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
-    jumpTo(Math.round(pct * (durationFrames - 1)));
+    const target = Math.round(pct * (durationFrames - 1));
+    scrubPreview = target;
+    scrubTargetFrame = target;
+    if (scrubRaf === null) scrubRaf = requestAnimationFrame(scrubApply);
   };
   const onScrubDown = (event: PointerEvent): void => {
     if (seekLocked) return;
@@ -254,6 +284,10 @@
     if (!scrubbing) return;
     scrubbing = false;
     scrubEl?.releasePointerCapture(event.pointerId);
+    /* The last pointer position is the destination, precisely. */
+    if (scrubRaf !== null) cancelAnimationFrame(scrubRaf);
+    scrubRaf = null;
+    scrubApply();
   };
   const onScrubKeydown = (event: KeyboardEvent): void => {
     if (seekLocked) return;
@@ -365,6 +399,16 @@
   let drawMode = $state(false);
   let drawTool = $state<'pen' | 'arrow' | 'rect'>('pen');
   let drawInk = $state<'neutral' | 'accent'>('accent');
+  /* Pages that host their own draw controls (the share rail) drive the mode
+     from outside and hear about every change, including Escape in here. */
+  export function setDraw(on: boolean, tool: 'pen' | 'arrow' | 'rect' = 'pen'): void {
+    if (!allowDrawing) return;
+    drawTool = tool;
+    if (drawMode !== on) toggleDraw();
+  }
+  $effect(() => {
+    ondrawmodechange?.(drawMode, drawTool);
+  });
   let pendingStrokes = $state<AnnotationStroke[]>([]);
   let drawingFrame = $state<number | null>(null);
 
@@ -914,9 +958,9 @@
 
   <div class="transport">
     {#if !fullscreen}{@render deck()}{/if}
-    <!-- Nothing to settle, no row: a simple chrome with no drawing would
-         otherwise leave a band of empty space under the transport. -->
-    {#if allowDrawing || chrome === 'full'}
+    <!-- The settings row is the full instrument's. Simple chrome hosts its
+         draw controls in the page (the notes rail), so the row never shows. -->
+    {#if chrome === 'full'}
     <div class="transport-row settings">
       {#if allowDrawing}
         <button type="button" aria-pressed={drawMode} onclick={toggleDraw}>Draw</button>

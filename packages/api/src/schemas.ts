@@ -345,6 +345,13 @@ const folder = z.object({
   created_at: timestamp,
 });
 
+const commentAttachment = z.object({
+  id: z.string(),
+  filename: z.string(),
+  size: z.number().int(),
+  content_type: z.string(),
+});
+
 const comment = z.object({
   id: z.string(),
   version_id: z.string(),
@@ -367,6 +374,8 @@ const comment = z.object({
   edited_at: timestamp.nullable(),
   /* Derived from body_text (#[a-z0-9_]+, lowercased), never stored. */
   tags: z.array(z.string()),
+  /* Present on list reads; single-comment writes return the row alone. */
+  attachments: z.array(commentAttachment).optional(),
 });
 
 const signedUrl = z.object({ url: z.string(), expires_at: timestamp });
@@ -1094,6 +1103,22 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: { "200": ok(publicComment) },
   },
   "DELETE /s/:slug/comments/:commentId": { responses: { "204": noContent } },
+  "POST /s/:slug/comments/:commentId/attachments": {
+    requestContentType: "multipart/form-data",
+    responses: {
+      "201": created(
+        z.object({
+          id: z.string(),
+          comment_id: z.string(),
+          filename: z.string(),
+          size: z.number().int(),
+        }),
+      ),
+    },
+  },
+  "GET /s/:slug/comments/:commentId/attachments/:attachmentId": {
+    responses: { "200": ok(signedUrl) },
+  },
   "POST /s/:slug/comments/:commentId/replies": {
     request: bodies.shareReplyCreate,
     responses: { "201": created(publicComment) },

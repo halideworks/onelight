@@ -7,6 +7,13 @@ import type {
 /* The comment fields the review room and the share room share: enough to
    render annotations, timeline markers, and the note body. Each page extends
    this with its own extra columns (version_id, parent_id, and so on). */
+export type CommentAttachment = {
+  id: string;
+  filename: string;
+  size: number;
+  content_type: string;
+};
+
 export type ReviewComment = {
   id: string;
   author_name: string | null;
@@ -17,6 +24,8 @@ export type ReviewComment = {
   completed_at: number | null;
   tags?: string[];
   annotation: unknown;
+  /* Present on list reads; a freshly created comment has none yet. */
+  attachments?: CommentAttachment[];
 };
 
 /* Annotation payloads come from clients we do not control: accept either a

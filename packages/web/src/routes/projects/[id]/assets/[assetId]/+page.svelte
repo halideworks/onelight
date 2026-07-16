@@ -733,6 +733,31 @@
     }
   };
 
+  /* Files waiting on the composer; they upload after the note is created,
+     because attachments hang off a comment id. */
+  let pendingFiles = $state<File[]>([]);
+  let attachInput = $state<HTMLInputElement | null>(null);
+
+  const attachPicked = (event: Event): void => {
+    const input = event.currentTarget as HTMLInputElement;
+    pendingFiles = [...pendingFiles, ...Array.from(input.files ?? [])].slice(0, 5);
+    input.value = '';
+  };
+
+  const prettySize = (bytes: number): string =>
+    bytes >= 1_000_000 ? `${(bytes / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1000))} kB`;
+
+  const openAttachment = async (comment: Comment, attachment: { id: string }): Promise<void> => {
+    try {
+      const issued = await api<{ url: string }>(
+        `/api/v1/comments/${comment.id}/attachments/${attachment.id}`
+      );
+      window.open(issued.url, '_blank', 'noopener');
+    } catch (caught) {
+      commentError = messageFrom(caught, 'The file is not available.');
+    }
+  };
+
   const addComment = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
     const versionId = selectedVersionId;
@@ -760,6 +785,20 @@
           ...(mentionIds.length ? { mentions: mentionIds } : {})
         }
       );
+      const uploaded: NonNullable<Comment['attachments']> = [];
+      for (const file of pendingFiles) {
+        const form = new FormData();
+        form.set('file', file);
+        const response = await fetch(`/api/v1/comments/${created.id}/attachments`, {
+          method: 'POST',
+          body: form
+        });
+        if (!response.ok) throw new Error(`${file.name} could not be attached.`);
+        const row = (await response.json()) as { id: string };
+        uploaded.push({ id: row.id, filename: file.name, size: file.size, content_type: file.type });
+      }
+      created.attachments = uploaded;
+      pendingFiles = [];
       /* An SSE echo of this comment may already have refetched the list. */
       if (!comments.some((comment) => comment.id === created.id))
         comments = [...comments, created].sort(commentOrder);
@@ -1072,6 +1111,21 @@
                     {/if}
                   {/each}
                 </p>
+                {#if comment.attachments?.length}
+                  <span class="files">
+                    {#each comment.attachments as attachment (attachment.id)}
+                      <button
+                        type="button"
+                        class="filechip"
+                        title={`${attachment.filename} (${prettySize(attachment.size)})`}
+                        onclick={() => void openAttachment(comment, attachment)}
+                      >
+                        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L4 7.5" /></svg>
+                        <span class="filename">{attachment.filename}</span>
+                      </button>
+                    {/each}
+                  </span>
+                {/if}
                 <span class="note-actions">
                   {#if !isReply}
                     <button type="button" class="linky" onclick={() => { replyTo = comment; composerEl?.focus(); }}>Reply</button>
@@ -1160,11 +1214,27 @@
                 {/if}
               </span>
             </label>
+            {#if pendingFiles.length}
+              <span class="files">
+                {#each pendingFiles as file, index (index)}
+                  <span class="filechip pending">
+                    <span class="filename">{file.name}</span>
+                    <button type="button" class="filedrop" aria-label={`Remove ${file.name}`} onclick={() => { pendingFiles = pendingFiles.filter((_, at) => at !== index); }}>×</button>
+                  </span>
+                {/each}
+              </span>
+            {/if}
             <div class="composer-foot">
               <span class="composer-hint">
                 {#if replyTo}Reply to this note{:else if rangeActive}Note covers the marked range{:else}Enter to send{/if}
               </span>
-              <button type="submit" class="primary" disabled={!bodyText.trim()}>{replyTo ? 'Reply' : 'Add note'}</button>
+              <span class="foot-actions">
+                <button type="button" class="attach" onclick={() => attachInput?.click()} aria-label="Attach files">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L4 7.5" /></svg>
+                </button>
+                <input bind:this={attachInput} type="file" class="attachinput" multiple accept="application/pdf,image/*" onchange={attachPicked} />
+                <button type="submit" class="primary" disabled={!bodyText.trim()}>{replyTo ? 'Reply' : 'Add note'}</button>
+              </span>
             </div>
           </form>
           {#if commentError}<p class="error" role="alert">{commentError}</p>{/if}
@@ -1330,6 +1400,17 @@
   /* A reply composes under its thread, indented to the same line as the replies
      it is joining. */
   .composer-form.inline { margin: 2px 0 0 14px; background: var(--n-200); }
+  .files { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
+  .filechip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; border: 0; border-radius: 9px; background: var(--n-150); color: var(--n-800); padding: 3px 9px; font-size: var(--text-12); cursor: pointer; }
+  .filechip:hover { background: var(--n-300); color: var(--n-900); }
+  .filechip.pending { cursor: default; }
+  .filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+  .filedrop { border: 0; background: none; color: var(--n-600); padding: 0 0 0 2px; font-size: 13px; line-height: 1; cursor: pointer; }
+  .filedrop:hover { color: var(--n-900); }
+  .foot-actions { display: flex; align-items: center; gap: 8px; }
+  .attach { display: inline-flex; align-items: center; border: 0; border-radius: var(--radius); background: var(--n-200); color: var(--n-700); padding: 6px 8px; cursor: pointer; }
+  .attach:hover { background: var(--n-300); color: var(--n-900); }
+  .attachinput { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
   .sr-label { display: grid; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 

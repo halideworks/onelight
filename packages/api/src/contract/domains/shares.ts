@@ -226,6 +226,111 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
       expect(probed).toBeCloseTo((240 * 1001) / 24000, 5);
     });
 
+    ctx.itBlob(
+      "lets a viewer attach files to their own note and every viewer read them",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const fixture = await makeShare(h, seed);
+        const author = await accessShare(h, fixture.slug, { name: "Author" });
+        const posted = await json<{ id: string }>(
+          await req(
+            h,
+            `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/comments`,
+            {
+              cookie: author.cookie,
+              json: { body_text: "note with a file" },
+              headers: { "x-forwarded-for": uniqueIp() },
+            },
+          ),
+        );
+        const boundary = "----onelightsharefile";
+        const body = [
+          `--${boundary}`,
+          'content-disposition: form-data; name="file"; filename="grade notes.pdf"',
+          "content-type: application/pdf",
+          "",
+          "fake-pdf-bytes",
+          `--${boundary}--`,
+          "",
+        ].join("\r\n");
+        const uploaded = await req(
+          h,
+          `/api/v1/s/${fixture.slug}/comments/${posted.id}/attachments`,
+          {
+            method: "POST",
+            cookie: author.cookie,
+            body,
+            headers: {
+              "content-type": `multipart/form-data; boundary=${boundary}`,
+              "content-length": String(new TextEncoder().encode(body).length),
+            },
+          },
+        );
+        expect(uploaded.status).toBe(201);
+        const attachment = await json<{ id: string; filename: string }>(
+          uploaded,
+        );
+        expect(attachment.filename).toBe("grade notes.pdf");
+        // The list carries it, for every viewer.
+        const other = await accessShare(h, fixture.slug, { name: "Reader" });
+        const listed = await json<{
+          items: Array<{ id: string; attachments: Array<{ id: string }> }>;
+        }>(
+          await req(
+            h,
+            `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/comments`,
+            { cookie: other.cookie },
+          ),
+        );
+        const row = listed.items.find((entry) => entry.id === posted.id);
+        expect(row?.attachments.map((entry) => entry.id)).toEqual([
+          attachment.id,
+        ]);
+        // And the file itself serves through the share-scoped URL.
+        const issued = await json<{ url: string }>(
+          await req(
+            h,
+            `/api/v1/s/${fixture.slug}/comments/${posted.id}/attachments/${attachment.id}`,
+            { cookie: other.cookie },
+          ),
+        );
+        const parsed = new URL(issued.url);
+        const fetched = await req(h, parsed.pathname + parsed.search);
+        expect(fetched.status).toBe(200);
+        expect(await fetched.text()).toBe("fake-pdf-bytes");
+        // A different viewer cannot attach to someone else's note.
+        const denied = await req(
+          h,
+          `/api/v1/s/${fixture.slug}/comments/${posted.id}/attachments`,
+          {
+            method: "POST",
+            cookie: other.cookie,
+            body,
+            headers: {
+              "content-type": `multipart/form-data; boundary=${boundary}`,
+              "content-length": String(new TextEncoder().encode(body).length),
+            },
+          },
+        );
+        expect(denied.status).toBe(403);
+        // The internal list sees the same attachment.
+        const internal = await json<{
+          items: Array<{ id: string; attachments?: Array<{ id: string }> }>;
+        }>(
+          await req(h, `/api/v1/versions/${fixture.versionId}/comments`, {
+            cookie: seed.admin.cookie,
+          }),
+        );
+        const internalRow = internal.items.find(
+          (entry) => entry.id === posted.id,
+        );
+        expect(internalRow?.attachments?.map((entry) => entry.id)).toEqual([
+          attachment.id,
+        ]);
+      },
+    );
+
     it("round-trips the brand to the public wire and rejects junk", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

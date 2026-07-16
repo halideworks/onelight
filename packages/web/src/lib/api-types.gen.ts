@@ -3440,6 +3440,12 @@ export interface paths {
                                 created_at: number;
                                 edited_at: number | null;
                                 tags: string[];
+                                attachments?: {
+                                    id: string;
+                                    filename: string;
+                                    size: number;
+                                    content_type: string;
+                                }[];
                             }[];
                             next_cursor: string | null;
                         };
@@ -3540,6 +3546,12 @@ export interface paths {
                             created_at: number;
                             edited_at: number | null;
                             tags: string[];
+                            attachments?: {
+                                id: string;
+                                filename: string;
+                                size: number;
+                                content_type: string;
+                            }[];
                         };
                     };
                 };
@@ -3707,6 +3719,12 @@ export interface paths {
                             created_at: number;
                             edited_at: number | null;
                             tags: string[];
+                            attachments?: {
+                                id: string;
+                                filename: string;
+                                size: number;
+                                content_type: string;
+                            }[];
                         };
                     };
                 };
@@ -4027,6 +4045,12 @@ export interface paths {
                             created_at: number;
                             edited_at: number | null;
                             tags: string[];
+                            attachments?: {
+                                id: string;
+                                filename: string;
+                                size: number;
+                                content_type: string;
+                            }[];
                         };
                     };
                 };
@@ -4125,6 +4149,12 @@ export interface paths {
                             created_at: number;
                             edited_at: number | null;
                             tags: string[];
+                            attachments?: {
+                                id: string;
+                                filename: string;
+                                size: number;
+                                content_type: string;
+                            }[];
                         };
                     };
                 };
@@ -4208,6 +4238,12 @@ export interface paths {
                             created_at: number;
                             edited_at: number | null;
                             tags: string[];
+                            attachments?: {
+                                id: string;
+                                filename: string;
+                                size: number;
+                                content_type: string;
+                            }[];
                         };
                     };
                 };
@@ -6777,6 +6813,12 @@ export interface paths {
                                 created_at: number;
                                 edited_at: number | null;
                                 tags: string[];
+                                attachments?: {
+                                    id: string;
+                                    filename: string;
+                                    size: number;
+                                    content_type: string;
+                                }[];
                             }[];
                         };
                     };
@@ -6870,6 +6912,12 @@ export interface paths {
                             created_at: number;
                             edited_at: number | null;
                             tags: string[];
+                            attachments?: {
+                                id: string;
+                                filename: string;
+                                size: number;
+                                content_type: string;
+                            }[];
                         };
                     };
                 };
@@ -7034,6 +7082,12 @@ export interface paths {
                             created_at: number;
                             edited_at: number | null;
                             tags: string[];
+                            attachments?: {
+                                id: string;
+                                filename: string;
+                                size: number;
+                                content_type: string;
+                            }[];
                         };
                     };
                 };
@@ -7075,6 +7129,170 @@ export interface paths {
                 };
             };
         };
+        trace?: never;
+    };
+    "/api/v1/s/{slug}/comments/{commentId}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    slug: string;
+                    commentId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "multipart/form-data": {
+                        /** Format: binary */
+                        file: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            comment_id: string;
+                            filename: string;
+                            size: number;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s/{slug}/comments/{commentId}/attachments/{attachmentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    slug: string;
+                    commentId: string;
+                    attachmentId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            url: string;
+                            expires_at: number;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/s/{slug}/comments/{commentId}/replies": {
@@ -7134,6 +7352,12 @@ export interface paths {
                             created_at: number;
                             edited_at: number | null;
                             tags: string[];
+                            attachments?: {
+                                id: string;
+                                filename: string;
+                                size: number;
+                                content_type: string;
+                            }[];
                         };
                     };
                 };

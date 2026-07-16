@@ -17,7 +17,8 @@
   import ProjectCover from '$lib/ProjectCover.svelte';
   import { pageWashFor, pageWashFromStops } from '$lib/washes.js';
   import { api, apiPost, ApiError, messageFrom } from '$lib/api.js';
-  import { annotationsFrom, markersFrom, type ReviewComment } from '$lib/comments.js';
+  import { formatTimecode, timecodeFromFrames } from '@onelight/core';
+  import { annotationsFrom, markersFrom, type CommentAttachment, type ReviewComment } from '$lib/comments.js';
   import { hashtagsIn, segmentCommentBody } from '../../projects/[id]/assets/[assetId]/comment-text.js';
 
   type Brand = {
@@ -86,6 +87,14 @@
   let pendingDrawing = $state<PendingDrawing | null>(null);
   let activeTag = $state<string | null>(null);
   let copyNotice = $state('');
+  /* Files waiting on the composer; they upload after the note is created,
+     because attachments hang off a comment id. */
+  let pendingFiles = $state<File[]>([]);
+  let attachInput = $state<HTMLInputElement | null>(null);
+  /* Mirrors the player's draw mode, driven from the rail's own buttons and
+     kept honest by ondrawmodechange (Escape inside the player included). */
+  let drawOn = $state(false);
+  let drawTool = $state<'pen' | 'arrow' | 'rect'>('pen');
   /* Bumped whenever the preview changes; in-flight media polls compare it
      and stand down. */
   let mediaPollToken = 0;
@@ -600,6 +609,39 @@
 
   const playerActive = $derived(Boolean(selected && previewUrl && selected.kind === 'video'));
 
+  /* Clients read clocks, reviewers read frames: the anchor chip says
+     timecode in showtime and frames in the review room. */
+  const anchorLabel = (frame: number): string =>
+    showtime
+      ? formatTimecode(timecodeFromFrames(frame, previewRate ?? { num: 24, den: 1 }, previewDropFrame))
+      : `frame ${frame}`;
+
+  const attachPicked = (event: Event): void => {
+    const input = event.currentTarget as HTMLInputElement;
+    pendingFiles = [...pendingFiles, ...Array.from(input.files ?? [])].slice(0, 5);
+    input.value = '';
+  };
+
+  const prettySize = (bytes: number): string =>
+    bytes >= 1_000_000 ? `${(bytes / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1000))} kB`;
+
+  /* Open an attachment through its short-lived share-scoped URL. */
+  const openAttachment = async (comment: Comment, attachment: CommentAttachment): Promise<void> => {
+    try {
+      const issued = await api<{ url: string }>(
+        `/api/v1/s/${slug}/comments/${comment.id}/attachments/${attachment.id}`
+      );
+      window.open(issued.url, '_blank', 'noopener');
+    } catch (caught) {
+      error = messageFrom(caught, 'The file is not available.');
+    }
+  };
+
+  const setDraw = (on: boolean, tool: 'pen' | 'arrow' | 'rect' = drawTool): void => {
+    drawTool = tool;
+    player?.setDraw(on, tool);
+  };
+
   const addComment = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
     if (!selected || !bodyText.trim()) return;
@@ -611,6 +653,22 @@
         ...(anchorFrame !== null ? { frame_in: anchorFrame } : {}),
         ...(drawing ? { annotation: { strokes: drawing.strokes } } : {})
       });
+      /* Files ride the new note; a failure names the file and keeps it on
+         the composer for another try. */
+      const uploaded: CommentAttachment[] = [];
+      for (const file of pendingFiles) {
+        const form = new FormData();
+        form.set('file', file);
+        const response = await fetch(`/api/v1/s/${slug}/comments/${created.id}/attachments`, {
+          method: 'POST',
+          body: form
+        });
+        if (!response.ok) throw new Error(`${file.name} could not be attached.`);
+        const row = (await response.json()) as { id: string };
+        uploaded.push({ id: row.id, filename: file.name, size: file.size, content_type: file.type });
+      }
+      created.attachments = uploaded;
+      pendingFiles = [];
       /* A poll may already have delivered this comment. */
       if (!comments.some((existing) => existing.id === created.id)) comments = [...comments, created];
       bodyText = '';
@@ -620,7 +678,9 @@
         pendingDrawing = null;
       }
     } catch (caught) {
-      error = messageFrom(caught, 'The comment could not be added.');
+      error = caught instanceof Error && caught.message.includes('attached')
+        ? caught.message
+        : messageFrom(caught, 'The comment could not be added.');
     }
   };
 
@@ -758,8 +818,12 @@
           renditions={previewRenditions}
           filmstrip={previewFilmstrip}
           waveformUrl={previewWaveformUrl}
-          allowDrawing={share.allow_comments && !showtime}
+          allowDrawing={share.allow_comments}
           chrome={playerChrome}
+          ondrawmodechange={(on, tool) => {
+            drawOn = on;
+            drawTool = tool;
+          }}
           {watermark}
           onframechange={(frame) => {
             currentFrame = frame;
@@ -840,6 +904,21 @@
               {/if}
               {#if comment.annotation}<span class="drawn">Drawing</span>{/if}
             </span>
+            {#if comment.attachments?.length}
+              <span class="files">
+                {#each comment.attachments as attachment (attachment.id)}
+                  <button
+                    type="button"
+                    class="filechip"
+                    title={`${attachment.filename} (${prettySize(attachment.size)})`}
+                    onclick={() => void openAttachment(comment, attachment)}
+                  >
+                    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L4 7.5" /></svg>
+                    <span class="filename">{attachment.filename}</span>
+                  </button>
+                {/each}
+              </span>
+            {/if}
             <p>
               {#each segmentCommentBody(comment.body_text) as segment, index (index)}
                 {#if segment.kind === 'mention'}
@@ -857,16 +936,61 @@
         {#if share.allow_comments}
           <form onsubmit={addComment}>
             <label>
-              Add a note
-              {#if pendingDrawing}
-                <span class="tc anchor">with drawing at frame {pendingDrawing.frame}</span>
-              {:else if playerActive}
-                <span class="tc anchor">at frame {currentFrame}</span>
-              {/if}
-              <textarea bind:value={bodyText} maxlength="10000" required></textarea>
+              <span class="composer-head">
+                Add a note
+                {#if pendingDrawing}
+                  <span class="tc anchor">with drawing at {anchorLabel(pendingDrawing.frame)}</span>
+                {:else if playerActive}
+                  <span class="tc anchor">at {anchorLabel(currentFrame)}</span>
+                {/if}
+              </span>
+              <textarea
+                bind:value={bodyText}
+                maxlength="10000"
+                required
+                placeholder={showtime ? 'What should change, or what you love.' : ''}
+              ></textarea>
             </label>
+            {#if pendingFiles.length}
+              <span class="files">
+                {#each pendingFiles as file, index (index)}
+                  <span class="filechip pending">
+                    <span class="filename">{file.name}</span>
+                    <button type="button" class="filedrop" aria-label={`Remove ${file.name}`} onclick={() => { pendingFiles = pendingFiles.filter((_, at) => at !== index); }}>×</button>
+                  </span>
+                {/each}
+              </span>
+            {/if}
+            {#if showtime && playerActive}
+              <!-- The player's own draw controls belong to the full
+                   instrument; here the rail hosts them. -->
+              <div class="drawrow" role="group" aria-label="Drawing">
+                <button type="button" class="quiet" aria-pressed={drawOn} onclick={() => setDraw(!drawOn)}>
+                  {drawOn ? 'Stop drawing' : 'Draw on the frame'}
+                </button>
+                {#if drawOn}
+                  <div class="seg" role="group" aria-label="Drawing tool">
+                    <button type="button" aria-pressed={drawTool === 'pen'} onclick={() => setDraw(true, 'pen')}>Pen</button>
+                    <button type="button" aria-pressed={drawTool === 'arrow'} onclick={() => setDraw(true, 'arrow')}>Arrow</button>
+                    <button type="button" aria-pressed={drawTool === 'rect'} onclick={() => setDraw(true, 'rect')}>Box</button>
+                  </div>
+                {/if}
+              </div>
+            {/if}
             <div class="post-row">
-              <button type="submit" class="post">Comment</button>
+              <button type="submit" class="post">{showtime ? 'Post note' : 'Comment'}</button>
+              <button type="button" class="quiet attach" onclick={() => attachInput?.click()}>
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L4 7.5" /></svg>
+                Attach
+              </button>
+              <input
+                bind:this={attachInput}
+                type="file"
+                class="attachinput"
+                multiple
+                accept="application/pdf,image/*"
+                onchange={attachPicked}
+              />
               {#if pendingDrawing}
                 <button type="button" class="quiet" onclick={discardDrawing}>Discard drawing</button>
               {/if}
@@ -1089,6 +1213,25 @@
   .comments textarea { border: 0; background: none; color: var(--n-900); padding: 0; min-height: 64px; resize: vertical; }
   .comments textarea:focus-visible { outline: none; }
   .anchor { color: var(--n-600); }
+  .composer-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .filechip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; border: 0; border-radius: 9px; background: var(--n-150); color: var(--n-800); padding: 3px 9px; font-size: var(--text-12); cursor: pointer; }
+  .filechip:hover { background: var(--n-300); color: var(--n-900); }
+  .filechip.pending { cursor: default; }
+  .filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+  .filedrop { border: 0; background: none; color: var(--n-600); padding: 0 0 0 2px; font-size: 13px; line-height: 1; cursor: pointer; }
+  .filedrop:hover { color: var(--n-900); }
+  .attach { display: inline-flex; align-items: center; gap: 6px; }
+  .attachinput { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .drawrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .seg { display: flex; gap: 2px; padding: 2px; border-radius: var(--radius); background: var(--n-150); }
+  .seg button { padding: 4px 10px; font-size: var(--text-12); background: none; color: var(--n-700); }
+  .seg button[aria-pressed='true'] { background: var(--n-300); color: var(--n-900); }
+  .showtime .filechip { background: rgba(250, 248, 244, 0.12); color: var(--ink-text); }
+  .showtime .filechip:hover { background: rgba(250, 248, 244, 0.24); }
+  .showtime .seg { background: rgba(13, 17, 23, 0.5); }
+  .showtime .seg button { color: var(--ink-text-dim); }
+  .showtime .seg button[aria-pressed='true'] { background: rgba(250, 248, 244, 0.2); color: var(--ink-text); }
   .post-row { display: flex; align-items: center; gap: 12px; }
   .post { background: var(--n-800); color: var(--n-050); }
   .preview .post:hover { background: var(--n-900); }
