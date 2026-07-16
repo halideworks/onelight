@@ -247,6 +247,55 @@ export const registerWorkspaceUsersDomain = (ctx: SuiteContext): void => {
     });
   });
 
+  describe("avatars", () => {
+    ctx.itBlob("stores, serves, and clears a user's picture", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const member = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      // Junk in, error out: type and size are the contract.
+      const wrongType = await req(h, "/api/v1/users/me/avatar", {
+        method: "PUT",
+        cookie: member.cookie,
+        body: "GIF89a",
+        headers: { "content-type": "image/gif" },
+      });
+      expect(wrongType.status).toBe(400);
+      const stored = await req(h, "/api/v1/users/me/avatar", {
+        method: "PUT",
+        cookie: member.cookie,
+        body: "png-bytes-here",
+        headers: { "content-type": "image/png" },
+      });
+      expect(stored.status).toBe(200);
+      const { avatar_url } = await json<{ avatar_url: string }>(stored);
+      // The wire carries it wherever the user appears.
+      const me = await json<{ user: { avatar_url: string | null } }>(
+        await req(h, "/api/v1/auth/session", { cookie: member.cookie }),
+      );
+      expect(me.user.avatar_url).toBe(avatar_url);
+      // Any workspace member can fetch the picture itself.
+      const fetched = await req(h, avatar_url, { cookie: seed.admin.cookie });
+      expect(fetched.status).toBe(200);
+      expect(fetched.headers.get("content-type")).toBe("image/png");
+      expect(await fetched.text()).toBe("png-bytes-here");
+      // Clearing returns the user to the generated avatar.
+      const cleared = await req(h, "/api/v1/users/me/avatar", {
+        method: "DELETE",
+        cookie: member.cookie,
+      });
+      expect(cleared.status).toBe(204);
+      const gone = await req(h, avatar_url, { cookie: seed.admin.cookie });
+      expect(gone.status).toBe(404);
+      const after = await json<{ user: { avatar_url: string | null } }>(
+        await req(h, "/api/v1/auth/session", { cookie: member.cookie }),
+      );
+      expect(after.user.avatar_url).toBeNull();
+    });
+  });
+
   describe("invites", () => {
     const validGrantInvite = async (h: ContractHarness, ctx2: SuiteContext) => {
       const seed = ctx2.seed();

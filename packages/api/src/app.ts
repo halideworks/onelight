@@ -156,6 +156,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     email: user.email,
     name: user.name,
     role: user.role,
+    /* Same-origin path, cookie-authenticated like every app read; updatedAt
+       busts the cache when the picture changes. Null means the generated
+       avatar. */
+    avatar_url: user.avatarKey
+      ? `/api/v1/users/${user.id}/avatar?v=${String(user.updatedAt)}`
+      : null,
     disabled_at: user.disabledAt,
     created_at: user.createdAt,
   });
@@ -1293,6 +1299,97 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       name: workspace.name,
       settings: parseJsonObject(workspace.settingsJson),
       oidc_enabled: Boolean(env.config.OIDC_ISSUER),
+    });
+  });
+
+  /* ---- avatars ---- */
+
+  const AVATAR_TYPES: Record<string, string> = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+  };
+  const AVATAR_MAX_BYTES = 512 * 1024;
+
+  api.put("/users/me/avatar", requireAuth, async (c) => {
+    const user = userFromContext(c);
+    if (!env.blobStore)
+      throw errors.internal("Blob storage is not configured.");
+    const contentType =
+      (c.req.header("content-type") ?? "").split(";")[0] ?? "";
+    const extension = AVATAR_TYPES[contentType];
+    if (!extension)
+      throw errors.validation("The avatar must be a PNG, JPEG, or WebP.");
+    const bytes = await c.req.arrayBuffer();
+    if (bytes.byteLength === 0) throw errors.validation("The avatar is empty.");
+    if (bytes.byteLength > AVATAR_MAX_BYTES)
+      throw errors.validation("The avatar must be under 512 KB.");
+    // One key per user and format; a format change strands the old blob,
+    // which the GC reconciliation is for.
+    const key = `avatars/${user.id}.${extension}`;
+    await env.blobStore.putStream(
+      key,
+      new Response(bytes).body as ReadableStream,
+      {
+        contentType,
+        size: bytes.byteLength,
+      },
+    );
+    const now = env.clock.now();
+    await env.db
+      .update(users)
+      .set({ avatarKey: key, updatedAt: now })
+      .where(eq(users.id, user.id))
+      .run();
+    return c.json({
+      avatar_url: `/api/v1/users/${user.id}/avatar?v=${String(now)}`,
+    });
+  });
+
+  api.delete("/users/me/avatar", requireAuth, async (c) => {
+    const user = userFromContext(c);
+    if (user.avatarKey && env.blobStore) {
+      try {
+        await env.blobStore.delete(user.avatarKey);
+      } catch {
+        // The pointer is the truth; a stranded blob is the GC's problem.
+      }
+    }
+    await env.db
+      .update(users)
+      .set({ avatarKey: null, updatedAt: env.clock.now() })
+      .where(eq(users.id, user.id))
+      .run();
+    return c.body(null, 204);
+  });
+
+  api.get("/users/:id/avatar", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    if (!env.blobStore) throw errors.notFound();
+    const target = (
+      await env.db
+        .select()
+        .from(users)
+        .where(
+          and(
+            eq(users.id, c.req.param("id")),
+            eq(users.workspaceId, actor.workspaceId),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (!target?.avatarKey) throw errors.notFound();
+    const extension = target.avatarKey.split(".").pop() ?? "png";
+    const contentType =
+      Object.entries(AVATAR_TYPES).find(([, ext]) => ext === extension)?.[0] ??
+      "image/png";
+    const stream = await env.blobStore.getStream(target.avatarKey);
+    return new Response(stream, {
+      headers: {
+        "Content-Type": contentType,
+        "Cache-Control": "private, max-age=86400",
+      },
     });
   });
 
@@ -4145,7 +4242,15 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (body.asset_ids.some((id) => !allowed.has(id)))
       throw errors.validation("Every shared asset must belong to the project.");
     const id = env.ids.ulid();
-    const slug = base62(22);
+    // The link reads like what it opens: the title, then 14 base62 chars
+    // (about 83 bits) so the URL stays the secret it is documented to be.
+    const readable = body.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48)
+      .replace(/-+$/g, "");
+    const slug = readable ? `${readable}-${base62(14)}` : base62(22);
     const now = env.clock.now();
     const watermarkJson = body.watermark_spec
       ? JSON.stringify(body.watermark_spec)

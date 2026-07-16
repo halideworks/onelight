@@ -18,6 +18,7 @@
   <section aria-label="Your account">
     <h2>You</h2>
     <nav>
+      <a href="/settings/profile"><strong>Profile</strong><span>Your name and picture</span></a>
       <a href="/settings/sessions"><strong>Sessions</strong><span>Browsers signed in to your account</span></a>
       <a href="/settings/notifications"><strong>Notifications</strong><span>Email delivery and muted projects</span></a>
       <a href="/settings/tokens"><strong>API tokens</strong><span>Command-line tools and integrations</span></a>

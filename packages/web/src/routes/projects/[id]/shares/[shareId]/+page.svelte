@@ -7,6 +7,7 @@
   import { copyText } from '$lib/clipboard.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
+  import { idFrom, pretty } from '$lib/ids.js';
   import { pageWashFor, pageWashFromStops, washFor } from '$lib/washes.js';
 
   /* One share, one page. The old flow was a list of every share with a dialog
@@ -18,8 +19,8 @@
   type Project = { id: string; name: string; palette: string };
   type Asset = { id: string; name: string; kind: string; current_version_id?: string | null };
 
-  const projectId = $derived(page.params.id);
-  const shareId = $derived(page.params.shareId);
+  const projectId = $derived(idFrom(page.params.id));
+  const shareId = $derived(idFrom(page.params.shareId));
 
   let project = $state<Project | null>(null);
   let share = $state<Share | null>(null);
@@ -577,7 +578,7 @@
                 {@const entry = media.entries[asset.id]}
                 <a
                   class="content"
-                  href={`/projects/${projectId}/assets/${asset.id}`}
+                  href={`/projects/${pretty(projectId ?? '', project?.name)}/assets/${pretty(asset.id, asset.name)}`}
                   title={asset.name}
                   use:observeMedia={asset}
                 >

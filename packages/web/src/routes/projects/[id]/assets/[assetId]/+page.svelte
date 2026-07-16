@@ -15,6 +15,8 @@
   import { replaceState } from '$app/navigation';
   import { api, apiDelete, apiPatch, apiPost, messageFrom } from '$lib/api.js';
   import { projectEvents } from '$lib/sse.svelte.js';
+  import Avatar from '$lib/Avatar.svelte';
+  import { idFrom } from '$lib/ids.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
   import { annotationsFrom, markersFrom, type ReviewComment } from '$lib/comments.js';
   import { hashtagsIn, segmentCommentBody } from './comment-text.js';
@@ -48,7 +50,7 @@
     author_user_id?: string | null;
     carried_from_comment_id?: string | null;
   };
-  type Member = { user: { id: string; name: string; email: string }; role: string };
+  type Member = { user: { id: string; name: string; email: string; avatar_url?: string | null }; role: string };
   type NoteFilter = 'all' | 'open' | 'completed';
   type UploadState = { status: 'idle' | 'uploading' | 'registering' | 'failed'; progress: number; error: string };
 
@@ -123,8 +125,8 @@
   /* Bumped on every asset or version switch; stale async loads stand down. */
   let versionToken = 0;
 
-  const projectId = $derived(page.params.id);
-  const assetId = $derived(page.params.assetId);
+  const projectId = $derived(idFrom(page.params.id));
+  const assetId = $derived(idFrom(page.params.assetId));
   const selectedVersion = $derived(versions.find((version) => version.id === selectedVersionId) ?? null);
   const newestVersion = $derived(versions[0] ?? null);
   const isNewestSelected = $derived(Boolean(selectedVersion && newestVersion && selectedVersion.id === newestVersion.id));
@@ -1037,6 +1039,14 @@
             >
               <div class="note-body">
                 <span class="head">
+                  <Avatar
+                    name={comment.author_name ?? 'Reviewer'}
+                    id={comment.author_user_id}
+                    url={comment.author_user_id
+                      ? (members.find((member) => member.user.id === comment.author_user_id)?.user.avatar_url ?? null)
+                      : null}
+                    size={22}
+                  />
                   <strong>{comment.author_name ?? 'Reviewer'}</strong>
                   {#if comment.frame_in !== null && !isReply}
                     <button

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api, messageFrom } from '$lib/api.js';
   import { formatBytes } from '$lib/upload.js';
+  import { pretty } from '$lib/ids.js';
 
   /* What the workspace weighs, per project, plus the media volume's capacity
      where the host reports one. Admin only, like the endpoint. */
@@ -90,7 +91,7 @@
         <tbody>
           {#each rows as row (row.id)}
             <tr>
-              <td class="name"><a href={`/projects/${row.id}`}>{row.name}</a></td>
+              <td class="name"><a href={`/projects/${pretty(row.id, row.name)}`}>{row.name}</a></td>
               <td class="num tc">{row.asset_count}</td>
               <td class="num tc">{row.version_count}</td>
               <td class="num tc">{formatBytes(row.originals_bytes)}</td>

@@ -7,7 +7,9 @@
   import { askConfirm } from '$lib/confirm.svelte.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import { uploadFile } from '$lib/upload.js';
+  import Avatar from '$lib/Avatar.svelte';
   import ProjectCover from '$lib/ProjectCover.svelte';
+  import { idFrom } from '$lib/ids.js';
   import { pageWashFor, washFor } from '$lib/washes.js';
   import { auth } from '$lib/auth.svelte.js';
 
@@ -24,7 +26,7 @@
   };
   type Asset = { id: string; name: string; kind: string; current_version_id?: string | null };
   type CoverUpload = { id: string; filename: string; url: string; current: boolean };
-  type Member = { user: { id: string; name: string; email: string }; role: string };
+  type Member = { user: { id: string; name: string; email: string; avatar_url?: string | null }; role: string };
   type User = { id: string; name: string; email: string };
 
   const ROLES = ['manager', 'editor', 'commenter', 'viewer'] as const;
@@ -37,7 +39,7 @@
     viewer: 'Watch only.'
   };
 
-  const projectId = $derived(page.params.id);
+  const projectId = $derived(idFrom(page.params.id));
 
   let project = $state<Project | null>(null);
   let members = $state<Member[]>([]);
@@ -501,8 +503,11 @@
         {#each members as member (member.user.id)}
           <li>
             <span class="who">
-              <strong>{member.user.name}</strong>
-              <small>{member.user.email}</small>
+              <Avatar name={member.user.name} id={member.user.id} url={member.user.avatar_url ?? null} size={30} />
+              <span class="whotext">
+                <strong>{member.user.name}</strong>
+                <small>{member.user.email}</small>
+              </span>
             </span>
             <span class="rolecell">
               <select
@@ -598,7 +603,8 @@
   .addform select { min-width: 0; }
   .addform select:first-child { flex: 1; max-width: 420px; }
   .members li:hover { background: var(--ink-200); }
-  .who { display: grid; gap: 2px; min-width: 0; }
+  .who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .whotext { display: grid; gap: 2px; min-width: 0; }
   .who small { color: var(--ink-text-dim); }
   .rolecell { display: grid; justify-items: end; }
   /* Removing someone is a real action, not the row's theme: quiet until

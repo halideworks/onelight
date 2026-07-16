@@ -265,6 +265,9 @@ const user = z.object({
   email: z.string(),
   name: z.string(),
   role: workspaceRole,
+  /* Same-origin path to the user's picture, cache-busted by update time;
+     null means the generated avatar. */
+  avatar_url: z.string().nullable(),
   disabled_at: timestamp.nullable(),
   created_at: timestamp,
 });
@@ -1244,6 +1247,17 @@ export const routeDocs: Record<string, RouteDoc> = {
   "GET /admin/jobs": {
     query: { ...paging, status: { description: "Filter by job status." } },
     responses: { "200": ok(page(job)) },
+  },
+  "PUT /users/me/avatar": {
+    requestContentType: "image/png",
+    responses: { "200": ok(z.object({ avatar_url: z.string() })) },
+  },
+  "DELETE /users/me/avatar": { responses: { "204": noContent } },
+  "GET /users/:id/avatar": {
+    query: {
+      v: { description: "Cache-busting update stamp.", required: false },
+    },
+    responses: { "200": binary("image/png") },
   },
   "GET /media/*": {
     query: { token: { description: "Signed media token.", required: true } },

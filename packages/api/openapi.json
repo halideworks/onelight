@@ -246,6 +246,12 @@
                             "member"
                           ]
                         },
+                        "avatar_url": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "disabled_at": {
                           "anyOf": [
                             {
@@ -265,6 +271,7 @@
                         "email",
                         "name",
                         "role",
+                        "avatar_url",
                         "disabled_at",
                         "created_at"
                       ],
@@ -375,6 +382,12 @@
                             "member"
                           ]
                         },
+                        "avatar_url": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "disabled_at": {
                           "anyOf": [
                             {
@@ -394,6 +407,7 @@
                         "email",
                         "name",
                         "role",
+                        "avatar_url",
                         "disabled_at",
                         "created_at"
                       ],
@@ -673,6 +687,12 @@
                             "member"
                           ]
                         },
+                        "avatar_url": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "disabled_at": {
                           "anyOf": [
                             {
@@ -692,6 +712,7 @@
                         "email",
                         "name",
                         "role",
+                        "avatar_url",
                         "disabled_at",
                         "created_at"
                       ],
@@ -1079,6 +1100,205 @@
         }
       }
     },
+    "/api/v1/users/me/avatar": {
+      "put": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "avatar_url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "avatar_url"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "responses": {
+          "204": {
+            "description": "No content"
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{id}/avatar": {
+      "get": {
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "v",
+            "in": "query",
+            "required": false,
+            "description": "Cache-busting update stamp.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Binary payload",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/users": {
       "get": {
         "parameters": [
@@ -1130,6 +1350,12 @@
                               "member"
                             ]
                           },
+                          "avatar_url": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "disabled_at": {
                             "anyOf": [
                               {
@@ -1149,6 +1375,7 @@
                           "email",
                           "name",
                           "role",
+                          "avatar_url",
                           "disabled_at",
                           "created_at"
                         ],
@@ -1240,6 +1467,12 @@
                         "member"
                       ]
                     },
+                    "avatar_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "disabled_at": {
                       "anyOf": [
                         {
@@ -1259,6 +1492,7 @@
                     "email",
                     "name",
                     "role",
+                    "avatar_url",
                     "disabled_at",
                     "created_at"
                   ],
@@ -1368,6 +1602,12 @@
                         "member"
                       ]
                     },
+                    "avatar_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "disabled_at": {
                       "anyOf": [
                         {
@@ -1387,6 +1627,7 @@
                     "email",
                     "name",
                     "role",
+                    "avatar_url",
                     "disabled_at",
                     "created_at"
                   ],
@@ -1497,6 +1738,12 @@
                         "member"
                       ]
                     },
+                    "avatar_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "disabled_at": {
                       "anyOf": [
                         {
@@ -1516,6 +1763,7 @@
                     "email",
                     "name",
                     "role",
+                    "avatar_url",
                     "disabled_at",
                     "created_at"
                   ],
@@ -2165,6 +2413,12 @@
                             "member"
                           ]
                         },
+                        "avatar_url": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "disabled_at": {
                           "anyOf": [
                             {
@@ -2184,6 +2438,7 @@
                         "email",
                         "name",
                         "role",
+                        "avatar_url",
                         "disabled_at",
                         "created_at"
                       ],
@@ -3682,6 +3937,12 @@
                                   "member"
                                 ]
                               },
+                              "avatar_url": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
                               "disabled_at": {
                                 "anyOf": [
                                   {
@@ -3701,6 +3962,7 @@
                               "email",
                               "name",
                               "role",
+                              "avatar_url",
                               "disabled_at",
                               "created_at"
                             ],
@@ -3847,6 +4109,12 @@
                             "member"
                           ]
                         },
+                        "avatar_url": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "disabled_at": {
                           "anyOf": [
                             {
@@ -3866,6 +4134,7 @@
                         "email",
                         "name",
                         "role",
+                        "avatar_url",
                         "disabled_at",
                         "created_at"
                       ],

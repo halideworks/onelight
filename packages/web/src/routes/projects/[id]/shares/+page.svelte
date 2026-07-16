@@ -6,6 +6,7 @@
   import { copyText } from '$lib/clipboard.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
+  import { idFrom, pretty } from '$lib/ids.js';
   import { pageWashFor } from '$lib/washes.js';
 
   /* The index of a project's shares. Each share has its own page now -- the
@@ -19,7 +20,7 @@
   type Project = { id: string; name: string; palette: string };
   type Asset = { id: string; name: string; kind: string; current_version_id?: string | null };
 
-  const projectId = $derived(page.params.id);
+  const projectId = $derived(idFrom(page.params.id));
 
   let project = $state<Project | null>(null);
   let shares = $state<Share[]>([]);
@@ -212,7 +213,7 @@
       });
       dialog?.close();
       /* Straight to the new share's page, where its link is the headline. */
-      await goto(`/projects/${id}/shares/${created.share.id}`);
+      await goto(`/projects/${pretty(id, project?.name)}/shares/${pretty(created.share.id, created.share.title)}`);
     } catch (caught) {
       formError = messageFrom(caught, 'The share could not be saved.');
     } finally {
@@ -254,7 +255,7 @@
               <h2>
                 <!-- The stretched link: the whole card opens the share's page,
                      and the two buttons sit above it. -->
-                <a class="cardlink" href={`/projects/${projectId}/shares/${share.id}`}>{share.title}</a>
+                <a class="cardlink" href={`/projects/${pretty(projectId ?? '', project?.name)}/shares/${pretty(share.id, share.title)}`}>{share.title}</a>
               </h2>
               <span class="chip">{share.kind}</span>
               <span class="chip dim">{share.layout}</span>

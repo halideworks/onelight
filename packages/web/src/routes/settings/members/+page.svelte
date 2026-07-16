@@ -1,9 +1,10 @@
 <script lang="ts">
   import { copyText } from '$lib/clipboard.js';
+  import Avatar from '$lib/Avatar.svelte';
   import { onMount } from 'svelte';
   import { api, apiDelete, apiPatch, apiPost, messageFrom } from '$lib/api.js';
 
-  type User = { id: string; email: string; name: string; role: 'admin' | 'member'; disabled_at: number | null };
+  type User = { id: string; email: string; name: string; role: 'admin' | 'member'; avatar_url?: string | null; disabled_at: number | null };
   type Invite = { id: string; email: string; role: string; expires_at: number };
   let users = $state<User[]>([]);
   let invites = $state<Invite[]>([]);
@@ -66,7 +67,7 @@
   <form class="invite" onsubmit={invite}><label>Email <input type="email" bind:value={email} required /></label><button type="submit">Invite member</button></form>
   {#if inviteUrl}<section class="revealed" aria-live="polite"><strong>Invite link</strong><input readonly value={inviteUrl} aria-label="Invite link" /><button type="button" onclick={() => void copyText(inviteUrl)}>Copy link</button></section>{/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
-  <section aria-label="Workspace members" class="list"><h2>Workspace members</h2>{#each users as user (user.id)}<article><div><strong>{user.name}</strong><span>{user.email}</span></div><select aria-label={`Role for ${user.name}`} value={user.role} onchange={(event) => changeRole(user, (event.currentTarget as HTMLSelectElement).value as User['role'])}><option value="member">Member</option><option value="admin">Admin</option></select></article>{/each}</section>
+  <section aria-label="Workspace members" class="list"><h2>Workspace members</h2>{#each users as user (user.id)}<article><div class="who"><Avatar name={user.name} id={user.id} url={user.avatar_url ?? null} size={30} /><div><strong>{user.name}</strong><span>{user.email}</span></div></div><select aria-label={`Role for ${user.name}`} value={user.role} onchange={(event) => changeRole(user, (event.currentTarget as HTMLSelectElement).value as User['role'])}><option value="member">Member</option><option value="admin">Admin</option></select></article>{/each}</section>
   <section aria-label="Pending invites" class="list"><h2>Pending invites</h2>{#if invites.length === 0}<p class="empty">No pending invites.</p>{/if}{#each invites as pending (pending.id)}<article><div><strong>{pending.email}</strong><span>{pending.role}</span></div><button type="button" onclick={() => revokeInvite(pending.id)}>Revoke</button></article>{/each}</section>
 </main>
 
@@ -88,6 +89,7 @@
   .revealed strong { flex-basis: 100%; }
   .list { max-width: 760px; }
   article { display: flex; justify-content: space-between; gap: 20px; align-items: center; padding: 14px; margin: 0 -14px 2px; border-radius: var(--radius); background: var(--ink-100); }
+  .who { display: flex; align-items: center; gap: 10px; min-width: 0; }
   article div { display: grid; gap: 4px; }
   article span, .empty { color: var(--ink-text-dim); }
   .error { color: var(--warn); }

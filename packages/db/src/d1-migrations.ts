@@ -44,6 +44,15 @@ const projectsHaveCover = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes("cover_asset_id"));
 };
 
+const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("avatar_key"));
+};
+
 const projectsHaveCoverBlob = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -220,6 +229,11 @@ export const d1Migrations: D1Migration[] = [
       "CREATE INDEX project_cover_uploads_project_idx ON project_cover_uploads(project_id, id)",
       "CREATE UNIQUE INDEX project_cover_uploads_blob_uq ON project_cover_uploads(project_id, blob_key)",
     ],
+  },
+  {
+    name: "0011_user_avatars.sql",
+    applied: usersHaveAvatarKey,
+    statements: ["ALTER TABLE users ADD COLUMN avatar_key TEXT"],
   },
 ];
 

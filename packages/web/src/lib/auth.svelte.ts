@@ -5,6 +5,7 @@ export type SessionUser = {
   email: string;
   name: string;
   role: "admin" | "member";
+  avatar_url?: string | null;
 };
 
 type SessionPayload = { user: SessionUser; auth: string };

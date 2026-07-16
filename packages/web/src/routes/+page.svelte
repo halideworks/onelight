@@ -3,6 +3,7 @@
   import { api, createProject, messageFrom } from '$lib/api.js';
   import { auth } from '$lib/auth.svelte.js';
   import ProjectCover from '$lib/ProjectCover.svelte';
+  import { pretty } from '$lib/ids.js';
 
   type Project = {
     id: string;
@@ -63,7 +64,7 @@
     createError = '';
     try {
       const project = await createProject({ name });
-      await goto(`/projects/${project.id}`);
+      await goto(`/projects/${pretty(project.id, project.name)}`);
     } catch (caught) {
       createError = messageFrom(caught, 'The project could not be created.');
       creating = false;
@@ -111,7 +112,7 @@
 
       <div class="projectlist" class:grid={view === 'grid'}>
         {#each projects as project (project.id)}
-          <a class="project" href={`/projects/${project.id}`}>
+          <a class="project" href={`/projects/${pretty(project.id, project.name)}`}>
             <!-- Every project has a picture: the one it chose, or the one
                  generated from its palette and name. Neither costs a request
                  beyond this page's own. -->

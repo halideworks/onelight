@@ -154,6 +154,27 @@ And a fifth, finishing the presentation and the details around it:
   select:focus and select:focus-visible everywhere; pages style focus as a
   background value step.
 
+A sixth pass: identity and addresses.
+
+- **People have faces.** `Avatar.svelte` generates a deterministic avatar --
+  the initial on a wash hashed from who they are -- and users can upload
+  their own (PNG/JPEG/WebP, 512 KB cap) from the new `/settings/profile`
+  page, which also renames in place. `users.avatar_key` (migration 0011,
+  D1 copy in parity), `PUT/DELETE /users/me/avatar`,
+  `GET /users/:id/avatar` (workspace-scoped), `avatar_url` on every user
+  wire. Avatars appear on review notes, share-room notes (generated from the
+  viewer's name; the public wire still never carries user ids), People lists,
+  workspace members, and the topbar. Contract-tested both legs.
+- **Links read like what they open.** New share slugs are the kebab-cased
+  title plus 14 base62 chars (~83 bits; the design doc records the
+  supersession), and app URLs carry a readable tail after the id --
+  `/projects/{ulid}-fanatics/assets/{ulid}-eagles-cc-mov` -- parsed by
+  `$lib/ids.ts`, so renames never break a copied link and old bare-id URLs
+  still work.
+- **The presentation scrub grew up**: the handle is always present (bright
+  dot, dark ring, grows under the pointer), the track is taller with the
+  played side bright, so it reads as a seek bar before anyone touches it.
+
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
 1. First green run of the integration and media-qc CI jobs on Linux: this exercises compose end to end, the HDR libplacebo tonemap on lavapipe (the new -init_hw_device vulkan flag), the zscale 601-to-709 conversion on partially-tagged sources, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Most of what used to be manual is now automated here; it just needs to run on a Linux runner with Docker.

@@ -1041,14 +1041,17 @@
   .frame-box { position: relative; width: min(100%, calc(72vh * var(--ar, 1.7778))); max-height: 100%; }
   video { display: block; width: 100%; height: auto; background: #000000; }
 
-  /* The presentation scrub: a thin line that answers the pointer. Painted in
-     the neutral scale, so a themed room recolours it with everything else. */
-  .scrub { padding: 12px 0 6px; cursor: pointer; touch-action: none; outline: none; }
-  .scrub-track { position: relative; height: 4px; border-radius: 2px; background: var(--n-150, #1c1c1c); transition: height 140ms ease; }
-  .scrub:hover .scrub-track, .scrub.scrubbing .scrub-track, .scrub:focus-visible .scrub-track { height: 6px; }
-  .scrub-played { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px; background: var(--n-800, #c4c4c4); }
-  .scrub-handle { position: absolute; top: 50%; width: 13px; height: 13px; border-radius: 50%; background: var(--n-900, #e9e9e9); transform: translate(-50%, -50%) scale(0); transition: transform 140ms ease; }
-  .scrub:hover .scrub-handle, .scrub.scrubbing .scrub-handle, .scrub:focus-visible .scrub-handle { transform: translate(-50%, -50%) scale(1); }
+  /* The presentation scrub: a thin line with its handle always on it, so it
+     reads as a seek bar before anyone touches it. Painted in the neutral
+     scale, so a themed room recolours it with everything else. */
+  .scrub { padding: 12px 0 8px; cursor: pointer; touch-action: none; outline: none; }
+  .scrub-track { position: relative; height: 5px; border-radius: 3px; background: var(--n-150, #1c1c1c); transition: height 140ms ease; }
+  .scrub:hover .scrub-track, .scrub.scrubbing .scrub-track, .scrub:focus-visible .scrub-track { height: 7px; }
+  .scrub-played { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 3px; background: var(--n-900, #e9e9e9); }
+  /* The handle is the promise that this can be grabbed: a bright dot with a
+     dark ring so it reads on any wash, grown a little under the pointer. */
+  .scrub-handle { position: absolute; top: 50%; width: 15px; height: 15px; border-radius: 50%; background: var(--n-900, #e9e9e9); border: 2px solid rgba(10, 12, 16, 0.55); box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45); transform: translate(-50%, -50%); transition: transform 140ms ease; }
+  .scrub:hover .scrub-handle, .scrub.scrubbing .scrub-handle, .scrub:focus-visible .scrub-handle { transform: translate(-50%, -50%) scale(1.2); }
   @media (prefers-reduced-motion: reduce) {
     .scrub-track, .scrub-handle { transition: none; }
   }

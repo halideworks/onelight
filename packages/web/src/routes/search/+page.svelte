@@ -3,6 +3,7 @@
   import { replaceState } from '$app/navigation';
   import { page } from '$app/state';
   import { messageFrom, searchWorkspace } from '$lib/api.js';
+  import { pretty } from '$lib/ids.js';
   import type { SearchHit } from '$lib/api.js';
   import { excerpt } from '$lib/format.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
@@ -227,7 +228,7 @@
         {@const entry = media.entries[hit.id]}
         <a
           class="hit"
-          href={`/projects/${hit.project_id}/assets/${hit.id}`}
+          href={`/projects/${hit.project_id}/assets/${pretty(hit.id, hit.name)}`}
           use:media.observe={{ id: hit.id, current_version_id: hit.current_version_id }}
         >
           <span class="thumb">
@@ -240,7 +241,7 @@
           <span class="when tc">{when(hit.updated_at)}</span>
         </a>
       {:else if hit.type === 'project'}
-        <a class="hit" href={`/projects/${hit.id}`}>
+        <a class="hit" href={`/projects/${pretty(hit.id, hit.name)}`}>
           <span class="thumb"><ProjectCover project={{ id: hit.id, name: hit.name, palette: hit.palette, cover_url: hit.cover_url }} monogram={false} /></span>
           <span class="kind">Project</span>
           <span class="name">{hit.name}</span>

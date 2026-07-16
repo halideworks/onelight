@@ -7,6 +7,7 @@
   import { auth } from '$lib/auth.svelte.js';
   import { notifications } from '$lib/notifications.svelte.js';
   import NotificationsPanel from '$lib/NotificationsPanel.svelte';
+  import Avatar from '$lib/Avatar.svelte';
   import ConfirmHost from '$lib/ConfirmHost.svelte';
   import type { Snippet } from 'svelte';
 
@@ -139,6 +140,11 @@
         <span class="badge tc">{notifications.unread > 99 ? '99+' : notifications.unread}</span>
       {/if}
     </button>
+    {#if auth.user}
+      <a class="me" href="/settings/profile" aria-label="Your profile">
+        <Avatar name={auth.user.name} id={auth.user.id} url={auth.user.avatar_url ?? null} size={26} />
+      </a>
+    {/if}
   </header>
   <NotificationsPanel bind:open={notificationsOpen} />
 {/if}
@@ -259,6 +265,8 @@
     text-align: center;
     line-height: 1.3;
   }
+  .me { display: inline-flex; border-radius: 50%; }
+  .me:hover { box-shadow: 0 0 0 2px var(--ink-300); }
   a:focus-visible,
   button:focus-visible {
     outline: 1px solid var(--accent-bright);

@@ -5,6 +5,7 @@
   import { page } from '$app/state';
   import { api, apiDelete, apiPatch, apiPost, createAssetVersion, messageFrom } from '$lib/api.js';
   import { copyText } from '$lib/clipboard.js';
+  import { idFrom, pretty } from '$lib/ids.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import AssetSelect from '$lib/AssetSelect.svelte';
   import ScrubThumb from '$lib/ScrubThumb.svelte';
@@ -107,7 +108,7 @@
   let dropTarget = $state<string | null>(null);
   let dragging = $state<string | null>(null);
 
-  const projectId = $derived(page.params.id);
+  const projectId = $derived(idFrom(page.params.id));
   const wash = $derived(pageWashFor(project?.palette));
 
   const media = createMediaCache();
@@ -376,7 +377,8 @@
      what is in it, who has opened it. Browsing its contents in this grid was
      a worse copy of that page. */
   const openShare = (id: string): void => {
-    void goto(`/projects/${projectId}/shares/${id}`);
+    const share = shares.find((entry) => entry.id === id);
+    void goto(`/projects/${pretty(projectId ?? '', project?.name)}/shares/${pretty(id, share?.title)}`);
   };
 
   const loadShares = async (id: string): Promise<void> => {
@@ -1110,7 +1112,8 @@
     selected = selected.length === displayed.length ? [] : displayed.map((asset) => asset.id);
   };
 
-  const assetHref = (id: string): string => `/projects/${projectId}/assets/${id}`;
+  const assetHref = (id: string): string =>
+    `/projects/${pretty(projectId ?? '', project?.name)}/assets/${pretty(id, nameOf(id))}`;
 
   const onItemKeydown = (event: KeyboardEvent, id: string): void => {
     if (event.key === ' ') {

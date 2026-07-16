@@ -398,7 +398,7 @@ The heart of the product; feature-complete against frame.io V4's model in v1:
 
 - **Shares** (one model, two kinds - mirroring frame.io V4's consolidation): `review` (comment-first) and `presentation` (branded, curated, reel/grid/list layouts).
 - Controls per share: passphrase (argon2 hash), expiry, revoke, allow_comments, allow_download (**none / proxy / original** - explicit, because "client downloaded the 480p proxy and delivered it" is a documented industry trauma), show_all_versions, per-share branding (logo, colors, background).
-- Share slugs are 22-char base62 (~128-bit) random strings; unguessable by construction, rate limits still apply to passphrase attempts and anonymous comment posting (per share + IP).
+- Share slugs are 22-char base62 (~128-bit) random strings; unguessable by construction, rate limits still apply to passphrase attempts and anonymous comment posting (per share + IP). Superseded 2026-07-16: new slugs read as the kebab-cased title plus 14 base62 chars (~83 bits), which stays far beyond enumeration while making the link say what it opens; old slugs keep resolving, since lookups were always by exact slug.
 - Anonymous access with named-viewer prompt; identity persists as a signed per-share cookie (`viewer_key`), so a returning viewer keeps their name and can edit or delete their own comments while the cookie lives. Re-prompt on a new device is accepted (spoofable identity is inherent to account-free review; the watermark carries the claimed identity). Promotion to a real user happens by email match at account creation.
 - `share_viewers` powers analytics (viewed/commented/downloaded, per-asset view state) and watermark identity.
 - **Watermarking**:

@@ -192,6 +192,7 @@ export interface paths {
                                 name: string;
                                 /** @enum {string} */
                                 role: "admin" | "member";
+                                avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
                             };
@@ -281,6 +282,7 @@ export interface paths {
                                 name: string;
                                 /** @enum {string} */
                                 role: "admin" | "member";
+                                avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
                             };
@@ -583,6 +585,7 @@ export interface paths {
                                 name: string;
                                 /** @enum {string} */
                                 role: "admin" | "member";
+                                avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
                             };
@@ -876,6 +879,212 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/users/me/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "image/png": string;
+                };
+            };
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            avatar_url: string;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description No content */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/{id}/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Cache-busting update stamp. */
+                    v?: string;
+                };
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Binary payload */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/png": string;
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users": {
         parameters: {
             query?: never;
@@ -910,6 +1119,7 @@ export interface paths {
                                 name: string;
                                 /** @enum {string} */
                                 role: "admin" | "member";
+                                avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
                             }[];
@@ -991,6 +1201,7 @@ export interface paths {
                             name: string;
                             /** @enum {string} */
                             role: "admin" | "member";
+                            avatar_url: string | null;
                             disabled_at: number | null;
                             created_at: number;
                         };
@@ -1070,6 +1281,7 @@ export interface paths {
                             name: string;
                             /** @enum {string} */
                             role: "admin" | "member";
+                            avatar_url: string | null;
                             disabled_at: number | null;
                             created_at: number;
                         };
@@ -1214,6 +1426,7 @@ export interface paths {
                             name: string;
                             /** @enum {string} */
                             role: "admin" | "member";
+                            avatar_url: string | null;
                             disabled_at: number | null;
                             created_at: number;
                         };
@@ -1630,6 +1843,7 @@ export interface paths {
                                 name: string;
                                 /** @enum {string} */
                                 role: "admin" | "member";
+                                avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
                             };
@@ -2662,6 +2876,7 @@ export interface paths {
                                     name: string;
                                     /** @enum {string} */
                                     role: "admin" | "member";
+                                    avatar_url: string | null;
                                     disabled_at: number | null;
                                     created_at: number;
                                 };
@@ -2757,6 +2972,7 @@ export interface paths {
                                 name: string;
                                 /** @enum {string} */
                                 role: "admin" | "member";
+                                avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
                             };

@@ -13,6 +13,7 @@
   import { page } from '$app/state';
   import { copyText } from '$lib/clipboard.js';
   import { replaceState } from '$app/navigation';
+  import Avatar from '$lib/Avatar.svelte';
   import ProjectCover from '$lib/ProjectCover.svelte';
   import { pageWashFor, pageWashFromStops } from '$lib/washes.js';
   import { api, apiPost, ApiError, messageFrom } from '$lib/api.js';
@@ -832,6 +833,7 @@
         {#each visibleComments as comment (comment.id)}
           <article id={`share-note-${comment.id}`} class:highlighted={highlightedId === comment.id}>
             <span class="c-head">
+              <Avatar name={comment.author_name ?? 'Viewer'} size={22} />
               <strong>{comment.author_name ?? 'Viewer'}</strong>
               {#if comment.frame_in !== null}
                 <button type="button" class="chip tc" onclick={() => seekToComment(comment)} aria-label={`Go to frame ${comment.frame_in}`}>Frame {comment.frame_in}</button>
