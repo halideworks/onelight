@@ -84,6 +84,18 @@ export const apiPost = <T>(
     ...init,
   });
 
+export const apiPut = <T>(
+  path: string,
+  body: unknown,
+  init?: ApiInit,
+): Promise<T> =>
+  api<T>(path, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    ...init,
+  });
+
 export const apiPatch = <T>(
   path: string,
   body: unknown,
