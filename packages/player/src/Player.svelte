@@ -89,6 +89,31 @@
   /* 16/9 until the first metadata arrives, so the stage has a shape to reserve
      instead of collapsing and then jumping. */
   let aspect = $state(16 / 9);
+  /* The stage's own box, measured. The picture is then the largest rectangle of
+     the right shape that fits inside it -- which is what "use the space" means,
+     and it cannot be expressed in CSS without either breaking the aspect ratio
+     or letterboxing inside the box (and the annotation canvas is inset:0 on the
+     box, so letterboxing there puts drawings off the footage). A height budget
+     like 72vh was a guess that ignored whatever the transport actually left. */
+  let stageWidth = $state(0);
+  let stageHeight = $state(0);
+  const boxWidth = $derived(
+    stageWidth > 0 && stageHeight > 0
+      ? Math.floor(Math.min(stageWidth, stageHeight * aspect))
+      : 0
+  );
+  $effect(() => {
+    if (!stage) return;
+    const element = stage;
+    const measure = (): void => {
+      stageWidth = element.clientWidth;
+      stageHeight = element.clientHeight;
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  });
   let muted = $state(false);
   let volume = $state(1);
   let fullscreen = $state(false);
@@ -645,7 +670,7 @@
     onpointermove={fullscreen ? wakeOverlay : undefined}
     onpointerleave={fullscreen ? () => { overlayHot = false; } : undefined}
   >
-    <div class="frame-box" bind:this={frameBox}>
+    <div class="frame-box" bind:this={frameBox} style:width={boxWidth > 0 ? `${String(boxWidth)}px` : undefined}>
       <video
         bind:this={video}
         src={currentSrc || src}
@@ -713,10 +738,12 @@
       </div>
 
       <div class="deck">
+        <!-- Direct children of the grid: each lands on its own band, so the
+             primary controls share one line and the labels share the next. -->
         <span class="readout">
           {#if timecode}<span class="tc tc-main">{timecode}</span>{/if}
-          <span class="tc tc-sub">{frame} fr&nbsp; {rateLabel}{dropFrame && isDropFrameRate(rate) ? ' DF' : ''}</span>
         </span>
+        <span class="readout-sub tc">{frame} fr&nbsp; {rateLabel}{dropFrame && isDropFrameRate(rate) ? ' DF' : ''}</span>
 
         <!-- Shuttle and step, in the order an editor's hand expects: J K L with
              frame steps either side of the playhead. Icons, not sentences: these
@@ -738,28 +765,27 @@
           <button type="button" class="icon step" onclick={() => step(1)} disabled={seekLocked} aria-label="Next frame" title="Next frame — → or .">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3v10l7-5z" /><rect x="12.4" y="3" width="1.6" height="10" /></svg>
           </button>
-          {#if shuttleLabel}<span class="shuttle tc">{shuttleLabel}</span>{/if}
         </div>
+        <span class="shuttle tc">{shuttleLabel}</span>
 
-        <!-- The marks and what they are set to, together: the readout used to
-             live under the timeline, nowhere near the buttons that set it. -->
+        <!-- The marks and what they are set to, on the two bands: the readout
+             used to live under the timeline, nowhere near the buttons that set
+             it. -->
         <div class="marks">
-          <div class="cluster">
-            <button type="button" onclick={() => { inFrame = frame; }} aria-label="Set loop in" title="Mark in — I">Set in</button>
-            <button type="button" onclick={() => { outFrame = frame; }} aria-label="Set loop out" title="Mark out — O">Set out</button>
-            <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }} title="Loop the marked range — P">Loop</button>
-            {#if inFrame !== null || outFrame !== null}
-              <button type="button" class="icon clearmarks" onclick={() => { inFrame = null; outFrame = null; }} aria-label="Clear marks" title="Clear marks — X">
-                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" fill="none" /></svg>
-              </button>
-            {/if}
-          </div>
-          <span class="marks-readout tc">
-            <span class:unset={inFrame === null}>{inFrame === null ? 'in —' : tcAt(inFrame)}</span>
-            <span class="marks-sep" aria-hidden="true">/</span>
-            <span class:unset={outFrame === null}>{outFrame === null ? 'out —' : tcAt(outFrame)}</span>
-          </span>
+          <button type="button" onclick={() => { inFrame = frame; }} aria-label="Set loop in" title="Mark in — I">Set in</button>
+          <button type="button" onclick={() => { outFrame = frame; }} aria-label="Set loop out" title="Mark out — O">Set out</button>
+          <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }} title="Loop the marked range — P">Loop</button>
+          {#if inFrame !== null || outFrame !== null}
+            <button type="button" class="icon clearmarks" onclick={() => { inFrame = null; outFrame = null; }} aria-label="Clear marks" title="Clear marks — X">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" fill="none" /></svg>
+            </button>
+          {/if}
         </div>
+        <span class="marks-readout tc">
+          <span class:unset={inFrame === null}>{inFrame === null ? 'in —' : tcAt(inFrame)}</span>
+          <span class="marks-sep" aria-hidden="true">/</span>
+          <span class:unset={outFrame === null}>{outFrame === null ? 'out —' : tcAt(outFrame)}</span>
+        </span>
       </div>
 
       <div class="side right volume">
@@ -865,7 +891,11 @@
 <style>
   /* Review room world: strictly neutral, R=G=B, no gradients, no tinted
      chrome. The stage background is the surround control's territory. */
-  .player { background: var(--n-050, #101010); color: var(--n-800, #c4c4c4); padding: 16px; }
+  /* A column so the stage can be handed the height the transport does not use.
+     Without a definite height to divide, the stage sized to its content and the
+     content sized to the stage -- a loop that settled wherever it happened to
+     start, which is why the picture sat in a box far smaller than the window. */
+  .player { display: flex; flex-direction: column; min-height: 0; height: 100%; background: var(--n-050, #101010); color: var(--n-800, #c4c4c4); padding: 16px; }
   /* The stage reserves the picture's shape and the frame box fills it, so the
      box is exactly the picture: no letterboxing inside it, which is what keeps
      the annotation canvas (inset:0 on the box) on the footage.
@@ -875,8 +905,10 @@
      identical for 540 and 1080. Switching quality rescales the picture without
      moving the box, which is what it looked like before: the 540 proxy is
      960px wide and simply rendered smaller. */
-  .stage { display: grid; place-items: center; min-height: 120px; }
-  .frame-box { position: relative; width: min(100%, calc(72vh * var(--ar, 1.7778))); }
+  /* The stage is given the height the transport does not use, and the picture
+     fills it: width comes from boxWidth, measured, not from a vh guess. */
+  .stage { flex: 1; display: grid; place-items: center; min-height: 120px; overflow: hidden; }
+  .frame-box { position: relative; width: min(100%, calc(72vh * var(--ar, 1.7778))); max-height: 100%; }
   video { display: block; width: 100%; height: auto; background: #000000; }
   .watermark {
     position: absolute;
@@ -900,7 +932,7 @@
   .watermark:not(.tiled)[data-position='bottom_left'] { align-items: flex-end; justify-content: flex-start; }
   .watermark:not(.tiled)[data-position='bottom_right'] { align-items: flex-end; justify-content: flex-end; }
   .watermark:not(.tiled)[data-position='center'] { align-items: center; justify-content: center; }
-  .transport { padding-top: 12px; font-family: var(--font-ui, system-ui); }
+  .transport { flex: none; padding-top: 12px; font-family: var(--font-ui, system-ui); }
   .transport-row { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
   /* One row, three tracks. The outer two are equal, so whatever they hold, the
      deck in the middle stays on the stage's centre line. Copy-link and volume
@@ -909,14 +941,22 @@
   .transport-row.main { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; }
   .side { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .side.right { justify-self: end; }
-  /* The instrument: timecode, transport, marks. One group, centred together --
-     they are read together, so they should not be scattered to three corners. */
-  .deck { display: flex; align-items: center; gap: 20px; justify-self: center; }
+  /* The instrument: timecode, transport, marks. One grid, two rows, and the
+     rows are the point. Every control lives on a fixed 34px band so the play
+     button, the timecode and Set in all sit on one line; every secondary label
+     lives on the band underneath. Before this each group was its own flex
+     column finding its own centre, so a two-line readout pushed its neighbours
+     around and nothing lined up with anything. */
+  .deck { display: grid; grid-template-columns: auto auto auto; grid-template-rows: 34px 14px; align-items: center; column-gap: 24px; row-gap: 0; justify-self: center; }
+  .deck > .readout { grid-row: 1; grid-column: 1; justify-self: end; }
+  .deck > .readout-sub { grid-row: 2; grid-column: 1; justify-self: end; }
+  .deck > .cluster { grid-row: 1; grid-column: 2; justify-self: center; }
+  .deck > .shuttle { grid-row: 2; grid-column: 2; justify-self: center; }
+  .deck > .marks { grid-row: 1; grid-column: 3; justify-self: start; }
+  .deck > .marks-readout { grid-row: 2; grid-column: 3; justify-self: start; }
   .cluster { display: flex; align-items: center; gap: 2px; }
-  /* Marks and their readout are one control: the readout used to sit under the
-     timeline, nowhere near the buttons that set it. */
-  .marks { display: flex; flex-direction: column; align-items: center; gap: 3px; }
-  .marks-readout { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--n-700, #9a9a9a); }
+  .marks { display: flex; align-items: center; gap: 2px; }
+  .marks-readout { display: flex; align-items: center; gap: 6px; font-size: 11px; line-height: 1; color: var(--n-700, #9a9a9a); }
   .marks-readout .unset { color: var(--n-500, #565656); }
   .marks-sep { color: var(--n-400, #3d3d3d); }
   .clearmarks { width: 24px; height: 24px; margin-left: 4px; }
@@ -925,7 +965,13 @@
   .side.volume { gap: 8px; }
   .side.volume .vol { margin-right: 10px; }
   /* Timecode reads as a number, not as prose: fixed width so it does not jitter. */
-  .readout { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-width: 118px; }
+  .readout { display: flex; align-items: center; min-width: 108px; justify-content: flex-end; }
+  .readout-sub { display: flex; align-items: center; font-size: 11px; line-height: 1; color: var(--n-600, #767676); }
+  /* Every button on the primary band is the same height, or "aligned" is a
+     coincidence that breaks the first time a label changes. */
+  .deck button { height: 30px; display: inline-flex; align-items: center; }
+  .icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; }
+  .deck .icon.play { width: 34px; height: 34px; }
 
   /* Fullscreen controls: over the picture, and gone when they are not wanted.
      They only fade while playing -- a still frame with no controls is a stuck
@@ -954,7 +1000,7 @@
   .icon.play { width: 38px; height: 38px; background: var(--n-300, #2e2e2e); color: var(--n-900, #e9e9e9); }
   .icon.play:hover { background: var(--n-400, #3d3d3d); }
   .icon.step svg { opacity: 0.9; }
-  .shuttle { margin-left: 6px; color: var(--n-700, #9a9a9a); font-size: 12px; font-weight: 600; }
+  .shuttle { color: var(--n-700, #9a9a9a); font-size: 11px; line-height: 1; font-weight: 600; min-height: 1em; }
   /* Volume: a neutral track, no accent fill. */
   .vol { width: 84px; height: 3px; appearance: none; background: var(--n-300, #2e2e2e); border-radius: 2px; padding: 0; }
   .vol::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; border-radius: 50%; background: var(--n-800, #c4c4c4); }
@@ -966,7 +1012,6 @@
      a wide screen, full height on a tall one. The frame box still hugs the
      picture, so drawings stay on the footage. */
   .stage:fullscreen { width: 100vw; height: 100vh; }
-  .stage:fullscreen .frame-box { width: min(100vw, calc(100vh * var(--ar, 1.7778))); }
   .transport-row.settings { margin-top: 10px; justify-content: flex-start; }
   .grow { flex: 1; }
   .readout { display: grid; text-align: center; gap: 2px; }

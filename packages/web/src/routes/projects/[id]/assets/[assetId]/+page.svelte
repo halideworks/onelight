@@ -1251,15 +1251,22 @@
   .content { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 420px); align-items: stretch; height: calc(100vh - 52px); transition: grid-template-columns 180ms ease; }
   .content.notes-closed { grid-template-columns: minmax(0, 1fr) 0px; }
   .content.notes-closed .rail { overflow: hidden; }
-  .maincol { min-width: 0; overflow-y: auto; }
+  /* A column too, so the player has a definite height to divide. overflow
+     hidden rather than auto: the stage shrinks to fit instead of the page
+     growing a scrollbar and hiding the transport below the fold. */
+  .maincol { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+  .maincol > :global(.player) { flex: 1; min-height: 0; }
   /* The handle sits on the rail's LEFT edge, against the stage, where the rail
      meets the picture. On the right it was pinned to the window edge, which is
      both the last place you look and exactly where it disappears when the rail
      is closed. Anchored to the rail's inside edge, it travels with the rail and
      is always the thing between the two panes. */
-  .railtoggle { position: absolute; top: 10px; right: clamp(320px, 26vw, 420px); z-index: 5; width: 20px; height: 40px; padding: 0; border-radius: var(--radius) 0 0 var(--radius); background: var(--n-200); color: var(--n-700); font-size: 13px; line-height: 1; transition: right 180ms ease; }
+  .railtoggle { position: absolute; top: 10px; right: clamp(320px, 26vw, 420px); z-index: 5; width: 22px; height: 44px; padding: 0; border-radius: var(--radius) 0 0 var(--radius); background: var(--n-200); color: var(--n-700); font-size: 13px; line-height: 1; transition: right 180ms ease, width 180ms ease, height 180ms ease; }
   .railtoggle:hover { background: var(--n-300); color: var(--n-900); }
-  .content.notes-closed .railtoggle { right: 0; }
+  /* Closed, this is the only way back to the notes, so it stops being a sliver:
+     a 22px tab against the window edge was a dart-throw. */
+  .content.notes-closed .railtoggle { right: 0; width: 36px; height: 72px; font-size: 16px; background: var(--n-300); color: var(--n-900); }
+  .content.notes-closed .railtoggle:hover { background: var(--n-400); }
   @media (prefers-reduced-motion: reduce) {
     .railtoggle { transition: none; }
   }
@@ -1354,6 +1361,10 @@
   .notes article div { flex: 1; }
   .notes article p { margin: 6px 0 0; color: var(--n-800); line-height: 1.45; white-space: pre-wrap; }
   .notes article.completed p { color: var(--n-500); }
+  /* A resolved note is still a note about a moment: it keeps its timecode, keeps
+     seeking, and only its prose steps back. The ring matches the timeline. */
+  .notes article.completed .chip { background: transparent; box-shadow: inset 0 0 0 1px var(--n-400); color: var(--n-700); }
+  .notes article.completed .chip:hover { background: var(--n-200); color: var(--n-900); }
   .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .head strong { color: var(--n-900); font-size: var(--text-13); font-weight: 600; }
   /* The timecode is the note's address: centred, tabular, and big enough to
