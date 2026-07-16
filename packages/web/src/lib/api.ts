@@ -96,8 +96,11 @@ export const apiPatch = <T>(
     ...init,
   });
 
-export const apiDelete = (path: string, init?: ApiInit): Promise<void> =>
-  api<void>(path, { method: "DELETE", ...init });
+/* Defaults to void, because most DELETEs answer 204. Some answer with the
+   object they changed -- reopening a comment returns the reopened comment --
+   so the shape is a parameter rather than a second helper. */
+export const apiDelete = <T = void>(path: string, init?: ApiInit): Promise<T> =>
+  api<T>(path, { method: "DELETE", ...init });
 
 export const messageFrom = (caught: unknown, fallback: string): string =>
   caught instanceof ApiError || caught instanceof Error

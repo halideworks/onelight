@@ -245,6 +245,71 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       expect(body.completed_by).toBe(seed.editor.id);
     });
 
+    /* Resolving used to be one-way: completedAt could be set and never cleared,
+       so a note resolved by mistake, or reopened because the fix did not hold,
+       was stuck resolved. */
+    it("reopens a completed comment and clears who completed it", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const createdResponse = await postComment(
+        h,
+        seed.commenter.cookie,
+        seed.media.versionId,
+        { body_text: "this came back" },
+      );
+      const created = await json<{ id: string }>(createdResponse);
+      await req(h, `/api/v1/comments/${created.id}/complete`, {
+        method: "POST",
+        cookie: seed.editor.cookie,
+      });
+      const reopened = await req(h, `/api/v1/comments/${created.id}/complete`, {
+        method: "DELETE",
+        cookie: seed.editor.cookie,
+      });
+      expect(reopened.status).toBe(200);
+      const body = await json(reopened);
+      expect(body.id).toBe(created.id);
+      expect(body.completed_at).toBeNull();
+      expect(body.completed_by).toBeNull();
+      // Still there, still the same note: reopening is not deleting.
+      expect(body.body_text).toBe("this came back");
+      // And it round-trips: resolve, reopen, resolve again.
+      const again = await req(h, `/api/v1/comments/${created.id}/complete`, {
+        method: "POST",
+        cookie: seed.editor.cookie,
+      });
+      expect((await json(again)).completed_at).toBeTruthy();
+    });
+
+    it("refuses to reopen for someone with no grant on the project", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const createdResponse = await postComment(
+        h,
+        seed.commenter.cookie,
+        seed.media.versionId,
+        { body_text: "guarded" },
+      );
+      const created = await json<{ id: string }>(createdResponse);
+      await req(h, `/api/v1/comments/${created.id}/complete`, {
+        method: "POST",
+        cookie: seed.editor.cookie,
+      });
+      const outsider = await req(h, `/api/v1/comments/${created.id}/complete`, {
+        method: "DELETE",
+        cookie: seed.nograntee.cookie,
+      });
+      // 403, the same answer this suite already pins for a viewer trying to
+      // comment: insufficient role, not a missing object.
+      expect(outsider.status).toBe(403);
+      // A viewer can read the note but not reopen it either.
+      const viewer = await req(h, `/api/v1/comments/${created.id}/complete`, {
+        method: "DELETE",
+        cookie: seed.viewer.cookie,
+      });
+      expect(viewer.status).toBe(403);
+    });
+
     it("adds and removes named reaction codes", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

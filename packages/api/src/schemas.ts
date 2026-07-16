@@ -811,6 +811,7 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: { "201": created(comment) },
   },
   "POST /comments/:id/complete": { responses: { "200": ok(comment) } },
+  "DELETE /comments/:id/complete": { responses: { "200": ok(comment) } },
   "POST /comments/:id/reactions": {
     request: bodies.reactionCreate,
     responses: { "204": noContent },
