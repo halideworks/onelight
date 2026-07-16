@@ -184,6 +184,10 @@ export const bodies = {
   shareAssetsAdd: z.object({
     asset_ids: z.array(z.string()).min(1).max(1000),
   }),
+  /* Every asset in the share, exactly once, in the order wanted. */
+  shareAssetsReorder: z.object({
+    asset_ids: z.array(z.string()).min(1).max(1000),
+  }),
   webhookCreate: z.object({
     url: z.string().url(),
     secret: z.string().min(16).optional(),
@@ -376,6 +380,8 @@ const comment = z.object({
   tags: z.array(z.string()),
   /* Present on list reads; single-comment writes return the row alone. */
   attachments: z.array(commentAttachment).optional(),
+  /* Share comment lists only: whether the requesting viewer wrote it. */
+  mine: z.boolean().optional(),
 });
 
 const signedUrl = z.object({ url: z.string(), expires_at: timestamp });
@@ -472,6 +478,8 @@ const share = z.object({
   show_all_versions: z.boolean(),
   watermark_spec: jsonRecord.nullable(),
   brand: jsonRecord.nullable(),
+  /* Public path to the share's logo; null without one. */
+  logo_url: z.string().nullable(),
   created_by: z.string(),
   revoked_at: timestamp.nullable(),
   created_at: timestamp,
@@ -637,6 +645,7 @@ const publicShare = z.object({
   revoked_at: timestamp.nullable(),
   watermark: z.boolean(),
   brand: jsonRecord.nullable(),
+  logo_url: z.string().nullable(),
 });
 
 const publicViewer = z.object({
@@ -1038,6 +1047,25 @@ export const routeDocs: Record<string, RouteDoc> = {
     request: bodies.sharePatch,
     responses: { "200": ok(share) },
   },
+  "PATCH /shares/:id/assets": {
+    request: bodies.shareAssetsReorder,
+    responses: {
+      "200": ok(
+        list(z.object({ asset_id: z.string(), sort_order: z.number().int() })),
+      ),
+    },
+  },
+  "DELETE /shares/:id/assets/:assetId": { responses: { "204": noContent } },
+  "PUT /shares/:id/logo": {
+    requestContentType: "image/png",
+    responses: { "200": ok(z.object({ logo_url: z.string() })) },
+  },
+  "DELETE /shares/:id/logo": { responses: { "204": noContent } },
+  "GET /s/:slug/logo": {
+    query: { v: { description: "Cache-busting key.", required: false } },
+    responses: { "200": binary("image/png") },
+  },
+  "GET /s/:slug/unfurl.png": { responses: { "200": binary("image/png") } },
   "POST /shares/:id/assets": {
     summary:
       "Add assets to an existing share. Assets already in it are skipped.",
@@ -1287,6 +1315,22 @@ export const routeDocs: Record<string, RouteDoc> = {
   "GET /media/*": {
     query: { token: { description: "Signed media token.", required: true } },
     responses: { "200": binary("application/octet-stream") },
+  },
+  "GET /trash": {
+    responses: {
+      "200": ok(
+        list(
+          z.object({
+            id: z.string(),
+            name: z.string(),
+            kind: z.string(),
+            project_id: z.string(),
+            project_name: z.string(),
+            deleted_at: timestamp.nullable(),
+          }),
+        ),
+      ),
+    },
   },
   "GET /audit": {
     query: { ...paging, action: { description: "Filter by action." } },

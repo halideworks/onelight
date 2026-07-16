@@ -409,6 +409,44 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
     });
   });
 
+  describe("trash", () => {
+    it("lists trashed assets for admins and feeds restore", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin);
+      const media = await seedAssetVersion(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+      });
+      await req(h, `/api/v1/assets/${media.assetId}/trash`, {
+        method: "POST",
+        cookie: seed.admin.cookie,
+      });
+      const member = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      expect(
+        (await req(h, "/api/v1/trash", { cookie: member.cookie })).status,
+      ).toBe(403);
+      const listed = await json<{
+        items: Array<{ id: string; project_name: string }>;
+      }>(await req(h, "/api/v1/trash", { cookie: seed.admin.cookie }));
+      const row = listed.items.find((item) => item.id === media.assetId);
+      expect(row).toBeDefined();
+      expect(row?.project_name).toBeTruthy();
+      await req(h, `/api/v1/assets/${media.assetId}/restore`, {
+        method: "POST",
+        cookie: seed.admin.cookie,
+      });
+      const after = await json<{ items: Array<{ id: string }> }>(
+        await req(h, "/api/v1/trash", { cookie: seed.admin.cookie }),
+      );
+      expect(after.items.some((item) => item.id === media.assetId)).toBe(false);
+    });
+  });
+
   describe("audit", () => {
     it("records actions, filters by action, and paginates", async () => {
       const h = ctx.h();

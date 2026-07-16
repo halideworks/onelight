@@ -1,7 +1,7 @@
 <script lang="ts">
   import { PALETTES } from '@onelight/core';
   import { page } from '$app/state';
-  import { api, listShareViewers, messageFrom, revokeShare, updateShare } from '$lib/api.js';
+  import { api, apiDelete, apiPatch, listShareViewers, messageFrom, revokeShare, updateShare } from '$lib/api.js';
   import type { Share, SharePatchBody, ShareViewer, WatermarkSpec } from '$lib/api.js';
   import { askConfirm } from '$lib/confirm.svelte.js';
   import { copyText } from '$lib/clipboard.js';
@@ -197,6 +197,106 @@
     if (brand.colors) return pageWashFromStops(brand.colors[0], brand.colors[1]);
     return pageWashFor(brand.palette ?? null);
   });
+
+  /* ---- curation: order and membership of the reel ---- */
+
+  let draggingAsset = $state<string | null>(null);
+  let dropBefore = $state<string | null>(null);
+
+  const persistOrder = async (ordered: Asset[]): Promise<void> => {
+    if (!share) return;
+    try {
+      await apiPatch(`/api/v1/shares/${share.id}/assets`, {
+        asset_ids: ordered.map((asset) => asset.id)
+      });
+      assets = ordered;
+      error = '';
+      saved = 'Order saved';
+      setTimeout(() => {
+        if (saved === 'Order saved') saved = '';
+      }, 1600);
+    } catch (caught) {
+      error = messageFrom(caught, 'The order could not be saved.');
+    }
+  };
+
+  const dropOn = (targetId: string | null): void => {
+    const dragged = draggingAsset;
+    draggingAsset = null;
+    dropBefore = null;
+    if (!dragged || dragged === targetId) return;
+    const without = assets.filter((asset) => asset.id !== dragged);
+    const moved = assets.find((asset) => asset.id === dragged);
+    if (!moved) return;
+    const at = targetId ? without.findIndex((asset) => asset.id === targetId) : without.length;
+    const ordered = [...without.slice(0, at < 0 ? without.length : at), moved, ...without.slice(at < 0 ? without.length : at)];
+    void persistOrder(ordered);
+  };
+
+  const removeAsset = async (asset: Asset): Promise<void> => {
+    if (!share) return;
+    if (
+      !(await askConfirm({
+        title: `Take "${asset.name}" out of this share?`,
+        body: 'The asset itself is untouched; it just stops being in this reel.',
+        confirmLabel: 'Remove',
+        danger: true
+      }))
+    )
+      return;
+    try {
+      await apiDelete(`/api/v1/shares/${share.id}/assets/${asset.id}`);
+      assets = assets.filter((entry) => entry.id !== asset.id);
+      error = '';
+    } catch (caught) {
+      error = messageFrom(caught, 'It could not be removed.');
+    }
+  };
+
+  /* ---- the logo (brand, design doc section 11) ---- */
+
+  let logoUploading = $state(false);
+
+  const uploadLogo = async (event: Event): Promise<void> => {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file || !share) return;
+    logoUploading = true;
+    try {
+      const response = await fetch(`/api/v1/shares/${share.id}/logo`, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        body: file
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
+        throw new Error(body?.error?.message ?? 'The logo could not be uploaded.');
+      }
+      share = await api<Share>(`/api/v1/shares/${share.id}`);
+      error = '';
+      saved = 'Logo saved';
+      setTimeout(() => {
+        if (saved === 'Logo saved') saved = '';
+      }, 1600);
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : 'The logo could not be uploaded.';
+    } finally {
+      logoUploading = false;
+    }
+  };
+
+  const removeLogo = async (): Promise<void> => {
+    if (!share) return;
+    try {
+      const response = await fetch(`/api/v1/shares/${share.id}/logo`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('The logo could not be removed.');
+      share = await api<Share>(`/api/v1/shares/${share.id}`);
+      error = '';
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : 'The logo could not be removed.';
+    }
+  };
 
   /* ---- watermark ---- */
 
@@ -473,6 +573,19 @@
               </button>
             {/if}
           </div>
+          <div class="logorow">
+            <span class="fieldname">Logo</span>
+            {#if share.logo_url}
+              <img class="logopreview" src={share.logo_url} alt="" />
+            {/if}
+            <label class="quiet uploadish" class:disabled={logoUploading}>
+              <input type="file" class="attach-hidden" accept="image/png,image/jpeg,image/webp,image/svg+xml" disabled={logoUploading} onchange={(event) => void uploadLogo(event)} />
+              {logoUploading ? 'Uploading' : share.logo_url ? 'Change' : 'Upload'}
+            </label>
+            {#if share.logo_url}
+              <button type="button" class="quiet" onclick={() => void removeLogo()}>Remove</button>
+            {/if}
+          </div>
           {#if share.kind === 'review'}
             <div class="playerpick" role="group" aria-label="Player">
               <span class="fieldname">Player</span>
@@ -573,23 +686,60 @@
           {#if assets.length === 0}
             <p class="empty">Nothing is in this share yet. Add assets from the project page: select them and right-click, or drag them onto the share in the rail.</p>
           {:else}
+            <p class="sub">Drag to set the order the share plays in.</p>
             <div class="contents">
               {#each assets as asset (asset.id)}
                 {@const entry = media.entries[asset.id]}
-                <a
-                  class="content"
-                  href={`/projects/${pretty(projectId ?? '', project?.name)}/assets/${pretty(asset.id, asset.name)}`}
-                  title={asset.name}
-                  use:observeMedia={asset}
+                <div
+                  class="contentwrap"
+                  class:dropbefore={dropBefore === asset.id}
+                  class:dragging={draggingAsset === asset.id}
+                  role="listitem"
+                  draggable="true"
+                  ondragstart={(event) => {
+                    draggingAsset = asset.id;
+                    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+                  }}
+                  ondragend={() => { draggingAsset = null; dropBefore = null; }}
+                  ondragover={(event) => {
+                    if (!draggingAsset || draggingAsset === asset.id) return;
+                    event.preventDefault();
+                    dropBefore = asset.id;
+                  }}
+                  ondragleave={() => { if (dropBefore === asset.id) dropBefore = null; }}
+                  ondrop={(event) => { event.preventDefault(); dropOn(asset.id); }}
                 >
-                  {#if entry?.media?.posterUrl}
-                    <img src={entry.media.posterUrl} alt="" loading="lazy" />
-                  {:else}
-                    <span class="contentblank" aria-hidden="true"></span>
-                  {/if}
-                  <span class="contentname">{asset.name}</span>
-                </a>
+                  <a
+                    class="content"
+                    href={`/projects/${pretty(projectId ?? '', project?.name)}/assets/${pretty(asset.id, asset.name)}`}
+                    title={asset.name}
+                    use:observeMedia={asset}
+                  >
+                    {#if entry?.media?.posterUrl}
+                      <img src={entry.media.posterUrl} alt="" loading="lazy" />
+                    {:else}
+                      <span class="contentblank" aria-hidden="true"></span>
+                    {/if}
+                    <span class="contentname">{asset.name}</span>
+                  </a>
+                  <button
+                    type="button"
+                    class="contentdrop"
+                    aria-label={`Remove ${asset.name} from this share`}
+                    title="Remove from this share"
+                    onclick={() => void removeAsset(asset)}
+                  >×</button>
+                </div>
               {/each}
+              {#if draggingAsset}
+                <div
+                  class="dropend"
+                  class:armed={dropBefore === null}
+                  role="presentation"
+                  ondragover={(event) => { event.preventDefault(); dropBefore = null; }}
+                  ondrop={(event) => { event.preventDefault(); dropOn(null); }}
+                >to the end</div>
+              {/if}
             </div>
           {/if}
         </section>
@@ -726,6 +876,20 @@
 
   /* ---- contents ---- */
   .contents { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 8px; }
+  .contentwrap { position: relative; }
+  .contentwrap.dragging { opacity: 0.4; }
+  .contentwrap.dropbefore { outline: 2px solid var(--accent-bright); outline-offset: 2px; border-radius: var(--radius); }
+  .contentdrop { position: absolute; top: 4px; right: 4px; display: none; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: rgba(6, 9, 14, 0.85); color: #fff; font-size: 13px; line-height: 1; cursor: pointer; }
+  .contentwrap:hover .contentdrop, .contentdrop:focus-visible { display: grid; }
+  .contentdrop:hover { background: var(--warn); color: #12080a; }
+  .dropend { display: grid; place-items: center; min-height: 84px; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text-dim); font-size: var(--text-12); }
+  .dropend.armed { outline: 2px solid var(--accent-bright); outline-offset: -2px; }
+  .logorow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .logopreview { max-height: 36px; max-width: 140px; object-fit: contain; border-radius: 2px; }
+  .uploadish { display: inline-flex; align-items: center; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 14px; font-size: var(--text-13); font-weight: 500; cursor: pointer; }
+  .uploadish:hover { background: var(--ink-300); }
+  .uploadish.disabled { opacity: 0.5; cursor: default; }
+  .attach-hidden { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
   .content { display: grid; gap: 5px; color: var(--ink-text-dim); text-decoration: none; }
   .content img, .contentblank { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; border-radius: var(--radius); background: var(--ink-200); }
   .content:hover { color: var(--ink-text); }

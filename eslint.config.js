@@ -11,6 +11,9 @@ export default tseslint.config(
       "**/node_modules/**",
       "**/coverage/**",
       "qa/.artifacts/**",
+      // Plain driven-browser scripts, run in a Playwright container against a
+      // live instance; not part of the typed project graph.
+      "e2e/**",
       "**/*.config.ts",
       "**/*.config.js",
       "vitest.config.ts",

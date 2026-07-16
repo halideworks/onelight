@@ -114,6 +114,34 @@ A third pass the same day, on the room's design and the admin surfaces:
   rows, project settings to 1600px, and the projects index grid fills the
   window with covers that scale (16:9) instead of clamping at one height.
 
+A ninth pass closed the loop on the client workflow and the admin surfaces:
+
+- **Clients decide from the room.** Approve and Request changes sit in the
+  bar of both rooms, calling the approval endpoint that had been dark; one
+  click records on the asset and notifies the team, the other click takes it
+  back. Viewers also see Edit and Remove on their own notes (`mine` on the
+  share comment wire, computed server-side from the viewer key; a freshly
+  posted note is marked mine locally, which the e2e suite caught).
+- **Shares are curated.** `PATCH /shares/:id/assets` reorders (the body names
+  the exact set), `DELETE /shares/:id/assets/:assetId` removes; the share
+  page's contents drag to reorder and shed on hover.
+- **The brand carries a logo** (`PUT/DELETE /shares/:id/logo`, served
+  publicly at `GET /s/:slug/logo` since it fronts the access prompt). It
+  survives colour edits (the logo key is server-managed inside brand_json),
+  and the room and access page wear it.
+- **Links unfurl with a picture**: `GET /s/:slug/unfurl.png` serves the first
+  asset's poster publicly, and og.ts points crawlers at it -- except behind a
+  passphrase, where unfurls stay pictureless on purpose.
+- **Admins get Trash and Webhooks pages** (`GET /trash` is new; webhooks CRUD
+  existed) plus the settings index links.
+- **The share room works on a phone**: the preview bar wraps instead of
+  pushing the room sideways (found by the mobile checks; 0px overflow at
+  390px now). Deeper phone polish -- the transport density, the proscenium
+  padding at small widths -- is still open.
+- **The browser e2e suite is committed** (`e2e/`): self-seeding, env-driven
+  specs for the share flows and the manager surfaces, run from the Playwright
+  container against a live instance. Wiring it into CI is open.
+
 A fourth pass, on David's design notes:
 
 - **The presentation room is the client moment.** A presentation share opens
@@ -193,8 +221,7 @@ A seventh pass: notes become a working surface everywhere.
   button says Post note, and the rail hosts the drawing controls (draw
   toggle plus pen/arrow/box) through the player's new setDraw API -- the
   full instrument keeps its own controls, simple chrome never shows them.
-- Attachment thumbnails for images (inline previews instead of chips) are
-  the natural next step; viewer-side attachment deletion has no endpoint.
+- Viewer-side attachment deletion has no endpoint.
 
 An eighth pass: pictures inline, timecode everywhere, words on the frame.
 

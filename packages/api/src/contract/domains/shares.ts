@@ -193,6 +193,179 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
       expect(assertSnakeCaseKeys(assetsBody)).toEqual([]);
     });
 
+    it("reorders and removes share assets, manager only", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const fixture = await makeShare(h, seed);
+      const second = await seedAssetVersion(h, {
+        workspaceId: seed.workspaceId,
+        projectId: fixture.projectId,
+        userId: seed.admin.id,
+      });
+      await req(h, `/api/v1/shares/${fixture.shareId}/assets`, {
+        cookie: seed.admin.cookie,
+        json: { asset_ids: [second.assetId] },
+      });
+      // Reorder must name the exact set.
+      const partial = await req(h, `/api/v1/shares/${fixture.shareId}/assets`, {
+        method: "PATCH",
+        cookie: seed.admin.cookie,
+        json: { asset_ids: [second.assetId] },
+      });
+      expect(partial.status).toBe(400);
+      const reordered = await req(
+        h,
+        `/api/v1/shares/${fixture.shareId}/assets`,
+        {
+          method: "PATCH",
+          cookie: seed.admin.cookie,
+          json: { asset_ids: [second.assetId, fixture.assetId] },
+        },
+      );
+      expect(reordered.status).toBe(200);
+      // The public listing follows the new order.
+      const viewer = await accessShare(h, fixture.slug);
+      const listed = await json<{ items: Array<{ id: string }> }>(
+        await req(h, `/api/v1/s/${fixture.slug}/assets`, {
+          cookie: viewer.cookie,
+        }),
+      );
+      expect(listed.items.map((item) => item.id)).toEqual([
+        second.assetId,
+        fixture.assetId,
+      ]);
+      // Removal takes one out; a repeat is a 404.
+      const removed = await req(
+        h,
+        `/api/v1/shares/${fixture.shareId}/assets/${second.assetId}`,
+        { method: "DELETE", cookie: seed.admin.cookie },
+      );
+      expect(removed.status).toBe(204);
+      const again = await req(
+        h,
+        `/api/v1/shares/${fixture.shareId}/assets/${second.assetId}`,
+        { method: "DELETE", cookie: seed.admin.cookie },
+      );
+      expect(again.status).toBe(404);
+      const after = await json<{ items: Array<{ id: string }> }>(
+        await req(h, `/api/v1/s/${fixture.slug}/assets`, {
+          cookie: viewer.cookie,
+        }),
+      );
+      expect(after.items.map((item) => item.id)).toEqual([fixture.assetId]);
+    });
+
+    ctx.itBlob(
+      "carries a logo end to end and survives brand edits",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const fixture = await makeShare(h, seed);
+        const stored = await req(h, `/api/v1/shares/${fixture.shareId}/logo`, {
+          method: "PUT",
+          cookie: seed.admin.cookie,
+          body: "png-logo-bytes",
+          headers: { "content-type": "image/png" },
+        });
+        expect(stored.status).toBe(200);
+        // The public bootstrap carries a URL, never the blob key.
+        const viewer = await accessShare(h, fixture.slug);
+        const shell = await json<{
+          share: { logo_url: string | null; brand: unknown };
+        }>(
+          await req(h, `/api/v1/s/${fixture.slug}`, { cookie: viewer.cookie }),
+        );
+        expect(shell.share.logo_url).toContain(`/s/${fixture.slug}/logo`);
+        expect(JSON.stringify(shell.share.brand ?? {})).not.toContain(
+          "logo_key",
+        );
+        // The logo itself is public: the access prompt draws it pre-viewer.
+        const fetched = await req(h, `/api/v1/s/${fixture.slug}/logo`);
+        expect(fetched.status).toBe(200);
+        expect(await fetched.text()).toBe("png-logo-bytes");
+        // Changing the colours must not drop the mark.
+        await req(h, `/api/v1/shares/${fixture.shareId}`, {
+          method: "PATCH",
+          cookie: seed.admin.cookie,
+          json: { brand: { palette: "yoai" } },
+        });
+        const kept = await json<{ share: { logo_url: string | null } }>(
+          await req(h, `/api/v1/s/${fixture.slug}`, { cookie: viewer.cookie }),
+        );
+        expect(kept.share.logo_url).toContain(`/s/${fixture.slug}/logo`);
+        // And deletion clears it.
+        const cleared = await req(h, `/api/v1/shares/${fixture.shareId}/logo`, {
+          method: "DELETE",
+          cookie: seed.admin.cookie,
+        });
+        expect(cleared.status).toBe(204);
+        const gone = await req(h, `/api/v1/s/${fixture.slug}/logo`);
+        expect(gone.status).toBe(404);
+      },
+    );
+
+    ctx.itBlob(
+      "serves the unfurl poster publicly, except behind a passphrase",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const fixture = await makeShare(h, seed);
+        // No poster yet: nothing to unfurl.
+        expect(
+          (await req(h, `/api/v1/s/${fixture.slug}/unfurl.png`)).status,
+        ).toBe(404);
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          kind: "poster",
+          content: "unfurl-poster-bytes",
+        });
+        const served = await req(h, `/api/v1/s/${fixture.slug}/unfurl.png`);
+        expect(served.status).toBe(200);
+        expect(await served.text()).toBe("unfurl-poster-bytes");
+        // A protected share unfurls without a picture.
+        const locked = await makeShare(h, seed, { passphrase: "sesame-99" });
+        await seedRendition(h, { versionId: locked.versionId, kind: "poster" });
+        expect(
+          (await req(h, `/api/v1/s/${locked.slug}/unfurl.png`)).status,
+        ).toBe(404);
+      },
+    );
+
+    it("marks a viewer's own comments as mine, and only theirs", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const fixture = await makeShare(h, seed);
+      const author = await accessShare(h, fixture.slug, { name: "Author" });
+      const posted = await json<{ id: string }>(
+        await req(
+          h,
+          `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/comments`,
+          {
+            cookie: author.cookie,
+            json: { body_text: "mine to edit" },
+            headers: { "x-forwarded-for": uniqueIp() },
+          },
+        ),
+      );
+      const listedFor = async (
+        cookie: string,
+      ): Promise<boolean | undefined> => {
+        const body = await json<{
+          items: Array<{ id: string; mine?: boolean }>;
+        }>(
+          await req(
+            h,
+            `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/comments`,
+            { cookie },
+          ),
+        );
+        return body.items.find((item) => item.id === posted.id)?.mine;
+      };
+      expect(await listedFor(author.cookie)).toBe(true);
+      const other = await accessShare(h, fixture.slug, { name: "Reader" });
+      expect(await listedFor(other.cookie)).toBe(false);
+    });
+
     it("carries the running time once the current version is probed", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

@@ -19,7 +19,8 @@
   import Lightbox from '$lib/Lightbox.svelte';
   import ProjectCover from '$lib/ProjectCover.svelte';
   import { pageWashFor, pageWashFromStops } from '$lib/washes.js';
-  import { api, apiPost, ApiError, messageFrom } from '$lib/api.js';
+  import { api, apiDelete, apiPatch, apiPost, ApiError, messageFrom } from '$lib/api.js';
+  import { askConfirm } from '$lib/confirm.svelte.js';
   import { formatTimecode, timecodeFromFrames } from '@onelight/core';
   import { annotationsFrom, markersFrom, type CommentAttachment, type ReviewComment } from '$lib/comments.js';
   import { hashtagsIn, segmentCommentBody } from '../../projects/[id]/assets/[assetId]/comment-text.js';
@@ -38,6 +39,7 @@
     expires_at: number | null;
     watermark_spec: Record<string, unknown> | null;
     brand: Brand | null;
+    logo_url: string | null;
   };
   type Asset = {
     id: string;
@@ -48,7 +50,7 @@
     poster_url: string | null;
     duration_seconds: number | null;
   };
-  type Comment = ReviewComment;
+  type Comment = ReviewComment & { mine?: boolean };
   type AssetDetail = {
     asset: { id: string; name: string; kind: string; status: string };
     versions: Array<{
@@ -250,7 +252,8 @@
       allow_download: download === 'proxy' || download === 'original' ? download : 'none',
       expires_at: typeof expires === 'number' ? expires : null,
       watermark_spec: parseSpec(),
-      brand: parseBrand()
+      brand: parseBrand(),
+      logo_url: typeof record['logo_url'] === 'string' ? record['logo_url'] : null
     };
   };
 
@@ -650,6 +653,61 @@
     }
   };
 
+  /* The client's word on the work: one click, reversible by the other
+     button. The server notifies the team. */
+  const setApproval = async (status: 'approved' | 'changes_requested'): Promise<void> => {
+    if (!selected) return;
+    const next = selected.status === status ? 'in_review' : status;
+    try {
+      await apiPatch<{ asset_id: string; status: string }>(`/api/v1/s/${slug}/approval`, {
+        asset_id: selected.id,
+        status: next
+      });
+      selected = { ...selected, status: next };
+      assets = assets.map((asset) => (asset.id === selected?.id ? { ...asset, status: next } : asset));
+      error = '';
+    } catch (caught) {
+      error = messageFrom(caught, 'The decision could not be recorded.');
+    }
+  };
+
+  /* A viewer's own note can be reworded or withdrawn; mine comes from the
+     server, which is also what enforces it. */
+  let editingNoteId = $state<string | null>(null);
+  let editingText = $state('');
+
+  const saveNoteEdit = async (comment: Comment): Promise<void> => {
+    const next = editingText.trim();
+    editingNoteId = null;
+    if (!next || next === comment.body_text) return;
+    try {
+      await apiPatch(`/api/v1/s/${slug}/comments/${comment.id}`, { body_text: next });
+      comments = comments.map((entry) => (entry.id === comment.id ? { ...entry, body_text: next } : entry));
+      error = '';
+    } catch (caught) {
+      error = messageFrom(caught, 'The note could not be changed.');
+    }
+  };
+
+  const deleteNote = async (comment: Comment): Promise<void> => {
+    if (
+      !(await askConfirm({
+        title: 'Remove this note?',
+        body: 'It disappears for everyone on this share.',
+        confirmLabel: 'Remove',
+        danger: true
+      }))
+    )
+      return;
+    try {
+      await apiDelete(`/api/v1/s/${slug}/comments/${comment.id}`);
+      comments = comments.filter((entry) => entry.id !== comment.id);
+      error = '';
+    } catch (caught) {
+      error = messageFrom(caught, 'The note could not be removed.');
+    }
+  };
+
   const setDraw = (on: boolean, tool: 'pen' | 'arrow' | 'rect' | 'text' = drawTool): void => {
     drawTool = tool;
     player?.setDraw(on, tool);
@@ -687,6 +745,9 @@
         uploaded.push({ id: row.id, filename: file.name, size: file.size, content_type: file.type });
       }
       created.attachments = uploaded;
+      /* The note I just wrote is mine by definition; the wire only says so
+         on list reads, and Edit must not wait for the next poll. */
+      created.mine = true;
       pendingFiles = [];
       /* A poll may already have delivered this comment. */
       if (!comments.some((existing) => existing.id === created.id)) comments = [...comments, created];
@@ -733,6 +794,7 @@
        alone. It used to show the tiles instead, and each one failed to open. -->
   <main class="shell access" style={`background-image: ${wash};`}>
     <div class="inner">
+      {#if share?.logo_url}<img class="sharelogo" src={share.logo_url} alt="" />{/if}
       <h1>{share ? share.title : 'Enter the review room.'}</h1>
       <form onsubmit={access}>
         {#if locked}
@@ -751,6 +813,7 @@
     <!-- The title carries the page; naming the mechanism ("Review room") over
          it was chrome the client does not need. -->
     <header>
+      {#if share.logo_url}<img class="sharelogo" src={share.logo_url} alt="" />{/if}
       <h1>{share.title}</h1>
     </header>
     <section class={`assets ${share.layout}`} aria-label="Shared assets">
@@ -799,6 +862,20 @@
           <button type="button" class="copylink" onclick={() => void copyFrameLink()}>Copy link at this timecode</button>
           {#if copyNotice}<span class="copy-note" role="status">{copyNotice}</span>{/if}
         {/if}
+        <span class="approval" role="group" aria-label="Your decision">
+          <button
+            type="button"
+            class="approve"
+            aria-pressed={selected.status === 'approved'}
+            onclick={() => void setApproval('approved')}
+          >{selected.status === 'approved' ? 'Approved' : 'Approve'}</button>
+          <button
+            type="button"
+            class="changes"
+            aria-pressed={selected.status === 'changes_requested'}
+            onclick={() => void setApproval('changes_requested')}
+          >{selected.status === 'changes_requested' ? 'Changes requested' : 'Request changes'}</button>
+        </span>
         {#if showtime && share.allow_comments}
           <button type="button" class="railtoggle" aria-pressed={!railHidden} onclick={() => { railHidden = !railHidden; }}>
             {railHidden ? 'Show notes' : 'Hide notes'}
@@ -924,6 +1001,26 @@
               {/if}
               {#if comment.annotation}<span class="drawn">Drawing</span>{/if}
             </span>
+            {#if editingNoteId === comment.id}
+              <textarea
+                class="noteedit"
+                bind:value={editingText}
+                maxlength="10000"
+                onkeydown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    void saveNoteEdit(comment);
+                  } else if (event.key === 'Escape') editingNoteId = null;
+                }}
+                onblur={() => void saveNoteEdit(comment)}
+              ></textarea>
+            {/if}
+            {#if comment.mine && editingNoteId !== comment.id}
+              <span class="noteacts">
+                <button type="button" class="linkish" onclick={() => { editingNoteId = comment.id; editingText = comment.body_text; }}>Edit</button>
+                <button type="button" class="linkish" onclick={() => void deleteNote(comment)}>Remove</button>
+              </span>
+            {/if}
             {#if comment.attachments?.length}
               <span class="files">
                 {#each comment.attachments as attachment (attachment.id)}
@@ -947,7 +1044,7 @@
                 {/each}
               </span>
             {/if}
-            <p>
+            <p class:hidden={editingNoteId === comment.id}>
               {#each segmentCommentBody(comment.body_text) as segment, index (index)}
                 {#if segment.kind === 'mention'}
                   <span class="mention">{segment.text}</span>
@@ -1106,7 +1203,9 @@
 
   /* Preview: review-room world. Full bleed, opaque, strictly neutral. */
   .preview { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; background: var(--n-050); color: var(--n-800); font-size: var(--text-13); }
-  .preview-bar { flex: none; display: flex; align-items: center; gap: var(--pad-2); padding: 10px var(--pad-2); background: var(--n-100); }
+  /* The bar wraps rather than widening the room: on a phone the title and
+     the verbs stack, and nothing ever pushes the page sideways. */
+  .preview-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px var(--pad-2); padding: 10px var(--pad-2); background: var(--n-100); }
 
   /* The picture and the rail divide what is left of the window, the way the
      review page divides it. Not ".stage": the player owns that name for its
@@ -1215,7 +1314,8 @@
   .showtime .post { background: rgba(250, 248, 244, 0.92); color: #14181f; }
   .showtime .post:hover { background: #fff; color: #0d1117; }
   .showtime .anchor { color: var(--ink-text-dim); }
-  .preview h2 { flex: 1; margin: 0; font-family: var(--font-ui); font-size: var(--text-16); font-weight: 500; color: var(--n-900); }
+  .preview h2 { flex: 1 1 100%; min-width: 0; margin: 0; font-family: var(--font-ui); font-size: var(--text-16); font-weight: 500; color: var(--n-900); overflow-wrap: anywhere; }
+  @media (min-width: 761px) { .preview h2 { flex: 1 1 auto; } }
   .preview { outline: none; }
   .preview button { border: 0; border-radius: var(--radius); background: var(--n-200); color: var(--n-800); padding: 8px 12px; font-size: var(--text-13); font-weight: 500; }
   .preview button:hover { background: var(--n-300); color: var(--n-900); }
@@ -1259,6 +1359,19 @@
   .comments textarea:focus-visible { outline: none; }
   .anchor { color: var(--n-600); }
   .composer-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .sharelogo { display: block; max-height: 56px; max-width: 240px; margin: 0 0 20px; object-fit: contain; }
+  /* The decision buttons: quiet verbs until taken, then they wear it. */
+  .approval { display: inline-flex; gap: 6px; }
+  .approval .approve[aria-pressed='true'] { background: #3f7d5c; color: #eafff3; }
+  .approval .changes[aria-pressed='true'] { background: #8a4b46; color: #ffeeec; }
+  .noteacts { display: inline-flex; gap: 10px; }
+  .linkish { border: 0; background: none; padding: 0; color: var(--n-600); font-size: var(--text-12); cursor: pointer; }
+  .linkish:hover { color: var(--n-900); text-decoration: underline; }
+  .showtime .linkish { color: var(--ink-text-dim); }
+  .showtime .linkish:hover { color: var(--ink-text); }
+  .noteedit { width: 100%; border: 0; border-radius: var(--radius); background: var(--n-150); color: var(--n-900); padding: 8px 10px; min-height: 56px; font: inherit; }
+  .showtime .noteedit { background: rgba(250, 248, 244, 0.1); color: var(--ink-text); }
+  .hidden { display: none; }
   .files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .filechip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; border: 0; border-radius: 9px; background: var(--n-150); color: var(--n-800); padding: 3px 9px; font-size: var(--text-12); cursor: pointer; }
   .filechip:hover { background: var(--n-300); color: var(--n-900); }

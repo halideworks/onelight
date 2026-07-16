@@ -5,6 +5,7 @@ import {
   eq,
   gt,
   inArray,
+  isNotNull,
   isNull,
   lt,
   ne,
@@ -887,6 +888,24 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return wire;
   };
 
+  const shareLogoUrl = (share: typeof shares.$inferSelect): string | null => {
+    const brand = share.brandJson ? parseJsonObject(share.brandJson) : {};
+    return typeof brand.logo_key === "string"
+      ? `/api/v1/s/${share.slug}/logo?v=${encodeURIComponent(brand.logo_key.split("/").pop() ?? "")}`
+      : null;
+  };
+
+  /* The brand as clients of the wire read it: the logo travels as a URL,
+     never as a blob key. */
+  const brandWire = (
+    share: typeof shares.$inferSelect,
+  ): Record<string, unknown> | null => {
+    if (!share.brandJson) return null;
+    const brand = parseJsonObject(share.brandJson);
+    delete brand.logo_key;
+    return Object.keys(brand).length ? brand : null;
+  };
+
   const shareWire = (share: typeof shares.$inferSelect) => ({
     id: share.id,
     project_id: share.projectId,
@@ -902,7 +921,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     watermark_spec: share.watermarkSpecJson
       ? parseJsonObject(share.watermarkSpecJson)
       : null,
-    brand: share.brandJson ? parseJsonObject(share.brandJson) : null,
+    brand: brandWire(share),
+    logo_url: shareLogoUrl(share),
     created_by: share.createdBy,
     revoked_at: share.revokedAt,
     created_at: share.createdAt,
@@ -924,7 +944,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     expires_at: share.expiresAt,
     revoked_at: share.revokedAt,
     watermark: shareIsWatermarked(share),
-    brand: share.brandJson ? parseJsonObject(share.brandJson) : null,
+    brand: brandWire(share),
+    logo_url: shareLogoUrl(share),
   });
 
   // Share viewers expose only their display identity; the signed viewer_key
@@ -4490,7 +4511,20 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             }),
         ...(body.brand === undefined
           ? {}
-          : { brandJson: body.brand ? JSON.stringify(body.brand) : null }),
+          : {
+              // The logo rides the brand row but is managed by its own
+              // endpoints; a colour change must not silently drop the mark.
+              brandJson: (() => {
+                const kept = share.brandJson
+                  ? parseJsonObject(share.brandJson).logo_key
+                  : undefined;
+                const next = {
+                  ...(body.brand ?? {}),
+                  ...(typeof kept === "string" ? { logo_key: kept } : {}),
+                };
+                return Object.keys(next).length ? JSON.stringify(next) : null;
+              })(),
+            }),
         ...(body.revoked ? { revokedAt: env.clock.now() } : {}),
       })
       .where(eq(shares.id, share.id))
@@ -4577,6 +4611,202 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         `share:${share.id}`,
       );
     return c.json({ share: shareWire(share), added });
+  });
+
+  /* Curation: a presentation is an ordered reel, so its order is a setting.
+     The body names every asset currently in the share, in the order wanted;
+     naming a different set is a mistake, not a merge. */
+  api.patch("/shares/:id/assets", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const share = (
+      await env.db
+        .select()
+        .from(shares)
+        .where(eq(shares.id, c.req.param("id")))
+        .limit(1)
+        .all()
+    )[0];
+    if (!share) throw errors.notFound();
+    await requireProject(share.projectId, actor, "manager");
+    const body = await jsonBody(c, bodies.shareAssetsReorder);
+    const existing = (await env.db
+      .select({ assetId: shareAssets.assetId })
+      .from(shareAssets)
+      .where(eq(shareAssets.shareId, share.id))
+      .all()) as Array<{ assetId: string }>;
+    const current = new Set(existing.map((link) => link.assetId));
+    const wanted = new Set(body.asset_ids);
+    if (
+      wanted.size !== body.asset_ids.length ||
+      current.size !== wanted.size ||
+      body.asset_ids.some((id) => !current.has(id))
+    )
+      throw errors.validation(
+        "The order must name each asset in the share exactly once.",
+      );
+    for (const [index, assetId] of body.asset_ids.entries()) {
+      await env.db
+        .update(shareAssets)
+        .set({ sortOrder: index })
+        .where(
+          and(
+            eq(shareAssets.shareId, share.id),
+            eq(shareAssets.assetId, assetId),
+          ),
+        )
+        .run();
+    }
+    await audit(
+      actor.workspaceId,
+      actor.id,
+      "share.update",
+      `share:${share.id}`,
+    );
+    return c.json({
+      items: body.asset_ids.map((assetId, index) => ({
+        asset_id: assetId,
+        sort_order: index,
+      })),
+    });
+  });
+
+  api.delete("/shares/:id/assets/:assetId", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const share = (
+      await env.db
+        .select()
+        .from(shares)
+        .where(eq(shares.id, c.req.param("id")))
+        .limit(1)
+        .all()
+    )[0];
+    if (!share) throw errors.notFound();
+    await requireProject(share.projectId, actor, "manager");
+    const link = (
+      await env.db
+        .select({ assetId: shareAssets.assetId })
+        .from(shareAssets)
+        .where(
+          and(
+            eq(shareAssets.shareId, share.id),
+            eq(shareAssets.assetId, c.req.param("assetId")),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (!link) throw errors.notFound();
+    await env.db
+      .delete(shareAssets)
+      .where(
+        and(
+          eq(shareAssets.shareId, share.id),
+          eq(shareAssets.assetId, link.assetId),
+        ),
+      )
+      .run();
+    await audit(
+      actor.workspaceId,
+      actor.id,
+      "share.update",
+      `share:${share.id}`,
+    );
+    return c.body(null, 204);
+  });
+
+  /* ---- the share's logo (brand, design doc section 11) ---- */
+
+  const LOGO_TYPES: Record<string, string> = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "image/svg+xml": "svg",
+  };
+  const LOGO_MAX_BYTES = 512 * 1024;
+
+  const logoKeyOf = (share: typeof shares.$inferSelect): string | null => {
+    const brand = share.brandJson ? parseJsonObject(share.brandJson) : {};
+    return typeof brand.logo_key === "string" ? brand.logo_key : null;
+  };
+
+  api.put("/shares/:id/logo", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const share = (
+      await env.db
+        .select()
+        .from(shares)
+        .where(eq(shares.id, c.req.param("id")))
+        .limit(1)
+        .all()
+    )[0];
+    if (!share) throw errors.notFound();
+    await requireProject(share.projectId, actor, "manager");
+    if (!env.blobStore)
+      throw errors.internal("Blob storage is not configured.");
+    const contentType =
+      (c.req.header("content-type") ?? "").split(";")[0] ?? "";
+    const extension = LOGO_TYPES[contentType];
+    if (!extension)
+      throw errors.validation("The logo must be a PNG, JPEG, WebP, or SVG.");
+    const bytes = await c.req.arrayBuffer();
+    if (bytes.byteLength === 0) throw errors.validation("The logo is empty.");
+    if (bytes.byteLength > LOGO_MAX_BYTES)
+      throw errors.validation("The logo must be under 512 KB.");
+    // A fresh key per upload, so the public URL changes and no cache can
+    // serve the old mark; the replaced blob is deleted best-effort.
+    const previous = logoKeyOf(share);
+    const key = `${actor.workspaceId}/sharelogos/${share.id}-${env.ids.ulid()}.${extension}`;
+    await env.blobStore.putStream(
+      key,
+      new Response(bytes).body as ReadableStream,
+      { contentType, size: bytes.byteLength },
+    );
+    const brand = share.brandJson ? parseJsonObject(share.brandJson) : {};
+    await env.db
+      .update(shares)
+      .set({ brandJson: JSON.stringify({ ...brand, logo_key: key }) })
+      .where(eq(shares.id, share.id))
+      .run();
+    if (previous) {
+      try {
+        await env.blobStore.delete(previous);
+      } catch {
+        // Stranded blobs are the GC reconciliation's problem.
+      }
+    }
+    return c.json({ logo_url: `/api/v1/s/${share.slug}/logo` });
+  });
+
+  api.delete("/shares/:id/logo", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const share = (
+      await env.db
+        .select()
+        .from(shares)
+        .where(eq(shares.id, c.req.param("id")))
+        .limit(1)
+        .all()
+    )[0];
+    if (!share) throw errors.notFound();
+    await requireProject(share.projectId, actor, "manager");
+    const previous = logoKeyOf(share);
+    if (previous && env.blobStore) {
+      try {
+        await env.blobStore.delete(previous);
+      } catch {
+        // The pointer is the truth.
+      }
+    }
+    const brand = share.brandJson ? parseJsonObject(share.brandJson) : {};
+    delete brand.logo_key;
+    await env.db
+      .update(shares)
+      .set({
+        brandJson: Object.keys(brand).length ? JSON.stringify(brand) : null,
+      })
+      .where(eq(shares.id, share.id))
+      .run();
+    return c.body(null, 204);
   });
 
   api.delete("/shares/:id", requireAuth, async (c) => {
@@ -4922,6 +5152,76 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     assets: await publicShareAssetsWire(projection.share, projection.assets),
   });
 
+  /* The share's logo, public by the slug's secrecy like the page itself:
+     it draws on the access prompt, before any viewer exists. */
+  api.get("/s/:slug/logo", async (c) => {
+    const share = await shareBySlug(c.req.param("slug"));
+    const key = logoKeyOf(share);
+    if (!key || !env.blobStore) throw errors.notFound();
+    const extension = key.split(".").pop() ?? "png";
+    const contentType =
+      Object.entries(LOGO_TYPES).find(([, ext]) => ext === extension)?.[0] ??
+      "image/png";
+    const stream = await env.blobStore.getStream(key);
+    return new Response(stream, {
+      headers: {
+        "Content-Type": contentType,
+        "Cache-Control": "public, max-age=86400",
+      },
+    });
+  });
+
+  /* The unfurl picture og.ts points crawlers at: the first asset's poster,
+     public by the slug's secrecy. Passphrase-protected shares serve nothing;
+     unfurls outlive chats, and the passphrase is what stands between them
+     and the content. */
+  api.get("/s/:slug/unfurl.png", async (c) => {
+    const share = await shareBySlug(c.req.param("slug"));
+    if (share.passphraseHash !== null) throw errors.notFound();
+    if (!env.blobStore) throw errors.notFound();
+    const first = (
+      await env.db
+        .select({ assetId: shareAssets.assetId })
+        .from(shareAssets)
+        .where(eq(shareAssets.shareId, share.id))
+        .orderBy(asc(shareAssets.sortOrder))
+        .limit(1)
+        .all()
+    )[0];
+    if (!first) throw errors.notFound();
+    const asset = (
+      await env.db
+        .select({ currentVersionId: assets.currentVersionId })
+        .from(assets)
+        .where(eq(assets.id, first.assetId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!asset?.currentVersionId) throw errors.notFound();
+    const poster = (
+      await env.db
+        .select({ blobKey: renditions.blobKey })
+        .from(renditions)
+        .where(
+          and(
+            eq(renditions.versionId, asset.currentVersionId),
+            eq(renditions.kind, "poster"),
+            isNull(renditions.shareId),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (!poster) throw errors.notFound();
+    const stream = await env.blobStore.getStream(poster.blobKey);
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "image/png",
+        "Cache-Control": "public, max-age=3600",
+      },
+    });
+  });
+
   root.get("/s/:slug", async (c) =>
     c.json(
       await publicShareResponse(
@@ -5144,6 +5444,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       items: rows.map((comment: typeof comments.$inferSelect) => ({
         ...publicCommentWire(comment),
         attachments: attached.get(comment.id) ?? [],
+        /* Whether this viewer wrote it: the room shows Edit and Delete only
+           where the server would allow them. The key itself never leaves. */
+        mine:
+          comment.viewerKey !== null &&
+          comment.viewerKey === projection.viewer?.viewerKey,
       })),
     });
   });
@@ -6727,6 +7032,39 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       throw errors.unauthorized();
     }
     return serveBlob(c, key, disposition);
+  });
+
+  /* What is in the trash, workspace-wide: names and when, for the restore
+     button. The purge sweep keeps this bounded. */
+  api.get("/trash", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    if (actor.role !== "admin") throw errors.forbidden();
+    const rows = (await env.db
+      .select({ asset: assets, projectName: projects.name })
+      .from(assets)
+      .innerJoin(projects, eq(assets.projectId, projects.id))
+      .where(
+        and(
+          eq(projects.workspaceId, actor.workspaceId),
+          isNotNull(assets.deletedAt),
+        ),
+      )
+      .orderBy(desc(assets.deletedAt))
+      .limit(500)
+      .all()) as Array<{
+      asset: typeof assets.$inferSelect;
+      projectName: string;
+    }>;
+    return c.json({
+      items: rows.map((row) => ({
+        id: row.asset.id,
+        name: row.asset.name,
+        kind: row.asset.kind,
+        project_id: row.asset.projectId,
+        project_name: row.projectName,
+        deleted_at: row.asset.deletedAt,
+      })),
+    });
   });
 
   api.get("/audit", requireAuth, async (c) => {

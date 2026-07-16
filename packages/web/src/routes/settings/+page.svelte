@@ -31,6 +31,7 @@
       <a href="/settings/members"><strong>Members</strong><span>Users, invites, and roles</span></a>
       {#if isAdmin}
         <a href="/settings/storage"><strong>Storage</strong><span>What each project weighs on disk</span></a>
+        <a href="/settings/trash"><strong>Trash</strong><span>Restore what was thrown away, before the purge</span></a>
         <a href="/settings/audit"><strong>Audit log</strong><span>Who did what, and when</span></a>
       {/if}
     </nav>
@@ -41,6 +42,7 @@
       <h2>System</h2>
       <nav>
         <a href="/settings/jobs"><strong>Job queue</strong><span>Transcodes, probes, and background work</span></a>
+        <a href="/settings/webhooks"><strong>Webhooks</strong><span>Signed event deliveries to other systems</span></a>
       </nav>
     </section>
   {/if}

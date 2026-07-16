@@ -1,6 +1,6 @@
-import { eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { AppDb } from "@onelight/db";
-import { shareAssets, shares } from "@onelight/db/schema";
+import { assets, renditions, shareAssets, shares } from "@onelight/db/schema";
 
 // Escapes a value for interpolation into a double-quoted HTML attribute.
 // Share titles are user controlled, so ampersands, angle brackets, and
@@ -27,12 +27,10 @@ const meta = (property: string, content: string): string =>
  * tags only: unfurls persist in chat logs and inboxes, and the passphrase
  * is the only thing standing between those and the content.
  *
- * No og:image is emitted: every poster and rendition URL this system
- * hands out is a short-lived signed-token URL (issueMediaToken and
- * issuePrivateMediaToken in app.ts), so any image URL embedded here would
- * be expired or unauthorized by the time a crawler fetched it. A public,
- * unauthenticated unfurl-image route is future work; when it exists, add
- * an og:image tag pointing at it.
+ * og:image points at the public unfurl route (GET /s/:slug/unfurl.png in
+ * app.ts, the first asset's poster), emitted only when that poster exists
+ * and the share has no passphrase: unfurls persist, so protected shares
+ * stay pictureless.
  */
 export const buildShareOgTags = async (
   db: AppDb,
@@ -82,10 +80,48 @@ export const buildShareOgTags = async (
     share.kind === "presentation"
       ? `${count} ${noun} in a presentation on Onelight`
       : `${count} ${noun} for review on Onelight`;
+  const first = (
+    await db
+      .select({ assetId: shareAssets.assetId })
+      .from(shareAssets)
+      .where(eq(shareAssets.shareId, share.id))
+      .orderBy(asc(shareAssets.sortOrder))
+      .limit(1)
+      .all()
+  )[0];
+  let hasPoster = false;
+  if (first) {
+    const asset = (
+      await db
+        .select({ currentVersionId: assets.currentVersionId })
+        .from(assets)
+        .where(eq(assets.id, first.assetId))
+        .limit(1)
+        .all()
+    )[0];
+    if (asset?.currentVersionId) {
+      const poster = (
+        await db
+          .select({ id: renditions.id })
+          .from(renditions)
+          .where(
+            and(
+              eq(renditions.versionId, asset.currentVersionId),
+              eq(renditions.kind, "poster"),
+              isNull(renditions.shareId),
+            ),
+          )
+          .limit(1)
+          .all()
+      )[0];
+      hasPoster = Boolean(poster);
+    }
+  }
   return [
     meta("og:title", share.title),
     meta("og:description", description),
     meta("og:type", "website"),
     meta("og:url", url),
+    ...(hasPoster ? [meta("og:image", `${url}/unfurl.png`)] : []),
   ].join("\n");
 };
