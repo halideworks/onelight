@@ -669,6 +669,54 @@
     dropActive = true;
   };
 
+  /* Drop anywhere on the page, not only on the upload panel.
+
+     Two things made this worth doing properly. Dragging a file onto any part of
+     the page that was not the panel did nothing, so the panel had to be found
+     first -- and the panel is the smallest thing on the screen. Worse, a file
+     dropped on a page with no drop handler makes the browser navigate to it:
+     the review page vanishes and is replaced by the .mov you were trying to
+     upload. The window guard below is what stops that, drop zone or not.
+
+     A folder-tree drag carries no files and is left to the tree. */
+  let pageDropActive = $state(false);
+  /* dragenter/leave fire for every child crossed, so a boolean flickers; the
+     depth counter only lets go when the pointer has actually left the page. */
+  let pageDropDepth = 0;
+  const isFileDrag = (event: DragEvent): boolean =>
+    !dragging && Boolean(event.dataTransfer?.types.includes('Files'));
+  const endPageDrop = (): void => {
+    pageDropDepth = 0;
+    pageDropActive = false;
+  };
+  const onPageDragEnter = (event: DragEvent): void => {
+    if (!isFileDrag(event)) return;
+    pageDropDepth += 1;
+    pageDropActive = true;
+  };
+  const onPageDragOver = (event: DragEvent): void => {
+    if (!isFileDrag(event)) return;
+    /* Both preventDefaults are required: without the dragover one the drop
+       never fires, and the browser opens the file instead. */
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  };
+  const onPageDragLeave = (event: DragEvent): void => {
+    if (!isFileDrag(event)) return;
+    pageDropDepth -= 1;
+    if (pageDropDepth <= 0) endPageDrop();
+  };
+  const onPageDrop = async (event: DragEvent): Promise<void> => {
+    if (!isFileDrag(event)) {
+      /* Not ours, but still stop the browser navigating to a dropped file. */
+      if (event.dataTransfer?.types.includes('Files')) event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    endPageDrop();
+    enqueue(await filesFromDataTransfer(event.dataTransfer as DataTransfer));
+  };
+
   /* Resumable upload: the session id stays on the item, so a retry reuses the
      session, skips completed parts, and continues from the failure. Files run
      one at a time, four parts in parallel inside each file. */
@@ -767,12 +815,34 @@
 
 <svelte:head><title>{project?.name ?? 'Project'} | Onelight</title></svelte:head>
 
-<main class="room" style={`background-image: ${wash};`}>
+<!-- Window-level, so a file dropped anywhere lands here instead of the browser
+     navigating away from the page to open it. -->
+<svelte:window
+  ondragenter={onPageDragEnter}
+  ondragover={onPageDragOver}
+  ondragleave={onPageDragLeave}
+  ondrop={onPageDrop}
+  ondragend={endPageDrop}
+/>
+
+<main class="room" class:pagedrop={pageDropActive} style={`background-image: ${wash};`}>
+  {#if pageDropActive}
+    <div class="dropveil" aria-hidden="true">
+      <div class="dropcard">
+        <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 16V4M7 9l5-5 5 5" /><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" />
+        </svg>
+        <strong>Drop to upload</strong>
+        <span>Adding to {selectedName}. Folder structure is kept.</span>
+      </div>
+    </div>
+  {/if}
   <header class="wash">
     <div class="washrow">
       <a href="/">Projects</a>
       <span class="grow"></span>
       <a href={`/projects/${projectId}/shares`}>Shares</a>
+      <a href={`/projects/${projectId}/settings`}>Settings</a>
     </div>
     <p class="eyebrow">{project?.palette ?? ''}</p>
     <h1>{project?.name ?? 'Project'}</h1>
@@ -1198,7 +1268,18 @@
 
   /* ---- uploader ---- */
   .uploader { border-radius: var(--radius-lg); padding: 14px; margin: -14px -14px var(--pad-2); }
-  .uploader.dropactive { background: var(--ink-100); }
+  /* The panel says it takes drops even when nothing is being dragged: a dashed
+     edge and a hover state, rather than a bare paragraph claiming it does. */
+  .uploader { border-radius: var(--radius-lg); box-shadow: inset 0 0 0 1px var(--ink-200); transition: box-shadow 120ms ease, background 120ms ease; }
+  .uploader:hover { box-shadow: inset 0 0 0 1px var(--ink-300); }
+  .uploader.dropactive { background: var(--ink-100); box-shadow: inset 0 0 0 2px var(--accent); }
+
+  /* Dragging over the page: one obvious target, nowhere to miss. */
+  .dropveil { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: rgba(5, 8, 12, 0.72); pointer-events: none; }
+  .dropcard { display: grid; justify-items: center; gap: 8px; padding: 28px 40px; border-radius: var(--radius-lg); background: var(--ink-100); color: var(--ink-text); box-shadow: inset 0 0 0 2px var(--accent); }
+  .dropcard strong { font-size: var(--text-20); font-weight: 600; }
+  .dropcard span { color: var(--ink-text-dim); font-size: var(--text-13); }
+  .dropcard svg { color: var(--accent-bright); }
   .upload { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
   .upload-label { color: var(--ink-text-dim); margin-right: 4px; }
   /* The native file input stays in the tree for keyboard and screen reader
