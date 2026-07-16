@@ -701,6 +701,15 @@ export const referencedBlobKeys = async (db: AppDb): Promise<Set<string>> => {
     .from(commentAttachments)
     .all())
     keys.add(row.key);
+  /* Uploaded project covers. Their upload session also names the blob, so this
+     is belt and braces today -- but a cover must not depend on a session row
+     surviving forever to keep its picture from being swept. */
+  for (const row of await db
+    .select({ key: projects.coverBlobKey })
+    .from(projects)
+    .where(isNotNull(projects.coverBlobKey))
+    .all())
+    if (row.key) keys.add(row.key);
   return keys;
 };
 

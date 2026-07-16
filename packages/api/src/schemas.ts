@@ -102,6 +102,8 @@ export const bodies = {
   folderCreate: z.object({
     name: z.string().min(1).max(200),
     parent_id: z.string().nullable().optional(),
+    /* Ignored when parent_id is given: a child inherits its parent's tree. */
+    kind: z.enum(["assets", "shares"]).optional(),
   }),
   folderPatch: z.object({
     name: z.string().min(1).max(200).optional(),
@@ -135,6 +137,7 @@ export const bodies = {
   }),
   shareCreate: z.object({
     project_id: z.string(),
+    folder_id: z.string().nullable().optional(),
     kind: shareKind.default("review"),
     title: z.string().min(1).max(200),
     layout: shareLayout.default("grid"),
@@ -150,6 +153,8 @@ export const bodies = {
   sharePatch: z.object({
     title: z.string().min(1).max(200).optional(),
     layout: shareLayout.optional(),
+    /* A 'shares' folder in the same project, or null for the Shares root. */
+    folder_id: z.string().nullable().optional(),
     passphrase: z.string().min(1).nullable().optional(),
     expires_at: z.number().int().positive().nullable().optional(),
     allow_download: allowDownload.optional(),
@@ -157,6 +162,9 @@ export const bodies = {
     show_all_versions: z.boolean().optional(),
     watermark_spec: z.record(z.unknown()).nullable().optional(),
     revoked: z.boolean().optional(),
+  }),
+  projectCoverPut: z.object({
+    upload_id: z.string(),
   }),
   shareAssetsAdd: z.object({
     asset_ids: z.array(z.string()).min(1).max(1000),
@@ -279,6 +287,7 @@ const project = z.object({
   status: z.enum(["active", "archived"]),
   palette: z.string(),
   cover_asset_id: z.string().nullable(),
+  cover_kind: z.enum(["upload", "asset", "generated"]),
   /* Null when the project has no cover, or when its cover asset has been
      deleted or has not finished producing a poster: the client falls back to
      the generated palette cover in all three cases. */
@@ -294,6 +303,7 @@ const folder = z.object({
   id: z.string(),
   project_id: z.string(),
   parent_id: z.string().nullable(),
+  kind: z.enum(["assets", "shares"]),
   name: z.string(),
   created_at: timestamp,
 });
@@ -364,14 +374,40 @@ const searchCommentHit = z.object({
   frame_in: z.number().int().nullable(),
 });
 
+const searchProjectHit = z.object({
+  type: z.literal("project"),
+  id: z.string(),
+  name: z.string(),
+  palette: z.string(),
+});
+
+const searchPersonHit = z.object({
+  type: z.literal("person"),
+  id: z.string(),
+  name: z.string(),
+  email: z.string(),
+});
+
+const searchShareHit = z.object({
+  type: z.literal("share"),
+  id: z.string(),
+  title: z.string(),
+  slug: z.string(),
+  project_id: z.string(),
+});
+
 const searchHit = z.discriminatedUnion("type", [
   searchAssetHit,
   searchCommentHit,
+  searchProjectHit,
+  searchPersonHit,
+  searchShareHit,
 ]);
 
 const share = z.object({
   id: z.string(),
   project_id: z.string(),
+  folder_id: z.string().nullable(),
   slug: z.string(),
   kind: shareKind,
   title: z.string(),
@@ -774,6 +810,12 @@ export const routeDocs: Record<string, RouteDoc> = {
     request: bodies.projectPatch,
     responses: { "200": ok(project) },
   },
+  "POST /projects/:id/cover": {
+    summary:
+      "Set a completed image upload as the project cover. The picture is not registered as an asset.",
+    request: bodies.projectCoverPut,
+    responses: { "200": ok(project) },
+  },
   "DELETE /projects/:id": { responses: { "204": noContent } },
   "GET /projects/:id/events": {
     responses: {
@@ -878,7 +920,10 @@ export const routeDocs: Record<string, RouteDoc> = {
         description: "Query text, at least two characters.",
         required: true,
       },
-      scope: { description: "assets, comments, or all (default all)." },
+      scope: {
+        description:
+          "all (default), assets, comments, projects, people, or shares.",
+      },
       ...paging,
     },
     responses: { "200": ok(page(searchHit)) },

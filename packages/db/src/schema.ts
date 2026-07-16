@@ -149,6 +149,9 @@ export const projects = sqliteTable(
         A soft reference, like assets.current_version_id: a cover pointing at a
         deleted asset reads as no cover, not as a broken row. */
     coverAssetId: text("cover_asset_id"),
+    /** An uploaded cover picture, shown as-is. Mutually exclusive with
+        coverAssetId in practice: setting either clears the other. */
+    coverBlobKey: text("cover_blob_key"),
     restricted: integer("restricted", { mode: "boolean" })
       .notNull()
       .default(false),
@@ -197,6 +200,12 @@ export const folders = sqliteTable(
     parentId: text("parent_id").references((): AnySQLiteColumn => folders.id, {
       onDelete: "cascade",
     }),
+    /** Which tree this folder belongs to. 'assets' folders hold assets;
+        'shares' folders hold shares. The two never mix: an asset is in exactly
+        one folder, a share is in any number of assets' worth of them. */
+    kind: text("kind", { enum: ["assets", "shares"] })
+      .notNull()
+      .default("assets"),
     name: text("name").notNull(),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
@@ -204,6 +213,7 @@ export const folders = sqliteTable(
   (table) => ({
     siblingUnique: uniqueIndex("folders_sibling_uq").on(
       table.projectId,
+      table.kind,
       sql`ifnull(${table.parentId}, '')`,
       table.name,
     ),
@@ -620,6 +630,11 @@ export const shares = sqliteTable("shares", {
   createdBy: text("created_by")
     .notNull()
     .references(() => users.id),
+  /** The 'shares' folder this share is filed in; null means directly under
+      the Shares root. */
+  folderId: text("folder_id").references(() => folders.id, {
+    onDelete: "set null",
+  }),
   revokedAt: integer("revoked_at"),
   createdAt: integer("created_at").notNull(),
 });

@@ -8,7 +8,7 @@
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import { uploadFile } from '$lib/upload.js';
   import ProjectCover from '$lib/ProjectCover.svelte';
-  import { washFor } from '$lib/washes.js';
+  import { pageWashFor, washFor } from '$lib/washes.js';
   import { auth } from '$lib/auth.svelte.js';
 
   type Project = {
@@ -18,6 +18,7 @@
     status: string;
     restricted: boolean;
     cover_asset_id?: string | null;
+    cover_kind?: 'upload' | 'asset' | 'generated';
     cover_url?: string | null;
     my_role?: string;
   };
@@ -54,6 +55,8 @@
      never in. */
   let coverAssets = $state<Asset[]>([]);
   let coverUploading = $state(false);
+  let coverProgress = $state(0);
+  let coverPreview = $state<string | null>(null);
   let coverNote = $state('');
   const media = createMediaCache();
 
@@ -199,9 +202,12 @@
   };
 
   const setCover = async (assetId: string | null): Promise<void> => {
+    coverNote = '';
     await patch({ cover_asset_id: assetId }, assetId ? 'Cover saved' : 'Cover reset');
+    /* Only a just-uploaded asset can lack a poster; anything already in the
+       picker below has one, because that is why it is showing a frame. */
     if (assetId && !project?.cover_url) {
-      coverNote = 'Processing the picture…';
+      coverNote = 'That clip is still processing. Its cover appears when it finishes.';
       void awaitPoster();
     }
   };
@@ -212,26 +218,44 @@
     input.value = '';
     if (!file || !projectId) return;
     coverUploading = true;
+    coverProgress = 0;
     coverNote = '';
+    error = '';
+    /* Show the file being picked before a byte has moved: the picture is on
+       this machine already, so waiting for the server to hand one back is a
+       delay with no reason to exist. */
+    if (coverPreview) URL.revokeObjectURL(coverPreview);
+    coverPreview = URL.createObjectURL(file);
     try {
-      /* An uploaded cover is an asset like any other: same upload path, same
-         poster, and it stays in the project rather than living in a second
-         kind of storage that only covers use. */
-      const uploadId = await uploadFile({ projectId, file, relativePath: file.name });
-      const asset = await apiPost<Asset>(`/api/v1/projects/${projectId}/assets`, {
-        upload_id: uploadId,
-        name: file.name
+      const uploadId = await uploadFile({
+        projectId,
+        file,
+        relativePath: file.name,
+        onProgress: ({ bytes }) => {
+          coverProgress = file.size > 0 ? Math.min(1, bytes / file.size) : 0;
+        }
       });
-      coverAssets = [asset, ...coverAssets];
-      await setCover(asset.id);
+      /* A cover is not an asset: this endpoint stores the picture and nothing
+         else, so it is done when the upload is, with no transcode to wait on. */
+      project = await apiPost<Project>(`/api/v1/projects/${projectId}/cover`, {
+        upload_id: uploadId
+      });
+      saved = 'Cover saved';
+      setTimeout(() => {
+        if (saved === 'Cover saved') saved = '';
+      }, 1600);
     } catch (caught) {
       error = messageFrom(caught, 'That picture could not be uploaded.');
     } finally {
       coverUploading = false;
+      if (coverPreview) {
+        URL.revokeObjectURL(coverPreview);
+        coverPreview = null;
+      }
     }
   };
 
-  const wash = $derived(washFor(project?.palette));
+  const wash = $derived(pageWashFor(project?.palette));
 </script>
 
 <svelte:head><title>{project?.name ?? 'Project'} settings | Onelight</title></svelte:head>
@@ -322,13 +346,24 @@
       <h2>Cover</h2>
       <p class="sub">The picture on the projects page. Without one, the project draws its own from its colour and name.</p>
       <div class="coverrow">
-        <span class="coverpreview"><ProjectCover {project} /></span>
+        <span class="coverpreview">
+          {#if coverPreview}
+            <img src={coverPreview} alt="" />
+            <span class="coverbusy" aria-hidden="true">
+              <span class="bar" style={`transform: scaleX(${coverProgress});`}></span>
+            </span>
+          {:else}
+            <ProjectCover {project} />
+          {/if}
+        </span>
         <div class="coveractions">
           <label class="uploadlabel" class:disabled={!isManager || coverUploading}>
-            <input type="file" accept="image/*,video/*" disabled={!isManager || coverUploading} onchange={(event) => void uploadCover(event)} />
-            <span>{coverUploading ? 'Uploading…' : 'Upload a picture'}</span>
+            <!-- Only what a browser will actually draw: a TIFF or an EXR would
+                 upload happily and then never appear. -->
+            <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={!isManager || coverUploading} onchange={(event) => void uploadCover(event)} />
+            <span>{coverUploading ? `Uploading ${Math.round(coverProgress * 100)}%` : 'Upload a picture'}</span>
           </label>
-          {#if project.cover_asset_id}
+          {#if project.cover_kind !== 'generated'}
             <button type="button" class="quiet" disabled={!isManager} onclick={() => void setCover(null)}>Use the generated cover</button>
           {/if}
           {#if coverNote}<p class="covernote" aria-live="polite">{coverNote}</p>{/if}
@@ -413,7 +448,7 @@
 </main>
 
 <style>
-  .room { position: relative; min-height: calc(100vh - var(--topbar-h, 0px)); background-color: var(--ink-000); background-size: 100% 100%; background-attachment: fixed; color: var(--ink-text); font-size: var(--text-13); padding-bottom: var(--pad-4); }
+  .room { position: relative; min-height: calc(100vh - var(--topbar-h, 0px)); background-color: var(--ink-000); background-repeat: no-repeat; color: var(--ink-text); font-size: var(--text-13); padding-bottom: var(--pad-4); }
   .room::before { content: ''; position: fixed; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(13, 17, 23, 0.05) 0%, rgba(13, 17, 23, 0.45) 26%, rgba(13, 17, 23, 0.88) 58%, rgba(13, 17, 23, 0.95) 100%); }
   .room > :global(*) { position: relative; }
   .wash { padding: var(--pad-3) var(--pad-4) var(--pad-4); }
@@ -431,8 +466,22 @@
      something wide -- the cover picker, the member list -- take the full width
      underneath. A 340px track let four columns form and left Name and Colour
      stranded in the corner with two empty tracks beside them. */
-  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 2px; align-items: start; margin: 0 var(--pad-4); }
-  .panel { padding: var(--pad-2); background: var(--ink-100); border-radius: var(--radius); }
+  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 10px; align-items: start; margin: 0 var(--pad-4); }
+  /* Panels as surfaces rather than holes. At one flat fill and a 2px gap they
+     merged into a single dark mass -- five settings reading as one slab, which
+     is the "heavy" part. A light from above (one highlight along the top edge,
+     a fill that falls away below it) gives each panel a top and a bottom, so
+     the eye separates them without a single border. */
+  .panel {
+    padding: var(--pad-2);
+    border-radius: var(--radius-lg);
+    background: linear-gradient(180deg, color-mix(in oklab, var(--ink-100) 88%, var(--ink-200)) 0%, var(--ink-100) 46%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.045),
+      0 1px 2px rgba(0, 0, 0, 0.28);
+  }
+  /* The heading names a panel; it should not weigh the same as its contents. */
+  .panel h2 { color: var(--ink-text-dim); text-transform: uppercase; letter-spacing: 0.07em; font-size: var(--text-11); }
   .panel.wide { grid-column: 1 / -1; }
   h2 { margin: 0 0 4px; font-size: var(--text-13); font-weight: 600; color: var(--ink-text); }
   .sub { margin: 0 0 12px; color: var(--ink-text-dim); }
@@ -480,7 +529,12 @@
 
   /* Cover */
   .coverrow { display: flex; align-items: flex-start; gap: 16px; }
-  .coverpreview { flex: none; width: 200px; height: 118px; border-radius: var(--radius); overflow: hidden; display: grid; }
+  .coverpreview { position: relative; flex: none; width: 200px; height: 118px; border-radius: var(--radius); overflow: hidden; display: grid; }
+  .coverpreview > img { width: 100%; height: 100%; object-fit: cover; }
+  /* Progress over the picture being uploaded, not a spinner beside it: the
+     thing that is happening is happening to this image. */
+  .coverbusy { position: absolute; inset: auto 0 0 0; height: 3px; background: rgba(0, 0, 0, 0.45); }
+  .coverbusy .bar { display: block; height: 100%; transform-origin: 0 50%; background: var(--accent-bright); transition: transform 120ms linear; }
   .coverpreview :global(.cover) { width: 100%; height: 100%; }
   .coveractions { display: grid; gap: 8px; align-content: start; }
   /* The file input itself is unstylable across browsers; the label is the

@@ -1,0 +1,12 @@
+-- An uploaded project cover: the image itself, not an asset.
+--
+-- The first cut made an uploaded cover an ordinary asset so it could reuse the
+-- poster pipeline. That was wrong twice over: the picture showed up in the
+-- project's file list, where it is not a deliverable and nobody put it there,
+-- and it had to wait for a transcode to produce a poster of an image that was
+-- already a poster. A cover blob is shown directly, so it appears the moment
+-- the upload finishes.
+--
+-- cover_asset_id stays: picking one of the project's own assets is still a
+-- cover, and reuses that asset's poster. At most one of the two is set.
+ALTER TABLE projects ADD COLUMN cover_blob_key TEXT;

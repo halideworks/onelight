@@ -1845,6 +1845,8 @@ export interface paths {
                                 status: "active" | "archived";
                                 palette: string;
                                 cover_asset_id: string | null;
+                                /** @enum {string} */
+                                cover_kind: "upload" | "asset" | "generated";
                                 cover_url: string | null;
                                 restricted: boolean;
                                 created_by: string;
@@ -1928,6 +1930,8 @@ export interface paths {
                             status: "active" | "archived";
                             palette: string;
                             cover_asset_id: string | null;
+                            /** @enum {string} */
+                            cover_kind: "upload" | "asset" | "generated";
                             cover_url: string | null;
                             restricted: boolean;
                             created_by: string;
@@ -2013,6 +2017,8 @@ export interface paths {
                             status: "active" | "archived";
                             palette: string;
                             cover_asset_id: string | null;
+                            /** @enum {string} */
+                            cover_kind: "upload" | "asset" | "generated";
                             cover_url: string | null;
                             restricted: boolean;
                             created_by: string;
@@ -2157,6 +2163,8 @@ export interface paths {
                             status: "active" | "archived";
                             palette: string;
                             cover_asset_id: string | null;
+                            /** @enum {string} */
+                            cover_kind: "upload" | "asset" | "generated";
                             cover_url: string | null;
                             restricted: boolean;
                             created_by: string;
@@ -2274,6 +2282,102 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/cover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set a completed image upload as the project cover. The picture is not registered as an asset. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        upload_id: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            name: string;
+                            /** @enum {string} */
+                            status: "active" | "archived";
+                            palette: string;
+                            cover_asset_id: string | null;
+                            /** @enum {string} */
+                            cover_kind: "upload" | "asset" | "generated";
+                            cover_url: string | null;
+                            restricted: boolean;
+                            created_by: string;
+                            created_at: number;
+                            updated_at: number;
+                            /** @enum {string} */
+                            my_role?: "manager" | "editor" | "commenter" | "viewer";
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -2548,6 +2652,8 @@ export interface paths {
                                 id: string;
                                 project_id: string;
                                 parent_id: string | null;
+                                /** @enum {string} */
+                                kind: "assets" | "shares";
                                 name: string;
                                 created_at: number;
                             }[];
@@ -2607,6 +2713,8 @@ export interface paths {
                     "application/json": {
                         name: string;
                         parent_id?: string | null;
+                        /** @enum {string} */
+                        kind?: "assets" | "shares";
                     };
                 };
             };
@@ -2621,6 +2729,8 @@ export interface paths {
                             id: string;
                             project_id: string;
                             parent_id: string | null;
+                            /** @enum {string} */
+                            kind: "assets" | "shares";
                             name: string;
                             created_at: number;
                         };
@@ -2766,6 +2876,8 @@ export interface paths {
                             id: string;
                             project_id: string;
                             parent_id: string | null;
+                            /** @enum {string} */
+                            kind: "assets" | "shares";
                             name: string;
                             created_at: number;
                         };
@@ -4473,7 +4585,7 @@ export interface paths {
                 query: {
                     /** @description Query text, at least two characters. */
                     q: string;
-                    /** @description assets, comments, or all (default all). */
+                    /** @description all (default), assets, comments, projects, people, or shares. */
                     scope?: string;
                     /** @description Page size, 1 to 200 (default 50). */
                     limit?: string;
@@ -4508,6 +4620,25 @@ export interface paths {
                                 version_id: string;
                                 project_id: string;
                                 frame_in: number | null;
+                            } | {
+                                /** @constant */
+                                type: "project";
+                                id: string;
+                                name: string;
+                                palette: string;
+                            } | {
+                                /** @constant */
+                                type: "person";
+                                id: string;
+                                name: string;
+                                email: string;
+                            } | {
+                                /** @constant */
+                                type: "share";
+                                id: string;
+                                title: string;
+                                slug: string;
+                                project_id: string;
                             })[];
                             next_cursor: string | null;
                         };
@@ -4588,6 +4719,7 @@ export interface paths {
                             items: {
                                 id: string;
                                 project_id: string;
+                                folder_id: string | null;
                                 slug: string;
                                 /** @enum {string} */
                                 kind: "review" | "presentation";
@@ -4662,6 +4794,7 @@ export interface paths {
                 content: {
                     "application/json": {
                         project_id: string;
+                        folder_id?: string | null;
                         /**
                          * @default review
                          * @enum {string}
@@ -4705,6 +4838,7 @@ export interface paths {
                             share: {
                                 id: string;
                                 project_id: string;
+                                folder_id: string | null;
                                 slug: string;
                                 /** @enum {string} */
                                 kind: "review" | "presentation";
@@ -4801,6 +4935,7 @@ export interface paths {
                         "application/json": {
                             id: string;
                             project_id: string;
+                            folder_id: string | null;
                             slug: string;
                             /** @enum {string} */
                             kind: "review" | "presentation";
@@ -4942,6 +5077,7 @@ export interface paths {
                         title?: string;
                         /** @enum {string} */
                         layout?: "grid" | "list" | "reel";
+                        folder_id?: string | null;
                         passphrase?: string | null;
                         expires_at?: number | null;
                         /** @enum {string} */
@@ -4965,6 +5101,7 @@ export interface paths {
                         "application/json": {
                             id: string;
                             project_id: string;
+                            folder_id: string | null;
                             slug: string;
                             /** @enum {string} */
                             kind: "review" | "presentation";
@@ -5148,6 +5285,7 @@ export interface paths {
                             share: {
                                 id: string;
                                 project_id: string;
+                                folder_id: string | null;
                                 slug: string;
                                 /** @enum {string} */
                                 kind: "review" | "presentation";

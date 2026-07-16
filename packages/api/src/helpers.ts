@@ -174,8 +174,19 @@ export const commentCursorParam = (
   }
 };
 
+/** The things search can return, in the order it returns them. */
+export const SEARCH_STREAMS = [
+  "asset",
+  "comment",
+  "project",
+  "person",
+  "share",
+] as const;
+
+export type SearchStream = (typeof SEARCH_STREAMS)[number];
+
 export interface SearchCursor {
-  t: "asset" | "comment";
+  t: SearchStream;
   /** Continue after this ULID; absent means the start of the stream. */
   id?: string;
 }
@@ -193,7 +204,7 @@ export const searchCursorParam = (
     if (
       !decoded ||
       typeof decoded !== "object" ||
-      (cursor.t !== "asset" && cursor.t !== "comment") ||
+      !(SEARCH_STREAMS as readonly string[]).includes(cursor.t) ||
       (cursor.id !== undefined &&
         (typeof cursor.id !== "string" || !ULID_PATTERN.test(cursor.id)))
     )

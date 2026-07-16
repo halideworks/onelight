@@ -2431,6 +2431,14 @@
                               "null"
                             ]
                           },
+                          "cover_kind": {
+                            "type": "string",
+                            "enum": [
+                              "upload",
+                              "asset",
+                              "generated"
+                            ]
+                          },
                           "cover_url": {
                             "type": [
                               "string",
@@ -2465,6 +2473,7 @@
                           "status",
                           "palette",
                           "cover_asset_id",
+                          "cover_kind",
                           "cover_url",
                           "restricted",
                           "created_by",
@@ -2603,6 +2612,14 @@
                         "null"
                       ]
                     },
+                    "cover_kind": {
+                      "type": "string",
+                      "enum": [
+                        "upload",
+                        "asset",
+                        "generated"
+                      ]
+                    },
                     "cover_url": {
                       "type": [
                         "string",
@@ -2637,6 +2654,7 @@
                     "status",
                     "palette",
                     "cover_asset_id",
+                    "cover_kind",
                     "cover_url",
                     "restricted",
                     "created_by",
@@ -2733,6 +2751,14 @@
                         "null"
                       ]
                     },
+                    "cover_kind": {
+                      "type": "string",
+                      "enum": [
+                        "upload",
+                        "asset",
+                        "generated"
+                      ]
+                    },
                     "cover_url": {
                       "type": [
                         "string",
@@ -2767,6 +2793,7 @@
                     "status",
                     "palette",
                     "cover_asset_id",
+                    "cover_kind",
                     "cover_url",
                     "restricted",
                     "created_by",
@@ -2910,6 +2937,14 @@
                         "null"
                       ]
                     },
+                    "cover_kind": {
+                      "type": "string",
+                      "enum": [
+                        "upload",
+                        "asset",
+                        "generated"
+                      ]
+                    },
                     "cover_url": {
                       "type": [
                         "string",
@@ -2944,6 +2979,7 @@
                     "status",
                     "palette",
                     "cover_asset_id",
+                    "cover_kind",
                     "cover_url",
                     "restricted",
                     "created_by",
@@ -3075,6 +3111,165 @@
                 "schema": {
                   "type": "string",
                   "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/cover": {
+      "post": {
+        "summary": "Set a completed image upload as the project cover. The picture is not registered as an asset.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "upload_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "upload_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "archived"
+                      ]
+                    },
+                    "palette": {
+                      "type": "string"
+                    },
+                    "cover_asset_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cover_kind": {
+                      "type": "string",
+                      "enum": [
+                        "upload",
+                        "asset",
+                        "generated"
+                      ]
+                    },
+                    "cover_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "restricted": {
+                      "type": "boolean"
+                    },
+                    "created_by": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "integer"
+                    },
+                    "updated_at": {
+                      "type": "integer"
+                    },
+                    "my_role": {
+                      "type": "string",
+                      "enum": [
+                        "manager",
+                        "editor",
+                        "commenter",
+                        "viewer"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "status",
+                    "palette",
+                    "cover_asset_id",
+                    "cover_kind",
+                    "cover_url",
+                    "restricted",
+                    "created_by",
+                    "created_at",
+                    "updated_at"
+                  ],
+                  "additionalProperties": false
                 }
               }
             }
@@ -3528,6 +3723,13 @@
                               "null"
                             ]
                           },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "assets",
+                              "shares"
+                            ]
+                          },
                           "name": {
                             "type": "string"
                           },
@@ -3539,6 +3741,7 @@
                           "id",
                           "project_id",
                           "parent_id",
+                          "kind",
                           "name",
                           "created_at"
                         ],
@@ -3624,6 +3827,13 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "assets",
+                      "shares"
+                    ]
                   }
                 },
                 "required": [
@@ -3654,6 +3864,13 @@
                         "null"
                       ]
                     },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "assets",
+                        "shares"
+                      ]
+                    },
                     "name": {
                       "type": "string"
                     },
@@ -3665,6 +3882,7 @@
                     "id",
                     "project_id",
                     "parent_id",
+                    "kind",
                     "name",
                     "created_at"
                   ],
@@ -3772,6 +3990,13 @@
                         "null"
                       ]
                     },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "assets",
+                        "shares"
+                      ]
+                    },
                     "name": {
                       "type": "string"
                     },
@@ -3783,6 +4008,7 @@
                     "id",
                     "project_id",
                     "parent_id",
+                    "kind",
                     "name",
                     "created_at"
                   ],
@@ -6701,7 +6927,7 @@
             "name": "scope",
             "in": "query",
             "required": false,
-            "description": "assets, comments, or all (default all).",
+            "description": "all (default), assets, comments, projects, people, or shares.",
             "schema": {
               "type": "string"
             }
@@ -6805,6 +7031,85 @@
                               "frame_in"
                             ],
                             "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "project"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "palette": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "id",
+                              "name",
+                              "palette"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "person"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "email": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "id",
+                              "name",
+                              "email"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "share"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "title": {
+                                "type": "string"
+                              },
+                              "slug": {
+                                "type": "string"
+                              },
+                              "project_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "id",
+                              "title",
+                              "slug",
+                              "project_id"
+                            ],
+                            "additionalProperties": false
                           }
                         ]
                       }
@@ -6879,6 +7184,12 @@
                 "properties": {
                   "project_id": {
                     "type": "string"
+                  },
+                  "folder_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "kind": {
                     "type": "string",
@@ -6992,6 +7303,12 @@
                         "project_id": {
                           "type": "string"
                         },
+                        "folder_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "slug": {
                           "type": "string"
                         },
@@ -7079,6 +7396,7 @@
                       "required": [
                         "id",
                         "project_id",
+                        "folder_id",
                         "slug",
                         "kind",
                         "title",
@@ -7181,6 +7499,12 @@
                           "project_id": {
                             "type": "string"
                           },
+                          "folder_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "slug": {
                             "type": "string"
                           },
@@ -7268,6 +7592,7 @@
                         "required": [
                           "id",
                           "project_id",
+                          "folder_id",
                           "slug",
                           "kind",
                           "title",
@@ -7362,6 +7687,12 @@
                     },
                     "project_id": {
                       "type": "string"
+                    },
+                    "folder_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "slug": {
                       "type": "string"
@@ -7473,6 +7804,7 @@
                   "required": [
                     "id",
                     "project_id",
+                    "folder_id",
                     "slug",
                     "kind",
                     "title",
@@ -7566,6 +7898,12 @@
                       "reel"
                     ]
                   },
+                  "folder_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "passphrase": {
                     "anyOf": [
                       {
@@ -7635,6 +7973,12 @@
                     },
                     "project_id": {
                       "type": "string"
+                    },
+                    "folder_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "slug": {
                       "type": "string"
@@ -7723,6 +8067,7 @@
                   "required": [
                     "id",
                     "project_id",
+                    "folder_id",
                     "slug",
                     "kind",
                     "title",
@@ -8013,6 +8358,12 @@
                         "project_id": {
                           "type": "string"
                         },
+                        "folder_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "slug": {
                           "type": "string"
                         },
@@ -8100,6 +8451,7 @@
                       "required": [
                         "id",
                         "project_id",
+                        "folder_id",
                         "slug",
                         "kind",
                         "title",

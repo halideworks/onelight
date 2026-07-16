@@ -21,6 +21,12 @@ services:
       # with "The request origin is not allowed."
       ONELIGHT_ALLOWED_ORIGINS: ${ONELIGHT_ALLOWED_ORIGINS:-}
       ONELIGHT_WORKSPACE_NAME: ${ONELIGHT_WORKSPACE_NAME:-Onelight}
+      # Blob sweeper. Without this the server only ever REPORTS orphaned
+      # objects: every thumbnail, proxy and watermarked render belonging to a
+      # deleted asset, share or project stays on disk forever. Compose passes
+      # only what is named here, so leaving it out meant .env could not turn it
+      # on no matter what it said.
+      ONELIGHT_GC_DELETE: ${ONELIGHT_GC_DELETE:-false}
       WORKER_URL: ${WORKER_URL:-http://onelight-worker:8080}
       WORKER_SECRET: ${WORKER_SECRET:?WORKER_SECRET is required}
       # Outgoing email is optional: uncomment and set SMTP_URL (or the

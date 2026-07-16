@@ -19,7 +19,7 @@
     UploadQuarantinedError
   } from '$lib/upload.js';
   import type { PendingFile } from '$lib/upload.js';
-  import { washFor } from '$lib/washes.js';
+  import { pageWashFor } from '$lib/washes.js';
 
   type Asset = {
     id: string;
@@ -33,7 +33,7 @@
     updated_at: number;
   };
   type Project = { id: string; name: string; palette: string; status: string };
-  type Folder = { id: string; parent_id: string | null; name: string };
+  type Folder = { id: string; parent_id: string | null; kind?: 'assets' | 'shares'; name: string };
   type TreeNode = { folder: Folder; childIds: string[] | null; expanded: boolean };
   type UploadItem = {
     key: number;
@@ -51,7 +51,14 @@
   };
 
   let project = $state<Project | null>(null);
-  type Share = { id: string; title: string; slug: string; allow_download: string; revoked_at: number | null };
+  type Share = {
+    id: string;
+    title: string;
+    slug: string;
+    folder_id: string | null;
+    allow_download: string;
+    revoked_at: number | null;
+  };
 
   let assets = $state<Asset[]>([]);
   let nextCursor = $state<string | null>(null);
@@ -67,6 +74,10 @@
      synthetic all-assets row. */
   let nodes = $state<Record<string, TreeNode>>({});
   let rootIds = $state<string[]>([]);
+  /* The share tree: same shape, separate roots. Two trees in one rail, because
+     "where is this?" should have one answer and one place to look. */
+  let shareRootIds = $state<string[]>([]);
+  let sharesOpen = $state(true);
   let selectedFolder = $state<string | null>(null);
   /* A share is browsed like a folder, so it shares the rail and the grid, but
      it is not a folder: an asset lives in exactly one folder and in any number
@@ -85,7 +96,7 @@
   let dragging = $state<string | null>(null);
 
   const projectId = $derived(page.params.id);
-  const wash = $derived(washFor(project?.palette));
+  const wash = $derived(pageWashFor(project?.palette));
 
   const media = createMediaCache();
   const observeMedia = media.observe;
@@ -139,24 +150,37 @@
     }
   };
 
-  const loadChildren = async (parentId: string | null): Promise<void> => {
+  const loadChildren = async (
+    parentId: string | null,
+    kind: 'assets' | 'shares' = 'assets'
+  ): Promise<void> => {
     const id = projectId;
     if (!id) return;
-    const suffix = parentId ? `?parent_id=${encodeURIComponent(parentId)}` : '';
-    const children = (await api<{ items: Folder[] }>(`/api/v1/projects/${id}/folders${suffix}`)).items;
+    const query = new URLSearchParams();
+    if (parentId) query.set('parent_id', parentId);
+    query.set('kind', kind);
+    const children = (
+      await api<{ items: Folder[] }>(`/api/v1/projects/${id}/folders?${query.toString()}`)
+    ).items;
     if (id !== projectId) return;
     for (const folder of children) {
       const existing = nodes[folder.id];
-      nodes[folder.id] = existing ? { ...existing, folder } : { folder, childIds: null, expanded: false };
+      nodes[folder.id] = existing
+        ? { ...existing, folder }
+        : { folder, childIds: null, expanded: false };
     }
     const ids = children.map((folder) => folder.id);
     if (parentId === null) {
-      rootIds = ids;
+      if (kind === 'shares') shareRootIds = ids;
+      else rootIds = ids;
     } else {
       const parent = nodes[parentId];
       if (parent) nodes[parentId] = { ...parent, childIds: ids };
     }
   };
+
+  const kindOf = (folderId: string): 'assets' | 'shares' =>
+    nodes[folderId]?.folder.kind ?? 'assets';
 
   const load = async (id: string): Promise<void> => {
     project = null; assets = []; nextCursor = null; error = ''; listError = ''; queue = [];
@@ -173,7 +197,7 @@
       return;
     }
     try {
-      await loadChildren(null);
+      await Promise.all([loadChildren(null, 'assets'), loadChildren(null, 'shares')]);
     } catch (caught) {
       treeError = messageFrom(caught, 'Folders could not be loaded.');
     }
@@ -241,19 +265,46 @@
 
   /* ---- tree rows and keyboard ---- */
 
-  type Row = { id: string; depth: number };
+  /* One rail, two trees. A row is a folder, a share, or one of the two roots
+     that head each tree; `id` doubles as the DOM id and the keyboard's cursor,
+     so every row needs a unique one. */
+  type Row =
+    | { kind: 'root'; id: 'root'; depth: number }
+    | { kind: 'folder'; id: string; depth: number }
+    | { kind: 'sharesroot'; id: 'sharesroot'; depth: number }
+    | { kind: 'share'; id: string; depth: number };
+
   const visibleRows = $derived.by(() => {
-    const rows: Row[] = [{ id: 'root', depth: 0 }];
-    const walk = (ids: string[], depth: number): void => {
+    const rows: Row[] = [{ kind: 'root', id: 'root', depth: 0 }];
+    const walkFolders = (ids: string[], depth: number): void => {
       for (const id of ids) {
-        rows.push({ id, depth });
+        rows.push({ kind: 'folder', id, depth });
         const node = nodes[id];
-        if (node?.expanded && node.childIds) walk(node.childIds, depth + 1);
+        if (!node?.expanded) continue;
+        if (node.childIds) walkFolders(node.childIds, depth + 1);
+        /* Shares filed in this folder sit under it, as its contents. */
+        for (const share of shares.filter((entry) => entry.folder_id === id))
+          rows.push({ kind: 'share', id: share.id, depth: depth + 1 });
       }
     };
-    walk(rootIds, 1);
+    walkFolders(rootIds, 1);
+
+    /* The Shares root appears once there is something to put in it: an empty
+       heading for a feature the project has never used is furniture. */
+    const looseShares = shares.filter((share) => !share.folder_id);
+    if (shares.length > 0 || shareRootIds.length > 0) {
+      rows.push({ kind: 'sharesroot', id: 'sharesroot', depth: 0 });
+      if (sharesOpen) {
+        walkFolders(shareRootIds, 1);
+        for (const share of looseShares)
+          rows.push({ kind: 'share', id: share.id, depth: 1 });
+      }
+    }
     return rows;
   });
+
+  const rowOf = (id: string): Row | undefined =>
+    visibleRows.find((row) => row.id === id);
 
   const focusRow = async (id: string): Promise<void> => {
     focusedRow = id;
@@ -267,7 +318,7 @@
     nodes[id] = { ...node, expanded: true };
     if (node.childIds === null) {
       try {
-        await loadChildren(id);
+        await loadChildren(id, node.folder.kind ?? 'assets');
       } catch (caught) {
         treeError = messageFrom(caught, 'Folders could not be loaded.');
       }
@@ -409,7 +460,7 @@
     try {
       const updated = await apiPatch<Folder>(`/api/v1/folders/${id}`, { name });
       nodes[id] = { ...node, folder: updated };
-      await loadChildren(updated.parent_id);
+      await loadChildren(updated.parent_id, updated.kind ?? 'assets');
     } catch (caught) {
       treeError = messageFrom(caught, 'The folder could not be renamed.');
     }
@@ -429,7 +480,14 @@
     if (!id || !name) return;
     treeError = '';
     try {
-      await apiPost(`/api/v1/projects/${id}/folders`, { name, parent_id: selectedFolder });
+      await apiPost(`/api/v1/projects/${id}/folders`, {
+        name,
+        parent_id: selectedFolder,
+        /* Selecting a share, or a folder of shares, means "here" is the share
+           tree; the server takes kind only when there is no parent to inherit
+           from. */
+        kind: newFolderTree
+      });
     } catch (caught) {
       treeError = messageFrom(caught, 'The folder could not be created.');
       return;
@@ -440,7 +498,7 @@
       if (parent) nodes[selectedFolder] = { ...parent, expanded: true };
     }
     try {
-      await loadChildren(selectedFolder);
+      await loadChildren(selectedFolder, newFolderTree);
     } catch {
       /* The next expand reloads. */
     }
@@ -477,7 +535,7 @@
     const parent = node.folder.parent_id;
     if (selectedFolder && isInSubtree(selectedFolder, id)) await select(parent);
     try {
-      await loadChildren(parent);
+      await loadChildren(parent, node.folder.kind ?? 'assets');
     } catch {
       /* The next expand reloads. */
     }
@@ -502,8 +560,9 @@
       if (target) nodes[newParent] = { ...target, expanded: true };
     }
     try {
-      await loadChildren(oldParent);
-      await loadChildren(newParent);
+      const tree = node.folder.kind ?? 'assets';
+      await loadChildren(oldParent, tree);
+      await loadChildren(newParent, tree);
     } catch {
       /* The next expand reloads. */
     }
@@ -518,10 +577,11 @@
   };
 
   const onDragOver = (event: DragEvent, target: string | null): void => {
-    /* A folder onto itself is a no-op; assets can go anywhere, including the
-       root, which is how you get one back out of a folder. */
+    /* A folder onto itself is a no-op; assets and shares can go anywhere,
+       including the root, which is how you get one back out of a folder. */
     const assetDrag = draggingAssets !== null && draggingAssets.length > 0;
-    if (!assetDrag && (!dragging || dragging === target)) return;
+    const shareDrag = draggingShare !== null;
+    if (!assetDrag && !shareDrag && (!dragging || dragging === target)) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
     dropTarget = target ?? 'root';
@@ -529,15 +589,23 @@
 
   const onDrop = (event: DragEvent, target: string | null): void => {
     event.preventDefault();
-    /* Two things can land on a folder: another folder (reparent) and a
-       selection of assets (file them). Assets could not be dropped anywhere
-       before -- moving one meant opening it -- even though the folder rows were
-       already drop targets for folders. */
+    /* Three things can land on a folder: another folder (reparent), a selection
+       of assets (file them), and a share (file it). Which one is decided by
+       which drag is in flight, never by the drop target. */
     const assetIds = draggingAssets;
     const id = dragging;
+    const shareId = draggingShare;
     dragging = null;
     draggingAssets = null;
+    draggingShare = null;
     dropTarget = null;
+    if (shareId) {
+      /* Only a shares folder can hold a share; the asset tree would swallow it
+         without a trace. */
+      if (target === null || kindOf(target) === 'shares') void fileShare(shareId, target);
+      else shareError = 'A share can only go in a folder of shares.';
+      return;
+    }
     if (assetIds?.length) {
       void moveAssets(assetIds, target);
       return;
@@ -545,9 +613,9 @@
     if (id) void moveFolder(id, target);
   };
 
-  /* Dropping on a share adds; dropping on a folder moves. A share row takes
-     assets only -- a folder dragged onto a share means nothing, so it is not
-     accepted rather than silently ignored. */
+  /* Dropping assets on a share adds them to it; dropping a share on a folder
+     files it there. A share row takes assets only -- a folder dragged onto a
+     share means nothing, so it is not accepted rather than silently ignored. */
   const onShareDragOver = (event: DragEvent, shareId: string): void => {
     if (!draggingAssets?.length) return;
     event.preventDefault();
@@ -561,6 +629,75 @@
     draggingAssets = null;
     dropTarget = null;
     if (assetIds?.length) void addToShare(shareId, assetIds);
+  };
+
+  /* A share being dragged, kept apart from folder and asset drags for the same
+     reason those are kept apart from each other: three kinds of thing move in
+     this rail and none of them should be mistaken for another. */
+  let draggingShare = $state<string | null>(null);
+
+  const beginShareDrag = (event: DragEvent, shareId: string): void => {
+    draggingShare = shareId;
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', shareId);
+    }
+  };
+
+  const fileShare = async (shareId: string, folderId: string | null): Promise<void> => {
+    const share = shares.find((entry) => entry.id === shareId);
+    if (!share || share.folder_id === folderId) return;
+    shareError = '';
+    try {
+      const updated = await apiPatch<Share>(`/api/v1/shares/${shareId}`, {
+        folder_id: folderId
+      });
+      shares = shares.map((entry) => (entry.id === shareId ? updated : entry));
+      if (folderId) {
+        const parent = nodes[folderId];
+        if (parent) nodes[folderId] = { ...parent, expanded: true };
+      }
+    } catch (caught) {
+      shareError = messageFrom(caught, 'That share could not be moved.');
+    }
+  };
+
+  const onShareRootDragOver = (event: DragEvent): void => {
+    if (!draggingShare) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    dropTarget = 'shares-root';
+  };
+
+  const onShareRootDrop = (event: DragEvent): void => {
+    event.preventDefault();
+    const shareId = draggingShare;
+    draggingShare = null;
+    dropTarget = null;
+    if (shareId) void fileShare(shareId, null);
+  };
+
+  /* The rail's empty space means "the top level", for whichever kind of thing
+     is being dragged. This is the way back out of a folder. */
+  const onRailDragOver = (event: DragEvent): void => {
+    if (!dragging && !draggingAssets?.length && !draggingShare) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    dropTarget = 'rail';
+  };
+
+  const onRailDrop = (event: DragEvent): void => {
+    event.preventDefault();
+    const folderId = dragging;
+    const assetIds = draggingAssets;
+    const shareId = draggingShare;
+    dragging = null;
+    draggingAssets = null;
+    draggingShare = null;
+    dropTarget = null;
+    if (folderId) void moveFolder(folderId, null);
+    else if (assetIds?.length) void moveAssets(assetIds, null);
+    else if (shareId) void fileShare(shareId, null);
   };
 
   /* The assets being dragged, or null. Kept apart from `dragging` (a folder id)
@@ -599,8 +736,12 @@
     const rows = visibleRows;
     const index = rows.findIndex((row) => row.id === focusedRow);
     if (index < 0) return;
+    const row = rows[index];
+    if (!row) return;
     const id = focusedRow;
-    const node = id === 'root' ? null : nodes[id];
+    /* Only folder rows have a node behind them; roots and shares do not, and
+       reaching for nodes[id] on those is how a tree keyboard quietly breaks. */
+    const node = row.kind === 'folder' ? nodes[id] : undefined;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       const next = rows[index + 1];
@@ -611,7 +752,9 @@
       if (previous) void focusRow(previous.id);
     } else if (event.key === 'ArrowRight') {
       event.preventDefault();
-      if (id === 'root') {
+      if (row.kind === 'sharesroot') {
+        sharesOpen = true;
+      } else if (row.kind === 'root') {
         const first = rows[1];
         if (first) void focusRow(first.id);
       } else if (node && !node.expanded) {
@@ -621,17 +764,21 @@
       }
     } else if (event.key === 'ArrowLeft') {
       event.preventDefault();
-      if (node?.expanded) collapse(id);
+      if (row.kind === 'sharesroot') sharesOpen = false;
+      else if (node?.expanded) collapse(id);
       else if (node) void focusRow(node.folder.parent_id ?? 'root');
+      else if (row.kind === 'share') void focusRow('sharesroot');
     } else if (event.key === 'Enter') {
       event.preventDefault();
-      void select(id === 'root' ? null : id);
+      if (row.kind === 'share') void selectShare(id);
+      else if (row.kind === 'sharesroot') sharesOpen = !sharesOpen;
+      else void select(row.kind === 'root' ? null : id);
     } else if (event.key === 'F2') {
       event.preventDefault();
-      if (id !== 'root') startRename(id);
+      if (row.kind === 'folder') startRename(id);
     } else if (event.key === 'Delete') {
       event.preventDefault();
-      if (id !== 'root') void removeFolder(id);
+      if (row.kind === 'folder') void removeFolder(id);
     }
   };
 
@@ -639,6 +786,16 @@
     element.focus();
     element.select();
   };
+
+  /* Which tree the New folder field is about to add to. Selecting a share or a
+     folder of shares means you are working in shares; otherwise assets. */
+  const newFolderTree = $derived<'assets' | 'shares'>(
+    selectedShare
+      ? 'shares'
+      : selectedFolder
+        ? (nodes[selectedFolder]?.folder.kind ?? 'assets')
+        : 'assets'
+  );
 
   const selectedName = $derived(
     selectedShare
@@ -1156,7 +1313,15 @@
            is already painted in. -->
       <h1>{project?.name ?? 'Project'}</h1>
       <span class="grow"></span>
-      <a href={`/projects/${projectId}/settings`}>Settings</a>
+      <!-- "Settings" alone, in a row of link-coloured text, read as chrome and
+           was missed. It says what it settles, and carries a gear so it can be
+           found by shape before it is read. -->
+      <a class="settingslink" href={`/projects/${projectId}/settings`}>
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path d="M8 10.2a2.2 2.2 0 110-4.4 2.2 2.2 0 010 4.4zm5.6-1.3l1.2-.9-1.2-2.1-1.4.5a4.7 4.7 0 00-1.2-.7L10.8 4H8.4l-.2 1.7a4.7 4.7 0 00-1.2.7l-1.4-.5-1.2 2.1 1.2.9a4.6 4.6 0 000 1.4l-1.2.9 1.2 2.1 1.4-.5c.36.3.77.53 1.2.7l.2 1.5h2.4l.2-1.5c.43-.17.84-.4 1.2-.7l1.4.5 1.2-2.1-1.2-.9a4.6 4.6 0 000-1.4z" fill="currentColor" />
+        </svg>
+        Project settings
+      </a>
     </div>
   </header>
   {#if error}
@@ -1164,18 +1329,29 @@
   {:else}
     <div class="body">
       <aside class="pane" aria-label="Folders and shares">
-        <h2 class="pane-label" id="folders-label">Folders</h2>
-        <div class="tree" role="tree" aria-labelledby="folders-label">
+        <!-- Making a folder comes before filing things in one, so the control
+             that makes them sits above the list rather than under it. -->
+        <form class="newfolder" onsubmit={createFolder}>
+          <input
+            bind:value={newFolderName}
+            placeholder={selectedFolder || selectedShare ? `New folder in ${selectedName}` : 'New folder'}
+            aria-label={selectedFolder || selectedShare ? `New folder in ${selectedName}` : 'New folder at the top level'}
+            maxlength="200"
+          />
+          <button type="submit" class="quiet" disabled={!newFolderName.trim()}>Create</button>
+        </form>
+
+        <div class="tree" role="tree" aria-label="Folders and shares">
           {#each visibleRows as row (row.id)}
-            {#if row.id === 'root'}
+            {#if row.kind === 'root'}
               <div
                 id="tree-row-root"
                 class="row root"
-                class:selected={selectedFolder === null}
+                class:selected={selectedFolder === null && !selectedShare}
                 class:droptarget={dropTarget === 'root'}
                 role="treeitem"
                 aria-level="1"
-                aria-selected={selectedFolder === null}
+                aria-selected={selectedFolder === null && !selectedShare}
                 tabindex={focusedRow === 'root' ? 0 : -1}
                 onclick={() => select(null)}
                 onkeydown={onTreeKeydown}
@@ -1184,8 +1360,74 @@
                 ondragleave={() => (dropTarget = dropTarget === 'root' ? null : dropTarget)}
                 ondrop={(event) => onDrop(event, null)}
               >
+                <span class="ic" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" width="14" height="14"><path d="M2 4.2A1.2 1.2 0 013.2 3h3l1.4 1.6h5.2A1.2 1.2 0 0114 5.8v6A1.2 1.2 0 0112.8 13H3.2A1.2 1.2 0 012 11.8z" fill="currentColor" opacity="0.85" /></svg>
+                </span>
                 <span class="name">All assets</span>
               </div>
+            {:else if row.kind === 'sharesroot'}
+              <div
+                id="tree-row-sharesroot"
+                class="row root sharesrow"
+                role="treeitem"
+                aria-level="1"
+                aria-expanded={sharesOpen}
+                aria-selected="false"
+                tabindex={focusedRow === 'sharesroot' ? 0 : -1}
+                class:droptarget={dropTarget === 'shares-root'}
+                onclick={() => (sharesOpen = !sharesOpen)}
+                onkeydown={onTreeKeydown}
+                onfocus={() => (focusedRow = 'sharesroot')}
+                ondragover={onShareRootDragOver}
+                ondragleave={() => (dropTarget = dropTarget === 'shares-root' ? null : dropTarget)}
+                ondrop={onShareRootDrop}
+              >
+                <button
+                  type="button"
+                  class="caret"
+                  class:open={sharesOpen}
+                  tabindex="-1"
+                  aria-label={sharesOpen ? 'Collapse shares' : 'Expand shares'}
+                  onclick={(event) => { event.stopPropagation(); sharesOpen = !sharesOpen; }}
+                >
+                  <svg viewBox="0 0 8 8" width="8" height="8" aria-hidden="true"><path d="M2 1l4 3-4 3z" fill="currentColor" /></svg>
+                </button>
+                <span class="ic" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" width="14" height="14"><path d="M11.5 5.5a2 2 0 10-1.9-2.6L6.4 4.6a2 2 0 100 2.8l3.2 1.7a2 2 0 10.5-.9L6.9 6.5a2 2 0 000-1l3.2-1.7c.36.44.9.7 1.4.7z" fill="currentColor" opacity="0.85" /></svg>
+                </span>
+                <span class="name">Shares</span>
+                <span class="count">{shares.length}</span>
+              </div>
+            {:else if row.kind === 'share'}
+              {@const share = shares.find((entry) => entry.id === row.id)}
+              {#if share}
+                <div
+                  id={`tree-row-${row.id}`}
+                  class="row sharerow"
+                  class:selected={selectedShare === share.id}
+                  class:droptarget={dropTarget === `share:${share.id}`}
+                  role="treeitem"
+                  aria-level={row.depth + 1}
+                  aria-selected={selectedShare === share.id}
+                  tabindex={focusedRow === row.id ? 0 : -1}
+                  style={`padding-left: ${10 + row.depth * 14}px;`}
+                  draggable="true"
+                  onclick={() => void selectShare(share.id)}
+                  onkeydown={onTreeKeydown}
+                  onfocus={() => (focusedRow = row.id)}
+                  ondragstart={(event) => beginShareDrag(event, share.id)}
+                  ondragend={() => { draggingShare = null; dropTarget = null; }}
+                  ondragover={(event) => onShareDragOver(event, share.id)}
+                  ondragleave={() => (dropTarget = dropTarget === `share:${share.id}` ? null : dropTarget)}
+                  ondrop={(event) => onShareDrop(event, share.id)}
+                >
+                  <span class="ic dot" aria-hidden="true"></span>
+                  <span class="name">{share.title}</span>
+                  <span class="acts">
+                    <a class="act" href={`/projects/${projectId}/shares`} onclick={(event) => event.stopPropagation()}>Settings</a>
+                  </span>
+                </div>
+              {/if}
             {:else}
               {@const node = nodes[row.id]}
               {#if node}
@@ -1237,6 +1479,9 @@
                       ondblclick={(event) => event.stopPropagation()}
                     />
                   {:else}
+                    <span class="ic" aria-hidden="true">
+                      <svg viewBox="0 0 16 16" width="14" height="14"><path d="M2 4.2A1.2 1.2 0 013.2 3h3l1.4 1.6h5.2A1.2 1.2 0 0114 5.8v6A1.2 1.2 0 0112.8 13H3.2A1.2 1.2 0 012 11.8z" fill="currentColor" opacity="0.7" /></svg>
+                    </span>
                     <span class="name">{node.folder.name}</span>
                     <span class="acts">
                       <button type="button" class="act" tabindex="-1" aria-label={`Rename ${node.folder.name}`} onclick={(event) => { event.stopPropagation(); startRename(row.id); }}>Rename</button>
@@ -1248,52 +1493,25 @@
             {/if}
           {/each}
         </div>
-        <form class="newfolder" onsubmit={createFolder}>
-          <input
-            bind:value={newFolderName}
-            placeholder={selectedFolder ? `New folder in ${selectedName}` : 'New folder'}
-            aria-label={selectedFolder ? `New folder in ${selectedName}` : 'New folder at the top level'}
-            maxlength="200"
-          />
-          <button type="submit" class="quiet" disabled={!newFolderName.trim()}>Create</button>
-        </form>
-        {#if treeError}<p class="error" role="alert">{treeError}</p>{/if}
-        <p class="hint">Arrows navigate, Enter opens, F2 renames, drag to move.</p>
 
-        <!-- Shares sit in the rail beside the folders because that is what they
-             are to the person using them: another way the project's media is
-             grouped. As a button in the header they were a place you went;
-             here they are a place things go, and assets can be dropped
-             straight onto one. -->
-        <h2 class="pane-label" id="shares-label">Shares</h2>
-        <div class="tree" role="list" aria-labelledby="shares-label">
-          {#each shares as share (share.id)}
-            <div
-              class="row"
-              class:selected={selectedShare === share.id}
-              class:droptarget={dropTarget === `share:${share.id}`}
-              role="listitem"
-            >
-              <button
-                type="button"
-                class="rowbtn"
-                aria-pressed={selectedShare === share.id}
-                onclick={() => void selectShare(share.id)}
-                ondragover={(event) => onShareDragOver(event, share.id)}
-                ondragleave={() => (dropTarget = dropTarget === `share:${share.id}` ? null : dropTarget)}
-                ondrop={(event) => onShareDrop(event, share.id)}
-              >
-                <span class="name">{share.title}</span>
-              </button>
-              <span class="acts">
-                <a class="act" href={`/projects/${projectId}/shares`} onclick={(event) => event.stopPropagation()}>Settings</a>
-              </span>
-            </div>
-          {:else}
-            <p class="hint none">No shares yet. Select media and right-click to make one.</p>
-          {/each}
+        <!-- The rail's empty space is the top level. Dragging something out of
+             a folder used to mean hitting one 30px row; the way out should be
+             the biggest target in the rail, not the smallest. -->
+        <div
+          class="rootdrop"
+          class:armed={dragging !== null || draggingAssets !== null || draggingShare !== null}
+          class:droptarget={dropTarget === 'rail'}
+          role="presentation"
+          ondragover={onRailDragOver}
+          ondragleave={() => (dropTarget = dropTarget === 'rail' ? null : dropTarget)}
+          ondrop={onRailDrop}
+        >
+          <span>Drop here to move to the top level</span>
         </div>
+
+        {#if treeError}<p class="error" role="alert">{treeError}</p>{/if}
         {#if shareError}<p class="sharenote" aria-live="polite">{shareError}</p>{/if}
+        <p class="hint">Arrows navigate, Enter opens, F2 renames, drag to move.</p>
       </aside>
 
       <section class="main">
@@ -1658,11 +1876,16 @@
      work behind the title, and deepens to near-ink by the content, so colour
      reaches the whole page and text contrast never depends on where in the
      gradient a paragraph happens to land. */
-  .room { position: relative; min-height: calc(100vh - var(--topbar-h, 0px)); background-color: var(--ink-000); background-size: 100% 100%; background-attachment: fixed; color: var(--ink-text); font-size: var(--text-13); }
+  .room { position: relative; min-height: calc(100vh - var(--topbar-h, 0px)); background-color: var(--ink-000); background-repeat: no-repeat; color: var(--ink-text); font-size: var(--text-13); }
   .room::before { content: ''; position: fixed; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(13, 17, 23, 0.05) 0%, rgba(13, 17, 23, 0.45) 26%, rgba(13, 17, 23, 0.88) 58%, rgba(13, 17, 23, 0.95) 100%); }
   .room > :global(*) { position: relative; }
   .wash { padding: var(--pad-3) var(--pad-4) var(--pad-4); }
-  .washrow { display: flex; gap: 16px; align-items: baseline; }
+  .washrow { display: flex; gap: 16px; align-items: center; }
+  /* A button, not a word in a row of words. */
+  .settingslink { display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: var(--radius); background: color-mix(in oklab, var(--ink-100) 70%, transparent); color: var(--ink-text); font-size: var(--text-13); font-weight: 500; text-decoration: none; box-shadow: inset 0 0 0 1px var(--ink-200); transition: background 100ms ease; white-space: nowrap; }
+  .settingslink:hover { background: var(--ink-200); }
+  .settingslink svg { color: var(--ink-text-dim); }
+  .settingslink:hover svg { color: var(--accent-bright); }
   .washrow a { color: rgba(250, 248, 244, 0.72); font-size: var(--text-13); text-decoration: none; }
   .washrow a:hover { color: rgba(250, 248, 244, 0.96); }
   .grow { flex: 1; }
@@ -1675,16 +1898,30 @@
   .body { padding: var(--pad-3) var(--pad-4) var(--pad-4); display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--pad-4); align-items: start; }
   @media (max-width: 760px) { .body { grid-template-columns: 1fr; } }
 
-  /* ---- folder tree pane ---- */
-  .pane-label { margin: 0 0 10px; font-size: var(--text-13); font-weight: 600; color: var(--ink-text-dim); }
+  /* ---- the rail ---- */
+  /* One rail, two trees, one grammar: an icon says what a row is, indentation
+     says where it sits, and the only line in the whole pane is the one between
+     the trees. Rows are quiet until you touch them -- a list of folders should
+     read as a list, not as a stack of buttons. */
   .tree { display: grid; gap: 1px; }
-  .row { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: var(--radius); cursor: default; }
-  .row:hover { background: var(--ink-100); }
-  .row.selected { background: var(--ink-200); }
-  .row.droptarget { background: var(--ink-300); }
+  .row { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border-radius: var(--radius); cursor: default; color: var(--ink-text-dim); transition: background 90ms ease, color 90ms ease; }
+  .row:hover { background: var(--ink-100); color: var(--ink-text); }
+  .row.selected { background: var(--ink-200); color: var(--ink-text); }
+  /* The drop target is the accent, not another grey: mid-drag the question is
+     "will it land here", and three shades of the same grey cannot answer it. */
+  .row.droptarget { background: color-mix(in oklab, var(--accent) 30%, var(--ink-200)); color: #fff; box-shadow: inset 0 0 0 1px var(--accent-bright); }
   .row:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
   .row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-  .row.root .name { color: var(--ink-text); }
+  .row.root { color: var(--ink-text); font-weight: 600; }
+  .ic { flex: none; display: inline-grid; place-items: center; width: 14px; height: 14px; color: var(--ink-text-dim); }
+  .row:hover .ic, .row.selected .ic { color: var(--accent-bright); }
+  /* A share is a thing, not a container: a dot, so the eye can tell the two
+     apart without reading either. */
+  .ic.dot { position: relative; }
+  .ic.dot::after { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.75; }
+  .sharesrow { margin-top: 12px; padding-top: 12px; box-shadow: inset 0 1px 0 var(--ink-200); border-radius: 0; }
+  .row .count { flex: none; color: var(--ink-text-dim); font-size: var(--text-12); font-variant-numeric: tabular-nums; }
+  .sharerow .name { font-weight: 400; }
   .caret { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 2px; background: none; color: var(--ink-text-dim); }
   .caret:hover { color: var(--ink-text); }
   .caret.open svg { transform: rotate(90deg); }
@@ -1693,29 +1930,45 @@
   .act { border: 0; border-radius: 2px; background: none; color: var(--ink-text-dim); padding: 2px 6px; font-size: var(--text-13); }
   .act:hover { background: var(--ink-300); color: var(--ink-text); }
   .rename { flex: 1; min-width: 0; border: 0; border-radius: 2px; background: var(--ink-300); color: var(--ink-text); padding: 3px 6px; font-size: var(--text-13); }
-  /* A share row is a button so the keyboard and the drop target are the same
-     element; the tree rows above it are div treeitems because they carry the
-     tree's own roving-tabindex keyboard model. */
-  .rowbtn { flex: 1; min-width: 0; display: flex; align-items: center; border: 0; background: none; color: inherit; padding: 0; font: inherit; text-align: left; }
-  .rowbtn:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
-  #shares-label { margin-top: 20px; }
-  .hint.none { margin-top: 0; }
   .sharenote { margin: 8px 0 0; color: var(--ink-text-dim); font-size: var(--text-12); }
   a.act { text-decoration: none; }
-  .newfolder { display: flex; gap: 6px; margin-top: 14px; }
+
+  /* The way out of a folder. Invisible until something is being dragged, then
+     it is the largest target in the rail -- the opposite of hunting for one
+     30px row. */
+  .rootdrop { min-height: 56px; margin-top: 8px; border-radius: var(--radius); display: grid; place-items: center; padding: 10px; text-align: center; color: transparent; font-size: var(--text-12); transition: background 120ms ease, color 120ms ease, box-shadow 120ms ease; }
+  .rootdrop.armed { color: var(--ink-text-dim); background: var(--ink-100); box-shadow: inset 0 0 0 1px var(--ink-200); }
+  .rootdrop.droptarget { background: color-mix(in oklab, var(--accent) 26%, var(--ink-100)); color: #fff; box-shadow: inset 0 0 0 2px var(--accent-bright); }
+  .newfolder { display: flex; gap: 6px; margin: 0 0 12px; }
   .newfolder input { flex: 1; min-width: 0; border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 10px; font-size: var(--text-13); }
   .newfolder input::placeholder { color: var(--ink-text-dim); }
   .hint { margin: 12px 0 0; color: var(--ink-text-dim); font-size: var(--text-13); }
 
   /* ---- uploader ---- */
   .uploader { border-radius: var(--radius-lg); padding: 14px; margin: -14px -14px var(--pad-2); }
-  /* A panel, not a boxed-in region. The hairline outline read as a stray border
-     around nothing; separation here comes from a value step, like everywhere
-     else in this app, and the drop state is the only time an edge appears --
-     when an edge is actually saying something. */
-  .uploader { border-radius: var(--radius-lg); background: var(--ink-100); box-shadow: none; transition: background 120ms ease, box-shadow 120ms ease; }
-  .uploader:hover { background: var(--ink-150, var(--ink-100)); }
-  .uploader.dropactive { background: var(--ink-200); box-shadow: inset 0 0 0 2px var(--accent); }
+  /* A surface you can drop onto, said with texture instead of contrast. The
+     flat slab read as a hole punched in the page -- the heaviest thing on a
+     screen that is mostly wash. Hatching at 4% carries "this is a receiving
+     area" at a fraction of the volume, and the panel can then sit almost at the
+     wash's own value. The lines are drawn with repeating-linear-gradient rather
+     than an image so they cost nothing and stay crisp at any zoom. */
+  .uploader {
+    border-radius: var(--radius-lg);
+    background-color: color-mix(in oklab, var(--ink-100) 55%, transparent);
+    background-image:
+      repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.04) 0 1px, transparent 1px 9px),
+      repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.04) 0 1px, transparent 1px 9px);
+    transition: background-color 140ms ease, box-shadow 140ms ease;
+  }
+  .uploader:hover { background-color: color-mix(in oklab, var(--ink-100) 80%, transparent); }
+  /* Mid-drop the hatching tightens and takes the accent: the surface itself
+     answers "yes, here", so no extra banner has to. */
+  .uploader.dropactive {
+    background-color: color-mix(in oklab, var(--accent) 12%, var(--ink-100));
+    background-image:
+      repeating-linear-gradient(45deg, color-mix(in oklab, var(--accent-bright) 35%, transparent) 0 2px, transparent 2px 8px);
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
 
   /* The thing to press next should look like it. */
   .uploadbtn.ready { background: var(--accent); color: #0b1214; box-shadow: 0 0 0 4px rgba(72, 146, 155, 0.18); }

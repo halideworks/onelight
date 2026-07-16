@@ -221,7 +221,7 @@ export const listNotifications = (cursor?: string): Promise<NotificationPage> =>
   );
 export const searchWorkspace = (options: {
   q: string;
-  scope?: "all" | "assets" | "comments";
+  scope?: "all" | "assets" | "comments" | "projects" | "people" | "shares";
   limit?: number;
   cursor?: string;
 }): Promise<SearchPage> => {
