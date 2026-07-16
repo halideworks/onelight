@@ -11,6 +11,7 @@
     TimelineMarker
   } from '@onelight/player';
   import { page } from '$app/state';
+  import { copyText } from '$lib/clipboard.js';
   import { replaceState } from '$app/navigation';
   import { api, apiDelete, apiPatch, apiPost, messageFrom } from '$lib/api.js';
   import { projectEvents } from '$lib/sse.svelte.js';
@@ -633,12 +634,7 @@
     if (asset && selectedVersionId && selectedVersionId !== asset.current_version_id)
       url.searchParams.set('v', selectedVersionId);
     else url.searchParams.delete('v');
-    try {
-      await navigator.clipboard.writeText(url.toString());
-      copyNotice = 'Link copied';
-    } catch {
-      copyNotice = 'Copy failed';
-    }
+    copyNotice = (await copyText(url.toString())) ? 'Link copied' : 'Copy failed';
     setTimeout(() => {
       copyNotice = '';
     }, 2000);
@@ -978,7 +974,8 @@
             onmarkerselect={(id) => highlightComment(id)}
             ondrawingchange={(drawing) => { pendingDrawing = drawing; }}
             onrangechange={(range) => { playerRange = range; }}
-            onshare={() => void copyFrameLink()}
+            oncopytimecode={copyText}
+          onshare={() => void copyFrameLink()}
           />
           <!-- The frame readout used to be repeated here under the player, next
                to the copy button, costing a row of vertical space to say what

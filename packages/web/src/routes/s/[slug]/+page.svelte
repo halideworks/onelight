@@ -11,6 +11,7 @@
     WatermarkOverlay
   } from '@onelight/player';
   import { page } from '$app/state';
+  import { copyText } from '$lib/clipboard.js';
   import { replaceState } from '$app/navigation';
   import { api, apiPost, ApiError, messageFrom } from '$lib/api.js';
   import { annotationsFrom, markersFrom, type ReviewComment } from '$lib/comments.js';
@@ -428,12 +429,7 @@
     const url = new URL(page.url.href);
     url.searchParams.set('a', selected.id);
     url.searchParams.set('f', String(currentFrame));
-    try {
-      await navigator.clipboard.writeText(url.toString());
-      copyNotice = 'Link copied';
-    } catch {
-      copyNotice = 'Copy failed';
-    }
+    copyNotice = (await copyText(url.toString())) ? 'Link copied' : 'Copy failed';
     setTimeout(() => {
       copyNotice = '';
     }, 2000);
@@ -584,6 +580,7 @@
       {#if playerActive}
         <Player
           bind:this={player}
+          oncopytimecode={copyText}
           src={previewUrl}
           rate={previewRate ?? { num: 24, den: 1 }}
           dropFrame={previewDropFrame}

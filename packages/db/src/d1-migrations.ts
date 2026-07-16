@@ -44,6 +44,24 @@ const projectsHaveCover = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes("cover_asset_id"));
 };
 
+const projectsHaveCoverBlob = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='projects'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("cover_blob_key"));
+};
+
+const foldersHaveKind = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='folders'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("kind"));
+};
+
 const assetVersionsHaveFailureNotified = async (
   binding: D1Database,
 ): Promise<boolean> => {
@@ -178,6 +196,21 @@ export const d1Migrations: D1Migration[] = [
     name: "0007_project_cover.sql",
     applied: projectsHaveCover,
     statements: ["ALTER TABLE projects ADD COLUMN cover_asset_id TEXT"],
+  },
+  {
+    name: "0008_project_cover_blob.sql",
+    applied: projectsHaveCoverBlob,
+    statements: ["ALTER TABLE projects ADD COLUMN cover_blob_key TEXT"],
+  },
+  {
+    name: "0009_share_folders.sql",
+    applied: foldersHaveKind,
+    statements: [
+      "ALTER TABLE folders ADD COLUMN kind TEXT NOT NULL DEFAULT 'assets'",
+      "ALTER TABLE shares ADD COLUMN folder_id TEXT",
+      "DROP INDEX IF EXISTS folders_sibling_uq",
+      "CREATE UNIQUE INDEX folders_sibling_uq ON folders(project_id, kind, ifnull(parent_id, ''), name)",
+    ],
   },
 ];
 

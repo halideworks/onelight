@@ -11,6 +11,8 @@ export const migrationFiles = [
   "0005_password_resets.sql",
   "0006_transcode_notify.sql",
   "0007_project_cover.sql",
+  "0008_project_cover_blob.sql",
+  "0009_share_folders.sql",
 ];
 
 const migrationPath = (file: string): string =>

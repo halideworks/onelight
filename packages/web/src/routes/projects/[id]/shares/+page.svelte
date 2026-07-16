@@ -1,5 +1,6 @@
 <script lang="ts">
   import { askConfirm } from '$lib/confirm.svelte.js';
+  import { copyText } from '$lib/clipboard.js';
   import { page } from '$app/state';
   import {
     api,
@@ -13,7 +14,7 @@
   import type { Share, ShareViewer, SharePatchBody, WatermarkSpec } from '$lib/api.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
-  import { washFor } from '$lib/washes.js';
+  import { pageWashFor } from '$lib/washes.js';
 
   type Project = { id: string; name: string; palette: string };
   type Asset = { id: string; name: string; kind: string; current_version_id?: string | null };
@@ -35,7 +36,7 @@
 
   const media = createMediaCache();
   const observeMedia = media.observe;
-  const wash = $derived(washFor(project?.palette));
+  const wash = $derived(pageWashFor(project?.palette));
 
   const loadViewers = async (shareId: string): Promise<void> => {
     viewers[shareId] = { status: 'loading', items: [] };
@@ -98,13 +99,13 @@
     share.allow_download === 'none' ? 'No downloads' : share.allow_download === 'proxy' ? 'Proxy downloads' : 'Original downloads';
 
   const copyUrl = async (share: Share): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(shareUrl(share));
+    if (await copyText(shareUrl(share))) {
+      listError = '';
       copiedId = share.id;
       setTimeout(() => {
         if (copiedId === share.id) copiedId = null;
       }, 2000);
-    } catch {
+    } else {
       listError = 'The link could not be copied. Copy it from the address shown.';
     }
   };
@@ -297,8 +298,8 @@
 
 <svelte:head><title>Shares | {project?.name ?? 'Project'} | Onelight</title></svelte:head>
 
-<main class="room">
-  <header class="wash" style={`background-image: ${wash};`}>
+<main class="room" style={`background-image: ${wash};`}>
+  <header class="wash">
     <nav class="crumbs" aria-label="Breadcrumb">
       <a href="/">Projects</a>
       <span aria-hidden="true">/</span>
@@ -517,6 +518,16 @@
         Burn a watermark into playback
       </label>
       {#if form.watermarkOn}
+        <!-- A watermark is burned into the pixels, so every clip in the share
+             has to be encoded again. Saying so here costs a sentence; finding
+             out by watching a share sit on "processing" costs the meeting. -->
+        <p class="wmnote">
+          Every clip in this share is re-encoded with the watermark burned in. That takes a
+          few minutes per clip, and the share shows each one as it finishes. Changing the
+          text or position below re-renders them all again.
+        </p>
+      {/if}
+      {#if form.watermarkOn}
         <label class="field">Text template
           <input bind:value={form.wmText} />
         </label>
@@ -561,19 +572,29 @@
 </dialog>
 
 <style>
-  .room { min-height: calc(100vh - var(--topbar-h, 0px)); background: var(--ink-000); color: var(--ink-text); font-size: var(--text-13); }
-  .wash { padding: var(--pad-3) var(--pad-4) var(--pad-4); background-size: 100% 300%; background-position: 50% 0%; }
+  /* The same page as the project and its settings: ink base, the project's
+     wash resolving into it at the same height. This page used to paint the
+     gradient into the header alone at 300% scale and leave the rest flat, which
+     is why it read as a different app. */
+  .room { min-height: calc(100vh - var(--topbar-h, 0px)); background-color: var(--ink-000); background-repeat: no-repeat; color: var(--ink-text); font-size: var(--text-13); padding-bottom: var(--pad-4); }
+  .wash { padding: var(--pad-3) var(--pad-4) var(--pad-4); }
   .crumbs { display: flex; gap: 8px; color: rgba(250, 248, 244, 0.72); }
   .crumbs a { color: inherit; font-size: var(--text-13); text-decoration: none; }
   .crumbs a:hover { color: rgba(250, 248, 244, 0.96); }
   .eyebrow { margin: var(--pad-3) 0 0; color: rgba(250, 248, 244, 0.62); font-size: var(--text-13); font-weight: 500; }
   h1 { margin: 4px 0 0; font-family: var(--font-display); font-size: clamp(2rem, 5vw, var(--text-56)); font-weight: 700; letter-spacing: -0.02em; color: rgba(250, 248, 244, 0.96); }
-  .body { padding: var(--pad-3) var(--pad-4) var(--pad-4); max-width: 900px; }
+  .body { padding: var(--pad-3) var(--pad-4) var(--pad-4); max-width: 1100px; }
   .actions-row { display: flex; align-items: center; gap: 16px; margin-bottom: var(--pad-3); }
 
   .shares { display: grid; gap: var(--pad); }
-  .share { padding: 16px 18px; border-radius: var(--radius-lg); background: var(--ink-100); display: grid; gap: 10px; }
-  .share.dead { opacity: 0.65; }
+  /* A card that reacts, and whose left edge carries its state: live shares are
+     accented, revoked and expired ones are not. State was a chip you had to
+     find and read. */
+  .share { position: relative; padding: 16px 18px 16px 20px; border-radius: var(--radius-lg); background: linear-gradient(180deg, color-mix(in oklab, var(--ink-100) 88%, var(--ink-200)) 0%, var(--ink-100) 46%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 1px 2px rgba(0, 0, 0, 0.28); display: grid; gap: 10px; overflow: hidden; transition: background 120ms ease; }
+  .share::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); }
+  .share:hover { background: var(--ink-200); }
+  .share.dead { opacity: 0.6; }
+  .share.dead::before { background: var(--ink-300); }
   .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   h2 { margin: 0; font-size: var(--text-16); font-weight: 600; }
   .grow { flex: 1; }
@@ -591,10 +612,17 @@
   td.tc, .meta .tc { font-variant-numeric: tabular-nums; }
 
   /* ---- dialog ---- */
-  dialog { border: 0; border-radius: var(--radius-lg); background: var(--ink-100); color: var(--ink-text); padding: 0; width: min(560px, calc(100vw - 48px)); }
-  dialog::backdrop { background: rgba(5, 8, 12, 0.7); }
-  .share-form { padding: var(--pad-3); display: grid; gap: 14px; font-size: var(--text-13); max-height: min(80vh, 720px); overflow: auto; }
-  .share-form h2 { font-size: var(--text-20); font-family: var(--font-display); }
+  /* A share has a lot of settings and they are not equally important: what it
+     is called and what is in it, then who can do what with it, then the
+     watermark. The form used to be one undifferentiated column of fields at one
+     weight, which is what "anemic" looks like -- nothing leads, so everything
+     has to be read. Grouping does the work that a flat list made the reader do.
+     Wider, too: at 560px the pairs wrapped and the asset picker was a keyhole. */
+  dialog { border: 0; border-radius: var(--radius-lg); background: var(--ink-100); color: var(--ink-text); padding: 0; width: min(760px, calc(100vw - 48px)); box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6); }
+  dialog::backdrop { background: rgba(5, 8, 12, 0.72); }
+  .share-form { padding: var(--pad-3); display: grid; gap: 16px; font-size: var(--text-13); max-height: min(84vh, 820px); overflow: auto; }
+  .share-form h2 { font-size: var(--text-20); font-family: var(--font-display); margin: 0 0 2px; }
+  .wmnote { margin: -4px 0 0; padding: 9px 11px; border-radius: var(--radius); background: color-mix(in oklab, var(--note) 14%, var(--ink-200)); color: var(--ink-text); font-size: var(--text-12); line-height: 1.5; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--note) 30%, transparent); }
   .field { display: grid; gap: 6px; color: var(--ink-text-dim); font-weight: 500; }
   .field input, .field select { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 10px; font-size: var(--text-13); }
   .field input:disabled { opacity: 0.5; }

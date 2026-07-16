@@ -27,3 +27,44 @@ export const WASHES: Record<string, string> = {
 
 export const washFor = (palette: string | null | undefined): string =>
   WASHES[palette ?? ""] ?? WASHES.sumimai;
+
+/* The same identity, as a page rather than a swatch.
+ *
+ * Every wash above ends on a light stop -- tan, cream, pale blue -- because it
+ * was drawn to fill a card 104px tall, where that terminal is a highlight. Run
+ * down a 1000px page it stops being a highlight and becomes most of the screen:
+ * the mid tone smears through the middle and the page ends in dirty cream with
+ * light text sitting on it. That is the dinginess. It is not the colours, which
+ * are the point; it is the distance they were being stretched over.
+ *
+ * So the page keeps the top of its wash -- the part that says which project you
+ * are in -- and resolves into the app's ink within the first screenful. Panels
+ * then sit on ink, at one value step, everywhere: the wash stops competing with
+ * the content and goes back to being a wash. The stop percentages are shared,
+ * so every page in the app resolves at the same height and they finally match.
+ */
+const PAGE_TOPS: Record<string, [string, string]> = {
+  kuwanomi: ["#3d1c2a", "var(--kuwanomi-a)"],
+  sakinezu: ["var(--sakinezu-b)", "var(--sakinezu-a)"],
+  shinai: ["var(--shinai-a)", "var(--shinai-m)"],
+  yorukou: ["var(--yorukou-a)", "var(--yorukou-m)"],
+  tetsukon: ["#16283a", "var(--tetsukon-a)"],
+  ebicha: ["var(--ebicha-a)", "var(--ebicha-m)"],
+  sumimai: ["var(--sumimai-a)", "var(--sumimai-m)"],
+  yoai: ["var(--yoai-a)", "var(--yoai-m)"],
+  kachitetsu: ["var(--kachitetsu-a)", "var(--kachitetsu-m)"],
+  mokutan: ["var(--mokutan-a)", "var(--mokutan-m)"],
+};
+
+export const pageWashFor = (palette: string | null | undefined): string => {
+  const [anchor, mid] = PAGE_TOPS[palette ?? ""] ?? PAGE_TOPS.sumimai;
+  return [
+    "linear-gradient(180deg,",
+    `color-mix(in oklab, ${anchor} 88%, var(--ink-000)) 0px,`,
+    /* The colour peaks around the header, where the project's name is, and is
+       gone by the time the content starts. */
+    `color-mix(in oklab, ${mid} 42%, var(--ink-000)) 190px,`,
+    `color-mix(in oklab, ${mid} 12%, var(--ink-000)) 380px,`,
+    "var(--ink-000) 640px)",
+  ].join(" ");
+};

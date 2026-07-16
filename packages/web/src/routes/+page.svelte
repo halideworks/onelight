@@ -130,14 +130,16 @@
 </main>
 
 <style>
-  .shell { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 12vh 9vw; background: linear-gradient(180deg, var(--sumimai-a) 0%, var(--sumimai-m) 55%, var(--sumimai-b) 105%); }
+  /* The landing wash, resolving into ink like every other page rather than
+     ending the screen in pale tan with white text on it. */
+  .shell { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 12vh 9vw; background-color: var(--ink-000); background-repeat: no-repeat; background-image: linear-gradient(180deg, color-mix(in oklab, var(--sumimai-a) 88%, var(--ink-000)) 0px, color-mix(in oklab, var(--sumimai-m) 42%, var(--ink-000)) 190px, color-mix(in oklab, var(--sumimai-m) 12%, var(--ink-000)) 380px, var(--ink-000) 640px); }
   /* Signed in this is a working page, not a landing page: less air, no hero. */
   .shell.signed-in { padding: 6vh 9vw; }
-  .eyebrow { margin: 0 0 24px; color: rgba(255, 255, 255, 0.65); font-size: var(--text-13); }
+  .eyebrow { margin: 0 0 24px; color: var(--ink-text-dim); font-size: var(--text-13); }
   h1 { max-width: 760px; margin: 0; font-family: var(--font-display); font-size: clamp(42px, 8vw, 92px); line-height: 0.98; }
   /* The heading over a list you came here to use does not need to be 92px. */
   .signed-in h1 { font-size: clamp(24px, 3vw, 34px); line-height: 1.1; margin: 0 0 24px; }
-  .lede { max-width: 460px; margin: 32px 0 48px; font-size: 19px; }
+  .lede { max-width: 460px; margin: 32px 0 48px; font-size: 19px; color: var(--ink-text-dim); }
   nav { display: flex; gap: 24px; }
   a { color: inherit; text-decoration: none; }
   nav a { border-bottom: 1px solid rgba(255, 255, 255, 0.7); padding-bottom: 5px; }
@@ -147,28 +149,28 @@
      form used to be inset by the row's negative margin. */
   .projects { max-width: 640px; }
   .newproject { display: flex; gap: 6px; }
-  .newproject input { flex: 1; min-width: 0; border: 0; border-radius: var(--radius); background: rgba(13, 17, 23, 0.35); color: var(--ink-text); padding: 10px 14px; font-size: var(--text-13); }
-  .newproject input::placeholder { color: rgba(255, 255, 255, 0.65); }
+  .newproject input { flex: 1; min-width: 0; border: 0; border-radius: var(--radius); background: var(--ink-100); color: var(--ink-text); padding: 10px 14px; font-size: var(--text-13); }
+  .newproject input::placeholder { color: var(--ink-text-dim); }
   .newproject button { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 10px 16px; font-size: var(--text-13); font-weight: 600; white-space: nowrap; }
   .newproject button:hover { background: var(--accent-bright); }
   .newproject button:disabled { opacity: 0.5; cursor: default; }
 
   .listhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 28px 0 10px; }
-  .count { color: rgba(255, 255, 255, 0.65); font-size: var(--text-13); }
-  .viewtoggle { display: flex; gap: 2px; padding: 2px; border-radius: var(--radius); background: rgba(13, 17, 23, 0.35); }
-  .viewtoggle button { border: 0; border-radius: 2px; background: none; color: rgba(255, 255, 255, 0.65); padding: 4px 10px; font-size: var(--text-12); font-weight: 500; }
+  .count { color: var(--ink-text-dim); font-size: var(--text-13); }
+  .viewtoggle { display: flex; gap: 2px; padding: 2px; border-radius: var(--radius); background: var(--ink-100); }
+  .viewtoggle button { border: 0; border-radius: 2px; background: none; color: var(--ink-text-dim); padding: 4px 10px; font-size: var(--text-12); font-weight: 500; }
   .viewtoggle button:hover { color: #fff; }
-  .viewtoggle button[aria-pressed='true'] { background: rgba(13, 17, 23, 0.55); color: #fff; }
+  .viewtoggle button[aria-pressed='true'] { background: var(--ink-300); color: #fff; }
 
   .projectlist { display: grid; gap: 2px; }
   .projectlist.grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
 
   /* List row: thumbnail as a small swatch. */
-  .project { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: var(--radius); background: rgba(13, 17, 23, 0.35); }
-  .project:hover { background: rgba(13, 17, 23, 0.55); }
+  .project { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: var(--radius); background: var(--ink-100); transition: background 100ms ease; }
+  .project:hover { background: var(--ink-200); }
   .meta { flex: 1; min-width: 0; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
   .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .project small { color: rgba(255, 255, 255, 0.65); }
+  .project small { color: var(--ink-text-dim); }
   .thumb { flex: none; width: 34px; height: 24px; border-radius: 2px; overflow: hidden; display: grid; }
 
   /* Grid card: the thumbnail leads and the name sits under it. */
@@ -178,6 +180,6 @@
   .thumb :global(.cover) { width: 100%; height: 100%; }
   .grid .meta { padding: 10px 12px; }
 
-  .empty { color: rgba(255, 255, 255, 0.65); }
+  .empty { color: var(--ink-text-dim); }
   .error { margin: 12px 0 0; color: var(--warn); font-size: var(--text-13); }
 </style>

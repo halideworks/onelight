@@ -80,12 +80,14 @@ import {
   extractHashtags,
   getLimit,
   searchCursorParam,
+  SEARCH_STREAMS,
   jsonBody,
   mapError,
   parseJsonObject,
   parseJsonValue,
   userFromContext,
 } from "./helpers.js";
+import type { SearchStream } from "./helpers.js";
 import { bodies, errorEnvelope, routeDocs } from "./schemas.js";
 import type { RouteDoc } from "./schemas.js";
 import type { AppEnv, Variables } from "./types.js";
@@ -193,6 +195,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const coverUrlFor = async (
     project: typeof projects.$inferSelect,
   ): Promise<string | null> => {
+    /* An uploaded cover is the picture itself: no rendition to wait for, so it
+       shows the moment the upload lands. */
+    if (project.coverBlobKey)
+      return privateMediaUrl({ projectId: project.id }, project.coverBlobKey);
     if (!project.coverAssetId) return null;
     const row = (
       await env.db
@@ -225,7 +231,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!row) return null;
-    return privateMediaUrl(row.versionId, row.blobKey);
+    return privateMediaUrl({ versionId: row.versionId }, row.blobKey);
   };
 
   const projectWire = async (
@@ -244,6 +250,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       status: project.status,
       palette: project.palette,
       cover_asset_id: project.coverAssetId,
+      /* Which kind of cover this is, so the settings page can say so without
+         guessing from the URL. */
+      cover_kind: project.coverBlobKey
+        ? ("upload" as const)
+        : project.coverAssetId
+          ? ("asset" as const)
+          : ("generated" as const),
       cover_url: await coverUrlFor(project),
       restricted: Boolean(project.restricted),
       created_by: project.createdBy,
@@ -693,6 +706,16 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     completed_at: upload.completedAt,
   });
 
+  /* A cover is put straight into an <img>, so "is this an image" means "will a
+     browser draw it", not "is it pictorial". assetKind() calls EXR, DPX and TIFF
+     images -- correctly, for footage -- and no browser renders any of them, so
+     accepting one would set a cover that silently never appears. This list
+     matches what blobContentType can actually label. */
+  const isImageFilename = (filename: string): boolean =>
+    ["png", "jpg", "jpeg", "webp", "gif"].includes(
+      filename.toLowerCase().split(".").pop() ?? "",
+    );
+
   const assetKind = (
     filename: string,
   ): "video" | "audio" | "image" | "pdf" | "file" => {
@@ -834,6 +857,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const shareWire = (share: typeof shares.$inferSelect) => ({
     id: share.id,
     project_id: share.projectId,
+    folder_id: share.folderId,
     slug: share.slug,
     kind: share.kind,
     title: share.title,
@@ -1868,9 +1892,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .set({
         ...(body.name ? { name: body.name.trim() } : {}),
         ...(body.palette ? { palette: body.palette } : {}),
+        // The two kinds of cover are alternatives, so setting one clears the
+        // other; without this, clearing a picked asset would silently fall back
+        // to an upload chosen weeks ago.
         ...(body.cover_asset_id === undefined
           ? {}
-          : { coverAssetId: body.cover_asset_id }),
+          : { coverAssetId: body.cover_asset_id, coverBlobKey: null }),
         ...(body.restricted === undefined
           ? {}
           : { restricted: body.restricted }),
@@ -1895,6 +1922,47 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       `project:${project.id}`,
     );
     return c.json(await projectWire(updated, user.id, user.role));
+  });
+
+  /* Set an uploaded picture as the project's cover.
+     Deliberately not an asset: a cover is not a deliverable, nobody filed it in
+     the project, and it should not appear in the file list, in search, or in a
+     share. It also skips the transcode entirely -- the poster pipeline exists to
+     make a still out of footage, and this is already a still. */
+  api.post("/projects/:id/cover", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const { project } = await requireProject(c.req.param("id"), actor, "manager");
+    const body = await jsonBody(c, bodies.projectCoverPut);
+    const upload = await findUpload(body.upload_id, actor);
+    if (upload.projectId !== project.id || upload.status !== "completed")
+      throw errors.validation("Upload must be completed for this project.");
+    if (!isImageFilename(upload.clientFilename))
+      throw errors.validation("A cover must be an image.");
+    await env.db
+      .update(projects)
+      .set({
+        coverBlobKey: upload.blobKey,
+        coverAssetId: null,
+        updatedAt: env.clock.now(),
+      })
+      .where(eq(projects.id, project.id))
+      .run();
+    const updated = (
+      await env.db
+        .select()
+        .from(projects)
+        .where(eq(projects.id, project.id))
+        .limit(1)
+        .all()
+    )[0];
+    if (!updated) throw errors.notFound();
+    await audit(
+      actor.workspaceId,
+      actor.id,
+      "project.update",
+      `project:${project.id}`,
+    );
+    return c.json(await projectWire(updated, actor.id, actor.role));
   });
 
   api.delete("/projects/:id", requireAuth, async (c) => {
@@ -2116,12 +2184,16 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const actor = userFromContext(c);
     await requireProject(c.req.param("id"), actor, "viewer");
     const parent = c.req.query("parent_id") ?? null;
+    // Two trees share this table; a caller asking for one must never be handed
+    // rows from the other.
+    const kind = c.req.query("kind") === "shares" ? "shares" : "assets";
     const rows = await env.db
       .select()
       .from(folders)
       .where(
         and(
           eq(folders.projectId, c.req.param("id")),
+          eq(folders.kind, kind),
           parent ? eq(folders.parentId, parent) : isNull(folders.parentId),
         ),
       )
@@ -2132,6 +2204,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         id: folder.id,
         project_id: folder.projectId,
         parent_id: folder.parentId,
+        kind: folder.kind,
         name: folder.name,
         created_at: folder.createdAt,
       })),
@@ -2143,6 +2216,19 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     await requireProject(c.req.param("id"), actor, "editor");
     const body = await jsonBody(c, bodies.folderCreate);
     await folderDepth(c.req.param("id"), body.parent_id ?? null);
+    // A child inherits its parent's tree: nothing may straddle the two, and a
+    // caller should not have to restate what the parent already decides.
+    const parentKind = body.parent_id
+      ? (
+          await env.db
+            .select({ kind: folders.kind })
+            .from(folders)
+            .where(eq(folders.id, body.parent_id))
+            .limit(1)
+            .all()
+        )[0]?.kind
+      : undefined;
+    const kind = parentKind ?? body.kind ?? "assets";
     const now = env.clock.now();
     const id = env.ids.ulid();
     try {
@@ -2152,6 +2238,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           id,
           projectId: c.req.param("id"),
           parentId: body.parent_id ?? null,
+          kind,
           name: body.name.trim(),
           createdAt: now,
           updatedAt: now,
@@ -2170,6 +2257,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         id,
         project_id: c.req.param("id"),
         parent_id: body.parent_id ?? null,
+        kind,
         name: body.name.trim(),
         created_at: now,
       },
@@ -2194,6 +2282,23 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       body.parent_id === undefined ? folder.parentId : body.parent_id;
     if (parentId === folder.id)
       throw errors.validation("A folder cannot be its own parent.");
+    if (parentId) {
+      const parent = (
+        await env.db
+          .select({ kind: folders.kind })
+          .from(folders)
+          .where(eq(folders.id, parentId))
+          .limit(1)
+          .all()
+      )[0];
+      if (!parent) throw errors.validation("That parent folder does not exist.");
+      // Moving a share folder into the asset tree would put shares somewhere
+      // only assets are read from: they would simply vanish from the rail.
+      if (parent.kind !== folder.kind)
+        throw errors.validation(
+          "A folder cannot be moved into the other tree.",
+        );
+    }
     const newDepth = await folderDepth(folder.projectId, parentId ?? null);
     // The cap applies to the deepest DESCENDANT after the move, not just
     // the moved folder itself.
@@ -2251,6 +2356,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       id: updated.id,
       project_id: updated.projectId,
       parent_id: updated.parentId,
+      kind: updated.kind,
       name: updated.name,
       created_at: updated.createdAt,
     });
@@ -2655,7 +2761,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (!attachment || !env.blobStore) throw errors.notFound();
     return c.json({
       url: await privateMediaUrl(
-        comment.versionId,
+        { versionId: comment.versionId },
         attachment.blobKey,
         attachmentDisposition(attachment.filename),
       ),
@@ -3169,18 +3275,23 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       throw errors.validation(
         "Search query must contain at least two characters.",
       );
+    const SCOPES: Record<string, SearchStream[]> = {
+      all: [...SEARCH_STREAMS],
+      assets: ["asset"],
+      comments: ["comment"],
+      projects: ["project"],
+      people: ["person"],
+      shares: ["share"],
+    };
     const scope = c.req.query("scope") ?? "all";
-    if (!["all", "assets", "comments"].includes(scope))
-      throw errors.validation("Search scope must be all, assets, or comments.");
+    const wanted = SCOPES[scope];
+    if (!wanted)
+      throw errors.validation(
+        `Search scope must be one of: ${Object.keys(SCOPES).join(", ")}.`,
+      );
     const limit = getLimit(c.req.query("limit"));
     const cursor = searchCursorParam(c.req.query("cursor"));
-    const wantAssets = scope !== "comments";
-    const wantComments = scope !== "assets";
-    if (
-      cursor &&
-      ((cursor.t === "asset" && !wantAssets) ||
-        (cursor.t === "comment" && !wantComments))
-    )
+    if (cursor && !wanted.includes(cursor.t))
       throw errors.validation("Cursor does not match the requested scope.");
     // Escape LIKE metacharacters (%, _, and the escape char itself) so a
     // query containing them matches literally instead of widening the search
@@ -3197,6 +3308,79 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const commentPattern = tagQuery ? `%#${escapeLike(tagQuery)}%` : pattern;
     const items: Array<Record<string, unknown>> = [];
     let nextCursor: string | null = null;
+
+    /* Restricted projects are invisible to anyone without a grant, so search
+       cannot simply LIKE over the workspace: that would leak the names of
+       projects the caller cannot open, and the names of their shares with
+       them. Both streams post-filter with the same rule the project read uses,
+       and keep scanning so a filtered-out row does not consume a page slot. */
+    const visibleProject = async (
+      project: typeof projects.$inferSelect,
+    ): Promise<boolean> => {
+      if (actor.role === "admin") return true;
+      if (!project.restricted) return true;
+      return Boolean(await grantFor(project.id, actor.id));
+    };
+
+    const matchingProjects = async (
+      after: string | undefined,
+      take: number,
+    ): Promise<Array<typeof projects.$inferSelect>> => {
+      const collected: Array<typeof projects.$inferSelect> = [];
+      let scanCursor = after;
+      for (;;) {
+        const batch = await env.db
+          .select()
+          .from(projects)
+          .where(
+            and(
+              eq(projects.workspaceId, actor.workspaceId),
+              sql`${projects.name} LIKE ${pattern} ESCAPE '\\'`,
+              scanCursor ? lt(projects.id, scanCursor) : undefined,
+            ),
+          )
+          .orderBy(desc(projects.id))
+          .limit(Math.max(take, 25))
+          .all();
+        for (const project of batch) {
+          if (await visibleProject(project)) collected.push(project);
+          if (collected.length === take) return collected;
+        }
+        if (batch.length < Math.max(take, 25)) return collected;
+        scanCursor = batch[batch.length - 1]?.id;
+      }
+    };
+
+    const matchingShares = async (
+      after: string | undefined,
+      take: number,
+    ): Promise<Array<typeof shares.$inferSelect>> => {
+      const collected: Array<typeof shares.$inferSelect> = [];
+      let scanCursor = after;
+      for (;;) {
+        const batch = await env.db
+          .select({ share: shares, project: projects })
+          .from(shares)
+          .innerJoin(projects, eq(shares.projectId, projects.id))
+          .where(
+            and(
+              eq(projects.workspaceId, actor.workspaceId),
+              isNull(shares.revokedAt),
+              sql`${shares.title} LIKE ${pattern} ESCAPE '\\'`,
+              scanCursor ? lt(shares.id, scanCursor) : undefined,
+            ),
+          )
+          .orderBy(desc(shares.id))
+          .limit(Math.max(take, 25))
+          .all();
+        for (const row of batch) {
+          if (await visibleProject(row.project)) collected.push(row.share);
+          if (collected.length === take) return collected;
+        }
+        if (batch.length < Math.max(take, 25)) return collected;
+        scanCursor = batch[batch.length - 1]?.share.id;
+      }
+    };
     const fetchCommentRows = (after: string | undefined, take: number) =>
       env.db
         .select()
@@ -3237,63 +3421,153 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         cursor = batch[batch.length - 1]?.comments.id;
       }
     };
-    if (wantAssets && (!cursor || cursor.t === "asset")) {
-      const assetRows = await env.db
-        .select()
-        .from(assets)
-        .innerJoin(projects, eq(assets.projectId, projects.id))
-        .where(
-          and(
-            eq(projects.workspaceId, actor.workspaceId),
-            isNull(assets.deletedAt),
-            sql`${assets.name} LIKE ${pattern} ESCAPE '\\'`,
-            cursor?.id ? lt(assets.id, cursor.id) : undefined,
-          ),
-        )
-        .orderBy(desc(assets.id))
-        .limit(limit + 1)
-        .all();
-      const assetPage = assetRows.slice(0, limit) as Array<{
-        assets: typeof assets.$inferSelect;
-      }>;
-      items.push(
-        ...assetPage.map((row) => ({
-          type: "asset",
-          id: row.assets.id,
-          name: row.assets.name,
-          project_id: row.assets.projectId,
-        })),
-      );
-      if (assetRows.length > limit) {
-        const last = assetPage[assetPage.length - 1];
-        nextCursor = last ? encodeSearchCursor("asset", last.assets.id) : null;
-      } else if (wantComments && items.length >= limit) {
-        // The asset stream filled the page exactly; the comment stream
-        // starts on the next page if anything matches there.
-        const peek = await matchingComments(undefined, 1);
-        if (peek.length) nextCursor = encodeSearchCursor("comment");
-      }
+    /* Every stream answers one question -- "give me the next N hits after this
+       id" -- and returns them already shaped for the wire, each with the id a
+       cursor would resume from. One loop then drives all five, rather than a
+       bespoke branch each with its own seam handling. Streams are consumed in
+       order, and the cursor names which one the next page resumes in, so a page
+       break never drops or repeats a row. */
+    interface Hit {
+      wire: Record<string, unknown>;
+      id: string;
     }
-    if (!nextCursor && wantComments && items.length < limit) {
+    interface Stream {
+      t: SearchStream;
+      page: (after: string | undefined, take: number) => Promise<Hit[]>;
+    }
+
+    const streams: Stream[] = [
+      {
+        t: "asset",
+        page: async (after, take) =>
+          (
+            await env.db
+              .select()
+              .from(assets)
+              .innerJoin(projects, eq(assets.projectId, projects.id))
+              .where(
+                and(
+                  eq(projects.workspaceId, actor.workspaceId),
+                  isNull(assets.deletedAt),
+                  sql`${assets.name} LIKE ${pattern} ESCAPE '\\'`,
+                  after ? lt(assets.id, after) : undefined,
+                ),
+              )
+              .orderBy(desc(assets.id))
+              .limit(take)
+              .all()
+          ).map((row: { assets: typeof assets.$inferSelect }) => ({
+            id: row.assets.id,
+            wire: {
+              type: "asset",
+              id: row.assets.id,
+              name: row.assets.name,
+              project_id: row.assets.projectId,
+            },
+          })),
+      },
+      {
+        t: "comment",
+        page: async (after, take) =>
+          (await matchingComments(after, take)).map((row) => ({
+            id: row.comments.id,
+            wire: {
+              type: "comment",
+              id: row.comments.id,
+              body_text: row.comments.bodyText,
+              asset_id: row.assets.id,
+              version_id: row.comments.versionId,
+              project_id: row.assets.projectId,
+              // Deep-link anchor for ?f= so search hits jump to the frame.
+              frame_in: row.comments.frameIn,
+            },
+          })),
+      },
+      {
+        t: "project",
+        page: async (after, take) =>
+          (await matchingProjects(after, take)).map((row) => ({
+            id: row.id,
+            wire: {
+              type: "project",
+              id: row.id,
+              name: row.name,
+              palette: row.palette,
+            },
+          })),
+      },
+      {
+        t: "person",
+        page: async (after, take) =>
+          (
+            await env.db
+              .select()
+              .from(users)
+              .where(
+                and(
+                  eq(users.workspaceId, actor.workspaceId),
+                  isNull(users.disabledAt),
+                  sql`(${users.name} LIKE ${pattern} ESCAPE '\\' OR ${users.email} LIKE ${pattern} ESCAPE '\\')`,
+                  after ? lt(users.id, after) : undefined,
+                ),
+              )
+              .orderBy(desc(users.id))
+              .limit(take)
+              .all()
+          ).map((row: typeof users.$inferSelect) => ({
+            id: row.id,
+            wire: {
+              type: "person",
+              id: row.id,
+              name: row.name,
+              email: row.email,
+            },
+          })),
+      },
+      {
+        t: "share",
+        page: async (after, take) =>
+          (await matchingShares(after, take)).map((row) => ({
+            id: row.id,
+            wire: {
+              type: "share",
+              id: row.id,
+              title: row.title,
+              slug: row.slug,
+              project_id: row.projectId,
+            },
+          })),
+      },
+    ];
+
+    for (const [index, stream] of streams.entries()) {
+      if (!wanted.includes(stream.t)) continue;
+      // Skip streams that come before the one the cursor points into.
+      if (cursor && streams.findIndex((entry) => entry.t === cursor.t) > index)
+        continue;
       const remaining = limit - items.length;
-      const after = cursor?.t === "comment" ? cursor.id : undefined;
-      const commentRows = await matchingComments(after, remaining + 1);
-      const commentPage = commentRows.slice(0, remaining);
-      items.push(
-        ...commentPage.map((row) => ({
-          type: "comment",
-          id: row.comments.id,
-          body_text: row.comments.bodyText,
-          asset_id: row.assets.id,
-          version_id: row.comments.versionId,
-          project_id: row.assets.projectId,
-          // Deep-link anchor for ?f= so search hits jump to the frame.
-          frame_in: row.comments.frameIn,
-        })),
-      );
-      if (commentRows.length > remaining) {
-        const last = commentPage[commentPage.length - 1];
-        if (last) nextCursor = encodeSearchCursor("comment", last.comments.id);
+      if (remaining <= 0) break;
+      const after = cursor?.t === stream.t ? cursor.id : undefined;
+      const hits = await stream.page(after, remaining + 1);
+      const pageHits = hits.slice(0, remaining);
+      items.push(...pageHits.map((hit) => hit.wire));
+      if (hits.length > remaining) {
+        const last = pageHits[pageHits.length - 1];
+        if (last) nextCursor = encodeSearchCursor(stream.t, last.id);
+        break;
+      }
+      // This stream is exhausted. If the page is full, the next page has to say
+      // where to resume, and only a stream with something in it may claim it.
+      if (items.length >= limit) {
+        for (const later of streams.slice(index + 1)) {
+          if (!wanted.includes(later.t)) continue;
+          const peek = await later.page(undefined, 1);
+          if (peek.length) {
+            nextCursor = encodeSearchCursor(later.t);
+            break;
+          }
+        }
+        break;
       }
     }
     return c.json({ items, next_cursor: nextCursor });
@@ -3480,13 +3754,29 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       : match[1];
   };
 
+  /* What the blob belongs to. The claim is not consulted when serving --
+     blob_key is what authorizes -- but a token should not misdescribe its own
+     subject: an export is not a version, and a project cover has no version at
+     all. */
+  type MediaScope =
+    | { versionId: string }
+    | { projectId: string }
+    | { exportId: string };
+
+  const mediaScopeClaim = (scope: MediaScope): Record<string, string> =>
+    "versionId" in scope
+      ? { version_id: scope.versionId }
+      : "projectId" in scope
+        ? { project_id: scope.projectId }
+        : { export_id: scope.exportId };
+
   const issuePrivateMediaToken = async (
-    versionId: string,
+    scope: MediaScope,
     blobKey: string,
     disposition?: string,
   ) =>
     new SignJWT({
-      version_id: versionId,
+      ...mediaScopeClaim(scope),
       blob_key: blobKey,
       ...(disposition ? { disposition } : {}),
     })
@@ -3496,11 +3786,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .sign(new TextEncoder().encode(env.config.SECRET_KEY));
 
   const privateMediaUrl = async (
-    versionId: string,
+    scope: MediaScope,
     blobKey: string,
     disposition?: string,
   ) =>
-    `${env.config.PUBLIC_URL.replace(/\/$/, "")}/api/v1/media/${blobKey.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(await issuePrivateMediaToken(versionId, blobKey, disposition))}`;
+    `${env.config.PUBLIC_URL.replace(/\/$/, "")}/api/v1/media/${blobKey.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(await issuePrivateMediaToken(scope, blobKey, disposition))}`;
 
   /* These must match what the worker actually writes. The sidecars are PNG
      (media.ts writes poster.png, sprite.png, audio_peaks.png) and were served
@@ -3667,6 +3957,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           : null,
         brandJson: body.brand ? JSON.stringify(body.brand) : null,
         createdBy: actor.id,
+        folderId: body.folder_id ?? null,
         revokedAt: null,
         createdAt: now,
       })
@@ -3790,6 +4081,24 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (!share) throw errors.notFound();
     await requireProject(share.projectId, actor, "manager");
     const body = await jsonBody(c, bodies.sharePatch);
+    if (body.folder_id) {
+      const folder = (
+        await env.db
+          .select({ projectId: folders.projectId, kind: folders.kind })
+          .from(folders)
+          .where(eq(folders.id, body.folder_id))
+          .limit(1)
+          .all()
+      )[0];
+      if (
+        !folder ||
+        folder.projectId !== share.projectId ||
+        folder.kind !== "shares"
+      )
+        throw errors.validation(
+          "folder_id must name a shares folder in this project.",
+        );
+    }
     const watermarkJson =
       body.watermark_spec === undefined
         ? share.watermarkSpecJson
@@ -3812,6 +4121,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           ? {}
           : { expiresAt: body.expires_at }),
         ...(body.allow_download ? { allowDownload: body.allow_download } : {}),
+        // Explicit null files a share back under the Shares root, so it must
+        // not be confused with "not mentioned".
+        ...(body.folder_id === undefined ? {} : { folderId: body.folder_id }),
         ...(body.allow_comments === undefined
           ? {}
           : { allowComments: body.allow_comments }),
@@ -3925,6 +4237,23 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .set({ revokedAt: env.clock.now() })
       .where(eq(shares.id, share.id))
       .run();
+    /* Drop the burned-in watermark renditions this share caused.
+       renditions.share_id carries no foreign key -- it cannot, since a
+       rendition may belong to no share at all -- so nothing else would ever
+       remove them, and a revoked share can never be watched again. They were
+       minutes of encoding and hundreds of megabytes each, pinned forever by a
+       row that exists only to say "revoked". The blobs become unreferenced and
+       the sweeper reclaims them; a later share re-renders its own. */
+    await env.db
+      .delete(renditions)
+      .where(eq(renditions.shareId, share.id))
+      .run();
+    await audit(
+      actor.workspaceId,
+      actor.id,
+      "share.revoke",
+      `share:${share.id}`,
+    );
     return c.body(null, 204);
   });
 
@@ -4060,7 +4389,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const filename = job.resultBlobKey.split("/").pop() || `export-${job.id}`;
     return c.json({
       url: await privateMediaUrl(
-        job.id,
+        { exportId: job.id },
         job.resultBlobKey,
         attachmentDisposition(filename),
       ),
@@ -5678,11 +6007,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             size: rendition.size,
             created_at: rendition.createdAt,
             url: env.blobStore
-              ? await privateMediaUrl(version.id, rendition.blobKey)
+              ? await privateMediaUrl({ versionId: version.id }, rendition.blobKey)
               : null,
             vtt_url:
               env.blobStore && vttKey
-                ? await privateMediaUrl(version.id, vttKey)
+                ? await privateMediaUrl({ versionId: version.id }, vttKey)
                 : null,
           };
         }),
@@ -5803,10 +6132,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         token,
         new TextEncoder().encode(env.config.SECRET_KEY),
       );
-      if (
-        verified.payload.blob_key !== key ||
-        typeof verified.payload.version_id !== "string"
-      )
+      const scoped =
+        typeof verified.payload.version_id === "string" ||
+        typeof verified.payload.project_id === "string" ||
+        typeof verified.payload.export_id === "string";
+      if (verified.payload.blob_key !== key || !scoped)
         throw new Error("Token claims do not match this media key.");
       // Content-disposition comes from the verified claim only, sanitized.
       if (typeof verified.payload.disposition === "string")

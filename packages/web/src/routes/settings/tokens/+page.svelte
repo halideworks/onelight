@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { copyText } from '$lib/clipboard.js';
   import { onMount } from 'svelte';
   import { api, apiDelete, apiPost, messageFrom } from '$lib/api.js';
 
@@ -50,7 +51,7 @@
     <label>Name <input bind:value={name} required maxlength="200" placeholder="Resolve export" /></label>
     <button type="submit">Create token</button>
   </form>
-  {#if revealed}<section class="revealed" aria-live="polite"><strong>Copy this token now</strong><input readonly value={revealed} aria-label="New API token" /><button type="button" onclick={() => navigator.clipboard?.writeText(revealed)}>Copy token</button></section>{/if}
+  {#if revealed}<section class="revealed" aria-live="polite"><strong>Copy this token now</strong><input readonly value={revealed} aria-label="New API token" /><button type="button" onclick={() => void copyText(revealed)}>Copy token</button></section>{/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   <section aria-label="Active tokens" class="list">
     {#if tokens.length === 0}<p class="empty">No active tokens.</p>{/if}

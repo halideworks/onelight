@@ -6,13 +6,16 @@
   import type { SearchHit } from '$lib/api.js';
   import { excerpt } from '$lib/format.js';
 
-  type Scope = 'all' | 'assets' | 'comments';
+  type Scope = 'all' | 'assets' | 'comments' | 'projects' | 'people' | 'shares';
 
   const PAGE_SIZE = 30;
   const SCOPES: Array<{ id: Scope; label: string }> = [
     { id: 'all', label: 'All' },
     { id: 'assets', label: 'Assets' },
-    { id: 'comments', label: 'Comments' }
+    { id: 'comments', label: 'Comments' },
+    { id: 'projects', label: 'Projects' },
+    { id: 'people', label: 'People' },
+    { id: 'shares', label: 'Shares' }
   ];
 
   let input = $state<HTMLInputElement | null>(null);
@@ -162,7 +165,7 @@
 
   <section aria-label="Results" class="results" aria-busy={busy}>
     {#if !searched}
-      <p class="empty">Type at least two characters to search asset names and comment text.</p>
+      <p class="empty">Type at least two characters. Searches assets, comments, projects, people and shares.</p>
     {:else if hits.length === 0 && !busy}
       <p class="empty">Nothing matched "{searched}".</p>
     {/if}
@@ -171,6 +174,24 @@
         <a class="hit" href={`/projects/${hit.project_id}/assets/${hit.id}`}>
           <span class="kind">Asset</span>
           <span class="name">{hit.name}</span>
+        </a>
+      {:else if hit.type === 'project'}
+        <a class="hit" href={`/projects/${hit.id}`}>
+          <span class="kind">Project</span>
+          <span class="name">{hit.name}</span>
+        </a>
+      {:else if hit.type === 'person'}
+        <!-- Not a link: a person is not a page here, and a hit that goes
+             nowhere is worse than one that plainly does not. -->
+        <span class="hit static">
+          <span class="kind">Person</span>
+          <span class="name">{hit.name}</span>
+          <span class="sub">{hit.email}</span>
+        </span>
+      {:else if hit.type === 'share'}
+        <a class="hit" href={`/projects/${hit.project_id}/shares`}>
+          <span class="kind">Share</span>
+          <span class="name">{hit.title}</span>
         </a>
       {:else}
         <a class="hit" href={`/projects/${hit.project_id}/assets/${hit.asset_id}${commentFrame(hit) === null ? '' : `?f=${commentFrame(hit)}`}`}>

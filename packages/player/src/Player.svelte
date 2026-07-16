@@ -37,7 +37,8 @@
     ondrawingchange = undefined,
     onplaystate = undefined,
     onshare = undefined,
-    onrangechange = undefined
+    onrangechange = undefined,
+    oncopytimecode = undefined
   }: {
     src: string;
     rate?: { num: number; den: number };
@@ -61,6 +62,10 @@
        exactly the same two numbers, so they are published rather than
        reinvented in a second piece of UI. */
     onrangechange?: ((range: { in: number | null; out: number | null }) => void) | undefined;
+    /* Copying is the page's business -- it owns the clipboard fallback that a
+       non-secure origin needs -- so the player hands over the text and shows
+       what the page reports back. */
+    oncopytimecode?: ((text: string) => Promise<boolean>) | undefined;
   } = $props();
 
   let video: HTMLVideoElement | undefined = $state();
@@ -171,6 +176,21 @@
     rateSupported ? formatTimecode(timecodeFromFrames(frame, rate, dropFrame && isDropFrameRate(rate))) : null
   );
   const rateLabel = $derived(rate.den === 1 ? String(rate.num) : (rate.num / rate.den).toFixed(3));
+  /* The readout confirms the copy in place, then goes back to being a clock.
+     Long enough to notice, short enough that the timecode is readable again by
+     the time you look back. */
+  let tcCopied = $state(false);
+  let tcCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+  const copyTimecode = async (): Promise<void> => {
+    if (!timecode || !oncopytimecode) return;
+    if (!(await oncopytimecode(timecode))) return;
+    tcCopied = true;
+    if (tcCopiedTimer) clearTimeout(tcCopiedTimer);
+    tcCopiedTimer = setTimeout(() => {
+      tcCopied = false;
+    }, 1200);
+  };
+
   /* Marks are shown as timecode, like everything else a person reads here. */
   const tcAt = (value: number): string =>
     rateSupported
@@ -741,7 +761,22 @@
         <!-- Direct children of the grid: each lands on its own band, so the
              primary controls share one line and the labels share the next. -->
         <span class="readout">
-          {#if timecode}<span class="tc tc-main">{timecode}</span>{/if}
+          {#if timecode}
+            {#if oncopytimecode}
+              <!-- The timecode is the thing people retype into an email. One
+                   click takes it, and the readout itself says so rather than a
+                   toast somewhere else on the page. -->
+              <button
+                type="button"
+                class="tc tc-main copyable"
+                class:copied={tcCopied}
+                aria-label={`Copy timecode ${timecode}`}
+                onclick={() => void copyTimecode()}
+              >{tcCopied ? 'Copied' : timecode}</button>
+            {:else}
+              <span class="tc tc-main">{timecode}</span>
+            {/if}
+          {/if}
         </span>
         <span class="readout-sub tc">{frame} fr&nbsp; {rateLabel}{dropFrame && isDropFrameRate(rate) ? ' DF' : ''}</span>
 
@@ -1017,6 +1052,12 @@
   .readout { display: grid; text-align: center; gap: 2px; }
   .tc { font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
   .tc-main { font-size: 16px; color: var(--n-900, #e9e9e9); }
+  /* A button that has to stay a readout: no chrome until you go near it, and a
+     fixed width so taking the copy does not make the row jump. */
+  .tc-main.copyable { border: 0; background: none; padding: 0 4px; border-radius: 3px; font: inherit; font-size: 16px; letter-spacing: inherit; cursor: pointer; transition: background 120ms ease, color 120ms ease; }
+  .tc-main.copyable:hover { background: rgba(255, 255, 255, 0.08); }
+  .tc-main.copyable:focus-visible { outline: 1px solid var(--accent-bright, #6ad6e0); outline-offset: 1px; }
+  .tc-main.copied { color: var(--ok, #7fd1a8); }
   .tc-sub { font-size: 13px; color: var(--n-600, #767676); }
   .ctl-label { font-size: 13px; color: var(--n-600, #767676); }
   .draw-hint { font-size: 13px; color: var(--n-600, #767676); }

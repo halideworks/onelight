@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { copyText } from '$lib/clipboard.js';
   import { onMount } from 'svelte';
   import { api, apiDelete, apiPatch, apiPost, messageFrom } from '$lib/api.js';
 
@@ -63,7 +64,7 @@
   <a href="/settings">Settings</a>
   <h1>Members</h1>
   <form class="invite" onsubmit={invite}><label>Email <input type="email" bind:value={email} required /></label><button type="submit">Invite member</button></form>
-  {#if inviteUrl}<section class="revealed" aria-live="polite"><strong>Invite link</strong><input readonly value={inviteUrl} aria-label="Invite link" /><button type="button" onclick={() => navigator.clipboard?.writeText(inviteUrl)}>Copy link</button></section>{/if}
+  {#if inviteUrl}<section class="revealed" aria-live="polite"><strong>Invite link</strong><input readonly value={inviteUrl} aria-label="Invite link" /><button type="button" onclick={() => void copyText(inviteUrl)}>Copy link</button></section>{/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   <section aria-label="Workspace members" class="list"><h2>Workspace members</h2>{#each users as user (user.id)}<article><div><strong>{user.name}</strong><span>{user.email}</span></div><select aria-label={`Role for ${user.name}`} value={user.role} onchange={(event) => changeRole(user, (event.currentTarget as HTMLSelectElement).value as User['role'])}><option value="member">Member</option><option value="admin">Admin</option></select></article>{/each}</section>
   <section aria-label="Pending invites" class="list"><h2>Pending invites</h2>{#if invites.length === 0}<p class="empty">No pending invites.</p>{/if}{#each invites as pending (pending.id)}<article><div><strong>{pending.email}</strong><span>{pending.role}</span></div><button type="button" onclick={() => revokeInvite(pending.id)}>Revoke</button></article>{/each}</section>
