@@ -14,11 +14,16 @@
   import { copyText } from '$lib/clipboard.js';
   import { replaceState } from '$app/navigation';
   import ProjectCover from '$lib/ProjectCover.svelte';
-  import { pageWashFor } from '$lib/washes.js';
+  import { pageWashFor, pageWashFromStops } from '$lib/washes.js';
   import { api, apiPost, ApiError, messageFrom } from '$lib/api.js';
   import { annotationsFrom, markersFrom, type ReviewComment } from '$lib/comments.js';
   import { hashtagsIn, segmentCommentBody } from '../../projects/[id]/assets/[assetId]/comment-text.js';
 
+  type Brand = {
+    palette?: string;
+    colors?: [string, string];
+    player?: 'full' | 'simple';
+  };
   type Share = {
     title: string;
     kind: 'review' | 'presentation';
@@ -27,6 +32,7 @@
     allow_download: 'none' | 'proxy' | 'original';
     expires_at: number | null;
     watermark_spec: Record<string, unknown> | null;
+    brand: Brand | null;
   };
   type Asset = {
     id: string;
@@ -133,10 +139,23 @@
      the whole height of a share ends on its light stop, so the tiles and their
      names sat on dirty cream and the page looked cheap exactly where a client
      first sees it (washes.ts documents the effect). This one peaks behind the
-     title and resolves into ink before the work starts. A share carries no
-     palette on the public wire yet, so it takes the default; per-share
-     branding (design doc section 11) is where that becomes the client's. */
-  const wash = pageWashFor(null);
+     title and resolves into ink before the work starts.
+
+     The share's brand decides the colours: a library palette, or two custom
+     hexes run through the same grammar so a client-designed room still reads
+     as this app. No brand takes the default. */
+  const wash = $derived(
+    share?.brand?.colors
+      ? pageWashFromStops(share.brand.colors[0], share.brand.colors[1])
+      : pageWashFor(share?.brand?.palette ?? null)
+  );
+
+  /* Which instrument the viewer gets. A presentation is always the simple
+     player; a review share can choose it too (brand.player), for clients who
+     should read and leave notes without the colorist's deck in their hands. */
+  const playerChrome = $derived<'full' | 'simple'>(
+    presenting || share?.brand?.player === 'simple' ? 'simple' : 'full'
+  );
 
   const tagsOf = (comment: Comment): string[] =>
     Array.isArray(comment.tags) ? comment.tags : hashtagsIn(comment.body_text);
@@ -164,6 +183,22 @@
       }
       return null;
     };
+    const parseBrand = (): Brand | null => {
+      const wire = record['brand'];
+      if (!wire || typeof wire !== 'object' || Array.isArray(wire)) return null;
+      const raw_ = wire as Record<string, unknown>;
+      const colors =
+        Array.isArray(raw_['colors']) &&
+        raw_['colors'].length === 2 &&
+        raw_['colors'].every((color) => typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color))
+          ? ([raw_['colors'][0], raw_['colors'][1]] as [string, string])
+          : undefined;
+      return {
+        ...(typeof raw_['palette'] === 'string' ? { palette: raw_['palette'] } : {}),
+        ...(colors ? { colors } : {}),
+        ...(raw_['player'] === 'simple' || raw_['player'] === 'full' ? { player: raw_['player'] } : {})
+      };
+    };
     const expires = record['expires_at'] ?? record['expiresAt'];
     const download = record['allow_download'] ?? record['allowDownload'];
     return {
@@ -173,7 +208,8 @@
       allow_comments: Boolean(record['allow_comments'] ?? record['allowComments']),
       allow_download: download === 'proxy' || download === 'original' ? download : 'none',
       expires_at: typeof expires === 'number' ? expires : null,
-      watermark_spec: parseSpec()
+      watermark_spec: parseSpec(),
+      brand: parseBrand()
     };
   };
 
@@ -587,22 +623,25 @@
        viewer, and every asset read needs one -- so it prompts for the name
        alone. It used to show the tiles instead, and each one failed to open. -->
   <main class="shell access" style={`background-image: ${wash};`}>
-    <p class="eyebrow">{share?.kind === 'presentation' ? 'Presentation' : 'Shared review'}</p>
-    <h1>{share ? share.title : 'Enter the review room.'}</h1>
-    <form onsubmit={access}>
-      {#if locked}
-        <label>Passphrase <input type="password" bind:value={passphrase} /></label>
-      {/if}
-      <label>Your name <input bind:value={viewerName} required /></label>
-      <label>Email <input type="email" bind:value={viewerEmail} /></label>
-      {#if error}<p class="error" role="alert">{error}</p>{/if}
-      <button type="submit">Continue</button>
-    </form>
+    <div class="inner">
+      <h1>{share ? share.title : 'Enter the review room.'}</h1>
+      <form onsubmit={access}>
+        {#if locked}
+          <label>Passphrase <input type="password" bind:value={passphrase} /></label>
+        {/if}
+        <label>Your name <input bind:value={viewerName} required /></label>
+        <label>Email <input type="email" bind:value={viewerEmail} /></label>
+        {#if error}<p class="error" role="alert">{error}</p>{/if}
+        <button type="submit">Continue</button>
+      </form>
+    </div>
   </main>
 {:else if share}
   <main class="shell" inert={selected !== null} style={`background-image: ${wash};`}>
+    <div class="inner">
+    <!-- The title carries the page; naming the mechanism ("Review room") over
+         it was chrome the client does not need. -->
     <header>
-      <p class="eyebrow">{presenting ? 'Presentation' : 'Review room'}</p>
       <h1>{share.title}</h1>
     </header>
     <section class={`assets ${share.layout}`} aria-label="Shared assets">
@@ -623,6 +662,7 @@
         </button>
       {/each}
     </section>
+    </div>
   </main>
   {#if selected}
     <!-- Media is open: a full-bleed opaque neutral layer. No gradient is
@@ -655,9 +695,11 @@
            footage to read what was said about it. A presentation with comments
            off has no notes, so its picture takes the whole room.
 
-           A presentation also gets a simple player and a clean timeline: the
-           lanes are how a reviewer hunts for a moment to talk about, and a
-           client watching the work does not need the sound drawn for them. -->
+           The player's chrome follows playerChrome: a presentation is always
+           the simple instrument, and a review share can choose it in its
+           brand, for clients who should read and leave notes without the
+           colorist's deck in their hands. The player hides its own lanes in
+           simple chrome, so the props pass unconditionally. -->
       <div class="room" class:solo={!railOpen}>
       <div class="maincol">
       {#if playerActive}
@@ -671,10 +713,10 @@
           durationFrames={previewDurationFrames}
           {markers}
           renditions={previewRenditions}
-          filmstrip={presenting ? null : previewFilmstrip}
-          waveformUrl={presenting ? null : previewWaveformUrl}
+          filmstrip={previewFilmstrip}
+          waveformUrl={previewWaveformUrl}
           allowDrawing={share.allow_comments && !presenting}
-          chrome={presenting ? 'simple' : 'full'}
+          chrome={playerChrome}
           {watermark}
           onframechange={(frame) => {
             currentFrame = frame;
@@ -775,10 +817,13 @@
 
 <style>
   /* Share landing: client world, gradient wash allowed. */
-  .shell { min-height: 100vh; padding: 48px clamp(24px, 8vw, 120px); color: var(--ink-text); background-color: var(--ink-000); background-repeat: no-repeat; }
+  .shell { min-height: 100vh; padding: 48px clamp(24px, 5vw, 96px); color: var(--ink-text); background-color: var(--ink-000); background-repeat: no-repeat; }
+  /* The content column sits centered in the window rather than hugging the
+     left edge of a wide screen; text stays left-aligned inside it. */
+  .inner { width: min(1120px, 100%); margin: 0 auto; }
   .access { display: grid; align-content: center; }
   .eyebrow { color: rgba(255, 255, 255, 0.68); font-size: var(--text-13); }
-  h1 { max-width: 760px; margin: 24px 0 48px; font-family: var(--font-display); font-size: clamp(44px, 8vw, 92px); line-height: 0.98; }
+  h1 { max-width: 760px; margin: 0 0 48px; font-family: var(--font-display); font-size: clamp(44px, 8vw, 92px); line-height: 0.98; }
   .shell form { display: grid; gap: 16px; max-width: 420px; }
   .shell label { display: grid; gap: 8px; }
   .shell input { border: 0; border-radius: var(--radius); background: rgba(13, 17, 23, 0.62); color: inherit; padding: 11px 12px; }
@@ -791,10 +836,10 @@
      stays one thing and the columns and the frame do the talking. */
   .assets { display: grid; gap: 20px 16px; max-width: 1120px; }
   .assets.grid { grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); }
-  .assets.list { grid-template-columns: 1fr; gap: 2px; max-width: 760px; }
+  .assets.list { grid-template-columns: 1fr; gap: 2px; max-width: 760px; margin-inline: auto; }
   /* Reel: one frame per row, as large as the page allows. This is the layout
      for showing the work, so the work is what fills the screen. */
-  .assets.reel { grid-template-columns: 1fr; gap: 56px; max-width: 1000px; }
+  .assets.reel { grid-template-columns: 1fr; gap: 56px; max-width: 1000px; margin-inline: auto; }
 
   .asset { display: grid; gap: 10px; padding: 0; border: 0; border-radius: 0; background: none; color: inherit; text-align: left; }
   .frame { display: block; overflow: hidden; border-radius: var(--radius-lg); background: rgba(13, 17, 23, 0.54); aspect-ratio: 16 / 9; }

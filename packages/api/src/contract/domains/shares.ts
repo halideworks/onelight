@@ -193,6 +193,45 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
       expect(assertSnakeCaseKeys(assetsBody)).toEqual([]);
     });
 
+    it("round-trips the brand to the public wire and rejects junk", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const fixture = await makeShare(h, seed);
+      const brand = {
+        palette: "yoai",
+        colors: ["#16283a", "#e7dfc8"],
+        player: "simple",
+      };
+      const patched = await req(h, `/api/v1/shares/${fixture.shareId}`, {
+        method: "PATCH",
+        cookie: seed.admin.cookie,
+        json: { brand },
+      });
+      expect(patched.status).toBe(200);
+      expect((await json<{ brand: unknown }>(patched)).brand).toEqual(brand);
+      // The viewer's page reads it from the public bootstrap.
+      const viewer = await accessShare(h, fixture.slug);
+      const shell = await json<{ share: { brand: unknown } }>(
+        await req(h, `/api/v1/s/${fixture.slug}`, { cookie: viewer.cookie }),
+      );
+      expect(shell.share.brand).toEqual(brand);
+      // Junk shapes never reach the row: a wash is two hex colours or a
+      // library palette, not arbitrary JSON.
+      const rejected = await req(h, `/api/v1/shares/${fixture.shareId}`, {
+        method: "PATCH",
+        cookie: seed.admin.cookie,
+        json: { brand: { colors: ["red", "blue"] } },
+      });
+      expect(rejected.status).toBe(400);
+      // Explicit null clears it.
+      const cleared = await req(h, `/api/v1/shares/${fixture.shareId}`, {
+        method: "PATCH",
+        cookie: seed.admin.cookie,
+        json: { brand: null },
+      });
+      expect((await json<{ brand: unknown }>(cleared)).brand).toBeNull();
+    });
+
     it("expires shares by wall clock", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

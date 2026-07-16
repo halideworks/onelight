@@ -145,9 +145,12 @@
   nav a { border-bottom: 1px solid rgba(255, 255, 255, 0.7); padding-bottom: 5px; }
   a:focus-visible { outline: 2px solid var(--accent-bright); outline-offset: 4px; }
 
-  /* One column shared by the form and the rows, so their edges line up: the
-     form used to be inset by the row's negative margin. */
-  .projects { max-width: 640px; }
+  /* The list uses the window: the grid flows into as many columns as fit,
+     and only the create form and the list rows keep a readable measure. A
+     640px strip on a 2560px display was a column of air. */
+  .projects { max-width: none; }
+  .newproject { max-width: 640px; }
+  .projectlist:not(.grid) { max-width: 900px; }
   .newproject { display: flex; gap: 6px; }
   .newproject input { flex: 1; min-width: 0; border: 0; border-radius: var(--radius); background: var(--ink-100); color: var(--ink-text); padding: 10px 14px; font-size: var(--text-13); }
   .newproject input::placeholder { color: var(--ink-text-dim); }
@@ -163,7 +166,7 @@
   .viewtoggle button[aria-pressed='true'] { background: var(--ink-300); color: #fff; }
 
   .projectlist { display: grid; gap: 2px; }
-  .projectlist.grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+  .projectlist.grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 
   /* List row: thumbnail as a small swatch. */
   .project { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: var(--radius); background: var(--ink-100); transition: background 100ms ease; }
@@ -175,7 +178,9 @@
 
   /* Grid card: the thumbnail leads and the name sits under it. */
   .grid .project { flex-direction: column; align-items: stretch; gap: 0; padding: 0; overflow: hidden; }
-  .grid .thumb { width: 100%; height: 104px; border-radius: 0; }
+  /* The thumb scales with its column instead of clamping at one height that
+     only suited 180px cards. */
+  .grid .thumb { width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: 0; }
   /* The component's own <span> is the box; let it fill the wrapper. */
   .thumb :global(.cover) { width: 100%; height: 100%; }
   .grid .meta { padding: 10px 12px; }

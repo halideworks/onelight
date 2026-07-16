@@ -929,6 +929,8 @@
     </div>
     {/if}
     {#if durationFrames !== null && durationFrames !== undefined && durationFrames > 0}
+      <!-- Simple chrome has no lane toggles, so it must not show lanes there
+           would be no way to put away. -->
       <Timeline
         {frame}
         {durationFrames}
@@ -937,8 +939,8 @@
         {inFrame}
         {outFrame}
         {markers}
-        filmstrip={showFilmLane ? filmstrip : null}
-        waveformUrl={showWaveLane ? waveformUrl : null}
+        filmstrip={chrome === 'full' && showFilmLane ? filmstrip : null}
+        waveformUrl={chrome === 'full' && showWaveLane ? waveformUrl : null}
         disabled={seekLocked}
         onseek={jumpTo}
         onmarkerselect={handleMarkerSelect}

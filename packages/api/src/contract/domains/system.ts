@@ -10,9 +10,15 @@ import {
   deliverDueWebhookDeliveries,
   scheduleWebhookDeliveries,
 } from "../../webhooks.js";
-import { errorCode, json, req } from "../harness.js";
+import { assertSnakeCaseKeys, errorCode, json, req } from "../harness.js";
 import type { ContractHarness } from "../harness.js";
-import { createProject, createUser, uniqueIp } from "../seed.js";
+import {
+  createProject,
+  createUser,
+  seedAssetVersion,
+  seedRendition,
+  uniqueIp,
+} from "../seed.js";
 import type { SuiteContext } from "../context.js";
 
 interface CapturedRequest {
@@ -354,6 +360,48 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       } finally {
         await deleteWebhook(h, seed.admin.cookie, hookId);
       }
+    });
+  });
+
+  describe("workspace usage", () => {
+    it("sums originals and renditions per project, admin only", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin);
+      const media = await seedAssetVersion(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+      });
+      const rendition = await seedRendition(h, {
+        versionId: media.versionId,
+        content: "usage-proxy-bytes",
+      });
+      const member = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      const forbidden = await req(h, "/api/v1/workspace/usage", {
+        cookie: member.cookie,
+      });
+      expect(forbidden.status).toBe(403);
+      const response = await req(h, "/api/v1/workspace/usage", {
+        cookie: seed.admin.cookie,
+      });
+      expect(response.status).toBe(200);
+      const body = await json<{
+        totals: Record<string, number>;
+        projects: Array<Record<string, unknown>>;
+      }>(response);
+      const row = body.projects.find((entry) => entry.id === project.id);
+      expect(row).toBeDefined();
+      // seedAssetVersion writes size 10; the rendition weighs its content.
+      expect(row?.originals_bytes).toBe(10);
+      expect(row?.renditions_bytes).toBe(rendition.bytes.byteLength);
+      expect(row?.asset_count).toBe(1);
+      expect(row?.version_count).toBe(1);
+      expect(body.totals.originals_bytes).toBeGreaterThanOrEqual(10);
+      expect(assertSnakeCaseKeys(body)).toEqual([]);
     });
   });
 

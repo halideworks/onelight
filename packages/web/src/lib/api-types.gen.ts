@@ -786,6 +786,92 @@ export interface paths {
         };
         trace?: never;
     };
+    "/api/v1/workspace/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            totals: {
+                                originals_bytes: number;
+                                renditions_bytes: number;
+                                asset_count: number;
+                                version_count: number;
+                            };
+                            projects: {
+                                originals_bytes: number;
+                                renditions_bytes: number;
+                                asset_count: number;
+                                version_count: number;
+                                id: string;
+                                name: string;
+                            }[];
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users": {
         parameters: {
             query?: never;
@@ -4984,7 +5070,14 @@ export interface paths {
                             [key: string]: unknown;
                         } | null;
                         brand?: {
-                            [key: string]: unknown;
+                            /** @enum {string} */
+                            palette?: "kuwanomi" | "sakinezu" | "shinai" | "yorukou" | "tetsukon" | "ebicha" | "sumimai" | "yoai" | "kachitetsu" | "mokutan";
+                            colors?: [
+                                string,
+                                string
+                            ];
+                            /** @enum {string} */
+                            player?: "full" | "simple";
                         } | null;
                         asset_ids: string[];
                     };
@@ -5249,6 +5342,16 @@ export interface paths {
                         show_all_versions?: boolean;
                         watermark_spec?: {
                             [key: string]: unknown;
+                        } | null;
+                        brand?: {
+                            /** @enum {string} */
+                            palette?: "kuwanomi" | "sakinezu" | "shinai" | "yorukou" | "tetsukon" | "ebicha" | "sumimai" | "yoai" | "kachitetsu" | "mokutan";
+                            colors?: [
+                                string,
+                                string
+                            ];
+                            /** @enum {string} */
+                            player?: "full" | "simple";
                         } | null;
                         revoked?: boolean;
                     };

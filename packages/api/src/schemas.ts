@@ -36,6 +36,17 @@ const exportFormat = z.enum([
 
 const commentText = z.string().min(1).max(10000);
 
+/* The share room's design, chosen by whoever made the share: one library
+   palette or two custom hexes for the wash, and which player the viewer
+   gets. Design doc section 11 promises palette-or-hexes plus a logo; the
+   logo needs an upload path and is not built yet. */
+const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/);
+const shareBrand = z.object({
+  palette: z.enum(PALETTES).optional(),
+  colors: z.tuple([hexColor, hexColor]).optional(),
+  player: z.enum(["full", "simple"]).optional(),
+});
+
 const commentBody = z.object({
   body_text: commentText,
   annotation: z.unknown().optional(),
@@ -150,7 +161,7 @@ export const bodies = {
     allow_comments: z.boolean().default(true),
     show_all_versions: z.boolean().default(false),
     watermark_spec: z.record(z.unknown()).nullable().optional(),
-    brand: z.record(z.unknown()).nullable().optional(),
+    brand: shareBrand.nullable().optional(),
     asset_ids: z.array(z.string()).min(1).max(1000),
   }),
   sharePatch: z.object({
@@ -164,6 +175,7 @@ export const bodies = {
     allow_comments: z.boolean().optional(),
     show_all_versions: z.boolean().optional(),
     watermark_spec: z.record(z.unknown()).nullable().optional(),
+    brand: shareBrand.nullable().optional(),
     revoked: z.boolean().optional(),
   }),
   projectCoverPut: z.object({
@@ -262,6 +274,20 @@ const workspace = z.object({
   name: z.string(),
   settings: jsonRecord,
   oidc_enabled: z.boolean(),
+});
+
+/* What the workspace weighs, summed from the sizes the DB already tracks (no
+   blob walk). Originals include trashed assets, whose bytes stay on disk
+   until the purge sweep collects them; asset_count is live assets only. */
+const usageCounters = z.object({
+  originals_bytes: z.number().int(),
+  renditions_bytes: z.number().int(),
+  asset_count: z.number().int(),
+  version_count: z.number().int(),
+});
+const workspaceUsage = z.object({
+  totals: usageCounters,
+  projects: z.array(usageCounters.extend({ id: z.string(), name: z.string() })),
 });
 
 const inviteItem = z.object({
@@ -771,6 +797,7 @@ export const routeDocs: Record<string, RouteDoc> = {
   "GET /auth/oidc/start": { responses: { "302": redirect } },
   "GET /auth/oidc/callback": { responses: { "302": redirect } },
   "GET /workspace": { responses: { "200": ok(workspace) } },
+  "GET /workspace/usage": { responses: { "200": ok(workspaceUsage) } },
   "PATCH /workspace": {
     request: bodies.workspacePatch,
     responses: { "200": ok(workspace) },

@@ -548,7 +548,7 @@
 
   /* The identity panel leads at full width; Access and People divide the row
      under it, weighted toward the list that grows. */
-  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 10px; align-items: start; margin: 0 var(--pad-4); max-width: 1100px; }
+  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 10px; align-items: start; margin: 0 var(--pad-4); max-width: 1600px; }
   /* Panels as surfaces rather than holes. At one flat fill and a 2px gap they
      merged into a single dark mass -- five settings reading as one slab, which
      is the "heavy" part. A light from above (one highlight along the top edge,

@@ -933,6 +933,128 @@
         }
       }
     },
+    "/api/v1/workspace/usage": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "totals": {
+                      "type": "object",
+                      "properties": {
+                        "originals_bytes": {
+                          "type": "integer"
+                        },
+                        "renditions_bytes": {
+                          "type": "integer"
+                        },
+                        "asset_count": {
+                          "type": "integer"
+                        },
+                        "version_count": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "originals_bytes",
+                        "renditions_bytes",
+                        "asset_count",
+                        "version_count"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "projects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "originals_bytes": {
+                            "type": "integer"
+                          },
+                          "renditions_bytes": {
+                            "type": "integer"
+                          },
+                          "asset_count": {
+                            "type": "integer"
+                          },
+                          "version_count": {
+                            "type": "integer"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "originals_bytes",
+                          "renditions_bytes",
+                          "asset_count",
+                          "version_count",
+                          "id",
+                          "name"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "totals",
+                    "projects"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/users": {
       "get": {
         "parameters": [
@@ -7469,7 +7591,46 @@
                     "anyOf": [
                       {
                         "type": "object",
-                        "additionalProperties": {}
+                        "properties": {
+                          "palette": {
+                            "type": "string",
+                            "enum": [
+                              "kuwanomi",
+                              "sakinezu",
+                              "shinai",
+                              "yorukou",
+                              "tetsukon",
+                              "ebicha",
+                              "sumimai",
+                              "yoai",
+                              "kachitetsu",
+                              "mokutan"
+                            ]
+                          },
+                          "colors": {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "items": [
+                              {
+                                "type": "string",
+                                "pattern": "^#[0-9a-fA-F]{6}$"
+                              },
+                              {
+                                "type": "string",
+                                "pattern": "^#[0-9a-fA-F]{6}$"
+                              }
+                            ]
+                          },
+                          "player": {
+                            "type": "string",
+                            "enum": [
+                              "full",
+                              "simple"
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
                       },
                       {
                         "type": "null"
@@ -8154,6 +8315,56 @@
                       {
                         "type": "object",
                         "additionalProperties": {}
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "brand": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "palette": {
+                            "type": "string",
+                            "enum": [
+                              "kuwanomi",
+                              "sakinezu",
+                              "shinai",
+                              "yorukou",
+                              "tetsukon",
+                              "ebicha",
+                              "sumimai",
+                              "yoai",
+                              "kachitetsu",
+                              "mokutan"
+                            ]
+                          },
+                          "colors": {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "items": [
+                              {
+                                "type": "string",
+                                "pattern": "^#[0-9a-fA-F]{6}$"
+                              },
+                              {
+                                "type": "string",
+                                "pattern": "^#[0-9a-fA-F]{6}$"
+                              }
+                            ]
+                          },
+                          "player": {
+                            "type": "string",
+                            "enum": [
+                              "full",
+                              "simple"
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
                       },
                       {
                         "type": "null"

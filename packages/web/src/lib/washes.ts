@@ -58,13 +58,20 @@ const PAGE_TOPS: Record<string, [string, string]> = {
 
 export const pageWashFor = (palette: string | null | undefined): string => {
   const [anchor, mid] = PAGE_TOPS[palette ?? ""] ?? PAGE_TOPS.sumimai;
-  return [
+  return pageWashFromStops(anchor, mid);
+};
+
+/* The same grammar from any two colours: a dark anchor and a mid tone,
+   resolving into ink at the same heights as every library wash. This is what
+   a share's custom brand colours run through, so a client-designed room still
+   reads as this app rather than as two raw hexes stretched down a page. */
+export const pageWashFromStops = (anchor: string, mid: string): string =>
+  [
     "linear-gradient(180deg,",
     `color-mix(in oklab, ${anchor} 88%, var(--ink-000)) 0px,`,
-    /* The colour peaks around the header, where the project's name is, and is
+    /* The colour peaks around the header, where the page's name is, and is
        gone by the time the content starts. */
     `color-mix(in oklab, ${mid} 42%, var(--ink-000)) 190px,`,
     `color-mix(in oklab, ${mid} 12%, var(--ink-000)) 380px,`,
     "var(--ink-000) 640px)",
   ].join(" ");
-};

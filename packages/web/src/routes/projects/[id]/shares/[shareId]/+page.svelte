@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { PALETTES } from '@onelight/core';
   import { page } from '$app/state';
   import { api, listShareViewers, messageFrom, revokeShare, updateShare } from '$lib/api.js';
   import type { Share, SharePatchBody, ShareViewer, WatermarkSpec } from '$lib/api.js';
@@ -6,7 +7,7 @@
   import { copyText } from '$lib/clipboard.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
-  import { pageWashFor } from '$lib/washes.js';
+  import { pageWashFor, pageWashFromStops, washFor } from '$lib/washes.js';
 
   /* One share, one page. The old flow was a list of every share with a dialog
      of twenty settings behind an Edit button: to change one thing about one
@@ -147,6 +148,54 @@
   const clearPassphrase = async (): Promise<void> => {
     await patch({ passphrase: null }, 'Passphrase removed');
   };
+
+  /* ---- appearance: the room the viewer walks into ---- */
+
+  /* The brand crosses the wire as a loose record; this is the shape the
+     share room reads (washes + player). */
+  type Brand = {
+    palette?: string;
+    colors?: [string, string];
+    player?: 'full' | 'simple';
+  };
+
+  const brandOf = (current: Share | null): Brand => {
+    const raw = current?.brand;
+    if (!raw || typeof raw !== 'object') return {};
+    return raw as Brand;
+  };
+
+  /* Replace the whole brand: it is one small object, and field-wise merging
+     on the server would turn "pick a palette" into "keep the stale custom
+     colours too". An empty result clears the row. */
+  const patchBrand = async (next: Brand, note: string): Promise<void> => {
+    const cleaned: Brand = {
+      ...(next.palette ? { palette: next.palette } : {}),
+      ...(next.colors ? { colors: next.colors } : {}),
+      ...(next.player === 'simple' ? { player: 'simple' } : {})
+    };
+    await patch(
+      { brand: Object.keys(cleaned).length ? cleaned : null } as SharePatchBody,
+      note
+    );
+  };
+
+  let customA = $state('#16283a');
+  let customB = $state('#e7dfc8');
+  /* Seed the pickers from the share whenever it (re)loads. */
+  $effect(() => {
+    const brand = brandOf(share);
+    if (brand.colors) {
+      customA = brand.colors[0];
+      customB = brand.colors[1];
+    }
+  });
+
+  const washPreview = $derived.by(() => {
+    const brand = brandOf(share);
+    if (brand.colors) return pageWashFromStops(brand.colors[0], brand.colors[1]);
+    return pageWashFor(brand.palette ?? null);
+  });
 
   /* ---- watermark ---- */
 
@@ -310,28 +359,35 @@
       </section>
 
       <div class="panels">
-        <section class="panel" aria-label="Viewing">
-          <h2>Viewing</h2>
-          <label class="field">Layout
-            <select
-              value={share.layout}
-              onchange={(event) => void patch({ layout: event.currentTarget.value as Share['layout'] }, 'Layout saved')}
-            >
-              <option value="grid">Grid</option>
-              <option value="list">List</option>
-              <option value="reel">Reel</option>
-            </select>
-          </label>
-          <label class="field">Downloads
-            <select
-              value={share.allow_download}
-              onchange={(event) => void patch({ allow_download: event.currentTarget.value as Share['allow_download'] }, 'Downloads saved')}
-            >
-              <option value="none">Not allowed</option>
-              <option value="proxy">Proxy only</option>
-              <option value="original">Original files</option>
-            </select>
-          </label>
+        <div class="duo">
+        <!-- One panel for what a viewer can do, one for how the room looks:
+             Viewing and Access as two thin panels beside the tall Appearance
+             left a field of dead air under them, and dead air is the one
+             thing empty space here is not allowed to be. -->
+        <section class="panel" aria-label="Access and viewing">
+          <h2>Access and viewing</h2>
+          <div class="pair">
+            <label class="field">Layout
+              <select
+                value={share.layout}
+                onchange={(event) => void patch({ layout: event.currentTarget.value as Share['layout'] }, 'Layout saved')}
+              >
+                <option value="grid">Grid</option>
+                <option value="list">List</option>
+                <option value="reel">Reel</option>
+              </select>
+            </label>
+            <label class="field">Downloads
+              <select
+                value={share.allow_download}
+                onchange={(event) => void patch({ allow_download: event.currentTarget.value as Share['allow_download'] }, 'Downloads saved')}
+              >
+                <option value="none">Not allowed</option>
+                <option value="proxy">Proxy only</option>
+                <option value="original">Original files</option>
+              </select>
+            </label>
+          </div>
           <label class="check">
             <input
               type="checkbox"
@@ -348,10 +404,6 @@
             />
             Show all versions, not just the current one
           </label>
-        </section>
-
-        <section class="panel" aria-label="Access">
-          <h2>Access</h2>
           <label class="field">Expires
             <input
               type="datetime-local"
@@ -378,6 +430,82 @@
             </button>
           </form>
         </section>
+
+        <section class="panel" aria-label="Appearance">
+          <h2>Appearance</h2>
+          <p class="sub">The room this link opens: its colours, and which player the viewer gets.</p>
+          <!-- The wash preview is the setting's own receipt: what the client's
+               page draws, drawn here. -->
+          <span class="washpreview" style={`background-image: ${washPreview};`} aria-hidden="true"></span>
+          <div class="swatches" role="group" aria-label="Share colours">
+            {#each PALETTES as palette (palette)}
+              <button
+                type="button"
+                class="swatch"
+                class:active={brandOf(share).palette === palette && !brandOf(share).colors}
+                aria-pressed={brandOf(share).palette === palette && !brandOf(share).colors}
+                aria-label={palette}
+                title={palette}
+                style={`background-image: ${washFor(palette)};`}
+                onclick={() => void patchBrand({ ...brandOf(share), palette, colors: undefined }, 'Colours saved')}
+              ></button>
+            {/each}
+          </div>
+          <div class="customwash">
+            <label class="colorpick">
+              <input type="color" bind:value={customA} aria-label="Custom wash, top colour" />
+              <span class="tc">{customA}</span>
+            </label>
+            <label class="colorpick">
+              <input type="color" bind:value={customB} aria-label="Custom wash, second colour" />
+              <span class="tc">{customB}</span>
+            </label>
+            <button
+              type="button"
+              class="quiet"
+              class:activechoice={Boolean(brandOf(share).colors)}
+              onclick={() => void patchBrand({ ...brandOf(share), colors: [customA, customB], palette: undefined }, 'Colours saved')}
+            >Use these colours</button>
+            {#if brandOf(share).palette || brandOf(share).colors}
+              <button type="button" class="quiet" onclick={() => void patchBrand({ ...brandOf(share), palette: undefined, colors: undefined }, 'Colours reset')}>
+                Default
+              </button>
+            {/if}
+          </div>
+          {#if share.kind === 'review'}
+            <div class="playerpick" role="group" aria-label="Player">
+              <span class="fieldname">Player</span>
+              <label class="check">
+                <input
+                  type="radio"
+                  name="playerchrome"
+                  checked={brandOf(share).player !== 'simple'}
+                  onchange={() => void patchBrand({ ...brandOf(share), player: undefined }, 'Player saved')}
+                />
+                <span>
+                  <strong>Full</strong>
+                  <small>The review instrument: marks, loops, lanes, quality.</small>
+                </span>
+              </label>
+              <label class="check">
+                <input
+                  type="radio"
+                  name="playerchrome"
+                  checked={brandOf(share).player === 'simple'}
+                  onchange={() => void patchBrand({ ...brandOf(share), player: 'simple' }, 'Player saved')}
+                />
+                <span>
+                  <strong>Simple</strong>
+                  <small>Transport, timecode, volume, full screen. Notes still work.</small>
+                </span>
+              </label>
+            </div>
+          {:else}
+            <p class="hint">A presentation always uses the simple player.</p>
+          {/if}
+        </section>
+
+        </div>
 
         <section class="panel wide" aria-label="Watermark">
           <h2>Watermark</h2>
@@ -531,7 +659,9 @@
   .chip.warn { color: var(--warn); }
   .saved { color: var(--ok); font-size: var(--text-13); }
 
-  .body { padding: 0 var(--pad-4); max-width: 1100px; display: grid; gap: 10px; }
+  /* The page uses the window: panels flow into as many columns as fit, capped
+     where lines would get too long to read rather than at a fixed strip. */
+  .body { padding: 0 var(--pad-4); max-width: 1720px; display: grid; gap: 10px; }
 
   /* ---- the link card ---- */
   .linkcard { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 18px 20px; border-radius: var(--radius-lg); background: linear-gradient(180deg, color-mix(in oklab, var(--ink-100) 82%, var(--ink-200)) 0%, var(--ink-100) 52%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 2px rgba(0, 0, 0, 0.28); }
@@ -545,15 +675,38 @@
   .deadnote { flex-basis: 100%; margin: 0; color: var(--warn); }
 
   /* ---- panels ---- */
-  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 10px; align-items: start; }
+  /* Stretch, not start: panels in one row share an edge, and a shorter panel
+     is a surface with room in it rather than a hole in the page. */
+  /* The two side-by-side panels get their own grid: auto-fit cannot collapse
+     spare tracks while a full-width sibling spans them, which left real empty
+     cells beside Appearance. Stretch inside the duo: panels in one row share
+     an edge, and a shorter panel is a surface with room in it rather than a
+     hole in the page. */
+  .panels { display: grid; gap: 10px; }
+  .duo { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 10px; align-items: stretch; }
   .panel { padding: var(--pad-2); border-radius: var(--radius-lg); background: linear-gradient(180deg, color-mix(in oklab, var(--ink-100) 88%, var(--ink-200)) 0%, var(--ink-100) 46%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 1px 2px rgba(0, 0, 0, 0.28); display: grid; gap: 10px; align-content: start; }
-  .panel.wide { grid-column: 1 / -1; }
   /* Panel names, plain case: the anti-slop list bans uppercase-tracked
      microcopy, and a heading does not need to shout to be a heading. */
   .panel h2 { margin: 0; color: var(--ink-text); font-size: var(--text-13); font-weight: 600; }
 
   .field { display: grid; gap: 6px; color: var(--ink-text-dim); font-weight: 500; }
   .fieldname { color: var(--ink-text-dim); font-weight: 500; }
+  .sub { margin: 0; color: var(--ink-text-dim); }
+
+  /* ---- appearance ---- */
+  .washpreview { display: block; height: 72px; border-radius: var(--radius); background-color: var(--ink-000); background-size: 100% 640px; }
+  .swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+  .swatch { width: 44px; height: 28px; padding: 0; border: 0; border-radius: var(--radius); background-size: 100% 100%; }
+  .swatch.active { box-shadow: 0 0 0 2px var(--ink-100), 0 0 0 4px var(--accent-bright); }
+  .customwash { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .colorpick { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-text-dim); font-size: var(--text-12); }
+  .colorpick input[type='color'] { width: 36px; height: 28px; padding: 2px; border: 0; border-radius: var(--radius); background: var(--ink-200); }
+  .activechoice { box-shadow: 0 0 0 1px var(--accent-bright); }
+  .playerpick { display: grid; gap: 6px; }
+  .playerpick .check { align-items: flex-start; }
+  .playerpick .check input { margin-top: 3px; }
+  .playerpick .check span { display: grid; gap: 1px; }
+  .playerpick .check small { color: var(--ink-text-dim); }
   .field input, .field select { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 10px; font: inherit; font-size: var(--text-13); }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: end; }
   .check { display: flex; align-items: center; gap: 10px; color: var(--ink-text); }

@@ -1178,6 +1178,94 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     });
   });
 
+  // What the workspace weighs on disk, summed from the sizes the DB already
+  // tracks -- no blob walk, so it answers instantly at any library size.
+  // Originals include trashed assets, whose bytes stay on disk until the
+  // purge sweep collects them; asset_count is live assets only.
+  api.get("/workspace/usage", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    if (actor.role !== "admin") throw errors.forbidden();
+    const projectRows = await env.db
+      .select({ id: projects.id, name: projects.name })
+      .from(projects)
+      .where(eq(projects.workspaceId, actor.workspaceId))
+      .all();
+    const originalRows = await env.db
+      .select({
+        projectId: assets.projectId,
+        bytes: sql<number>`coalesce(sum(${assetVersions.size}), 0)`,
+        versions: sql<number>`count(*)`,
+      })
+      .from(assetVersions)
+      .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+      .innerJoin(projects, eq(assets.projectId, projects.id))
+      .where(eq(projects.workspaceId, actor.workspaceId))
+      .groupBy(assets.projectId)
+      .all();
+    const renditionRows = await env.db
+      .select({
+        projectId: assets.projectId,
+        bytes: sql<number>`coalesce(sum(${renditions.size}), 0)`,
+      })
+      .from(renditions)
+      .innerJoin(assetVersions, eq(renditions.versionId, assetVersions.id))
+      .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+      .innerJoin(projects, eq(assets.projectId, projects.id))
+      .where(eq(projects.workspaceId, actor.workspaceId))
+      .groupBy(assets.projectId)
+      .all();
+    const assetRows = await env.db
+      .select({
+        projectId: assets.projectId,
+        count: sql<number>`count(*)`,
+      })
+      .from(assets)
+      .innerJoin(projects, eq(assets.projectId, projects.id))
+      .where(
+        and(
+          eq(projects.workspaceId, actor.workspaceId),
+          isNull(assets.deletedAt),
+        ),
+      )
+      .groupBy(assets.projectId)
+      .all();
+    const originalsBy = new Map(
+      originalRows.map((row) => [row.projectId, row]),
+    );
+    const renditionsBy = new Map(
+      renditionRows.map((row) => [row.projectId, row.bytes]),
+    );
+    const assetsBy = new Map(
+      assetRows.map((row) => [row.projectId, row.count]),
+    );
+    const perProject = projectRows.map((project) => ({
+      id: project.id,
+      name: project.name,
+      originals_bytes: originalsBy.get(project.id)?.bytes ?? 0,
+      renditions_bytes: renditionsBy.get(project.id) ?? 0,
+      asset_count: assetsBy.get(project.id) ?? 0,
+      version_count: originalsBy.get(project.id)?.versions ?? 0,
+    }));
+    return c.json({
+      totals: {
+        originals_bytes: perProject.reduce(
+          (sum, row) => sum + row.originals_bytes,
+          0,
+        ),
+        renditions_bytes: perProject.reduce(
+          (sum, row) => sum + row.renditions_bytes,
+          0,
+        ),
+        asset_count: perProject.reduce((sum, row) => sum + row.asset_count, 0),
+        version_count: perProject.reduce(
+          (sum, row) => sum + row.version_count,
+          0,
+        ),
+      },
+      projects: perProject,
+    });
+  });
+
   api.patch("/workspace", requireAuth, async (c) => {
     const user = userFromContext(c);
     if (user.role !== "admin") throw errors.forbidden();
@@ -4263,6 +4351,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
                 ? await sha256Hex(watermarkJson)
                 : null,
             }),
+        ...(body.brand === undefined
+          ? {}
+          : { brandJson: body.brand ? JSON.stringify(body.brand) : null }),
         ...(body.revoked ? { revokedAt: env.clock.now() } : {}),
       })
       .where(eq(shares.id, share.id))
