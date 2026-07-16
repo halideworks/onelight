@@ -5,6 +5,8 @@
   import { messageFrom, searchWorkspace } from '$lib/api.js';
   import type { SearchHit } from '$lib/api.js';
   import { excerpt } from '$lib/format.js';
+  import { createMediaCache } from '$lib/asset-media.svelte.js';
+  import ProjectCover from '$lib/ProjectCover.svelte';
 
   type Scope = 'all' | 'assets' | 'comments' | 'projects' | 'people' | 'shares';
 
@@ -17,6 +19,40 @@
     { id: 'people', label: 'People' },
     { id: 'shares', label: 'Shares' }
   ];
+
+  /* Sorting happens over what has been fetched, not on the server: the API
+     streams by kind and then id, so a global ORDER BY would break the cursor
+     that makes paging work. The control says "loaded" so it does not pretend
+     to be more than that. */
+  type Sort = 'relevance' | 'newest' | 'oldest' | 'name';
+  const SORTS: Array<{ id: Sort; label: string }> = [
+    { id: 'relevance', label: 'Default' },
+    { id: 'newest', label: 'Newest' },
+    { id: 'oldest', label: 'Oldest' },
+    { id: 'name', label: 'Name' }
+  ];
+  let sort = $state<Sort>('relevance');
+
+  /* Posters, fetched per visible asset row exactly like the project grid. */
+  const media = createMediaCache();
+
+  const titleOf = (hit: SearchHit): string =>
+    hit.type === 'share' ? hit.title : hit.type === 'comment' ? hit.body_text : hit.name;
+
+  const sorted = $derived.by(() => {
+    if (sort === 'relevance') return hits;
+    const copy = [...hits];
+    if (sort === 'name')
+      copy.sort((a, b) => titleOf(a).localeCompare(titleOf(b), undefined, { sensitivity: 'base' }));
+    else
+      copy.sort((a, b) =>
+        sort === 'newest' ? b.updated_at - a.updated_at : a.updated_at - b.updated_at
+      );
+    return copy;
+  });
+
+  const when = (ms: number): string =>
+    new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 
   let input = $state<HTMLInputElement | null>(null);
   let q = $state('');
@@ -151,6 +187,7 @@
       spellcheck="false"
     />
   </form>
+  <div class="controls">
   <div class="scopes" role="group" aria-label="Search scope">
     {#each SCOPES as item (item.id)}
       <button
@@ -161,7 +198,23 @@
       >{item.label}</button>
     {/each}
   </div>
+  {#if searched}
+    <label class="sortpick">
+      Sort
+      <select bind:value={sort} aria-label="Sort results">
+        {#each SORTS as option (option.id)}
+          <option value={option.id}>{option.label}</option>
+        {/each}
+      </select>
+    </label>
+  {/if}
+  </div>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if searched && sort !== 'relevance' && nextCursor}
+    <!-- Sorting reorders what has been loaded. Saying so beats a list that
+         silently is not what it claims to be. -->
+    <p class="empty small">Sorting the {hits.length} results loaded so far. Load more to sort the rest.</p>
+  {/if}
 
   <section aria-label="Results" class="results" aria-busy={busy}>
     {#if !searched}
@@ -169,34 +222,63 @@
     {:else if hits.length === 0 && !busy}
       <p class="empty">Nothing matched "{searched}".</p>
     {/if}
-    {#each hits as hit (hit.type + hit.id)}
+    {#each sorted as hit (hit.type + hit.id)}
       {#if hit.type === 'asset'}
-        <a class="hit" href={`/projects/${hit.project_id}/assets/${hit.id}`}>
+        {@const entry = media.entries[hit.id]}
+        <a
+          class="hit"
+          href={`/projects/${hit.project_id}/assets/${hit.id}`}
+          use:media.observe={{ id: hit.id, current_version_id: hit.current_version_id }}
+        >
+          <span class="thumb">
+            {#if entry?.media?.posterUrl}
+              <img src={entry.media.posterUrl} alt="" loading="lazy" />
+            {/if}
+          </span>
           <span class="kind">Asset</span>
           <span class="name">{hit.name}</span>
+          <span class="when tc">{when(hit.updated_at)}</span>
         </a>
       {:else if hit.type === 'project'}
         <a class="hit" href={`/projects/${hit.id}`}>
+          <span class="thumb"><ProjectCover project={{ id: hit.id, name: hit.name, palette: hit.palette, cover_url: hit.cover_url }} monogram={false} /></span>
           <span class="kind">Project</span>
           <span class="name">{hit.name}</span>
+          <span class="when tc">{when(hit.updated_at)}</span>
         </a>
       {:else if hit.type === 'person'}
         <!-- Not a link: a person is not a page here, and a hit that goes
              nowhere is worse than one that plainly does not. -->
         <span class="hit static">
+          <span class="thumb initials" aria-hidden="true">{hit.name.slice(0, 1).toUpperCase()}</span>
           <span class="kind">Person</span>
           <span class="name">{hit.name}</span>
           <span class="sub">{hit.email}</span>
         </span>
       {:else if hit.type === 'share'}
         <a class="hit" href={`/projects/${hit.project_id}/shares`}>
+          <span class="thumb glyph" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14"><path d="M11.5 5.5a2 2 0 10-1.9-2.6L6.4 4.6a2 2 0 100 2.8l3.2 1.7a2 2 0 10.5-.9L6.9 6.5a2 2 0 000-1l3.2-1.7c.36.44.9.7 1.4.7z" fill="currentColor" /></svg>
+          </span>
           <span class="kind">Share</span>
           <span class="name">{hit.title}</span>
+          <span class="when tc">{when(hit.updated_at)}</span>
         </a>
       {:else}
-        <a class="hit" href={`/projects/${hit.project_id}/assets/${hit.asset_id}${commentFrame(hit) === null ? '' : `?f=${commentFrame(hit)}`}`}>
+        {@const entry = media.entries[hit.asset_id]}
+        <a
+          class="hit"
+          href={`/projects/${hit.project_id}/assets/${hit.asset_id}${commentFrame(hit) === null ? '' : `?f=${commentFrame(hit)}`}`}
+          use:media.observe={{ id: hit.asset_id, current_version_id: hit.version_id }}
+        >
+          <span class="thumb">
+            {#if entry?.media?.posterUrl}
+              <img src={entry.media.posterUrl} alt="" loading="lazy" />
+            {/if}
+          </span>
           <span class="kind">Comment</span>
           <span class="name">{excerpt(hit.body_text)}</span>
+          <span class="when tc">{when(hit.updated_at)}</span>
         </a>
       {/if}
     {/each}
@@ -218,11 +300,23 @@
   .scope { border: 0; border-radius: var(--radius); background: var(--ink-100); color: var(--ink-text-dim); padding: 7px 14px; font-size: var(--text-13); font-weight: 500; }
   .scope:hover { color: var(--ink-text); }
   .scope[aria-pressed='true'] { background: var(--ink-300); color: var(--ink-text); }
-  .results { max-width: 760px; display: grid; gap: 2px; }
-  .hit { display: flex; align-items: baseline; gap: 14px; padding: 12px 14px; margin: 0 -14px; border: 0; border-radius: var(--radius); background: none; color: var(--ink-text); text-decoration: none; text-align: left; font-size: var(--text-13); }
+  .controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .sortpick { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-text-dim); font-size: var(--text-12); }
+  .sortpick select { border: 0; border-radius: var(--radius); background: var(--ink-100); color: var(--ink-text); padding: 5px 8px; font-size: var(--text-12); font-family: inherit; }
+  .empty.small { font-size: var(--text-12); }
+
+  .results { max-width: 860px; display: grid; gap: 2px; }
+  /* A row with a picture in it: the thumbnail sets the height, so the row is
+     centred rather than sitting on a baseline that no longer exists. */
+  .hit { display: flex; align-items: center; gap: 14px; padding: 8px 14px; margin: 0 -14px; border: 0; border-radius: var(--radius); background: none; color: var(--ink-text); text-decoration: none; text-align: left; font-size: var(--text-13); }
   .hit:hover { background: var(--ink-100); }
-  .kind { flex: none; width: 64px; color: var(--ink-text-dim); font-size: var(--text-13); }
-  .name { font-weight: 500; overflow-wrap: anywhere; }
+  .thumb { flex: none; width: 64px; height: 36px; border-radius: 2px; overflow: hidden; background: var(--ink-200); display: grid; place-items: center; color: var(--ink-text-dim); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb :global(.cover) { width: 100%; height: 100%; }
+  .thumb.initials { font-weight: 600; font-size: var(--text-13); }
+  .kind { flex: none; width: 64px; color: var(--ink-text-dim); font-size: var(--text-12); }
+  .name { flex: 1; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+  .when { flex: none; color: var(--ink-text-dim); font-size: var(--text-12); }
   .more { justify-self: start; margin-top: 10px; border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 9px 16px; font-size: var(--text-13); font-weight: 500; }
   .more:hover { background: var(--ink-300); }
   .empty { color: var(--ink-text-dim); }

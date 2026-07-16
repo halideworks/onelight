@@ -141,7 +141,7 @@
     allow_comments: true,
     show_all_versions: false,
     watermarkOn: false,
-    wmText: '{email} {date}',
+    wmText: '{share} {date}',
     wmPosition: 'br',
     wmOpacity: 0.4,
     wmSize: 0.03,
@@ -165,6 +165,42 @@
   const specOf = (share: Share): WatermarkSpec | null =>
     share.watermark_spec ? (share.watermark_spec as WatermarkSpec) : null;
 
+  let renamingId = $state<string | null>(null);
+  let renameValue = $state('');
+
+  const focusInput = (element: HTMLInputElement): void => {
+    element.focus();
+    element.select();
+  };
+
+  const startRename = (share: Share): void => {
+    renamingId = share.id;
+    renameValue = share.title;
+  };
+
+  const commitRename = async (): Promise<void> => {
+    const id = renamingId;
+    if (!id) return;
+    const share = shares.find((entry) => entry.id === id);
+    const next = renameValue.trim();
+    renamingId = null;
+    if (!share || !next || next === share.title) return;
+    try {
+      const updated = await updateShare(id, { title: next });
+      shares = shares.map((entry) => (entry.id === id ? updated : entry));
+      listError = '';
+    } catch (caught) {
+      listError = messageFrom(caught, 'That share could not be renamed.');
+    }
+  };
+
+  /* A click on the ::backdrop is dispatched with the dialog itself as target;
+     anything inside the form stops at the form. Escape already closed this --
+     clicking away is the same intention with a mouse. */
+  const onDialogClick = (event: MouseEvent): void => {
+    if (event.target === dialog) dialog?.close();
+  };
+
   const openCreate = (): void => {
     editing = null;
     form = blankForm();
@@ -187,7 +223,7 @@
       allow_comments: share.allow_comments,
       show_all_versions: share.show_all_versions,
       watermarkOn: spec !== null,
-      wmText: typeof spec?.text === 'string' ? spec.text : '{email} {date}',
+      wmText: typeof spec?.text === 'string' ? spec.text : '{share} {date}',
       wmPosition: spec?.position ?? 'br',
       wmOpacity: typeof spec?.opacity === 'number' ? spec.opacity : 0.4,
       wmSize: typeof spec?.size === 'number' ? spec.size : 0.03,
@@ -211,7 +247,7 @@
   const watermarkSpec = (): WatermarkSpec | null =>
     form.watermarkOn
       ? {
-          text: form.wmText.trim() || '{email} {date}',
+          text: form.wmText.trim() || '{share} {date}',
           position: form.wmPosition,
           opacity: form.wmOpacity,
           size: form.wmSize,
@@ -328,7 +364,33 @@
           {@const dead = share.revoked_at !== null || isExpired(share)}
           <article class="share" class:dead>
             <div class="head">
-              <h2>{share.title}</h2>
+              {#if renamingId === share.id}
+                <!-- Renaming is the one edit that is only a name; making it the
+                     one thing you cannot do without opening a dialog of twenty
+                     settings was backwards. -->
+                <input
+                  class="titleedit"
+                  bind:value={renameValue}
+                  use:focusInput
+                  aria-label={`Rename ${share.title}`}
+                  maxlength="200"
+                  onkeydown={(event) => {
+                    if (event.key === 'Enter') void commitRename();
+                    else if (event.key === 'Escape') renamingId = null;
+                  }}
+                  onblur={() => void commitRename()}
+                />
+              {:else if share.revoked_at === null}
+                <!-- A real button, so Enter, Space and focus come for free
+                     rather than being re-implemented on a heading. -->
+                <h2>
+                  <button type="button" class="titletext" title="Click to rename" onclick={() => startRename(share)}>
+                    {share.title}
+                  </button>
+                </h2>
+              {:else}
+                <h2>{share.title}</h2>
+              {/if}
               <span class="chip">{share.kind}</span>
               <span class="chip dim">{share.layout}</span>
               {#if share.revoked_at !== null}
@@ -410,6 +472,7 @@
 <dialog
   bind:this={dialog}
   aria-label={editing ? 'Edit share' : 'New share'}
+  onclick={onDialogClick}
   onclose={() => (editing = null)}
 >
   <form method="dialog" class="share-form" onsubmit={submitForm}>
@@ -526,12 +589,23 @@
           few minutes per clip, and the share shows each one as it finishes. Changing the
           text or position below re-renders them all again.
         </p>
-      {/if}
-      {#if form.watermarkOn}
         <label class="field">Text template
           <input bind:value={form.wmText} />
         </label>
-        <p class="hint">Tokens: {'{email}'} {'{name}'} {'{share}'} {'{date}'} fill in per viewer.</p>
+        <!-- The burned text is rendered once for the whole share, so it cannot
+             name a viewer: there is one file, and every viewer is served it.
+             Viewer identity is the on-screen layer instead, which costs
+             nothing and needs no render. Offering {email} here read as a
+             promise; it burned an empty gap. -->
+        <p class="hint">
+          Tokens: {'{share}'} and {'{date}'}. The burned text is the same for everyone,
+          because it is rendered once for the whole share.
+        </p>
+        <p class="wmnote quiet">
+          Each viewer's name and email are shown over the video on top of this, drawn live
+          per viewer. That needs no rendering, so nobody waits — but it can be removed with
+          developer tools, which is what the burned layer below it is for.
+        </p>
         <div class="pair">
           <label class="field">Position
             <select bind:value={form.wmPosition}>
@@ -590,13 +664,17 @@
   /* A card that reacts, and whose left edge carries its state: live shares are
      accented, revoked and expired ones are not. State was a chip you had to
      find and read. */
-  .share { position: relative; padding: 16px 18px 16px 20px; border-radius: var(--radius-lg); background: linear-gradient(180deg, color-mix(in oklab, var(--ink-100) 88%, var(--ink-200)) 0%, var(--ink-100) 46%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 1px 2px rgba(0, 0, 0, 0.28); display: grid; gap: 10px; overflow: hidden; transition: background 120ms ease; }
-  .share::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); }
-  .share:hover { background: var(--ink-200); }
+  .share { position: relative; padding: 16px 18px; border-radius: var(--radius-lg); background: linear-gradient(180deg, color-mix(in oklab, var(--ink-100) 88%, var(--ink-200)) 0%, var(--ink-100) 46%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 1px 2px rgba(0, 0, 0, 0.28); display: grid; gap: 10px; transition: box-shadow 120ms ease; }
+  .share:hover { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 2px 10px rgba(0, 0, 0, 0.34); }
   .share.dead { opacity: 0.6; }
-  .share.dead::before { background: var(--ink-300); }
   .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   h2 { margin: 0; font-size: var(--text-16); font-weight: 600; }
+  /* Editable, but not shouting about it until you go near it. */
+  .titletext { border: 0; background: none; color: inherit; font: inherit; padding: 2px 6px; margin: -2px -6px; border-radius: var(--radius); cursor: text; text-align: left; }
+  .titletext:hover { background: var(--ink-200); }
+  .titletext:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 1px; }
+  .titleedit { min-width: 0; flex: 0 1 320px; border: 0; border-radius: var(--radius); background: var(--ink-300); color: var(--ink-text); padding: 2px 6px; font-family: inherit; font-size: var(--text-16); font-weight: 600; }
+  .titleedit:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 1px; }
   .grow { flex: 1; }
   .chip { padding: 2px 8px; border-radius: 9px; background: var(--ink-300); font-size: var(--text-12); font-weight: 500; }
   .chip.dim { background: var(--ink-200); color: var(--ink-text-dim); }
@@ -620,7 +698,13 @@
      Wider, too: at 560px the pairs wrapped and the asset picker was a keyhole. */
   dialog { border: 0; border-radius: var(--radius-lg); background: var(--ink-100); color: var(--ink-text); padding: 0; width: min(760px, calc(100vw - 48px)); box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6); }
   dialog::backdrop { background: rgba(5, 8, 12, 0.72); }
-  .share-form { padding: var(--pad-3); display: grid; gap: 16px; font-size: var(--text-13); max-height: min(84vh, 820px); overflow: auto; }
+  /* The form scrolls, so it says so. A hidden scrollbar on a panel that is
+     taller than it looks is how half a form goes unread. */
+  .share-form { padding: var(--pad-3); display: grid; gap: 16px; font-size: var(--text-13); max-height: min(84vh, 820px); overflow-y: scroll; scrollbar-width: thin; scrollbar-color: var(--ink-300) transparent; }
+  .share-form::-webkit-scrollbar { width: 10px; }
+  .share-form::-webkit-scrollbar-track { background: transparent; }
+  .share-form::-webkit-scrollbar-thumb { background: var(--ink-300); border-radius: 5px; border: 2px solid var(--ink-100); }
+  .share-form::-webkit-scrollbar-thumb:hover { background: var(--ink-400, #33415a); }
   .share-form h2 { font-size: var(--text-20); font-family: var(--font-display); margin: 0 0 2px; }
   .wmnote { margin: -4px 0 0; padding: 9px 11px; border-radius: var(--radius); background: color-mix(in oklab, var(--note) 14%, var(--ink-200)); color: var(--ink-text); font-size: var(--text-12); line-height: 1.5; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--note) 30%, transparent); }
   .field { display: grid; gap: 6px; color: var(--ink-text-dim); font-weight: 500; }

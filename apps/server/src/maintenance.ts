@@ -13,6 +13,7 @@ import {
   exportJobs,
   notificationPreferences,
   notifications,
+  projectCoverUploads,
   projects,
   renditions,
   uploadParts,
@@ -710,6 +711,13 @@ export const referencedBlobKeys = async (db: AppDb): Promise<Set<string>> => {
     .where(isNotNull(projects.coverBlobKey))
     .all())
     if (row.key) keys.add(row.key);
+  /* Covers uploaded but not currently in force: still offered in settings, so
+     still referenced. Sweeping these would empty the picker. */
+  for (const row of await db
+    .select({ key: projectCoverUploads.blobKey })
+    .from(projectCoverUploads)
+    .all())
+    keys.add(row.key);
   return keys;
 };
 

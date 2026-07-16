@@ -190,6 +190,34 @@ export const projectMembers = sqliteTable(
   }),
 );
 
+/** Pictures uploaded as this project's cover, kept as options after another
+    cover is chosen. The cover in force is projects.cover_blob_key. */
+export const projectCoverUploads = sqliteTable(
+  "project_cover_uploads",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    blobKey: text("blob_key").notNull(),
+    filename: text("filename").notNull(),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => ({
+    projectIndex: index("project_cover_uploads_project_idx").on(
+      table.projectId,
+      table.id,
+    ),
+    blobUnique: uniqueIndex("project_cover_uploads_blob_uq").on(
+      table.projectId,
+      table.blobKey,
+    ),
+  }),
+);
+
 export const folders = sqliteTable(
   "folders",
   {

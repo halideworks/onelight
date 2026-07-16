@@ -53,6 +53,7 @@ import {
   shareViewers,
   shares,
   uploadParts,
+  projectCoverUploads,
   uploadSessions,
   users,
   webhooks,
@@ -1866,6 +1867,30 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       },
     );
     const body = await jsonBody(c, bodies.projectPatch);
+    if (body.cover_asset_id && body.cover_upload_id)
+      throw errors.validation(
+        "A project has one cover: set cover_asset_id or cover_upload_id, not both.",
+      );
+    let coverUpload: typeof projectCoverUploads.$inferSelect | undefined;
+    if (body.cover_upload_id) {
+      coverUpload = (
+        await env.db
+          .select()
+          .from(projectCoverUploads)
+          .where(
+            and(
+              eq(projectCoverUploads.id, body.cover_upload_id),
+              eq(projectCoverUploads.projectId, project.id),
+            ),
+          )
+          .limit(1)
+          .all()
+      )[0];
+      if (!coverUpload)
+        throw errors.validation(
+          "cover_upload_id must name a picture uploaded to this project.",
+        );
+    }
     if (body.cover_asset_id) {
       // Validated here rather than trusted: the wire read filters a bad cover
       // out silently, which would turn a typo into a cover that never appears
@@ -1892,12 +1917,15 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .set({
         ...(body.name ? { name: body.name.trim() } : {}),
         ...(body.palette ? { palette: body.palette } : {}),
-        // The two kinds of cover are alternatives, so setting one clears the
-        // other; without this, clearing a picked asset would silently fall back
-        // to an upload chosen weeks ago.
+        // The kinds of cover are alternatives, so setting one clears the
+        // others; without this, clearing a picked asset would silently fall
+        // back to an upload chosen weeks ago.
         ...(body.cover_asset_id === undefined
           ? {}
           : { coverAssetId: body.cover_asset_id, coverBlobKey: null }),
+        ...(coverUpload
+          ? { coverBlobKey: coverUpload.blobKey, coverAssetId: null }
+          : {}),
         ...(body.restricted === undefined
           ? {}
           : { restricted: body.restricted }),
@@ -1938,12 +1966,29 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       throw errors.validation("Upload must be completed for this project.");
     if (!isImageFilename(upload.clientFilename))
       throw errors.validation("A cover must be an image.");
+    const now = env.clock.now();
+    /* Shelve it as well as use it: an uploaded picture stays an option after
+       something else is chosen, instead of having to be uploaded again. The
+       unique index makes re-uploading the same blob a no-op rather than a
+       duplicate option. */
+    await env.db
+      .insert(projectCoverUploads)
+      .values({
+        id: env.ids.ulid(),
+        projectId: project.id,
+        blobKey: upload.blobKey,
+        filename: upload.clientFilename,
+        createdBy: actor.id,
+        createdAt: now,
+      })
+      .onConflictDoNothing()
+      .run();
     await env.db
       .update(projects)
       .set({
         coverBlobKey: upload.blobKey,
         coverAssetId: null,
-        updatedAt: env.clock.now(),
+        updatedAt: now,
       })
       .where(eq(projects.id, project.id))
       .run();
@@ -1963,6 +2008,62 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       `project:${project.id}`,
     );
     return c.json(await projectWire(updated, actor.id, actor.role));
+  });
+
+  /* The pictures uploaded for this project, current one included. */
+  api.get("/projects/:id/covers", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const { project } = await requireProject(c.req.param("id"), actor, "viewer");
+    const rows = await env.db
+      .select()
+      .from(projectCoverUploads)
+      .where(eq(projectCoverUploads.projectId, project.id))
+      .orderBy(desc(projectCoverUploads.id))
+      .all();
+    return c.json({
+      items: await Promise.all(
+        rows.map(async (row: typeof projectCoverUploads.$inferSelect) => ({
+          id: row.id,
+          filename: row.filename,
+          url: await privateMediaUrl({ projectId: project.id }, row.blobKey),
+          current: row.blobKey === project.coverBlobKey,
+          created_at: row.createdAt,
+        })),
+      ),
+    });
+  });
+
+  /* Forget an uploaded picture. If it is the cover in force, the project falls
+     back to its generated one rather than keeping a cover whose file is about
+     to be swept. */
+  api.delete("/projects/:id/covers/:uploadId", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const { project } = await requireProject(c.req.param("id"), actor, "manager");
+    const row = (
+      await env.db
+        .select()
+        .from(projectCoverUploads)
+        .where(
+          and(
+            eq(projectCoverUploads.id, c.req.param("uploadId")),
+            eq(projectCoverUploads.projectId, project.id),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (!row) throw errors.notFound("That cover was not found.");
+    await env.db
+      .delete(projectCoverUploads)
+      .where(eq(projectCoverUploads.id, row.id))
+      .run();
+    if (project.coverBlobKey === row.blobKey)
+      await env.db
+        .update(projects)
+        .set({ coverBlobKey: null, updatedAt: env.clock.now() })
+        .where(eq(projects.id, project.id))
+        .run();
+    return c.body(null, 204);
   });
 
   api.delete("/projects/:id", requireAuth, async (c) => {
@@ -3463,6 +3564,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               id: row.assets.id,
               name: row.assets.name,
               project_id: row.assets.projectId,
+              /* Enough to draw the row without a second request per hit: the
+                 version to fetch a poster for, and when it happened. */
+              current_version_id: row.assets.currentVersionId,
+              updated_at: row.assets.updatedAt,
             },
           })),
       },
@@ -3480,21 +3585,24 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               project_id: row.assets.projectId,
               // Deep-link anchor for ?f= so search hits jump to the frame.
               frame_in: row.comments.frameIn,
+              updated_at: row.comments.createdAt,
             },
           })),
       },
       {
         t: "project",
         page: async (after, take) =>
-          (await matchingProjects(after, take)).map((row) => ({
+          Promise.all((await matchingProjects(after, take)).map(async (row) => ({
             id: row.id,
             wire: {
               type: "project",
               id: row.id,
               name: row.name,
               palette: row.palette,
+              cover_url: await coverUrlFor(row),
+              updated_at: row.updatedAt,
             },
-          })),
+          }))),
       },
       {
         t: "person",
@@ -3521,6 +3629,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               id: row.id,
               name: row.name,
               email: row.email,
+              updated_at: row.updatedAt,
             },
           })),
       },
@@ -3535,6 +3644,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               title: row.title,
               slug: row.slug,
               project_id: row.projectId,
+              updated_at: row.createdAt,
             },
           })),
       },

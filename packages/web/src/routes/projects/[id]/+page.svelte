@@ -78,6 +78,13 @@
      "where is this?" should have one answer and one place to look. */
   let shareRootIds = $state<string[]>([]);
   let sharesOpen = $state(true);
+
+  /* What is inside each folder, keyed by folder id ('root' for the top level).
+     A folder that opens to show only more folders is lying about what it
+     holds -- the media is the point, and until now the tree never admitted it
+     existed. Loaded when a folder is first expanded, and kept fresh when
+     assets move. */
+  let folderAssets = $state<Record<string, Asset[]>>({});
   let selectedFolder = $state<string | null>(null);
   /* A share is browsed like a folder, so it shares the rail and the grid, but
      it is not a folder: an asset lives in exactly one folder and in any number
@@ -182,6 +189,23 @@
   const kindOf = (folderId: string): 'assets' | 'shares' =>
     nodes[folderId]?.folder.kind ?? 'assets';
 
+  const loadFolderAssets = async (folderId: string | null): Promise<void> => {
+    const id = projectId;
+    if (!id) return;
+    const key = folderId ?? 'root';
+    const query = new URLSearchParams({ limit: '200' });
+    if (folderId) query.set('folder_id', folderId);
+    try {
+      const loaded = await api<{ items: Asset[] }>(
+        `/api/v1/projects/${id}/assets?${query.toString()}`
+      );
+      if (id !== projectId) return;
+      folderAssets[key] = loaded.items;
+    } catch {
+      /* The rail is a convenience; the grid is the source of truth. */
+    }
+  };
+
   const load = async (id: string): Promise<void> => {
     project = null; assets = []; nextCursor = null; error = ''; listError = ''; queue = [];
     nodes = {}; rootIds = []; selectedFolder = null; focusedRow = 'root';
@@ -271,6 +295,7 @@
   type Row =
     | { kind: 'root'; id: 'root'; depth: number }
     | { kind: 'folder'; id: string; depth: number }
+    | { kind: 'asset'; id: string; depth: number; asset: Asset }
     | { kind: 'sharesroot'; id: 'sharesroot'; depth: number }
     | { kind: 'share'; id: string; depth: number };
 
@@ -282,6 +307,12 @@
         const node = nodes[id];
         if (!node?.expanded) continue;
         if (node.childIds) walkFolders(node.childIds, depth + 1);
+        /* Sub-folders first, then the media in this one: containers above
+           contents, which is the order every file tree has ever used. Row ids
+           are prefixed because an asset and a folder could otherwise collide
+           in the keyboard's cursor and the DOM. */
+        for (const asset of folderAssets[id] ?? [])
+          rows.push({ kind: 'asset', id: `asset:${asset.id}`, asset, depth: depth + 1 });
         /* Shares filed in this folder sit under it, as its contents. */
         for (const share of shares.filter((entry) => entry.folder_id === id))
           rows.push({ kind: 'share', id: share.id, depth: depth + 1 });
@@ -316,6 +347,9 @@
     const node = nodes[id];
     if (!node) return;
     nodes[id] = { ...node, expanded: true };
+    /* Shares folders hold shares, which the rail already has. */
+    if ((node.folder.kind ?? 'assets') === 'assets' && !folderAssets[id])
+      void loadFolderAssets(id);
     if (node.childIds === null) {
       try {
         await loadChildren(id, node.folder.kind ?? 'assets');
@@ -408,13 +442,41 @@
     }
   };
 
-  /* Right-click is where a file manager keeps its verbs, so that is where the
-     share actions are. A selected asset brings the whole selection; an
-     unselected one acts on itself, the same rule the drag uses. */
+  /* Right-click is where a file manager keeps its verbs, so all of them are
+     here -- not just the share ones. A selected asset brings the whole
+     selection; an unselected one acts on itself, the same rule the drag uses.
+     Right-clicking an unselected asset also selects it, so what the menu is
+     about is never in doubt. */
   const openShareMenu = (event: MouseEvent, assetId: string): void => {
     event.preventDefault();
     const ids = selected.includes(assetId) ? selected : [assetId];
+    if (!selected.includes(assetId)) {
+      selected = [assetId];
+      anchor = assetId;
+    }
     shareMenu = { x: event.clientX, y: event.clientY, ids };
+    /* Fire and forget: the menu opens now and the destinations fill in. */
+    void loadFolderChoices().catch(() => {
+      /* The Move to list stays as it was; the rest of the menu still works. */
+    });
+  };
+
+  /* The menu acts on what it was opened on, so it reads its ids before it
+     closes -- the same reason takeMenuIds exists. */
+  const menuOpen = (ids: string[]): void => {
+    closeShareMenu();
+    if (ids[0]) void goto(assetHref(ids[0]));
+  };
+
+  const menuMoveTo = async (ids: string[], folderId: string | null): Promise<void> => {
+    closeShareMenu();
+    await moveAssets(ids, folderId);
+  };
+
+  const menuTrash = async (ids: string[]): Promise<void> => {
+    closeShareMenu();
+    selected = ids;
+    await trashSelected();
   };
 
   const closeShareMenu = (): void => {
@@ -724,6 +786,17 @@
       /* Reload rather than patch in place: the visible list is folder-scoped,
          so a moved asset may belong somewhere else now. */
       if (projectId) await loadAssets(projectId);
+      /* The tree shows folder contents, so a move changes two branches: the one
+         it left and the one it joined. Only refresh what has been opened --
+         an unexpanded folder loads on first sight anyway. */
+      const touched = new Set<string>([folderId ?? 'root']);
+      for (const [key, list] of Object.entries(folderAssets))
+        if (list.some((asset) => ids.includes(asset.id))) touched.add(key);
+      await Promise.all(
+        [...touched]
+          .filter((key) => folderAssets[key] !== undefined || key === (folderId ?? 'root'))
+          .map((key) => loadFolderAssets(key === 'root' ? null : key))
+      );
       selected = [];
       error = '';
     } catch (caught) {
@@ -742,6 +815,7 @@
     /* Only folder rows have a node behind them; roots and shares do not, and
        reaching for nodes[id] on those is how a tree keyboard quietly breaks. */
     const node = row.kind === 'folder' ? nodes[id] : undefined;
+    const asset = row.kind === 'asset' ? row.asset : undefined;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       const next = rows[index + 1];
@@ -768,9 +842,17 @@
       else if (node?.expanded) collapse(id);
       else if (node) void focusRow(node.folder.parent_id ?? 'root');
       else if (row.kind === 'share') void focusRow('sharesroot');
+      /* A leaf: Left goes up to whatever contains it. */
+      else if (asset) {
+        const owner = Object.entries(folderAssets).find(([, list]) =>
+          list.some((entry) => entry.id === asset.id)
+        );
+        if (owner) void focusRow(owner[0]);
+      }
     } else if (event.key === 'Enter') {
       event.preventDefault();
-      if (row.kind === 'share') void selectShare(id);
+      if (asset) void goto(assetHref(asset.id));
+      else if (row.kind === 'share') void selectShare(id);
       else if (row.kind === 'sharesroot') sharesOpen = !sharesOpen;
       else void select(row.kind === 'root' ? null : id);
     } else if (event.key === 'F2') {
@@ -1012,24 +1094,34 @@
     batch = { ...batch, running: false };
   };
 
-  const openMove = async (): Promise<void> => {
+  /* Every folder that can hold an asset, flattened for a picker. The rail only
+     knows the branches that have been expanded, so this walks the whole asset
+     tree. Shared by the Move bar and the right-click menu. */
+  const loadFolderChoices = async (): Promise<void> => {
     const id = projectId;
     if (!id) return;
-    moveOpen = true;
-    moveTarget = '';
-    /* The move picker needs the whole tree, not just expanded branches. */
     const collected: Array<{ id: string; name: string; depth: number }> = [];
     const walk = async (parent: string | null, depth: number): Promise<void> => {
-      const suffix = parent ? `?parent_id=${encodeURIComponent(parent)}` : '';
-      const children = (await api<{ items: Folder[] }>(`/api/v1/projects/${id}/folders${suffix}`)).items;
+      const query = new URLSearchParams({ kind: 'assets' });
+      if (parent) query.set('parent_id', parent);
+      const children = (
+        await api<{ items: Folder[] }>(`/api/v1/projects/${id}/folders?${query.toString()}`)
+      ).items;
       for (const folder of children) {
         collected.push({ id: folder.id, name: folder.name, depth });
         await walk(folder.id, depth + 1);
       }
     };
+    await walk(null, 0);
+    if (id === projectId) folderChoices = collected;
+  };
+
+  const openMove = async (): Promise<void> => {
+    if (!projectId) return;
+    moveOpen = true;
+    moveTarget = '';
     try {
-      await walk(null, 0);
-      folderChoices = collected;
+      await loadFolderChoices();
     } catch (caught) {
       error = messageFrom(caught, 'Folders could not be loaded.');
       moveOpen = false;
@@ -1398,6 +1490,26 @@
                 <span class="name">Shares</span>
                 <span class="count">{shares.length}</span>
               </div>
+            {:else if row.kind === 'asset'}
+              {@const asset = row.asset}
+              <a
+                  id={`tree-row-${row.id}`}
+                  class="row assetrow"
+                  href={assetHref(asset.id)}
+                  style={`padding-left: ${10 + row.depth * 14}px;`}
+                  draggable="true"
+                  tabindex={focusedRow === row.id ? 0 : -1}
+                  onfocus={() => (focusedRow = row.id)}
+                  onkeydown={onTreeKeydown}
+                  ondragstart={(event) => beginAssetDrag(event, asset.id)}
+                  ondragend={() => { draggingAssets = null; dropTarget = null; }}
+                  oncontextmenu={(event) => openShareMenu(event, asset.id)}
+                >
+                  <span class="ic file" aria-hidden="true">
+                    <svg viewBox="0 0 16 16" width="12" height="12"><path d="M4 2h5l3 3v9H4z" fill="currentColor" opacity="0.6" /></svg>
+                  </span>
+                <span class="name">{asset.name}</span>
+              </a>
             {:else if row.kind === 'share'}
               {@const share = shares.find((entry) => entry.id === row.id)}
               {#if share}
@@ -1849,7 +1961,29 @@
     style={`left: ${menu.x}px; top: ${menu.y}px;`}
     use:keepOnScreen
   >
-    <p class="ctxhead">{menu.ids.length} {menu.ids.length === 1 ? 'item' : 'items'}</p>
+    <p class="ctxhead">
+      {menu.ids.length === 1 ? nameOf(menu.ids[0]) : `${menu.ids.length} items`}
+    </p>
+    {#if menu.ids.length === 1}
+      <button type="button" role="menuitem" onclick={() => menuOpen(takeMenuIds())}>Open</button>
+    {/if}
+
+    <p class="ctxlabel">Move to</p>
+    <div class="ctxscroll">
+      <button type="button" role="menuitem" onclick={() => void menuMoveTo(takeMenuIds(), null)}>
+        All assets
+      </button>
+      {#each folderChoices as choice (choice.id)}
+        <button
+          type="button"
+          role="menuitem"
+          style={`padding-left: ${10 + choice.depth * 12}px;`}
+          onclick={() => void menuMoveTo(takeMenuIds(), choice.id)}
+        >{choice.name}</button>
+      {/each}
+    </div>
+
+    <p class="ctxlabel">Share</p>
     {#each shares as share (share.id)}
       <button type="button" role="menuitem" onclick={() => void addToShare(share.id, takeMenuIds())}>
         Add to {share.title}
@@ -1857,6 +1991,11 @@
     {/each}
     <button type="button" role="menuitem" onclick={() => void createShareWith(takeMenuIds())}>
       New share…
+    </button>
+
+    <div class="ctxsep"></div>
+    <button type="button" role="menuitem" class="danger" onclick={() => void menuTrash(takeMenuIds())}>
+      Move to trash
     </button>
   </div>
 {/if}
@@ -1896,6 +2035,11 @@
      came for -- wrapped at four across. The folder pane stays a fixed column;
      everything else it does not need goes to the assets. */
   .body { padding: var(--pad-3) var(--pad-4) var(--pad-4); display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--pad-4); align-items: start; }
+  /* A grid item's min-content width beats its track: without this the rail's
+     rows -- name plus Rename plus Delete -- push the pane past its 240px column
+     and slide under the content beside it. */
+  .pane { min-width: 0; }
+  .row { overflow: hidden; }
   @media (max-width: 760px) { .body { grid-template-columns: 1fr; } }
 
   /* ---- the rail ---- */
@@ -1922,6 +2066,11 @@
   .sharesrow { margin-top: 12px; padding-top: 12px; box-shadow: inset 0 1px 0 var(--ink-200); border-radius: 0; }
   .row .count { flex: none; color: var(--ink-text-dim); font-size: var(--text-12); font-variant-numeric: tabular-nums; }
   .sharerow .name { font-weight: 400; }
+  /* Media in the tree: a leaf, lighter than the folders that hold it, and a
+     link because that is what it does. */
+  .assetrow { text-decoration: none; }
+  .assetrow .name { font-weight: 400; }
+  .ic.file { opacity: 0.75; }
   .caret { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 2px; background: none; color: var(--ink-text-dim); }
   .caret:hover { color: var(--ink-text); }
   .caret.open svg { transform: rotate(90deg); }
@@ -1982,7 +2131,14 @@
   .ctxmenu { position: fixed; z-index: 61; min-width: 200px; max-height: 60vh; overflow-y: auto; display: grid; gap: 1px; padding: 4px; border-radius: var(--radius); background: var(--ink-100); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); }
   .ctxmenu button { border: 0; border-radius: 2px; background: none; color: var(--ink-text); padding: 7px 10px; font-size: var(--text-13); text-align: left; }
   .ctxmenu button:hover { background: var(--ink-300); }
-  .ctxhead { margin: 0; padding: 6px 10px; color: var(--ink-text-dim); font-size: var(--text-12); }
+  .ctxhead { margin: 0; padding: 6px 10px; color: var(--ink-text); font-size: var(--text-12); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ctxlabel { margin: 4px 0 0; padding: 4px 10px; color: var(--ink-text-dim); font-size: var(--text-11); text-transform: uppercase; letter-spacing: 0.07em; }
+  /* A project with forty folders must not make the menu taller than the
+     screen; the destinations scroll, the verbs do not. */
+  .ctxscroll { display: grid; gap: 1px; max-height: 180px; overflow-y: auto; scrollbar-width: thin; }
+  .ctxsep { height: 1px; margin: 5px 6px; background: var(--ink-300); }
+  .ctxmenu button.danger { color: var(--warn); }
+  .ctxmenu button.danger:hover { background: color-mix(in oklab, var(--warn) 22%, var(--ink-200)); color: #fff; }
   .ctxmenu:focus-visible { outline: none; }
 
   .dropveil { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: rgba(5, 8, 12, 0.72); pointer-events: none; }

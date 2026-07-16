@@ -2900,6 +2900,9 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "cover_upload_id": {
+                    "type": "string"
                   }
                 },
                 "additionalProperties": false
@@ -3273,6 +3276,178 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/covers": {
+      "get": {
+        "summary": "Pictures uploaded as covers for this project.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "filename": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "current": {
+                            "type": "boolean"
+                          },
+                          "created_at": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "filename",
+                          "url",
+                          "current",
+                          "created_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/covers/{uploadId}": {
+      "delete": {
+        "summary": "Forget an uploaded cover.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "uploadId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No content"
           },
           "400": {
             "description": "Validation failure",
@@ -6978,13 +7153,24 @@
                               },
                               "project_id": {
                                 "type": "string"
+                              },
+                              "current_version_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "updated_at": {
+                                "type": "integer"
                               }
                             },
                             "required": [
                               "type",
                               "id",
                               "name",
-                              "project_id"
+                              "project_id",
+                              "current_version_id",
+                              "updated_at"
                             ],
                             "additionalProperties": false
                           },
@@ -7019,6 +7205,9 @@
                                     "type": "null"
                                   }
                                 ]
+                              },
+                              "updated_at": {
+                                "type": "integer"
                               }
                             },
                             "required": [
@@ -7028,7 +7217,8 @@
                               "asset_id",
                               "version_id",
                               "project_id",
-                              "frame_in"
+                              "frame_in",
+                              "updated_at"
                             ],
                             "additionalProperties": false
                           },
@@ -7047,13 +7237,24 @@
                               },
                               "palette": {
                                 "type": "string"
+                              },
+                              "cover_url": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "updated_at": {
+                                "type": "integer"
                               }
                             },
                             "required": [
                               "type",
                               "id",
                               "name",
-                              "palette"
+                              "palette",
+                              "cover_url",
+                              "updated_at"
                             ],
                             "additionalProperties": false
                           },
@@ -7072,13 +7273,17 @@
                               },
                               "email": {
                                 "type": "string"
+                              },
+                              "updated_at": {
+                                "type": "integer"
                               }
                             },
                             "required": [
                               "type",
                               "id",
                               "name",
-                              "email"
+                              "email",
+                              "updated_at"
                             ],
                             "additionalProperties": false
                           },
@@ -7100,6 +7305,9 @@
                               },
                               "project_id": {
                                 "type": "string"
+                              },
+                              "updated_at": {
+                                "type": "integer"
                               }
                             },
                             "required": [
@@ -7107,7 +7315,8 @@
                               "id",
                               "title",
                               "slug",
-                              "project_id"
+                              "project_id",
+                              "updated_at"
                             ],
                             "additionalProperties": false
                           }

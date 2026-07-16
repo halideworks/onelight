@@ -212,6 +212,15 @@ export const d1Migrations: D1Migration[] = [
       "CREATE UNIQUE INDEX folders_sibling_uq ON folders(project_id, kind, ifnull(parent_id, ''), name)",
     ],
   },
+  {
+    name: "0010_project_cover_uploads.sql",
+    applied: (binding) => tableExists(binding, "project_cover_uploads"),
+    statements: [
+      "CREATE TABLE project_cover_uploads (\n  id TEXT PRIMARY KEY,\n  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,\n  blob_key TEXT NOT NULL,\n  filename TEXT NOT NULL,\n  created_by TEXT NOT NULL REFERENCES users(id),\n  created_at INTEGER NOT NULL\n)",
+      "CREATE INDEX project_cover_uploads_project_idx ON project_cover_uploads(project_id, id)",
+      "CREATE UNIQUE INDEX project_cover_uploads_blob_uq ON project_cover_uploads(project_id, blob_key)",
+    ],
+  },
 ];
 
 const migrate = async (binding: D1Database): Promise<void> => {
