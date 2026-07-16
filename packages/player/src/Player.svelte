@@ -92,6 +92,42 @@
   let muted = $state(false);
   let volume = $state(1);
   let fullscreen = $state(false);
+  /* Fullscreen controls appear on movement and get out of the way again. The
+     footage is the point; chrome parked over it is not. */
+  const OVERLAY_IDLE_MS = 2200;
+  let overlayAwake = $state(true);
+  let overlayHot = $state(false);
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearIdle = (): void => {
+    if (idleTimer !== null) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+  /* Only arm the fade when there is something to watch: fullscreen, playing,
+     and no pointer resting on the controls. A paused still frame with no
+     controls is a stuck window, not a clean one. */
+  const armIdle = (): void => {
+    clearIdle();
+    if (!fullscreen || !playing) return;
+    idleTimer = setTimeout(() => {
+      if (!overlayHot) overlayAwake = false;
+    }, OVERLAY_IDLE_MS);
+  };
+  const wakeOverlay = (): void => {
+    overlayAwake = true;
+    armIdle();
+  };
+  /* Depends on playing as well as fullscreen. Arming only on entry meant the
+     timer fired while still paused, found nothing to do, and never scheduled
+     again once playback started -- so the controls never faded at all. */
+  $effect(() => {
+    void fullscreen;
+    void playing;
+    overlayAwake = true;
+    armIdle();
+    return clearIdle;
+  });
   /* Reverse is emulated by a timer with the element paused, so "playing" is not
      video.paused: it is either shuttle direction being live. */
   const playing = $derived(forwardSpeed > 0 || reverseSpeed > 0);
@@ -110,6 +146,11 @@
     rateSupported ? formatTimecode(timecodeFromFrames(frame, rate, dropFrame && isDropFrameRate(rate))) : null
   );
   const rateLabel = $derived(rate.den === 1 ? String(rate.num) : (rate.num / rate.den).toFixed(3));
+  /* Marks are shown as timecode, like everything else a person reads here. */
+  const tcAt = (value: number): string =>
+    rateSupported
+      ? formatTimecode(timecodeFromFrames(value, rate, dropFrame && isDropFrameRate(rate)))
+      : String(value);
 
   /* ---- rendition ladder ---- */
   const RUNG_HEIGHTS: Record<string, number> = { proxy_540: 540, proxy_1080: 1080, proxy_2160: 2160 };
@@ -528,8 +569,23 @@
       }
       return;
     }
+    /* The map an editor already has in their hands. JKL was here; the rest is
+       what they reach for next and found missing -- space above all, which is
+       the first key anyone presses at a review. */
+    if (event.key === ' ' || event.key === 'Spacebar') {
+      /* Space toggles, rather than being a third way to play: at a review it is
+         pressed to stop on the thing you are about to talk about. */
+      event.preventDefault();
+      if (playing) pausePlayback();
+      else playForward();
+      return;
+    }
     if (event.key === 'ArrowLeft') { event.preventDefault(); step(event.shiftKey ? -10 : -1); }
     if (event.key === 'ArrowRight') { event.preventDefault(); step(event.shiftKey ? 10 : 1); }
+    /* Comma and period step frames on every NLE worth naming; with shift they
+       take the same ten-frame stride as the arrows. */
+    if (key === ',') { event.preventDefault(); step(event.shiftKey ? -10 : -1); }
+    if (key === '.') { event.preventDefault(); step(event.shiftKey ? 10 : 1); }
     if (event.key === 'Home') { event.preventDefault(); jumpTo(0); }
     if (event.key === 'End' && durationFrames && durationFrames > 0) {
       event.preventDefault();
@@ -538,8 +594,22 @@
     if (key === 'j') { event.preventDefault(); playReverse(); }
     if (key === 'k') { event.preventDefault(); pausePlayback(); }
     if (key === 'l') { event.preventDefault(); playForward(); }
-    if (key === 'i') inFrame = frame;
-    if (key === 'o') outFrame = frame;
+    /* Shift jumps to the mark rather than setting it: I/O set, Shift+I/O go. */
+    if (key === 'i') {
+      event.preventDefault();
+      if (event.shiftKey) { if (inFrame !== null) jumpTo(inFrame); }
+      else inFrame = frame;
+    }
+    if (key === 'o') {
+      event.preventDefault();
+      if (event.shiftKey) { if (outFrame !== null) jumpTo(outFrame); }
+      else outFrame = frame;
+    }
+    /* X clears the marks: Avid's "mark clear" muscle memory. */
+    if (key === 'x') { event.preventDefault(); inFrame = null; outFrame = null; }
+    if (key === 'p') { event.preventDefault(); loop = !loop; }
+    if (key === 'f') { event.preventDefault(); toggleFullscreen(); }
+    if (key === 'm') { event.preventDefault(); muted = !muted; }
   };
 
   /* Window resize does not fire the video element's resize event (that event
@@ -566,7 +636,15 @@
 
 <svelte:window onkeydown={handleKeydown} />
 <section class="player" aria-label="Review player">
-  <div class="stage" bind:this={stage} style:background={surroundColor} style:--ar={String(aspect)}>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="stage"
+    bind:this={stage}
+    style:background={surroundColor}
+    style:--ar={String(aspect)}
+    onpointermove={fullscreen ? wakeOverlay : undefined}
+    onpointerleave={fullscreen ? () => { overlayHot = false; } : undefined}
+  >
     <div class="frame-box" bind:this={frameBox}>
       <video
         bind:this={video}
@@ -591,6 +669,17 @@
         strokeWidth={DRAW_WIDTH}
         onstroke={commitStroke}
       />
+      {#if fullscreen}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="fs-controls"
+          class:awake={overlayAwake}
+          onpointerenter={() => { overlayHot = true; wakeOverlay(); }}
+          onpointerleave={() => { overlayHot = false; wakeOverlay(); }}
+        >
+          {@render deck()}
+        </div>
+      {/if}
       {#if wmLines.length}
         <div
           class="watermark"
@@ -610,54 +699,71 @@
       {/if}
     </div>
   </div>
-  <div class="transport">
+  {#snippet deck()}
+    <!-- One row. Everything that drives playback -- timecode, transport, marks
+         -- rides the centre together, because they are one instrument and the
+         eye should find them in one place. Copy-link and volume are the only
+         things that are not playback, so they take the two edges of the same
+         row rather than wrapping onto a second one. -->
     <div class="transport-row main">
-      <!-- Timecode left, transport centred on the stage, range right: a deck
-           reads this way, and the play button wants to be on the centre line
-           rather than wherever the row happens to start. -->
-      <span class="readout">
-        {#if timecode}<span class="tc tc-main">{timecode}</span>{/if}
-        <span class="tc tc-sub">{frame} fr&nbsp; {rateLabel}{dropFrame && isDropFrameRate(rate) ? ' DF' : ''}</span>
-      </span>
-
-      <!-- Shuttle and step, in the order an editor's hand expects: J K L with
-           frame steps either side of the playhead. Icons, not sentences: these
-           are pressed hundreds of times an hour. -->
-      <div class="cluster">
-        <button type="button" class="icon" onclick={playReverse} aria-label="Play reverse (J)" title="Reverse — J">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10L2 8zM14 3v10L8 8z" /></svg>
-        </button>
-        <button type="button" class="icon step" onclick={() => step(-1)} disabled={seekLocked} aria-label="Previous frame" title="Previous frame — ←">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11 3v10L4 8z" /><rect x="2" y="3" width="1.6" height="10" /></svg>
-        </button>
-        <button type="button" class="icon play" onclick={() => (playing ? pausePlayback() : playForward())} aria-label={playing ? 'Pause (K)' : 'Play (L)'} title={playing ? 'Pause — K' : 'Play — L'}>
-          {#if playing}
-            <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3" width="3.4" height="10" /><rect x="9.1" y="3" width="3.4" height="10" /></svg>
-          {:else}
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3l9 5-9 5z" /></svg>
-          {/if}
-        </button>
-        <button type="button" class="icon step" onclick={() => step(1)} disabled={seekLocked} aria-label="Next frame" title="Next frame — →">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3v10l7-5z" /><rect x="12.4" y="3" width="1.6" height="10" /></svg>
-        </button>
-        {#if shuttleLabel}<span class="shuttle tc">{shuttleLabel}</span>{/if}
-      </div>
-
-      <div class="cluster">
-        <button type="button" onclick={() => { inFrame = frame; }} aria-label="Set loop in">Set in</button>
-        <button type="button" onclick={() => { outFrame = frame; }} aria-label="Set loop out">Set out</button>
-        <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }}>Loop</button>
-      </div>
-    </div>
-
-    <div class="transport-row aside">
-      <div class="cluster">
+      <div class="side">
         {#if onshare}
           <button type="button" class="linky" onclick={() => onshare?.(frame)}>Copy link at this frame</button>
         {/if}
       </div>
-      <div class="cluster volume">
-        <button type="button" class="icon" aria-pressed={muted} onclick={() => { muted = !muted; }} aria-label={muted ? 'Unmute' : 'Mute'}>
+
+      <div class="deck">
+        <span class="readout">
+          {#if timecode}<span class="tc tc-main">{timecode}</span>{/if}
+          <span class="tc tc-sub">{frame} fr&nbsp; {rateLabel}{dropFrame && isDropFrameRate(rate) ? ' DF' : ''}</span>
+        </span>
+
+        <!-- Shuttle and step, in the order an editor's hand expects: J K L with
+             frame steps either side of the playhead. Icons, not sentences: these
+             are pressed hundreds of times an hour. -->
+        <div class="cluster">
+          <button type="button" class="icon" onclick={playReverse} aria-label="Play reverse (J)" title="Reverse — J">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10L2 8zM14 3v10L8 8z" /></svg>
+          </button>
+          <button type="button" class="icon step" onclick={() => step(-1)} disabled={seekLocked} aria-label="Previous frame" title="Previous frame — ← or ,">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11 3v10L4 8z" /><rect x="2" y="3" width="1.6" height="10" /></svg>
+          </button>
+          <button type="button" class="icon play" onclick={() => (playing ? pausePlayback() : playForward())} aria-label={playing ? 'Pause (K)' : 'Play (L)'} title={playing ? 'Pause — space or K' : 'Play — space or L'}>
+            {#if playing}
+              <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3" width="3.4" height="10" /><rect x="9.1" y="3" width="3.4" height="10" /></svg>
+            {:else}
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3l9 5-9 5z" /></svg>
+            {/if}
+          </button>
+          <button type="button" class="icon step" onclick={() => step(1)} disabled={seekLocked} aria-label="Next frame" title="Next frame — → or .">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3v10l7-5z" /><rect x="12.4" y="3" width="1.6" height="10" /></svg>
+          </button>
+          {#if shuttleLabel}<span class="shuttle tc">{shuttleLabel}</span>{/if}
+        </div>
+
+        <!-- The marks and what they are set to, together: the readout used to
+             live under the timeline, nowhere near the buttons that set it. -->
+        <div class="marks">
+          <div class="cluster">
+            <button type="button" onclick={() => { inFrame = frame; }} aria-label="Set loop in" title="Mark in — I">Set in</button>
+            <button type="button" onclick={() => { outFrame = frame; }} aria-label="Set loop out" title="Mark out — O">Set out</button>
+            <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }} title="Loop the marked range — P">Loop</button>
+            {#if inFrame !== null || outFrame !== null}
+              <button type="button" class="icon clearmarks" onclick={() => { inFrame = null; outFrame = null; }} aria-label="Clear marks" title="Clear marks — X">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" fill="none" /></svg>
+              </button>
+            {/if}
+          </div>
+          <span class="marks-readout tc">
+            <span class:unset={inFrame === null}>{inFrame === null ? 'in —' : tcAt(inFrame)}</span>
+            <span class="marks-sep" aria-hidden="true">/</span>
+            <span class:unset={outFrame === null}>{outFrame === null ? 'out —' : tcAt(outFrame)}</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="side right volume">
+        <button type="button" class="icon" aria-pressed={muted} onclick={() => { muted = !muted; }} aria-label={muted ? 'Unmute' : 'Mute'} title="Mute — M">
           {#if muted || volume === 0}
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3L4 6H2v4h2l3 3z" /><path d="M10.5 6.5l3 3M13.5 6.5l-3 3" stroke="currentColor" stroke-width="1.3" fill="none" /></svg>
           {:else}
@@ -669,12 +775,12 @@
           type="range"
           min="0"
           max="1"
-          step="0.05"
+          step="any"
           bind:value={volume}
           oninput={() => { if (volume > 0) muted = false; }}
           aria-label="Volume"
         />
-        <button type="button" class="icon" onclick={toggleFullscreen} aria-pressed={fullscreen} aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}>
+        <button type="button" class="icon" onclick={toggleFullscreen} aria-pressed={fullscreen} aria-label={fullscreen ? 'Exit full screen' : 'Full screen'} title="Full screen — F">
           {#if fullscreen}
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2v4H2M10 14v-4h4" stroke="currentColor" stroke-width="1.4" fill="none" /></svg>
           {:else}
@@ -683,6 +789,10 @@
         </button>
       </div>
     </div>
+  {/snippet}
+
+  <div class="transport">
+    {#if !fullscreen}{@render deck()}{/if}
     <div class="transport-row settings">
       {#if allowDrawing}
         <button type="button" aria-pressed={drawMode} onclick={toggleDraw}>Draw</button>
@@ -750,7 +860,6 @@
       />
     {/if}
   </div>
-  <p class="range tc">{inFrame === null ? 'In not set' : `In ${inFrame}`}, {outFrame === null ? 'Out not set' : `Out ${outFrame}`}</p>
 </section>
 
 <style>
@@ -793,20 +902,51 @@
   .watermark:not(.tiled)[data-position='center'] { align-items: center; justify-content: center; }
   .transport { padding-top: 12px; font-family: var(--font-ui, system-ui); }
   .transport-row { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
-  /* Transport centred, the way a deck is. Three tracks: the outer two take equal
-     space and the middle one holds the controls, so the play button sits on the
-     centre line of the stage no matter how wide the side clusters get. */
+  /* One row, three tracks. The outer two are equal, so whatever they hold, the
+     deck in the middle stays on the stage's centre line. Copy-link and volume
+     are the only things here that are not playback, so they take the edges --
+     of this row, not of a second one. */
   .transport-row.main { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; }
-  .transport-row.main > .readout { justify-self: start; }
-  .transport-row.main > .cluster:first-of-type { justify-self: center; }
-  .transport-row.main > .cluster:last-of-type { justify-self: end; }
-  /* Secondary row: things that are not the transport do not compete with it. */
-  .transport-row.aside { justify-content: space-between; margin-top: 8px; gap: 16px; }
+  .side { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .side.right { justify-self: end; }
+  /* The instrument: timecode, transport, marks. One group, centred together --
+     they are read together, so they should not be scattered to three corners. */
+  .deck { display: flex; align-items: center; gap: 20px; justify-self: center; }
   .cluster { display: flex; align-items: center; gap: 2px; }
+  /* Marks and their readout are one control: the readout used to sit under the
+     timeline, nowhere near the buttons that set it. */
+  .marks { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .marks-readout { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--n-700, #9a9a9a); }
+  .marks-readout .unset { color: var(--n-500, #565656); }
+  .marks-sep { color: var(--n-400, #3d3d3d); }
+  .clearmarks { width: 24px; height: 24px; margin-left: 4px; }
   /* Volume and fullscreen are different jobs and should not read as one
      control: the slider needs air before the screen button. */
-  .cluster.volume { gap: 8px; }
-  .cluster.volume .vol { margin-right: 10px; }
+  .side.volume { gap: 8px; }
+  .side.volume .vol { margin-right: 10px; }
+  /* Timecode reads as a number, not as prose: fixed width so it does not jitter. */
+  .readout { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-width: 118px; }
+
+  /* Fullscreen controls: over the picture, and gone when they are not wanted.
+     They only fade while playing -- a still frame with no controls is a stuck
+     window, not a clean one. */
+  .fs-controls { position: absolute; left: 0; right: 0; bottom: 0; z-index: 4; padding: 64px 24px 16px; background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.55) 45%, rgba(0, 0, 0, 0.92) 100%); opacity: 0; transition: opacity 220ms ease; pointer-events: none; }
+  .fs-controls.awake { opacity: 1; pointer-events: auto; }
+  /* Over footage the chrome cannot borrow contrast from a grey page: the
+     scrim carries the buttons, and the readout goes full white with a shadow
+     so a timecode stays legible over blown highlights. */
+  .fs-controls .tc-main { color: #ffffff; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
+  .fs-controls .tc-sub, .fs-controls .marks-readout { color: rgba(255, 255, 255, 0.72); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
+  .fs-controls .marks-readout .unset { color: rgba(255, 255, 255, 0.45); }
+  .fs-controls button { background: rgba(28, 28, 28, 0.82); color: #ffffff; }
+  .fs-controls button:hover { background: rgba(62, 62, 62, 0.92); }
+  .fs-controls .icon.play { background: rgba(255, 255, 255, 0.92); color: #101010; }
+  .fs-controls .icon.play:hover { background: #ffffff; }
+  .fs-controls .linky { background: none; color: rgba(255, 255, 255, 0.8); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
+  .fs-controls .linky:hover { background: none; color: #ffffff; }
+  @media (prefers-reduced-motion: reduce) {
+    .fs-controls { transition: none; }
+  }
   /* Icon buttons: square, quiet, and the same value step as everything else in
      the room. No accent colour -- this chrome sits next to the frame. */
   .icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; }
