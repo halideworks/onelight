@@ -214,7 +214,15 @@ An eighth pass: pictures inline, timecode everywhere, words on the frame.
   timeline's ten marker inks under the same author hash, so the colour a
   person draws in matches the colour their markers wear. The ink palette
   (player settings row and the share rail) leads with the author's own
-  colour as the default; picking another sticks.
+  colour as the default; picking another sticks. White and black round out
+  the palette.
+- **Pending text is a live object.** Until the note posts, text renders as
+  DOM rather than canvas: grab to move, tools to resize (frame-diagonal
+  steps, clamped) or remove, a still click reopens the words, Enter
+  recommits, emptying deletes. Posting hands the words back to the canvas
+  as a committed stroke. Committed annotations on existing notes are still
+  immutable; editing those means editing the comment, which is a separate
+  decision.
 
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 

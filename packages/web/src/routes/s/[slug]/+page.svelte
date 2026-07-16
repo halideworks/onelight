@@ -101,7 +101,7 @@
   /* The viewer's own ink leads the palette and is the default. */
   const myInk = $derived(annotationInkFor(viewerIdentity?.name ?? null));
   let inkChoice = $state<string | null>(null);
-  const inks = $derived([myInk, ...ANNOTATION_INKS.filter((ink) => ink !== myInk).slice(0, 5)]);
+  const inks = $derived([myInk, ...ANNOTATION_INKS.filter((ink) => ink !== myInk).slice(0, 4), '#ffffff', '#0a0a0a']);
   let lightbox = $state<{ url: string; name: string } | null>(null);
   /* Bumped whenever the preview changes; in-flight media polls compare it
      and stand down. */

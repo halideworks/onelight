@@ -404,8 +404,9 @@
      hashed from who they are), then the shared brights, then neutral. */
   const inkChoices = $derived([
     ...(drawDefaultColor ? [drawDefaultColor] : []),
-    ...ANNOTATION_INKS.filter((ink) => ink !== drawDefaultColor).slice(0, 5),
-    INK_NEUTRAL,
+    ...ANNOTATION_INKS.filter((ink) => ink !== drawDefaultColor).slice(0, 4),
+    '#ffffff',
+    '#0a0a0a',
   ]);
   /* An uncommitted text placement: the input floats at its anchor until
      Enter commits it as a text stroke or Escape lets it go. */
@@ -506,12 +507,114 @@
     ondrawingchange?.(null);
   }
 
-  const activeStrokes = $derived([
+  /* The canvas draws committed strokes and pending shapes; pending TEXT is
+     DOM instead, so it can be grabbed, resized and re-opened until the note
+     is posted. Once posted it comes back as a committed stroke and the
+     canvas takes over. */
+  const canvasStrokes = $derived([
     ...annotations
       .filter((annotation) => annotation.frame === frame)
       .flatMap((annotation) => annotation.strokes),
-    ...(drawingFrame === frame ? pendingStrokes : [])
+    ...(drawingFrame === frame
+      ? pendingStrokes.filter((stroke) => stroke.tool !== 'text')
+      : [])
   ]);
+  const pendingTexts = $derived(
+    drawingFrame === frame
+      ? pendingStrokes
+          .map((stroke, index) => ({ stroke, index }))
+          .filter((entry) => entry.stroke.tool === 'text')
+      : []
+  );
+
+  /* ---- pending text editing: select, drag, resize, reopen ---- */
+
+  let selectedTextAt = $state<number | null>(null);
+  let textEdit = $state<{ index: number; value: string } | null>(null);
+  let textDrag: {
+    index: number;
+    pointerId: number;
+    grabX: number;
+    grabY: number;
+    moved: boolean;
+  } | null = null;
+
+  const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
+
+  const updateStrokeAt = (index: number, next: AnnotationStroke | null): void => {
+    pendingStrokes = next
+      ? pendingStrokes.map((stroke, at) => (at === index ? next : stroke))
+      : pendingStrokes.filter((_, at) => at !== index);
+    if (pendingStrokes.length === 0 && !drawMode) drawingFrame = null;
+    emitDrawing();
+  };
+
+  $effect(() => {
+    if (!drawMode) {
+      selectedTextAt = null;
+      textEdit = null;
+    }
+    if (selectedTextAt !== null && pendingStrokes[selectedTextAt]?.tool !== 'text')
+      selectedTextAt = null;
+  });
+
+  const textItemDown = (index: number, event: PointerEvent): void => {
+    if (!drawMode || textEdit) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectedTextAt = index;
+    const anchor = pendingStrokes[index]?.points[0];
+    if (!anchor || !frameBox) return;
+    const rect = frameBox.getBoundingClientRect();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    textDrag = {
+      index,
+      pointerId: event.pointerId,
+      grabX: event.clientX - (rect.left + anchor[0] * rect.width),
+      grabY: event.clientY - (rect.top + anchor[1] * rect.height),
+      moved: false,
+    };
+  };
+
+  const textItemMove = (event: PointerEvent): void => {
+    if (!textDrag || !frameBox) return;
+    const rect = frameBox.getBoundingClientRect();
+    const stroke = pendingStrokes[textDrag.index];
+    if (!stroke) return;
+    const x = clamp01((event.clientX - textDrag.grabX - rect.left) / rect.width);
+    const y = clamp01((event.clientY - textDrag.grabY - rect.top) / rect.height);
+    const anchor = stroke.points[0];
+    if (anchor && Math.hypot(x - anchor[0], y - anchor[1]) > 0.002) textDrag.moved = true;
+    if (textDrag.moved) updateStrokeAt(textDrag.index, { ...stroke, points: [[x, y]] });
+  };
+
+  const textItemUp = (index: number): void => {
+    const drag = textDrag;
+    textDrag = null;
+    /* A grab that never moved is a click: reopen the words. */
+    if (drag && !drag.moved) {
+      const stroke = pendingStrokes[index];
+      if (stroke?.text) textEdit = { index, value: stroke.text };
+    }
+  };
+
+  const resizeText = (index: number, delta: number): void => {
+    const stroke = pendingStrokes[index];
+    if (!stroke) return;
+    const next = Math.min(0.09, Math.max(0.018, (stroke.width ?? 0.035) + delta));
+    updateStrokeAt(index, { ...stroke, width: next });
+  };
+
+  const commitTextEdit = (): void => {
+    const edit = textEdit;
+    textEdit = null;
+    if (!edit) return;
+    const stroke = pendingStrokes[edit.index];
+    if (!stroke) return;
+    const value = edit.value.trim();
+    /* Emptied words are a removal, not an empty label. */
+    updateStrokeAt(edit.index, value ? { ...stroke, text: value } : null);
+  };
 
   /* ---- watermark (deterrent-grade session overlay, design doc section 11:
      a DOM layer over the footage that identifies the viewer; it is
@@ -850,7 +953,7 @@
         <track kind="captions" srclang="en" label="English captions" src={captionsSrc ?? 'data:text/vtt;charset=utf-8,WEBVTT'} />
       </video>
       <AnnotationOverlay
-        strokes={activeStrokes}
+        strokes={canvasStrokes}
         width={videoWidth}
         height={videoHeight}
         interactive={drawMode}
@@ -862,6 +965,50 @@
           textDraft = { point, value: '' };
         }}
       />
+      {#each pendingTexts as entry (entry.index)}
+        {#if textEdit && textEdit.index === entry.index}
+          <input
+            class="textdraft"
+            style={`left: ${(entry.stroke.points[0]?.[0] ?? 0) * 100}%; top: ${(entry.stroke.points[0]?.[1] ?? 0) * 100}%; color: ${entry.stroke.color ?? drawColor}; font-size: ${Math.max(12, (entry.stroke.width ?? 0.035) * Math.hypot(videoWidth, videoHeight))}px;`}
+            bind:value={textEdit.value}
+            maxlength="120"
+            use:focusDraft
+            onkeydown={(event) => {
+              event.stopPropagation();
+              if (event.key === 'Enter') commitTextEdit();
+              else if (event.key === 'Escape') textEdit = null;
+            }}
+            onblur={commitTextEdit}
+          />
+        {:else}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="textitem"
+            class:live={drawMode}
+            class:selected={selectedTextAt === entry.index}
+            style={`left: ${(entry.stroke.points[0]?.[0] ?? 0) * 100}%; top: ${(entry.stroke.points[0]?.[1] ?? 0) * 100}%; color: ${entry.stroke.color ?? drawColor}; font-size: ${Math.max(12, (entry.stroke.width ?? 0.035) * Math.hypot(videoWidth, videoHeight))}px;`}
+            onpointerdown={(event) => textItemDown(entry.index, event)}
+            onpointermove={textItemMove}
+            onpointerup={() => textItemUp(entry.index)}
+            onpointercancel={() => { textDrag = null; }}
+          >
+            {entry.stroke.text}
+            {#if selectedTextAt === entry.index && drawMode}
+              <span class="texttools" onpointerdown={(event) => event.stopPropagation()}>
+                <button type="button" aria-label="Smaller" onclick={() => resizeText(entry.index, -0.006)}>
+                  <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 6h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+                </button>
+                <button type="button" aria-label="Larger" onclick={() => resizeText(entry.index, 0.006)}>
+                  <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 6h8M6 2v8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+                </button>
+                <button type="button" aria-label="Remove" onclick={() => updateStrokeAt(entry.index, null)}>
+                  <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+                </button>
+              </span>
+            {/if}
+          </div>
+        {/if}
+      {/each}
       {#if textDraft}
         <!-- The caret lives in the DOM; the committed stroke lives on the
              canvas. Enter commits, Escape lets it go, and clicking elsewhere
@@ -1162,6 +1309,15 @@
      what is typed is what the note will burn. */
   .textdraft { position: absolute; transform: none; min-width: 40px; max-width: 70%; border: 0; border-radius: 3px; background: rgba(10, 10, 10, 0.55); padding: 2px 6px; font-family: Switzer, system-ui, sans-serif; font-weight: 600; outline: 1px dashed rgba(233, 233, 233, 0.5); z-index: 3; }
   .textdraft::placeholder { color: rgba(233, 233, 233, 0.45); }
+  /* Pending words on the frame: same face the canvas will burn, plus a halo
+     from shadows. Live items grab; a click reopens them. */
+  .textitem { position: absolute; z-index: 3; max-width: 70%; font-family: Switzer, system-ui, sans-serif; font-weight: 600; line-height: 1.15; white-space: pre-wrap; user-select: none; text-shadow: 0 1px 3px rgba(10, 10, 10, 0.9), 0 -1px 3px rgba(10, 10, 10, 0.9), 1px 0 3px rgba(10, 10, 10, 0.9), -1px 0 3px rgba(10, 10, 10, 0.9); }
+  .textitem.live { cursor: grab; touch-action: none; }
+  .textitem.live:active { cursor: grabbing; }
+  .textitem.selected { outline: 1px dashed rgba(233, 233, 233, 0.55); outline-offset: 3px; }
+  .texttools { position: absolute; bottom: 100%; left: 0; margin-bottom: 7px; display: flex; gap: 2px; padding: 2px; border-radius: 3px; background: rgba(10, 12, 16, 0.85); }
+  .texttools button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 2px; background: none; color: var(--n-800, #c4c4c4); cursor: pointer; }
+  .texttools button:hover { background: var(--n-300, #2e2e2e); color: #fff; }
   .inkrow { display: flex; align-items: center; gap: 5px; }
   .ink { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; opacity: 0.75; }
   .ink:hover { opacity: 1; }
