@@ -228,6 +228,39 @@
     pictureIn = false;
   });
 
+  /* ---- the presentation scrub (simple chrome's seek bar) ---- */
+
+  let scrubEl = $state<HTMLDivElement | null>(null);
+  let scrubbing = $state(false);
+  const scrubPct = $derived(
+    durationFrames && durationFrames > 1 ? Math.min(1, Math.max(0, frame / (durationFrames - 1))) : 0
+  );
+  const scrubSeek = (event: PointerEvent): void => {
+    if (!scrubEl || !durationFrames || durationFrames < 2) return;
+    const box = scrubEl.getBoundingClientRect();
+    const pct = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
+    jumpTo(Math.round(pct * (durationFrames - 1)));
+  };
+  const onScrubDown = (event: PointerEvent): void => {
+    if (seekLocked) return;
+    scrubbing = true;
+    scrubEl?.setPointerCapture(event.pointerId);
+    scrubSeek(event);
+  };
+  const onScrubMove = (event: PointerEvent): void => {
+    if (scrubbing) scrubSeek(event);
+  };
+  const onScrubUp = (event: PointerEvent): void => {
+    if (!scrubbing) return;
+    scrubbing = false;
+    scrubEl?.releasePointerCapture(event.pointerId);
+  };
+  const onScrubKeydown = (event: KeyboardEvent): void => {
+    if (seekLocked) return;
+    if (event.key === 'ArrowLeft') { event.preventDefault(); event.stopPropagation(); step(-1); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); step(1); }
+  };
+
   /* Auto heuristic: the highest rung whose height does not exceed the stage
      in device pixels. The stage can never be taller than the viewport, so
      the bound is innerHeight x devicePixelRatio; below the lowest rung the
@@ -938,22 +971,49 @@
     </div>
     {/if}
     {#if durationFrames !== null && durationFrames !== undefined && durationFrames > 0}
-      <!-- Simple chrome has no lane toggles, so it must not show lanes there
-           would be no way to put away. -->
-      <Timeline
-        {frame}
-        {durationFrames}
-        {rate}
-        dropFrame={dropFrame && isDropFrameRate(rate)}
-        {inFrame}
-        {outFrame}
-        {markers}
-        filmstrip={chrome === 'full' && showFilmLane ? filmstrip : null}
-        waveformUrl={chrome === 'full' && showWaveLane ? waveformUrl : null}
-        disabled={seekLocked}
-        onseek={jumpTo}
-        onmarkerselect={handleMarkerSelect}
-      />
+      {#if chrome === 'simple'}
+        <!-- The presentation scrub, purpose-built: one thin line, the played
+             part bright, a handle that shows itself when the pointer is
+             near. The review Timeline is an instrument; this is a progress
+             bar for watching. -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <div
+          class="scrub"
+          class:scrubbing
+          bind:this={scrubEl}
+          role="slider"
+          aria-label="Position"
+          aria-valuemin="0"
+          aria-valuemax={durationFrames - 1}
+          aria-valuenow={frame}
+          tabindex="0"
+          onpointerdown={onScrubDown}
+          onpointermove={onScrubMove}
+          onpointerup={onScrubUp}
+          onpointercancel={onScrubUp}
+          onkeydown={onScrubKeydown}
+        >
+          <div class="scrub-track">
+            <div class="scrub-played" style={`width: ${scrubPct * 100}%;`}></div>
+            <div class="scrub-handle" style={`left: ${scrubPct * 100}%;`}></div>
+          </div>
+        </div>
+      {:else}
+        <Timeline
+          {frame}
+          {durationFrames}
+          {rate}
+          dropFrame={dropFrame && isDropFrameRate(rate)}
+          {inFrame}
+          {outFrame}
+          {markers}
+          filmstrip={showFilmLane ? filmstrip : null}
+          waveformUrl={showWaveLane ? waveformUrl : null}
+          disabled={seekLocked}
+          onseek={jumpTo}
+          onmarkerselect={handleMarkerSelect}
+        />
+      {/if}
     {/if}
   </div>
 </section>
@@ -980,6 +1040,18 @@
   .stage { flex: 1; display: grid; place-items: center; min-height: 120px; overflow: hidden; }
   .frame-box { position: relative; width: min(100%, calc(72vh * var(--ar, 1.7778))); max-height: 100%; }
   video { display: block; width: 100%; height: auto; background: #000000; }
+
+  /* The presentation scrub: a thin line that answers the pointer. Painted in
+     the neutral scale, so a themed room recolours it with everything else. */
+  .scrub { padding: 12px 0 6px; cursor: pointer; touch-action: none; outline: none; }
+  .scrub-track { position: relative; height: 4px; border-radius: 2px; background: var(--n-150, #1c1c1c); transition: height 140ms ease; }
+  .scrub:hover .scrub-track, .scrub.scrubbing .scrub-track, .scrub:focus-visible .scrub-track { height: 6px; }
+  .scrub-played { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px; background: var(--n-800, #c4c4c4); }
+  .scrub-handle { position: absolute; top: 50%; width: 13px; height: 13px; border-radius: 50%; background: var(--n-900, #e9e9e9); transform: translate(-50%, -50%) scale(0); transition: transform 140ms ease; }
+  .scrub:hover .scrub-handle, .scrub.scrubbing .scrub-handle, .scrub:focus-visible .scrub-handle { transform: translate(-50%, -50%) scale(1); }
+  @media (prefers-reduced-motion: reduce) {
+    .scrub-track, .scrub-handle { transition: none; }
+  }
   /* Simple chrome fades the picture in on first data instead of popping it.
      The review player never fades footage: arrived is always on there. */
   video:not(.arrived) { opacity: 0; }

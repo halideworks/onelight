@@ -1300,7 +1300,7 @@
   /* ---- notes ---- */
   .notes { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: var(--pad-2); gap: 10px; }
   /* The list scrolls between a fixed head and a docked composer. */
-  .thread-list { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
+  .thread-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; margin: 0 -6px; padding: 0 6px; }
   .thread { margin-bottom: 10px; }
   /* One control, not a filled panel with a button loose beneath it. The surface
      holds the anchor, the field and the send together and ends where the

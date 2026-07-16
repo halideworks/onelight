@@ -103,10 +103,6 @@
      drawing -- because its viewer is a client, not a reviewer. */
   const presenting = $derived(share?.kind === 'presentation');
 
-  /* The notes rail exists only where the share allows comments: with them
-     off there is nothing to read and nothing to write, and an empty panel
-     titled Comments was furniture. The picture takes the whole room. */
-  const railOpen = $derived(Boolean(share?.allow_comments));
 
   /* Running time as a clock: 1:23, or 1:02:03 past the hour. */
   const clock = (seconds: number): string => {
@@ -137,14 +133,14 @@
     cover_url: asset.poster_url
   });
 
-  /* Showtime opens straight into the work: the client clicked a link to
-     watch something, not to choose from a menu first. Deep links (?a=)
-     still win; this only fills the silence when none is given. */
+  /* A share holding exactly one thing opens straight into it: a landing
+     with one tile is a menu with one item. With several, the landing is the
+     gallery and the client chooses. Deep links (?a=) still win. */
   const autoOpen = (): void => {
-    if (playerChrome !== 'simple' || selected) return;
+    if (selected || assets.length !== 1) return;
     if (new URLSearchParams(location.search).get('a')) return;
-    const first = assets[0];
-    if (first) void openAsset(first);
+    const only = assets[0];
+    if (only) void openAsset(only);
   };
 
   /* The page wash the rest of the app outside the review room uses, rather
@@ -176,6 +172,13 @@
      only the review player; David has been explicit that presentation is the
      other world. Notes still work in showtime when the share allows them. */
   const showtime = $derived(playerChrome === 'simple');
+
+  /* The notes rail exists only where the share allows comments: with them
+     off there is nothing to read and nothing to write, and an empty panel
+     titled Comments was furniture. In showtime the client can also put it
+     away and bring it back; the room is theirs. */
+  let railHidden = $state(false);
+  const railOpen = $derived(Boolean(share?.allow_comments) && !(showtime && railHidden));
 
   const tagsOf = (comment: Comment): string[] =>
     Array.isArray(comment.tags) ? comment.tags : hashtagsIn(comment.body_text);
@@ -716,6 +719,11 @@
           <button type="button" class="copylink" onclick={() => void copyFrameLink()}>Copy link at this frame</button>
           {#if copyNotice}<span class="copy-note" role="status">{copyNotice}</span>{/if}
         {/if}
+        {#if showtime && share.allow_comments}
+          <button type="button" class="railtoggle" aria-pressed={!railHidden} onclick={() => { railHidden = !railHidden; }}>
+            {railHidden ? 'Show notes' : 'Hide notes'}
+          </button>
+        {/if}
         {#if share.allow_download !== 'none'}
           <button type="button" class="download" onclick={() => void download()}>Download</button>
         {/if}
@@ -772,6 +780,19 @@
       {/if}
       </div>
       {/key}
+      {#if showtime && assets.length > 1 && selected}
+        {@const at = assets.findIndex((candidate) => candidate.id === selected?.id)}
+        {#if at > 0}
+          <button type="button" class="skip prev" aria-label="Previous" onclick={() => void openAsset(assets[at - 1])}>
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5L8 12l6.5 6.5" /></svg>
+          </button>
+        {/if}
+        {#if at >= 0 && at < assets.length - 1}
+          <button type="button" class="skip next" aria-label="Next" onclick={() => void openAsset(assets[at + 1])}>
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 5.5L16 12l-6.5 6.5" /></svg>
+          </button>
+        {/if}
+      {/if}
       {#if showtime && assets.length > 1}
         <!-- The whole share, current one marked: the client skips through the
              work from here, never back out to a menu. -->
@@ -990,16 +1011,38 @@
   .showtime .reelname { color: var(--ink-text-dim); }
   .showtime .reeltile:hover .reelname, .showtime .reeltile.current .reelname { color: var(--ink-text); }
   .showtime .reelframe { background: rgba(13, 17, 23, 0.5); }
-  /* Notes, when the share allows them, sit on ink rather than the review
-     room's neutral grey. */
+  /* Skipping lives on the picture's own gutters: a circular chevron either
+     side, quiet until the pointer comes near. */
+  .maincol { position: relative; }
+  .skip { position: absolute; top: 50%; z-index: 2; display: grid; place-items: center; width: 46px; height: 46px; padding: 0; border: 0; border-radius: 50%; background: rgba(13, 17, 23, 0.5); color: rgba(250, 248, 244, 0.75); transform: translateY(-50%); transition: background 140ms ease, color 140ms ease; }
+  .skip:hover { background: rgba(13, 17, 23, 0.8); color: #fff; }
+  .skip.prev { left: clamp(8px, 1.6vw, 28px); }
+  .skip.next { right: clamp(8px, 1.6vw, 28px); }
+
+  /* Notes in showtime: the same thread, dressed for the room. Cards on
+     translucent ink, cream type, roomy line height, and a composer that
+     reads as an invitation rather than a form. */
   .showtime .rail { background: rgba(13, 17, 23, 0.45); }
-  .showtime .comments h3, .showtime .c-head strong, .showtime .comments article p { color: var(--ink-text); }
+  .showtime .comments { padding: var(--pad-2) 18px; }
+  .showtime .comments h3 { color: var(--ink-text); font-family: var(--font-display); font-size: var(--text-14); font-weight: 700; letter-spacing: -0.01em; }
+  .showtime .c-head strong, .showtime .comments article p { color: var(--ink-text); }
+  .showtime .comments article p { line-height: 1.55; }
   .showtime .comments .empty { color: var(--ink-text-dim); text-align: left; padding: 0; }
-  .showtime .comments article:hover { background: rgba(13, 17, 23, 0.5); }
-  .showtime .comments article.highlighted { background: rgba(13, 17, 23, 0.65); }
-  .showtime .comments form { background: rgba(13, 17, 23, 0.5); box-shadow: none; }
-  .showtime .comments textarea { color: var(--ink-text); }
+  .showtime .comments article { background: rgba(13, 17, 23, 0.38); border-radius: var(--radius-lg); padding: 12px 14px; margin: 0 0 8px; }
+  .showtime .comments article:hover { background: rgba(13, 17, 23, 0.55); }
+  .showtime .comments article.highlighted { background: rgba(13, 17, 23, 0.7); }
+  .showtime .chip { background: rgba(250, 248, 244, 0.16); color: var(--ink-text); }
+  .showtime .chip:hover { background: rgba(250, 248, 244, 0.3); }
+  .showtime .tag { background: rgba(250, 248, 244, 0.12); color: var(--ink-text); }
+  .showtime .tag:hover { background: rgba(250, 248, 244, 0.24); }
+  .showtime .mention { color: #fff; }
+  .showtime .comments form { background: rgba(13, 17, 23, 0.5); box-shadow: none; border-radius: var(--radius-lg); padding: 12px 14px; }
+  .showtime .comments form:focus-within { box-shadow: inset 0 0 0 1px rgba(250, 248, 244, 0.35); }
+  .showtime .comments textarea { color: var(--ink-text); background: rgba(250, 248, 244, 0.08); border-radius: var(--radius); padding: 8px 10px; min-height: 60px; }
+  .showtime .comments textarea::placeholder { color: var(--ink-text-dim); }
   .showtime .comments form label { color: var(--ink-text-dim); }
+  .showtime .post { background: rgba(250, 248, 244, 0.92); color: #14181f; }
+  .showtime .post:hover { background: #fff; color: #0d1117; }
   .showtime .anchor { color: var(--ink-text-dim); }
   .preview h2 { flex: 1; margin: 0; font-family: var(--font-ui); font-size: var(--text-16); font-weight: 500; color: var(--n-900); }
   .preview { outline: none; }
@@ -1014,7 +1057,10 @@
      the bottom: reading the notes never scrolls the composer away, and a long
      thread never pushes it off the screen. */
   .comments { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: var(--pad-2); }
-  .notelist { flex: 1; min-height: 0; overflow-y: auto; }
+  /* overflow-x hidden, not visible: the note cards bleed 12px into their own
+     gutters, and inside a scroll container that bleed became a horizontal
+     scrollbar over the composer. */
+  .notelist { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 12px; margin: 0 -12px; }
   .c-bar { flex: none; display: flex; align-items: center; gap: 12px; margin: 0 0 10px; }
   .comments h3 { margin: 0; font-size: var(--text-13); font-weight: 600; color: var(--n-900); }
   .tagfilter { background: var(--n-300); color: var(--n-900); font-weight: 600; padding: 4px 10px; }
