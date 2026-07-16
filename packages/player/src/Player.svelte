@@ -220,6 +220,13 @@
   let quality = $state('auto');
   let currentSrc = $state('');
   let pendingRestore: { frame: number; playing: boolean; playbackRate: number } | null = null;
+  /* Whether the first frame of the current source has arrived; simple chrome
+     fades the picture in on it. A new source starts unseen again. */
+  let pictureIn = $state(false);
+  $effect(() => {
+    void (currentSrc || src);
+    pictureIn = false;
+  });
 
   /* Auto heuristic: the highest rung whose height does not exceed the stage
      in device pixels. The stage can never be taller than the viewport, so
@@ -709,12 +716,14 @@
     <div class="frame-box" bind:this={frameBox} style:width={boxWidth > 0 ? `${String(boxWidth)}px` : undefined}>
       <video
         bind:this={video}
+        class:arrived={chrome === 'full' || pictureIn}
         src={currentSrc || src}
         bind:muted
         bind:volume
         playsinline
         ontimeupdate={hasRvfc ? undefined : handleTimeUpdate}
         onloadedmetadata={handleLoadedMetadata}
+        onloadeddata={() => { pictureIn = true; }}
         onplay={() => onplaystate?.(true)}
         onpause={() => onplaystate?.(false)}
       >
@@ -971,6 +980,14 @@
   .stage { flex: 1; display: grid; place-items: center; min-height: 120px; overflow: hidden; }
   .frame-box { position: relative; width: min(100%, calc(72vh * var(--ar, 1.7778))); max-height: 100%; }
   video { display: block; width: 100%; height: auto; background: #000000; }
+  /* Simple chrome fades the picture in on first data instead of popping it.
+     The review player never fades footage: arrived is always on there. */
+  video:not(.arrived) { opacity: 0; }
+  video.arrived { opacity: 1; transition: opacity 480ms ease; }
+  @media (prefers-reduced-motion: reduce) {
+    video:not(.arrived) { opacity: 1; }
+    video.arrived { transition: none; }
+  }
   .watermark {
     position: absolute;
     inset: 0;
@@ -1063,7 +1080,7 @@
   .icon.step svg { opacity: 0.9; }
   .shuttle { color: var(--n-700, #9a9a9a); font-size: 11px; line-height: 1; font-weight: 600; min-height: 1em; }
   /* Volume: a neutral track, no accent fill. */
-  .vol { width: 84px; height: 3px; appearance: none; background: var(--n-300, #2e2e2e); border-radius: 2px; padding: 0; }
+  .vol { width: 84px; height: 3px; appearance: none; background: var(--vol-track, var(--n-300, #2e2e2e)); border-radius: 2px; padding: 0; }
   .vol::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; border-radius: 50%; background: var(--n-800, #c4c4c4); }
   .vol::-moz-range-thumb { width: 11px; height: 11px; border: 0; border-radius: 50%; background: var(--n-800, #c4c4c4); }
   .vol:hover::-webkit-slider-thumb { background: var(--n-900, #e9e9e9); }

@@ -671,8 +671,8 @@
       <h1>{share.title}</h1>
     </header>
     <section class={`assets ${share.layout}`} aria-label="Shared assets">
-      {#each assets as asset (asset.id)}
-        <button class="asset" type="button" onclick={() => openAsset(asset)}>
+      {#each assets as asset, index (asset.id)}
+        <button class="asset" type="button" style={`--i: ${index};`} onclick={() => openAsset(asset)}>
           <!-- The picture leads. A list row is 56px of frame, too small for a
                monogram to read as anything but a cropped letter, so it takes
                the wash and the light alone. -->
@@ -734,6 +734,8 @@
            simple chrome, so the props pass unconditionally. -->
       <div class="room" class:solo={!railOpen}>
       <div class="maincol">
+      {#key selected.id}
+      <div class="picture">
       {#if playerActive}
         <Player
           bind:this={player}
@@ -768,6 +770,8 @@
       {:else}
         <p class="empty">A review rendition is not ready.</p>
       {/if}
+      </div>
+      {/key}
       {#if showtime && assets.length > 1}
         <!-- The whole share, current one marked: the client skips through the
              work from here, never back out to a menu. -->
@@ -922,7 +926,11 @@
      hidden rather than auto: the picture shrinks to fit instead of the room
      growing a scrollbar and hiding the transport below the fold. */
   .maincol { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-  .maincol > :global(.player) { flex: 1; min-height: 0; }
+  /* The keyed wrapper re-enters when the clip changes, so switching is a
+     dissolve rather than a pop. It mirrors the column so the player still
+     gets a definite height. */
+  .picture { flex: 1; min-height: 0; display: flex; flex-direction: column; animation: fadein 380ms ease both; }
+  .picture > :global(.player) { flex: 1; min-height: 0; }
   .rail { display: flex; flex-direction: column; min-height: 0; background: var(--n-100); }
   @media (max-width: 900px) {
     .preview { overflow: auto; }
@@ -955,7 +963,7 @@
   .showtime .preview-bar button:hover { background: rgba(13, 17, 23, 0.8); color: #fff; }
   /* The picture gets a proscenium: inset from the walls, never wall to wall. */
   .showtime .maincol { padding: 0 clamp(16px, 5vw, 96px); }
-  .showtime .maincol > :global(.player) { border-radius: var(--radius-lg); overflow: hidden; }
+  .showtime .maincol :global(.player) { border-radius: var(--radius-lg); overflow: hidden; }
   /* The instrument sheds the NLE grey. The player paints itself entirely in
      the neutral scale, so re-mapping that scale inside this container turns
      its slabs transparent (the wash shows through, the picture floats on the
@@ -965,9 +973,10 @@
     --n-000: transparent;
     --n-050: transparent;
     --n-100: transparent;
-    /* The scrub track reads in cream: translucent ink vanished into the
-       wash, and an invisible seek bar is a control that does not exist. */
+    /* The scrub and volume tracks read in cream: translucent ink vanished
+       into the wash, and an invisible control does not exist. */
     --n-150: rgba(250, 248, 244, 0.14);
+    --vol-track: rgba(250, 248, 244, 0.22);
     --n-200: rgba(13, 17, 23, 0.5);
     --n-300: rgba(13, 17, 23, 0.66);
     --n-400: rgba(13, 17, 23, 0.85);
@@ -1041,4 +1050,34 @@
   button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px solid var(--n-800); outline-offset: 2px; }
   .shell button:focus-visible, .shell input:focus-visible { outline: 2px solid var(--accent-bright); outline-offset: 3px; }
   @media (max-width: 760px) { .assets { grid-template-columns: 1fr; } }
+
+  /* ---- arrival ---- */
+  /* Everything enters instead of appearing: one easing, short distances,
+     small staggers. Expensive is calm, so nothing bounces and nothing takes
+     longer than it needs to be felt. */
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes fadein {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  .inner h1 { animation: rise 560ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+  .shell form { animation: rise 560ms cubic-bezier(0.22, 1, 0.36, 1) 90ms both; }
+  /* Tiles follow the title, each a beat behind the last; the stagger is
+     capped so a long reel does not keep the bottom waiting. */
+  .assets .asset { animation: rise 520ms cubic-bezier(0.22, 1, 0.36, 1) both; animation-delay: min(calc(90ms + var(--i, 0) * 50ms), 500ms); }
+  .preview { animation: fadein 300ms ease both; }
+  .preview .empty { animation: fadein 400ms ease 200ms both; }
+  .showtime .preview-bar { animation: fadein 520ms ease both; }
+  .showtime .picture { animation: rise 620ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+  .showtime .carousel { animation: rise 620ms cubic-bezier(0.22, 1, 0.36, 1) 130ms both; }
+  .showtime .rail { animation: rise 620ms cubic-bezier(0.22, 1, 0.36, 1) 80ms both; }
+  @media (prefers-reduced-motion: reduce) {
+    .inner h1, .shell form, .assets .asset, .preview, .preview .empty,
+    .showtime .preview-bar, .showtime .picture, .showtime .carousel, .showtime .rail, .picture {
+      animation: none;
+    }
+  }
 </style>
