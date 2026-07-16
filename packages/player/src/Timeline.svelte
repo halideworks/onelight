@@ -5,7 +5,7 @@
     isDropFrameRate,
     timecodeFromFrames
   } from '@onelight/core';
-  import { frameForX, spanForRange, xForFrame } from './timeline.js';
+  import { frameForX, markerInkFor, spanForRange, xForFrame } from './timeline.js';
   import type { TimelineMarker } from './timeline.js';
   import { filmstripTiles, spriteSheetSize } from './filmstrip.js';
   import type { SpriteCue } from './filmstrip.js';
@@ -263,6 +263,7 @@
             type="button"
             class="span"
             class:completed={marker.completed}
+            style:--ink={markerInkFor(marker.authorId)}
             style:left={`${span.left * 100}%`}
             style:width={`${Math.max(span.width * 100, 0.4)}%`}
             aria-label={markerLabel(marker)}
@@ -278,6 +279,7 @@
             type="button"
             class="mark"
             class:completed={marker.completed}
+            style:--ink={markerInkFor(marker.authorId)}
             style:left={`${percentFor(marker.frameIn)}%`}
             aria-label={markerLabel(marker)}
             onpointerdown={(event) => event.stopPropagation()}
@@ -396,15 +398,26 @@
     margin-left: -3.5px;
     transform: rotate(45deg);
   }
-  .mark:hover { background: var(--n-900, #e9e9e9); }
+  .mark:hover { background: var(--ink, var(--n-900, #e9e9e9)); filter: brightness(1.35); }
   .span {
     top: 5px;
     height: 7px;
     border-radius: 2px;
-    background: var(--n-600, #767676);
+    background: var(--ink, var(--n-600, #767676));
   }
-  .span:hover { background: var(--n-800, #c4c4c4); }
-  .lane button.completed { background: var(--n-400, #3d3d3d); }
+  .span:hover { filter: brightness(1.35); }
+  /* Whose note it is, in the ink assigned to that person. The design doc bans
+     tinted chrome near the frame but allows muted desaturated functional colour
+     for markers, which is the only way to see at a glance that a run of notes is
+     all from one person. */
+  .lane button { background: var(--ink, var(--n-600, #767676)); }
+
+  /* Resolved notes stay on the timeline and stay findable: same ink, hollowed
+     out and dimmed. Filling them grey said "someone else's note"; removing them
+     said "never happened". A ring says done. */
+  .lane button.completed { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink, var(--n-500, #565656)); opacity: 0.65; }
+  .lane button.completed:hover { opacity: 1; background: transparent; filter: none; }
+  .span.completed { background: transparent; }
   .lane button:focus-visible { outline: 1px solid var(--n-800, #c4c4c4); outline-offset: 2px; }
   .tip {
     position: absolute;

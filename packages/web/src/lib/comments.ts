@@ -10,6 +10,7 @@ import type {
 export type ReviewComment = {
   id: string;
   author_name: string | null;
+  author_user_id?: string | null;
   body_text: string;
   frame_in: number | null;
   frame_out: number | null;
@@ -56,6 +57,8 @@ export const markersFrom = (comments: ReviewComment[]): TimelineMarker[] =>
       frameIn: comment.frame_in as number,
       frameOut: comment.frame_out,
       author: comment.author_name,
+      /* Colour is keyed to the author's id, not their name. */
+      authorId: comment.author_user_id ?? null,
       text: comment.body_text,
       completed: comment.completed_at !== null,
     }));
