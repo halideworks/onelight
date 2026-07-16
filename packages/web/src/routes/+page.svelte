@@ -2,9 +2,16 @@
   import { goto } from '$app/navigation';
   import { api, createProject, messageFrom } from '$lib/api.js';
   import { auth } from '$lib/auth.svelte.js';
-  import { washFor } from '$lib/washes.js';
+  import ProjectCover from '$lib/ProjectCover.svelte';
 
-  type Project = { id: string; name: string; status: string; palette: string; my_role?: string };
+  type Project = {
+    id: string;
+    name: string;
+    status: string;
+    palette: string;
+    cover_url?: string | null;
+    my_role?: string;
+  };
   let projects = $state<Project[]>([]);
 
   /* Grid or list, remembered per user: a wall of thumbnails is right for a few
@@ -105,10 +112,10 @@
       <div class="projectlist" class:grid={view === 'grid'}>
         {#each projects as project (project.id)}
           <a class="project" href={`/projects/${project.id}`}>
-            <!-- The project's own palette is its thumbnail: assigned at
-                 creation, so every project already has one and the page needs
-                 no extra request to show it. -->
-            <span class="thumb" style={`background-image: ${washFor(project.palette)};`} aria-hidden="true"></span>
+            <!-- Every project has a picture: the one it chose, or the one
+                 generated from its palette and name. Neither costs a request
+                 beyond this page's own. -->
+            <span class="thumb"><ProjectCover {project} monogram={view === 'grid'} /></span>
             <span class="meta">
               <span class="name">{project.name}</span>
               <small>{project.my_role ?? 'viewer'}</small>
@@ -162,11 +169,13 @@
   .meta { flex: 1; min-width: 0; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
   .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .project small { color: rgba(255, 255, 255, 0.65); }
-  .thumb { flex: none; width: 34px; height: 24px; border-radius: 2px; background-size: 100% 100%; }
+  .thumb { flex: none; width: 34px; height: 24px; border-radius: 2px; overflow: hidden; display: grid; }
 
   /* Grid card: the thumbnail leads and the name sits under it. */
   .grid .project { flex-direction: column; align-items: stretch; gap: 0; padding: 0; overflow: hidden; }
   .grid .thumb { width: 100%; height: 104px; border-radius: 0; }
+  /* The component's own <span> is the box; let it fill the wrapper. */
+  .thumb :global(.cover) { width: 100%; height: 100%; }
   .grid .meta { padding: 10px 12px; }
 
   .empty { color: rgba(255, 255, 255, 0.65); }

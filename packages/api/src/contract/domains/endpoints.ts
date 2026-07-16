@@ -84,6 +84,7 @@ const AUTHED_ENDPOINTS: Array<[string, string]> = [
   ["GET", "/api/v1/shares"],
   ["GET", `/api/v1/shares/${ID}`],
   ["PATCH", `/api/v1/shares/${ID}`],
+  ["POST", `/api/v1/shares/${ID}/assets`],
   ["DELETE", `/api/v1/shares/${ID}`],
   ["GET", `/api/v1/shares/${ID}/viewers`],
   ["POST", `/api/v1/shares/${ID}/export`],

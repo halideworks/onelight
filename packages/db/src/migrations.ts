@@ -10,6 +10,7 @@ export const migrationFiles = [
   "0004_comments_fks.sql",
   "0005_password_resets.sql",
   "0006_transcode_notify.sql",
+  "0007_project_cover.sql",
 ];
 
 const migrationPath = (file: string): string =>

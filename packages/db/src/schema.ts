@@ -145,6 +145,10 @@ export const projects = sqliteTable(
       .notNull()
       .default("active"),
     palette: text("palette").notNull(),
+    /** An asset in this project whose poster stands in as the cover picture.
+        A soft reference, like assets.current_version_id: a cover pointing at a
+        deleted asset reads as no cover, not as a broken row. */
+    coverAssetId: text("cover_asset_id"),
     restricted: integer("restricted", { mode: "boolean" })
       .notNull()
       .default(false),

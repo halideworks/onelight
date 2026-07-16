@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { askConfirm, askText } from '$lib/confirm.svelte.js';
   import { tick } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
@@ -50,6 +51,8 @@
   };
 
   let project = $state<Project | null>(null);
+  type Share = { id: string; title: string; slug: string; allow_download: string; revoked_at: number | null };
+
   let assets = $state<Asset[]>([]);
   let nextCursor = $state<string | null>(null);
   let loadingMore = $state(false);
@@ -65,6 +68,14 @@
   let nodes = $state<Record<string, TreeNode>>({});
   let rootIds = $state<string[]>([]);
   let selectedFolder = $state<string | null>(null);
+  /* A share is browsed like a folder, so it shares the rail and the grid, but
+     it is not a folder: an asset lives in exactly one folder and in any number
+     of shares. Two selections, one visible at a time. */
+  let selectedShare = $state<string | null>(null);
+  let shares = $state<Share[]>([]);
+  let shareError = $state('');
+  let shareMenu = $state<{ x: number; y: number; ids: string[] } | null>(null);
+  let shareChoice = $state('');
   let focusedRow = $state('root');
   let renaming = $state<string | null>(null);
   let renameValue = $state('');
@@ -79,14 +90,24 @@
   const media = createMediaCache();
   const observeMedia = media.observe;
 
+  /* One place decides what the grid is showing: a folder, a share, or
+     everything. */
+  const listSuffix = (): string =>
+    selectedShare
+      ? `&share_id=${encodeURIComponent(selectedShare)}`
+      : selectedFolder
+        ? `&folder_id=${encodeURIComponent(selectedFolder)}`
+        : '';
+
   const loadAssets = async (id: string): Promise<void> => {
     const folder = selectedFolder;
-    const suffix = folder ? `&folder_id=${encodeURIComponent(folder)}` : '';
+    const share = selectedShare;
+    const suffix = listSuffix();
     try {
       const loaded = await api<{ items: Asset[]; next_cursor: string | null }>(
         `/api/v1/projects/${id}/assets?limit=100${suffix}`
       );
-      if (id !== projectId || folder !== selectedFolder) return;
+      if (id !== projectId || folder !== selectedFolder || share !== selectedShare) return;
       assets = loaded.items;
       nextCursor = loaded.next_cursor;
       selected = selected.filter((entry) => loaded.items.some((asset) => asset.id === entry));
@@ -101,12 +122,13 @@
     if (!id || !cursor || loadingMore) return;
     loadingMore = true;
     const folder = selectedFolder;
-    const suffix = folder ? `&folder_id=${encodeURIComponent(folder)}` : '';
+    const share = selectedShare;
+    const suffix = listSuffix();
     try {
       const loaded = await api<{ items: Asset[]; next_cursor: string | null }>(
         `/api/v1/projects/${id}/assets?limit=100&cursor=${encodeURIComponent(cursor)}${suffix}`
       );
-      if (id !== projectId || folder !== selectedFolder) return;
+      if (id !== projectId || folder !== selectedFolder || share !== selectedShare) return;
       const known = new Set(assets.map((asset) => asset.id));
       assets = [...assets, ...loaded.items.filter((asset) => !known.has(asset.id))];
       nextCursor = loaded.next_cursor;
@@ -139,6 +161,7 @@
   const load = async (id: string): Promise<void> => {
     project = null; assets = []; nextCursor = null; error = ''; listError = ''; queue = [];
     nodes = {}; rootIds = []; selectedFolder = null; focusedRow = 'root';
+    selectedShare = null; shares = []; shareError = ''; shareMenu = null;
     renaming = null; treeError = ''; newFolderName = '';
     selected = []; anchor = null; batch = { running: false, label: '', done: 0, total: 0, errors: [] };
     try {
@@ -154,7 +177,7 @@
     } catch (caught) {
       treeError = messageFrom(caught, 'Folders could not be loaded.');
     }
-    await loadAssets(id);
+    await Promise.all([loadAssets(id), loadShares(id)]);
   };
 
   $effect(() => {
@@ -258,11 +281,114 @@
 
   const select = async (id: string | null): Promise<void> => {
     selectedFolder = id;
+    selectedShare = null;
     selected = [];
     anchor = null;
     if (id) await expand(id);
     const project_ = projectId;
     if (project_) await loadAssets(project_);
+  };
+
+  const selectShare = async (id: string): Promise<void> => {
+    selectedShare = id;
+    selectedFolder = null;
+    selected = [];
+    anchor = null;
+    const project_ = projectId;
+    if (project_) await loadAssets(project_);
+  };
+
+  const loadShares = async (id: string): Promise<void> => {
+    try {
+      const loaded = await api<{ items: Share[] }>(
+        `/api/v1/shares?project_id=${encodeURIComponent(id)}`
+      );
+      if (id !== projectId) return;
+      shares = loaded.items.filter((share) => !share.revoked_at);
+    } catch {
+      /* Shares are one section of the rail, not the page: a manager-only read
+         failing for a viewer must not take the project down with it. */
+      shares = [];
+    }
+  };
+
+  /* Putting assets in front of a client should not mean leaving the page you
+     are looking at them on. */
+  const addToShare = async (shareId: string, ids: string[]): Promise<void> => {
+    shareError = '';
+    try {
+      const result = await apiPost<{ added: number }>(`/api/v1/shares/${shareId}/assets`, {
+        asset_ids: ids
+      });
+      const share = shares.find((entry) => entry.id === shareId);
+      shareError =
+        result.added === 0
+          ? `Already in ${share?.title ?? 'that share'}.`
+          : `Added ${result.added} to ${share?.title ?? 'the share'}.`;
+      if (selectedShare === shareId && projectId) await loadAssets(projectId);
+    } catch (caught) {
+      shareError = messageFrom(caught, 'Those assets could not be shared.');
+    }
+  };
+
+  const createShareWith = async (ids: string[]): Promise<void> => {
+    const id = projectId;
+    if (!id) return;
+    const title = await askText({
+      title: `New share of ${ids.length} ${ids.length === 1 ? 'item' : 'items'}`,
+      body: 'Anyone with the link can watch what is in this share. Download, comments and a passphrase are set in the share\u2019s settings.',
+      label: 'Share name',
+      initial: selectedName === 'All assets' ? (project?.name ?? '') : selectedName,
+      placeholder: 'Client review',
+      confirmLabel: 'Create share'
+    });
+    if (!title) return;
+    shareError = '';
+    try {
+      const created = await apiPost<{ share: Share; url: string }>('/api/v1/shares', {
+        project_id: id,
+        title,
+        asset_ids: ids
+      });
+      shares = [...shares, created.share];
+      shareError = `Created ${created.share.title}.`;
+    } catch (caught) {
+      shareError = messageFrom(caught, 'That share could not be created.');
+    }
+  };
+
+  /* Right-click is where a file manager keeps its verbs, so that is where the
+     share actions are. A selected asset brings the whole selection; an
+     unselected one acts on itself, the same rule the drag uses. */
+  const openShareMenu = (event: MouseEvent, assetId: string): void => {
+    event.preventDefault();
+    const ids = selected.includes(assetId) ? selected : [assetId];
+    shareMenu = { x: event.clientX, y: event.clientY, ids };
+  };
+
+  const closeShareMenu = (): void => {
+    shareMenu = null;
+  };
+
+  /* Reads the menu's assets and closes it, in that order. `{@const menu = ...}`
+     in the template is a derived view of shareMenu rather than a copy of it, so
+     closing first and reading second read from null. */
+  const takeMenuIds = (): string[] => {
+    const ids = shareMenu?.ids ?? [];
+    shareMenu = null;
+    return ids;
+  };
+
+  /* Right-clicking near the right or bottom edge would otherwise open a menu
+     that runs off the screen. Its height depends on how many shares exist, so
+     it is measured once it exists rather than estimated. */
+  const keepOnScreen = (node: HTMLElement): void => {
+    const box = node.getBoundingClientRect();
+    const overflowX = box.right - (window.innerWidth - 8);
+    const overflowY = box.bottom - (window.innerHeight - 8);
+    if (overflowX > 0) node.style.left = `${Math.max(8, box.left - overflowX)}px`;
+    if (overflowY > 0) node.style.top = `${Math.max(8, box.top - overflowY)}px`;
+    node.focus();
   };
 
   const startRename = (id: string): void => {
@@ -332,7 +458,15 @@
   const removeFolder = async (id: string): Promise<void> => {
     const node = nodes[id];
     if (!node) return;
-    if (!confirm(`Delete "${node.folder.name}" and every folder inside it? Assets in those folders are kept and return to All assets.`)) return;
+    if (
+      !(await askConfirm({
+        title: `Delete "${node.folder.name}" and every folder inside it?`,
+        body: 'Assets in those folders are kept and return to All assets.',
+        confirmLabel: 'Delete folder',
+        danger: true
+      }))
+    )
+      return;
     treeError = '';
     try {
       await apiDelete(`/api/v1/folders/${id}`);
@@ -384,7 +518,10 @@
   };
 
   const onDragOver = (event: DragEvent, target: string | null): void => {
-    if (!dragging || dragging === target) return;
+    /* A folder onto itself is a no-op; assets can go anywhere, including the
+       root, which is how you get one back out of a folder. */
+    const assetDrag = draggingAssets !== null && draggingAssets.length > 0;
+    if (!assetDrag && (!dragging || dragging === target)) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
     dropTarget = target ?? 'root';
@@ -392,10 +529,69 @@
 
   const onDrop = (event: DragEvent, target: string | null): void => {
     event.preventDefault();
+    /* Two things can land on a folder: another folder (reparent) and a
+       selection of assets (file them). Assets could not be dropped anywhere
+       before -- moving one meant opening it -- even though the folder rows were
+       already drop targets for folders. */
+    const assetIds = draggingAssets;
     const id = dragging;
     dragging = null;
+    draggingAssets = null;
     dropTarget = null;
+    if (assetIds?.length) {
+      void moveAssets(assetIds, target);
+      return;
+    }
     if (id) void moveFolder(id, target);
+  };
+
+  /* Dropping on a share adds; dropping on a folder moves. A share row takes
+     assets only -- a folder dragged onto a share means nothing, so it is not
+     accepted rather than silently ignored. */
+  const onShareDragOver = (event: DragEvent, shareId: string): void => {
+    if (!draggingAssets?.length) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    dropTarget = `share:${shareId}`;
+  };
+
+  const onShareDrop = (event: DragEvent, shareId: string): void => {
+    event.preventDefault();
+    const assetIds = draggingAssets;
+    draggingAssets = null;
+    dropTarget = null;
+    if (assetIds?.length) void addToShare(shareId, assetIds);
+  };
+
+  /* The assets being dragged, or null. Kept apart from `dragging` (a folder id)
+     so a folder drag and an asset drag can never be mistaken for each other. */
+  let draggingAssets = $state<string[] | null>(null);
+
+  const beginAssetDrag = (event: DragEvent, id: string): void => {
+    /* Dragging an unselected asset drags just that one; dragging a selected one
+       brings the whole selection, which is what every file manager does. */
+    const ids = selected.includes(id) ? selected : [id];
+    draggingAssets = ids;
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      /* Something has to be set or Firefox refuses to start the drag. */
+      event.dataTransfer.setData('text/plain', ids.join(','));
+    }
+  };
+
+  const moveAssets = async (ids: string[], folderId: string | null): Promise<void> => {
+    try {
+      await Promise.all(
+        ids.map((id) => apiPatch(`/api/v1/assets/${id}`, { folder_id: folderId }))
+      );
+      /* Reload rather than patch in place: the visible list is folder-scoped,
+         so a moved asset may belong somewhere else now. */
+      if (projectId) await loadAssets(projectId);
+      selected = [];
+      error = '';
+    } catch (caught) {
+      error = messageFrom(caught, 'Those assets could not be moved.');
+    }
   };
 
   const onTreeKeydown = (event: KeyboardEvent): void => {
@@ -445,7 +641,11 @@
   };
 
   const selectedName = $derived(
-    selectedFolder ? (nodes[selectedFolder]?.folder.name ?? 'Folder') : 'All assets'
+    selectedShare
+      ? (shares.find((share) => share.id === selectedShare)?.title ?? 'Share')
+      : selectedFolder
+        ? (nodes[selectedFolder]?.folder.name ?? 'Folder')
+        : 'All assets'
   );
 
   /* ---- view mode, sorting, selection ---- */
@@ -494,6 +694,84 @@
   let selected = $state<string[]>([]);
   let anchor = $state<string | null>(null);
   const isSelected = (id: string): boolean => selected.includes(id);
+
+  /* Click opens, hold selects.
+
+     It used to be the other way round: a click selected and only a double-click
+     opened, so the obvious gesture on a thumbnail -- click the picture you want
+     to watch -- put a blue outline on it and did nothing else. Modifier-clicks
+     still select (shift for a range, ctrl/cmd to add), because that is what
+     they do everywhere, and holding is the touch-friendly way to get there
+     without a keyboard.
+
+     A drag must not become a click or a hold, so any movement past a few pixels
+     cancels both. */
+  const HOLD_MS = 380;
+  const HOLD_SLOP = 6;
+  let holdTimer: ReturnType<typeof setTimeout> | null = null;
+  let holdFired = false;
+  let pressAt: { x: number; y: number } | null = null;
+
+  const cancelHold = (): void => {
+    if (holdTimer !== null) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    }
+  };
+
+  const onCardPointerDown = (event: PointerEvent, id: string): void => {
+    /* Let modifier-clicks and non-primary buttons fall through to select. */
+    if (event.button !== 0 || event.shiftKey || event.metaKey || event.ctrlKey) return;
+    holdFired = false;
+    pressAt = { x: event.clientX, y: event.clientY };
+    cancelHold();
+    holdTimer = setTimeout(() => {
+      holdFired = true;
+      holdTimer = null;
+      toggleOne(id);
+      /* Confirm the hold on devices that can: without it, a long press feels
+         like the app froze. */
+      navigator.vibrate?.(8);
+    }, HOLD_MS);
+  };
+
+  const onCardPointerMove = (event: PointerEvent): void => {
+    if (!pressAt) return;
+    if (Math.hypot(event.clientX - pressAt.x, event.clientY - pressAt.y) > HOLD_SLOP) {
+      pressAt = null;
+      cancelHold();
+    }
+  };
+
+  const onCardPointerUp = (): void => {
+    pressAt = null;
+    cancelHold();
+  };
+
+  const onCardClick = (event: MouseEvent, id: string): void => {
+    /* The hold already acted; the click that follows it must not also open. */
+    if (holdFired) {
+      holdFired = false;
+      event.preventDefault();
+      return;
+    }
+    if (event.shiftKey || event.metaKey || event.ctrlKey) {
+      handleSelect(event, id);
+      return;
+    }
+    /* With a selection running, a plain click keeps picking rather than
+       yanking you into a review room mid-multi-select. */
+    if (selected.length > 0) {
+      toggleOne(id);
+      return;
+    }
+    void goto(assetHref(id));
+  };
+
+  const toggleOne = (id: string): void => {
+    selected = selected.includes(id) ? selected.filter((entry) => entry !== id) : [...selected, id];
+    anchor = id;
+  };
 
   const handleSelect = (event: MouseEvent | KeyboardEvent, id: string): void => {
     if (event.shiftKey && anchor) {
@@ -622,7 +900,15 @@
 
   const trashSelected = async (): Promise<void> => {
     const ids = [...selected];
-    if (!confirm(`Move ${ids.length === 1 ? nameOf(ids[0]) : `${ids.length} assets`} to trash?`)) return;
+    if (
+      !(await askConfirm({
+        title: `Move ${ids.length === 1 ? nameOf(ids[0]) : `${String(ids.length)} assets`} to trash?`,
+        body: 'Trashed assets stop appearing in the project. They are not deleted.',
+        confirmLabel: 'Move to trash',
+        danger: true
+      }))
+    )
+      return;
     await runBatch('Trashing', ids, async (id) => {
       await apiPost(`/api/v1/assets/${id}/trash`);
     });
@@ -632,6 +918,28 @@
   };
 
   /* ---- uploads ---- */
+
+  /* A preview of the dropped file, made locally from the File itself -- no
+     server, no wait. A queue row that says "Waiting" next to nothing reads as
+     "nothing happened"; a row with the frame you just dropped reads as "we have
+     it, press Upload". The URLs are revoked when the row goes, or a long
+     session leaks a blob per file. */
+  const previews = new Map<number, string>();
+  const previewFor = (key: number, file: File): string | null => {
+    if (!file.type.startsWith('video/') && !file.type.startsWith('image/')) return null;
+    const existing = previews.get(key);
+    if (existing) return existing;
+    const url = URL.createObjectURL(file);
+    previews.set(key, url);
+    return url;
+  };
+  const dropPreview = (key: number): void => {
+    const url = previews.get(key);
+    if (url) {
+      URL.revokeObjectURL(url);
+      previews.delete(key);
+    }
+  };
 
   const enqueue = (files: PendingFile[]): void => {
     const additions = files.map(({ file, relativePath }) => ({
@@ -793,10 +1101,12 @@
   };
 
   const clearFinished = (): void => {
+    for (const item of queue) if (item.status === 'done') dropPreview(item.key);
     queue = queue.filter((item) => item.status !== 'done');
   };
 
   const hasPending = $derived(queue.some((item) => item.status === 'queued' || item.status === 'failed'));
+  const pendingCount = $derived(queue.filter((item) => item.status === 'queued' || item.status === 'failed').length);
   const overall = $derived.by(() => {
     let total = 0;
     let bytes = 0;
@@ -823,6 +1133,8 @@
   ondragleave={onPageDragLeave}
   ondrop={onPageDrop}
   ondragend={endPageDrop}
+  onscroll={closeShareMenu}
+  onkeydown={(event) => { if (event.key === 'Escape') closeShareMenu(); }}
 />
 
 <main class="room" class:pagedrop={pageDropActive} style={`background-image: ${wash};`}>
@@ -839,19 +1151,19 @@
   {/if}
   <header class="wash">
     <div class="washrow">
-      <a href="/">Projects</a>
+      <!-- No "Projects" link: the nav bar two rows up already has one, and the
+           palette's name was never information -- it labelled a colour the page
+           is already painted in. -->
+      <h1>{project?.name ?? 'Project'}</h1>
       <span class="grow"></span>
-      <a href={`/projects/${projectId}/shares`}>Shares</a>
       <a href={`/projects/${projectId}/settings`}>Settings</a>
     </div>
-    <p class="eyebrow">{project?.palette ?? ''}</p>
-    <h1>{project?.name ?? 'Project'}</h1>
   </header>
   {#if error}
     <p class="error page-error" role="alert">{error}</p>
   {:else}
     <div class="body">
-      <aside class="pane" aria-label="Folders">
+      <aside class="pane" aria-label="Folders and shares">
         <h2 class="pane-label" id="folders-label">Folders</h2>
         <div class="tree" role="tree" aria-labelledby="folders-label">
           {#each visibleRows as row (row.id)}
@@ -947,6 +1259,41 @@
         </form>
         {#if treeError}<p class="error" role="alert">{treeError}</p>{/if}
         <p class="hint">Arrows navigate, Enter opens, F2 renames, drag to move.</p>
+
+        <!-- Shares sit in the rail beside the folders because that is what they
+             are to the person using them: another way the project's media is
+             grouped. As a button in the header they were a place you went;
+             here they are a place things go, and assets can be dropped
+             straight onto one. -->
+        <h2 class="pane-label" id="shares-label">Shares</h2>
+        <div class="tree" role="list" aria-labelledby="shares-label">
+          {#each shares as share (share.id)}
+            <div
+              class="row"
+              class:selected={selectedShare === share.id}
+              class:droptarget={dropTarget === `share:${share.id}`}
+              role="listitem"
+            >
+              <button
+                type="button"
+                class="rowbtn"
+                aria-pressed={selectedShare === share.id}
+                onclick={() => void selectShare(share.id)}
+                ondragover={(event) => onShareDragOver(event, share.id)}
+                ondragleave={() => (dropTarget = dropTarget === `share:${share.id}` ? null : dropTarget)}
+                ondrop={(event) => onShareDrop(event, share.id)}
+              >
+                <span class="name">{share.title}</span>
+              </button>
+              <span class="acts">
+                <a class="act" href={`/projects/${projectId}/shares`} onclick={(event) => event.stopPropagation()}>Settings</a>
+              </span>
+            </div>
+          {:else}
+            <p class="hint none">No shares yet. Select media and right-click to make one.</p>
+          {/each}
+        </div>
+        {#if shareError}<p class="sharenote" aria-live="polite">{shareError}</p>{/if}
       </aside>
 
       <section class="main">
@@ -966,7 +1313,9 @@
             <label class="filebtn">Add a folder
               <input type="file" webkitdirectory multiple onchange={chooseFiles} />
             </label>
-            <button type="submit" disabled={!hasPending || uploading}>{uploading ? 'Uploading' : 'Upload'}</button>
+            <button type="submit" class="uploadbtn" class:ready={hasPending && !uploading} disabled={!hasPending || uploading}>
+              {#if uploading}Uploading{:else if pendingCount > 0}Upload {pendingCount} {pendingCount === 1 ? 'file' : 'files'}{:else}Upload{/if}
+            </button>
             {#if queue.some((item) => item.status === 'done')}
               <button type="button" class="quiet" onclick={clearFinished}>Clear finished</button>
             {/if}
@@ -980,7 +1329,17 @@
           {#if queue.length > 0}
             <ul class="queue" aria-label="Upload queue">
               {#each queue as item (item.key)}
+                {@const preview = previewFor(item.key, item.file)}
                 <li class={`q-${item.status}`}>
+                  <span class="qthumb" aria-hidden="true">
+                    {#if preview && item.file.type.startsWith('video/')}
+                      <!-- preload=metadata is enough for a first frame, and does
+                           not pull the whole file into memory. -->
+                      <video src={preview} preload="metadata" muted playsinline></video>
+                    {:else if preview}
+                      <img src={preview} alt="" />
+                    {/if}
+                  </span>
                   <span class="qname">
                     {item.file.name}
                     {#if item.relativePath && item.relativePath !== item.file.name}
@@ -1010,7 +1369,7 @@
                     aria-valuemax="100"
                   ><span style={`width: ${item.file.size > 0 ? (item.bytes / item.file.size) * 100 : 0}%;`}></span></span>
                   <span class="state tc">
-                    {#if item.status === 'queued'}Waiting
+                    {#if item.status === 'queued'}Ready to upload
                     {:else if item.status === 'uploading'}{formatBytes(item.bytes)} of {formatBytes(item.file.size)}{item.rate > 0 ? `, ${formatRate(item.rate)}` : ''}
                     {:else if item.status === 'done'}Done
                     {:else if item.status === 'quarantined'}Quarantined
@@ -1042,6 +1401,22 @@
             {:else if selected.length > 0}
               <span class="tc">{selected.length} selected</span>
               <button type="button" class="quiet" onclick={() => void openMove()}>Move to folder</button>
+              <span class="approval">
+                <select bind:value={shareChoice} aria-label="Share to add to">
+                  <option value="">New share…</option>
+                  {#each shares as share (share.id)}
+                    <option value={share.id}>{share.title}</option>
+                  {/each}
+                </select>
+                <button
+                  type="button"
+                  class="quiet"
+                  onclick={() =>
+                    void (shareChoice ? addToShare(shareChoice, selected) : createShareWith(selected))}
+                >
+                  {shareChoice ? 'Add to share' : 'Create share'}
+                </button>
+              </span>
               <span class="approval">
                 <select bind:value={approvalChoice} aria-label="Approval status to apply">
                   <option value="none">No status</option>
@@ -1103,9 +1478,16 @@
                 role="option"
                 aria-selected={isSelected(asset.id)}
                 tabindex="0"
+                draggable="true"
                 use:observeMedia={asset}
-                onclick={(event) => handleSelect(event, asset.id)}
-                ondblclick={() => void goto(assetHref(asset.id))}
+                ondragstart={(event) => beginAssetDrag(event, asset.id)}
+                ondragend={() => { draggingAssets = null; dropTarget = null; }}
+                onpointerdown={(event) => onCardPointerDown(event, asset.id)}
+                onpointermove={onCardPointerMove}
+                onpointerup={onCardPointerUp}
+                onpointercancel={onCardPointerUp}
+                onclick={(event) => onCardClick(event, asset.id)}
+                oncontextmenu={(event) => openShareMenu(event, asset.id)}
                 onkeydown={(event) => onItemKeydown(event, asset.id)}
               >
                 <ScrubThumb
@@ -1163,9 +1545,16 @@
                 <tr
                   class:picked={isSelected(asset.id)}
                   tabindex="0"
+                  draggable="true"
                   use:observeMedia={asset}
-                  onclick={(event) => handleSelect(event, asset.id)}
-                  ondblclick={() => void goto(assetHref(asset.id))}
+                  ondragstart={(event) => beginAssetDrag(event, asset.id)}
+                  ondragend={() => { draggingAssets = null; dropTarget = null; }}
+                  onpointerdown={(event) => onCardPointerDown(event, asset.id)}
+                  onpointermove={onCardPointerMove}
+                  onpointerup={onCardPointerUp}
+                  onpointercancel={onCardPointerUp}
+                  onclick={(event) => onCardClick(event, asset.id)}
+                  oncontextmenu={(event) => openShareMenu(event, asset.id)}
                   onkeydown={(event) => onItemKeydown(event, asset.id)}
                 >
                   <td class="sel">
@@ -1183,6 +1572,14 @@
                     />
                   </td>
                   <td class="namecell">
+                    <!-- A list of filenames tells you nothing about the
+                         footage. The poster is small enough to keep the row a
+                         row, and it is the same image the grid already has. -->
+                    <span class="rowthumb" aria-hidden="true">
+                      {#if detail?.posterUrl}
+                        <img src={detail.posterUrl} alt="" loading="lazy" />
+                      {/if}
+                    </span>
                     <a href={assetHref(asset.id)} onclick={(event) => event.stopPropagation()}>{asset.name}</a>
                   </td>
                   <td>
@@ -1208,12 +1605,43 @@
           </button>
         {/if}
         {#if displayed.length > 0}
-          <p class="hint">Click selects. Ctrl-click adds, Shift-click extends, Space selects, Enter or the name opens.</p>
+          <p class="hint">Click opens, hold selects. Ctrl-click adds, Shift-click extends, right-click shares.</p>
         {/if}
       </section>
     </div>
   {/if}
 </main>
+
+<!-- Right-click menu. Positioned at the pointer and dismissed by the next
+     click anywhere, Escape, or a scroll -- a menu that outlives its context is
+     worse than no menu. -->
+{#if shareMenu}
+  {@const menu = shareMenu}
+  <div
+    class="menuveil"
+    role="presentation"
+    onclick={closeShareMenu}
+    oncontextmenu={(event) => { event.preventDefault(); closeShareMenu(); }}
+  ></div>
+  <div
+    class="ctxmenu"
+    role="menu"
+    tabindex="-1"
+    aria-label="Asset actions"
+    style={`left: ${menu.x}px; top: ${menu.y}px;`}
+    use:keepOnScreen
+  >
+    <p class="ctxhead">{menu.ids.length} {menu.ids.length === 1 ? 'item' : 'items'}</p>
+    {#each shares as share (share.id)}
+      <button type="button" role="menuitem" onclick={() => void addToShare(share.id, takeMenuIds())}>
+        Add to {share.title}
+      </button>
+    {/each}
+    <button type="button" role="menuitem" onclick={() => void createShareWith(takeMenuIds())}>
+      New share…
+    </button>
+  </div>
+{/if}
 
 <style>
   /* App world: dark ink base, the project's palette as the header wash.
@@ -1234,13 +1662,17 @@
   .room::before { content: ''; position: fixed; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(13, 17, 23, 0.05) 0%, rgba(13, 17, 23, 0.45) 26%, rgba(13, 17, 23, 0.88) 58%, rgba(13, 17, 23, 0.95) 100%); }
   .room > :global(*) { position: relative; }
   .wash { padding: var(--pad-3) var(--pad-4) var(--pad-4); }
-  .washrow { display: flex; gap: 16px; }
+  .washrow { display: flex; gap: 16px; align-items: baseline; }
   .washrow a { color: rgba(250, 248, 244, 0.72); font-size: var(--text-13); text-decoration: none; }
   .washrow a:hover { color: rgba(250, 248, 244, 0.96); }
   .grow { flex: 1; }
   .eyebrow { margin: var(--pad-3) 0 0; color: rgba(250, 248, 244, 0.62); font-size: var(--text-13); font-weight: 500; }
   h1 { margin: 4px 0 0; font-family: var(--font-display); font-size: clamp(2rem, 5vw, var(--text-56)); font-weight: 700; letter-spacing: -0.02em; color: rgba(250, 248, 244, 0.96); }
-  .body { padding: var(--pad-3) var(--pad-4) var(--pad-4); display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--pad-4); max-width: 1400px; align-items: start; }
+  /* No max-width. On a 2560px display this page was a 1400px strip with a
+     third of the screen empty beside it, while the asset grid -- the thing you
+     came for -- wrapped at four across. The folder pane stays a fixed column;
+     everything else it does not need goes to the assets. */
+  .body { padding: var(--pad-3) var(--pad-4) var(--pad-4); display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--pad-4); align-items: start; }
   @media (max-width: 760px) { .body { grid-template-columns: 1fr; } }
 
   /* ---- folder tree pane ---- */
@@ -1261,6 +1693,15 @@
   .act { border: 0; border-radius: 2px; background: none; color: var(--ink-text-dim); padding: 2px 6px; font-size: var(--text-13); }
   .act:hover { background: var(--ink-300); color: var(--ink-text); }
   .rename { flex: 1; min-width: 0; border: 0; border-radius: 2px; background: var(--ink-300); color: var(--ink-text); padding: 3px 6px; font-size: var(--text-13); }
+  /* A share row is a button so the keyboard and the drop target are the same
+     element; the tree rows above it are div treeitems because they carry the
+     tree's own roving-tabindex keyboard model. */
+  .rowbtn { flex: 1; min-width: 0; display: flex; align-items: center; border: 0; background: none; color: inherit; padding: 0; font: inherit; text-align: left; }
+  .rowbtn:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  #shares-label { margin-top: 20px; }
+  .hint.none { margin-top: 0; }
+  .sharenote { margin: 8px 0 0; color: var(--ink-text-dim); font-size: var(--text-12); }
+  a.act { text-decoration: none; }
   .newfolder { display: flex; gap: 6px; margin-top: 14px; }
   .newfolder input { flex: 1; min-width: 0; border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 10px; font-size: var(--text-13); }
   .newfolder input::placeholder { color: var(--ink-text-dim); }
@@ -1268,13 +1709,29 @@
 
   /* ---- uploader ---- */
   .uploader { border-radius: var(--radius-lg); padding: 14px; margin: -14px -14px var(--pad-2); }
-  /* The panel says it takes drops even when nothing is being dragged: a dashed
-     edge and a hover state, rather than a bare paragraph claiming it does. */
-  .uploader { border-radius: var(--radius-lg); box-shadow: inset 0 0 0 1px var(--ink-200); transition: box-shadow 120ms ease, background 120ms ease; }
-  .uploader:hover { box-shadow: inset 0 0 0 1px var(--ink-300); }
-  .uploader.dropactive { background: var(--ink-100); box-shadow: inset 0 0 0 2px var(--accent); }
+  /* A panel, not a boxed-in region. The hairline outline read as a stray border
+     around nothing; separation here comes from a value step, like everywhere
+     else in this app, and the drop state is the only time an edge appears --
+     when an edge is actually saying something. */
+  .uploader { border-radius: var(--radius-lg); background: var(--ink-100); box-shadow: none; transition: background 120ms ease, box-shadow 120ms ease; }
+  .uploader:hover { background: var(--ink-150, var(--ink-100)); }
+  .uploader.dropactive { background: var(--ink-200); box-shadow: inset 0 0 0 2px var(--accent); }
+
+  /* The thing to press next should look like it. */
+  .uploadbtn.ready { background: var(--accent); color: #0b1214; box-shadow: 0 0 0 4px rgba(72, 146, 155, 0.18); }
+  .uploadbtn.ready:hover { background: var(--accent-bright); }
+
+  .qthumb { flex: none; width: 52px; height: 30px; border-radius: 2px; overflow: hidden; background: var(--ink-200); display: grid; place-items: center; }
+  .qthumb video, .qthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
   /* Dragging over the page: one obvious target, nowhere to miss. */
+  .menuveil { position: fixed; inset: 0; z-index: 60; }
+  .ctxmenu { position: fixed; z-index: 61; min-width: 200px; max-height: 60vh; overflow-y: auto; display: grid; gap: 1px; padding: 4px; border-radius: var(--radius); background: var(--ink-100); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); }
+  .ctxmenu button { border: 0; border-radius: 2px; background: none; color: var(--ink-text); padding: 7px 10px; font-size: var(--text-13); text-align: left; }
+  .ctxmenu button:hover { background: var(--ink-300); }
+  .ctxhead { margin: 0; padding: 6px 10px; color: var(--ink-text-dim); font-size: var(--text-12); }
+  .ctxmenu:focus-visible { outline: none; }
+
   .dropveil { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: rgba(5, 8, 12, 0.72); pointer-events: none; }
   .dropcard { display: grid; justify-items: center; gap: 8px; padding: 28px 40px; border-radius: var(--radius-lg); background: var(--ink-100); color: var(--ink-text); box-shadow: inset 0 0 0 2px var(--accent); }
   .dropcard strong { font-size: var(--text-20); font-weight: 600; }
@@ -1327,6 +1784,11 @@
 
   /* ---- grid ---- */
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-top: var(--pad-2); }
+  .card { cursor: pointer; }
+  /* List rows carry the same poster the grid does, at row height. */
+  .namecell { display: flex; align-items: center; gap: 10px; }
+  .rowthumb { flex: none; width: 44px; height: 26px; border-radius: 2px; overflow: hidden; background: var(--ink-200); }
+  .rowthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .card { display: grid; gap: 8px; padding: 8px; margin: -8px; border-radius: var(--radius-lg); }
   .card:hover { background: var(--ink-100); }
   .card.picked { background: var(--ink-200); }

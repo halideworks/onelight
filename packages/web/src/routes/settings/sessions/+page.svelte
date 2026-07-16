@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { askConfirm } from '$lib/confirm.svelte.js';
   import { onMount } from 'svelte';
   import { api, apiDelete, messageFrom } from '$lib/api.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
@@ -30,7 +31,15 @@
      revoke carries the sign-out warning. Revoking the current session makes
      the next request 401 and the client returns to /login. */
   const revoke = async (session: Session): Promise<void> => {
-    if (!confirm('Revoke this session? If it is the one you are using right now, you will be signed out.')) return;
+    if (
+      !(await askConfirm({
+        title: 'Revoke this session?',
+        body: 'If it is the one you are using right now, you will be signed out.',
+        confirmLabel: 'Revoke',
+        danger: true
+      }))
+    )
+      return;
     try {
       await apiDelete(`/api/v1/sessions/${session.id}`);
     } catch (caught) {
