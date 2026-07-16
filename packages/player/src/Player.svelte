@@ -14,7 +14,8 @@
   import AnnotationOverlay from './AnnotationOverlay.svelte';
   import Timeline from './Timeline.svelte';
   import { isVerifyStale, seeksLocked } from './transport-state.js';
-  import type { AnnotationStroke, FrameAnnotation, PendingDrawing } from './annotations.js';
+  import { ANNOTATION_INKS } from './annotations.js';
+  import type { AnnotationPoint, AnnotationStroke, FrameAnnotation, PendingDrawing } from './annotations.js';
   import type { TimelineMarker } from './timeline.js';
   import type { SpriteCue } from './filmstrip.js';
   import type { PlayerRendition, SurroundMode, WatermarkOverlay } from './options.js';
@@ -29,6 +30,7 @@
     markers = [],
     renditions = [],
     allowDrawing = false,
+    drawDefaultColor = undefined,
     chrome = 'full',
     watermark = null,
     filmstrip = null,
@@ -51,6 +53,9 @@
     markers?: TimelineMarker[];
     renditions?: PlayerRendition[];
     allowDrawing?: boolean;
+    /* The author's own ink (annotationInkFor them): the default drawing and
+       text colour until they pick another. */
+    drawDefaultColor?: string | undefined;
     /* How much of the instrument to show.
      *
      * 'full' is the review room: everything here is a tool someone works the
@@ -395,16 +400,37 @@
   /* ---- drawing ---- */
   const INK_NEUTRAL = '#e9e9e9'; /* --n-900, neutral-safe ink */
   const INK_ACCENT = '#a5605a'; /* --warn, the one functional accent */
+  /* The ink palette on offer: the author's own colour leads (drawDefaultColor,
+     hashed from who they are), then the shared brights, then neutral. */
+  const inkChoices = $derived([
+    ...(drawDefaultColor ? [drawDefaultColor] : []),
+    ...ANNOTATION_INKS.filter((ink) => ink !== drawDefaultColor).slice(0, 5),
+    INK_NEUTRAL,
+  ]);
+  /* An uncommitted text placement: the input floats at its anchor until
+     Enter commits it as a text stroke or Escape lets it go. */
+  let textDraft = $state<{ point: AnnotationPoint; value: string } | null>(null);
   const DRAW_WIDTH = 0.004; /* normalized fraction of the frame diagonal */
   let drawMode = $state(false);
-  let drawTool = $state<'pen' | 'arrow' | 'rect'>('pen');
-  let drawInk = $state<'neutral' | 'accent'>('accent');
+  let drawTool = $state<'pen' | 'arrow' | 'rect' | 'text'>('pen');
+  let drawColor = $state('');
+  /* The author's colour is the default until they pick one themselves. */
+  let colorPicked = false;
+  $effect(() => {
+    const fallback = drawDefaultColor ?? INK_ACCENT;
+    if (!colorPicked) drawColor = fallback;
+  });
   /* Pages that host their own draw controls (the share rail) drive the mode
      from outside and hear about every change, including Escape in here. */
-  export function setDraw(on: boolean, tool: 'pen' | 'arrow' | 'rect' = 'pen'): void {
+  export function setDraw(on: boolean, tool: 'pen' | 'arrow' | 'rect' | 'text' = 'pen'): void {
     if (!allowDrawing) return;
     drawTool = tool;
     if (drawMode !== on) toggleDraw();
+    if (!on) textDraft = null;
+  }
+  export function setDrawColor(color: string): void {
+    colorPicked = true;
+    drawColor = color;
   }
   $effect(() => {
     ondrawmodechange?.(drawMode, drawTool);
@@ -435,6 +461,23 @@
     } else if (pendingStrokes.length === 0) {
       drawingFrame = null;
     }
+  };
+
+  const focusDraft = (element: HTMLInputElement): void => {
+    element.focus();
+  };
+
+  const commitTextDraft = (): void => {
+    const draft = textDraft;
+    textDraft = null;
+    if (!draft || !draft.value.trim()) return;
+    commitStroke({
+      tool: 'text',
+      text: draft.value.trim(),
+      color: drawColor,
+      width: 0.035,
+      points: [draft.point],
+    });
   };
 
   const commitStroke = (stroke: AnnotationStroke): void => {
@@ -812,10 +855,32 @@
         height={videoHeight}
         interactive={drawMode}
         tool={drawTool}
-        color={drawInk === 'accent' ? INK_ACCENT : INK_NEUTRAL}
+        color={drawColor}
         strokeWidth={DRAW_WIDTH}
         onstroke={commitStroke}
+        ontextplace={(point) => {
+          textDraft = { point, value: '' };
+        }}
       />
+      {#if textDraft}
+        <!-- The caret lives in the DOM; the committed stroke lives on the
+             canvas. Enter commits, Escape lets it go, and clicking elsewhere
+             in text mode simply moves the draft. -->
+        <input
+          class="textdraft"
+          style={`left: ${textDraft.point[0] * 100}%; top: ${textDraft.point[1] * 100}%; color: ${drawColor}; font-size: ${Math.max(12, 0.035 * Math.hypot(videoWidth, videoHeight))}px;`}
+          bind:value={textDraft.value}
+          placeholder="Say it here"
+          maxlength="120"
+          use:focusDraft
+          onkeydown={(event) => {
+            event.stopPropagation();
+            if (event.key === 'Enter') commitTextDraft();
+            else if (event.key === 'Escape') textDraft = null;
+          }}
+          onblur={commitTextDraft}
+        />
+      {/if}
       {#if fullscreen}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
@@ -969,10 +1034,19 @@
             <button type="button" aria-pressed={drawTool === 'pen'} onclick={() => { drawTool = 'pen'; }}>Pen</button>
             <button type="button" aria-pressed={drawTool === 'arrow'} onclick={() => { drawTool = 'arrow'; }}>Arrow</button>
             <button type="button" aria-pressed={drawTool === 'rect'} onclick={() => { drawTool = 'rect'; }}>Rect</button>
+            <button type="button" aria-pressed={drawTool === 'text'} onclick={() => { drawTool = 'text'; }}>Text</button>
           </div>
-          <div class="seg" role="group" aria-label="Ink color">
-            <button type="button" aria-pressed={drawInk === 'accent'} onclick={() => { drawInk = 'accent'; }}>Accent</button>
-            <button type="button" aria-pressed={drawInk === 'neutral'} onclick={() => { drawInk = 'neutral'; }}>Grey</button>
+          <div class="inkrow" role="group" aria-label="Ink colour">
+            {#each inkChoices as ink (ink)}
+              <button
+                type="button"
+                class="ink"
+                aria-pressed={drawColor === ink}
+                aria-label={`Ink ${ink}`}
+                style={`background: ${ink};`}
+                onclick={() => setDrawColor(ink)}
+              ></button>
+            {/each}
           </div>
           <button type="button" onclick={undoStroke} disabled={pendingStrokes.length === 0}>Undo</button>
           <button type="button" onclick={clearStrokes} disabled={pendingStrokes.length === 0}>Clear</button>
@@ -1084,6 +1158,14 @@
   .stage { flex: 1; display: grid; place-items: center; min-height: 120px; overflow: hidden; }
   .frame-box { position: relative; width: min(100%, calc(72vh * var(--ar, 1.7778))); max-height: 100%; }
   video { display: block; width: 100%; height: auto; background: #000000; }
+  /* The floating text entry: bare type on the footage, no box furniture --
+     what is typed is what the note will burn. */
+  .textdraft { position: absolute; transform: none; min-width: 40px; max-width: 70%; border: 0; border-radius: 3px; background: rgba(10, 10, 10, 0.55); padding: 2px 6px; font-family: Switzer, system-ui, sans-serif; font-weight: 600; outline: 1px dashed rgba(233, 233, 233, 0.5); z-index: 3; }
+  .textdraft::placeholder { color: rgba(233, 233, 233, 0.45); }
+  .inkrow { display: flex; align-items: center; gap: 5px; }
+  .ink { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; opacity: 0.75; }
+  .ink:hover { opacity: 1; }
+  .ink[aria-pressed='true'] { opacity: 1; box-shadow: 0 0 0 2px var(--n-050, #101010), 0 0 0 3.5px var(--n-800, #c4c4c4); }
 
   /* The presentation scrub: a thin line with its handle always on it, so it
      reads as a seek bar before anyone touches it. Painted in the neutral

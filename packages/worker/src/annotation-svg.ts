@@ -8,10 +8,12 @@
 export type AnnotationPoint = [number, number, number?];
 
 export interface AnnotationStroke {
-  tool?: "pen" | "line" | "arrow" | "rect" | "ellipse";
+  tool?: "pen" | "line" | "arrow" | "rect" | "ellipse" | "text";
   color?: string;
   width?: number;
   points: AnnotationPoint[];
+  /* Text tool only; points[0] anchors the type. */
+  text?: string;
 }
 
 const FALLBACK_COLOR = "#a5605a";
@@ -24,7 +26,7 @@ const isPoint = (value: unknown): value is AnnotationPoint =>
   Number.isFinite(value[0]) &&
   Number.isFinite(value[1]);
 
-const TOOLS = new Set(["pen", "line", "arrow", "rect", "ellipse"]);
+const TOOLS = new Set(["pen", "line", "arrow", "rect", "ellipse", "text"]);
 
 // annotation_json is stored either as a bare stroke array or as an object
 // carrying a strokes array (both shapes exist in the wild; the web app
@@ -58,6 +60,12 @@ export const parseAnnotationStrokes = (
     if (typeof raw.color === "string") stroke.color = raw.color;
     if (typeof raw.width === "number" && Number.isFinite(raw.width))
       stroke.width = raw.width;
+    if (stroke.tool === "text") {
+      // Text is user-controlled and lands in report SVG: bounded, and the
+      // renderer escapes it. A text stroke with nothing to say is dropped.
+      if (typeof raw.text !== "string" || !raw.text.trim()) continue;
+      stroke.text = raw.text.slice(0, 200);
+    }
     strokes.push(stroke);
   }
   return strokes;
@@ -79,6 +87,14 @@ const round = (value: number): string => String(Math.round(value * 100) / 100);
 const strokeWidth = (stroke: AnnotationStroke, width: number): string =>
   round(Math.max(1, (stroke.width ?? 3) * (width / 1280)));
 
+const escapeXml = (value: string): string =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
 const strokeSvg = (
   stroke: AnnotationStroke,
   width: number,
@@ -87,6 +103,20 @@ const strokeSvg = (
   const points = stroke.points;
   const first = points[0];
   if (!first) return "";
+  if (stroke.tool === "text") {
+    if (!stroke.text) return "";
+    // Mirrors the overlay: width < 1 is a fraction of the frame diagonal.
+    const raw = stroke.width ?? 0.035;
+    const size = raw < 1 ? Math.max(8, raw * Math.hypot(width, height)) : raw;
+    const x = round(first[0] * width);
+    const y = round(first[1] * height);
+    const halo = Math.max(2, size * 0.16);
+    const common = `x="${x}" y="${y}" font-family="Switzer, sans-serif" font-weight="600" font-size="${round(size)}" dominant-baseline="hanging"`;
+    return (
+      `<text ${common} fill="none" stroke="rgba(10,10,10,0.85)" stroke-width="${round(halo)}" stroke-linejoin="round">${escapeXml(stroke.text)}</text>` +
+      `<text ${common} fill="${safeColor(stroke.color)}" stroke="none">${escapeXml(stroke.text)}</text>`
+    );
+  }
   const attrs = `stroke="${safeColor(stroke.color)}" stroke-width="${strokeWidth(stroke, width)}"`;
   const x = first[0] * width;
   const y = first[1] * height;

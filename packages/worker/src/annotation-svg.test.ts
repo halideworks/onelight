@@ -110,6 +110,39 @@ describe("annotation svg generation", () => {
     expect(svg).toContain('<ellipse cx="100" cy="50" rx="50" ry="25"');
   });
 
+  it("renders text with a halo, escaped and bounded", () => {
+    const strokes = parseAnnotationStrokes([
+      {
+        tool: "text",
+        text: 'warmer <mids> & "clip"',
+        color: "#6aa5d8",
+        width: 0.035,
+        points: [[0.1, 0.2]],
+      },
+      // A text stroke with nothing to say is dropped at parse time.
+      { tool: "text", text: "   ", points: [[0.5, 0.5]] },
+    ]);
+    expect(strokes).toHaveLength(1);
+    const svg = annotationSvg(strokes, 1280, 720);
+    // Escaped payload, never raw markup.
+    expect(svg).toContain("warmer &lt;mids&gt; &amp; &quot;clip&quot;");
+    expect(svg).not.toContain("<mids>");
+    // The halo pass and the ink pass are separate text elements.
+    expect(svg.match(/<text /g)?.length).toBe(2);
+    expect(svg).toContain('fill="#6aa5d8"');
+    // Size follows the diagonal convention: 0.035 of hypot(1280,720).
+    expect(svg).toContain(
+      `font-size="${Math.round(0.035 * Math.hypot(1280, 720) * 100) / 100}"`,
+    );
+  });
+
+  it("caps hostile text length at parse time", () => {
+    const strokes = parseAnnotationStrokes([
+      { tool: "text", text: "x".repeat(5000), points: [[0, 0]] },
+    ]);
+    expect(strokes[0]?.text?.length).toBe(200);
+  });
+
   it("sanitizes hostile colors instead of injecting markup", () => {
     const svg = annotationSvg(
       [

@@ -196,6 +196,26 @@ A seventh pass: notes become a working surface everywhere.
 - Attachment thumbnails for images (inline previews instead of chips) are
   the natural next step; viewer-side attachment deletion has no endpoint.
 
+An eighth pass: pictures inline, timecode everywhere, words on the frame.
+
+- **Image attachments render inline** (`AttachmentImage`, min-bounded thumbs
+  that resolve their signed URL on mount and refresh it once if it expires)
+  and open in a **lightbox** (`Lightbox`: veil, Escape or click closes), in
+  both rooms. Non-images stay chips.
+- **Timecode, always.** The share room's bar readout, note chips, anchor
+  labels and aria labels all read timecode now; frames stay in the data.
+- **A text tool joins the drawing tools.** `AnnotationStroke` grew
+  `tool: "text"` with a `text` field (points[0] anchors, width keeps the
+  frame-diagonal convention as the type size). The overlay renders type with
+  a dark halo so it reads on any footage; a click in text mode floats a bare
+  input at the spot, Enter commits. The PDF report renderer draws the same
+  text, escaped and length-capped, with tests.
+- **Inks are personal.** `ANNOTATION_INKS` are bright siblings of the
+  timeline's ten marker inks under the same author hash, so the colour a
+  person draws in matches the colour their markers wear. The ink palette
+  (player settings row and the share rail) leads with the author's own
+  colour as the default; picking another sticks.
+
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
 1. First green run of the integration and media-qc CI jobs on Linux: this exercises compose end to end, the HDR libplacebo tonemap on lavapipe (the new -init_hw_device vulkan flag), the zscale 601-to-709 conversion on partially-tagged sources, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Most of what used to be manual is now automated here; it just needs to run on a Linux runner with Docker.

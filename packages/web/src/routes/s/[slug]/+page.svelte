@@ -13,7 +13,10 @@
   import { page } from '$app/state';
   import { copyText } from '$lib/clipboard.js';
   import { replaceState } from '$app/navigation';
+  import { annotationInkFor, ANNOTATION_INKS } from '@onelight/player';
+  import AttachmentImage from '$lib/AttachmentImage.svelte';
   import Avatar from '$lib/Avatar.svelte';
+  import Lightbox from '$lib/Lightbox.svelte';
   import ProjectCover from '$lib/ProjectCover.svelte';
   import { pageWashFor, pageWashFromStops } from '$lib/washes.js';
   import { api, apiPost, ApiError, messageFrom } from '$lib/api.js';
@@ -94,7 +97,12 @@
   /* Mirrors the player's draw mode, driven from the rail's own buttons and
      kept honest by ondrawmodechange (Escape inside the player included). */
   let drawOn = $state(false);
-  let drawTool = $state<'pen' | 'arrow' | 'rect'>('pen');
+  let drawTool = $state<'pen' | 'arrow' | 'rect' | 'text'>('pen');
+  /* The viewer's own ink leads the palette and is the default. */
+  const myInk = $derived(annotationInkFor(viewerIdentity?.name ?? null));
+  let inkChoice = $state<string | null>(null);
+  const inks = $derived([myInk, ...ANNOTATION_INKS.filter((ink) => ink !== myInk).slice(0, 5)]);
+  let lightbox = $state<{ url: string; name: string } | null>(null);
   /* Bumped whenever the preview changes; in-flight media polls compare it
      and stand down. */
   let mediaPollToken = 0;
@@ -609,12 +617,10 @@
 
   const playerActive = $derived(Boolean(selected && previewUrl && selected.kind === 'video'));
 
-  /* Clients read clocks, reviewers read frames: the anchor chip says
-     timecode in showtime and frames in the review room. */
+  /* Timecode, always: everyone reads clocks. Frames are a working language
+     that lives in the data, not on the label. */
   const anchorLabel = (frame: number): string =>
-    showtime
-      ? formatTimecode(timecodeFromFrames(frame, previewRate ?? { num: 24, den: 1 }, previewDropFrame))
-      : `frame ${frame}`;
+    formatTimecode(timecodeFromFrames(frame, previewRate ?? { num: 24, den: 1 }, previewDropFrame));
 
   const attachPicked = (event: Event): void => {
     const input = event.currentTarget as HTMLInputElement;
@@ -624,6 +630,13 @@
 
   const prettySize = (bytes: number): string =>
     bytes >= 1_000_000 ? `${(bytes / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1000))} kB`;
+
+  const resolveAttachmentUrl = async (comment: Comment, attachment: CommentAttachment): Promise<string> => {
+    const issued = await api<{ url: string }>(
+      `/api/v1/s/${slug}/comments/${comment.id}/attachments/${attachment.id}`
+    );
+    return issued.url;
+  };
 
   /* Open an attachment through its short-lived share-scoped URL. */
   const openAttachment = async (comment: Comment, attachment: CommentAttachment): Promise<void> => {
@@ -637,9 +650,15 @@
     }
   };
 
-  const setDraw = (on: boolean, tool: 'pen' | 'arrow' | 'rect' = drawTool): void => {
+  const setDraw = (on: boolean, tool: 'pen' | 'arrow' | 'rect' | 'text' = drawTool): void => {
     drawTool = tool;
     player?.setDraw(on, tool);
+    player?.setDrawColor(inkChoice ?? myInk);
+  };
+
+  const pickInk = (ink: string): void => {
+    inkChoice = ink;
+    player?.setDrawColor(ink);
   };
 
   const addComment = async (event: SubmitEvent): Promise<void> => {
@@ -776,8 +795,8 @@
       <div class="preview-bar">
         <h2>{selected.name}</h2>
         {#if playerActive && !showtime}
-          <span class="tc frame-readout">Frame {currentFrame}</span>
-          <button type="button" class="copylink" onclick={() => void copyFrameLink()}>Copy link at this frame</button>
+          <span class="tc frame-readout">{anchorLabel(currentFrame)}</span>
+          <button type="button" class="copylink" onclick={() => void copyFrameLink()}>Copy link at this timecode</button>
           {#if copyNotice}<span class="copy-note" role="status">{copyNotice}</span>{/if}
         {/if}
         {#if showtime && share.allow_comments}
@@ -819,6 +838,7 @@
           filmstrip={previewFilmstrip}
           waveformUrl={previewWaveformUrl}
           allowDrawing={share.allow_comments}
+          drawDefaultColor={inkChoice ?? myInk}
           chrome={playerChrome}
           ondrawmodechange={(on, tool) => {
             drawOn = on;
@@ -900,22 +920,30 @@
               <Avatar name={comment.author_name ?? 'Viewer'} size={22} />
               <strong>{comment.author_name ?? 'Viewer'}</strong>
               {#if comment.frame_in !== null}
-                <button type="button" class="chip tc" onclick={() => seekToComment(comment)} aria-label={`Go to frame ${comment.frame_in}`}>Frame {comment.frame_in}</button>
+                <button type="button" class="chip tc" onclick={() => seekToComment(comment)} aria-label={`Go to ${anchorLabel(comment.frame_in)}`}>{anchorLabel(comment.frame_in)}</button>
               {/if}
               {#if comment.annotation}<span class="drawn">Drawing</span>{/if}
             </span>
             {#if comment.attachments?.length}
               <span class="files">
                 {#each comment.attachments as attachment (attachment.id)}
-                  <button
-                    type="button"
-                    class="filechip"
-                    title={`${attachment.filename} (${prettySize(attachment.size)})`}
-                    onclick={() => void openAttachment(comment, attachment)}
-                  >
-                    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L4 7.5" /></svg>
-                    <span class="filename">{attachment.filename}</span>
-                  </button>
+                  {#if attachment.content_type.startsWith('image/')}
+                    <AttachmentImage
+                      {attachment}
+                      resolve={() => resolveAttachmentUrl(comment, attachment)}
+                      onopen={(url) => { lightbox = { url, name: attachment.filename }; }}
+                    />
+                  {:else}
+                    <button
+                      type="button"
+                      class="filechip"
+                      title={`${attachment.filename} (${prettySize(attachment.size)})`}
+                      onclick={() => void openAttachment(comment, attachment)}
+                    >
+                      <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L4 7.5" /></svg>
+                      <span class="filename">{attachment.filename}</span>
+                    </button>
+                  {/if}
                 {/each}
               </span>
             {/if}
@@ -973,6 +1001,19 @@
                     <button type="button" aria-pressed={drawTool === 'pen'} onclick={() => setDraw(true, 'pen')}>Pen</button>
                     <button type="button" aria-pressed={drawTool === 'arrow'} onclick={() => setDraw(true, 'arrow')}>Arrow</button>
                     <button type="button" aria-pressed={drawTool === 'rect'} onclick={() => setDraw(true, 'rect')}>Box</button>
+                    <button type="button" aria-pressed={drawTool === 'text'} onclick={() => setDraw(true, 'text')}>Text</button>
+                  </div>
+                  <div class="inkrow" role="group" aria-label="Ink colour">
+                    {#each inks as ink (ink)}
+                      <button
+                        type="button"
+                        class="inkdot"
+                        aria-pressed={(inkChoice ?? myInk) === ink}
+                        aria-label={`Ink ${ink}`}
+                        style={`background: ${ink};`}
+                        onclick={() => pickInk(ink)}
+                      ></button>
+                    {/each}
                   </div>
                 {/if}
               </div>
@@ -1004,6 +1045,10 @@
       </div>
     </section>
   {/if}
+{/if}
+
+{#if lightbox}
+  <Lightbox url={lightbox.url} name={lightbox.name} onclose={() => (lightbox = null)} />
 {/if}
 
 <style>
@@ -1224,6 +1269,11 @@
   .attach { display: inline-flex; align-items: center; gap: 6px; }
   .attachinput { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
   .drawrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .inkrow { display: flex; align-items: center; gap: 5px; }
+  .inkdot { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; opacity: 0.7; }
+  .inkdot:hover { opacity: 1; }
+  .inkdot[aria-pressed='true'] { opacity: 1; box-shadow: 0 0 0 2px var(--n-050), 0 0 0 3.5px var(--n-800); }
+  .showtime .inkdot[aria-pressed='true'] { box-shadow: 0 0 0 2px rgba(13, 17, 23, 0.8), 0 0 0 3.5px rgba(250, 248, 244, 0.9); }
   .seg { display: flex; gap: 2px; padding: 2px; border-radius: var(--radius); background: var(--n-150); }
   .seg button { padding: 4px 10px; font-size: var(--text-12); background: none; color: var(--n-700); }
   .seg button[aria-pressed='true'] { background: var(--n-300); color: var(--n-900); }

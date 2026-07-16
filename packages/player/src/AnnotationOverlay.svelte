@@ -9,17 +9,21 @@
     tool = 'pen',
     color = '#e9e9e9',
     strokeWidth = 0.004,
-    onstroke = undefined
+    onstroke = undefined,
+    ontextplace = undefined
   }: {
     strokes?: AnnotationStroke[];
     width?: number;
     height?: number;
     interactive?: boolean;
-    tool?: 'pen' | 'arrow' | 'rect';
+    tool?: 'pen' | 'arrow' | 'rect' | 'text';
     color?: string;
     /* Normalized fraction of the frame diagonal (see annotations.ts). */
     strokeWidth?: number;
     onstroke?: ((stroke: AnnotationStroke) => void) | undefined;
+    /* Text placement: a click in text mode names the spot; the host owns the
+       input box (a canvas cannot hold a caret). */
+    ontextplace?: ((point: AnnotationPoint) => void) | undefined;
   } = $props();
 
   let canvas: HTMLCanvasElement | undefined = $state();
@@ -43,6 +47,21 @@
   const draw = (context: CanvasRenderingContext2D, stroke: AnnotationStroke): void => {
     const points = stroke.points;
     if (points.length === 0 || width <= 0 || height <= 0) return;
+    if (stroke.tool === 'text') {
+      const anchor = points[0];
+      if (!anchor || !stroke.text) return;
+      const size = lineWidthFor({ ...stroke, width: stroke.width ?? 0.035 });
+      context.font = `600 ${size}px Switzer, system-ui, sans-serif`;
+      context.textBaseline = 'top';
+      /* A dark halo first, so the type reads on any footage. */
+      context.lineJoin = 'round';
+      context.lineWidth = Math.max(2, size * 0.16);
+      context.strokeStyle = 'rgba(10, 10, 10, 0.85)';
+      context.strokeText(stroke.text, anchor[0] * width, anchor[1] * height);
+      context.fillStyle = stroke.color ?? '#a5605a';
+      context.fillText(stroke.text, anchor[0] * width, anchor[1] * height);
+      return;
+    }
     context.strokeStyle = stroke.color ?? '#a5605a';
     context.lineWidth = lineWidthFor(stroke);
     context.lineCap = 'round';
@@ -110,6 +129,10 @@
     const point = pointFrom(event);
     if (!point) return;
     event.preventDefault();
+    if (tool === 'text') {
+      ontextplace?.(point);
+      return;
+    }
     try {
       canvas?.setPointerCapture(event.pointerId);
     } catch {

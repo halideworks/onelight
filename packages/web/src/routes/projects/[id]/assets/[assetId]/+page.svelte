@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import Player from '@onelight/player/Player.svelte';
   import { parseSpriteVtt } from '@onelight/player';
+  import { annotationInkFor } from '@onelight/player';
   import { formatTimecode, timecodeFromFrames } from '@onelight/core';
   import type {
     FrameAnnotation,
@@ -15,7 +16,10 @@
   import { replaceState } from '$app/navigation';
   import { api, apiDelete, apiPatch, apiPost, messageFrom } from '$lib/api.js';
   import { projectEvents } from '$lib/sse.svelte.js';
+  import AttachmentImage from '$lib/AttachmentImage.svelte';
+  import { auth } from '$lib/auth.svelte.js';
   import Avatar from '$lib/Avatar.svelte';
+  import Lightbox from '$lib/Lightbox.svelte';
   import { idFrom } from '$lib/ids.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
   import { annotationsFrom, markersFrom, type ReviewComment } from '$lib/comments.js';
@@ -737,6 +741,14 @@
      because attachments hang off a comment id. */
   let pendingFiles = $state<File[]>([]);
   let attachInput = $state<HTMLInputElement | null>(null);
+  let lightbox = $state<{ url: string; name: string } | null>(null);
+
+  const resolveAttachmentUrl = async (comment: Comment, attachment: { id: string }): Promise<string> => {
+    const issued = await api<{ url: string }>(
+      `/api/v1/comments/${comment.id}/attachments/${attachment.id}`
+    );
+    return issued.url;
+  };
 
   const attachPicked = (event: Event): void => {
     const input = event.currentTarget as HTMLInputElement;
@@ -1004,6 +1016,7 @@
             {filmstrip}
             {waveformUrl}
             allowDrawing
+            drawDefaultColor={annotationInkFor(auth.user?.id ?? null)}
             onframechange={(frame) => {
               currentFrame = frame;
               if (paused) scheduleFrameParam();
@@ -1114,15 +1127,23 @@
                 {#if comment.attachments?.length}
                   <span class="files">
                     {#each comment.attachments as attachment (attachment.id)}
-                      <button
-                        type="button"
-                        class="filechip"
-                        title={`${attachment.filename} (${prettySize(attachment.size)})`}
-                        onclick={() => void openAttachment(comment, attachment)}
-                      >
-                        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L4 7.5" /></svg>
-                        <span class="filename">{attachment.filename}</span>
-                      </button>
+                      {#if attachment.content_type.startsWith('image/')}
+                        <AttachmentImage
+                          {attachment}
+                          resolve={() => resolveAttachmentUrl(comment, attachment)}
+                          onopen={(url) => { lightbox = { url, name: attachment.filename }; }}
+                        />
+                      {:else}
+                        <button
+                          type="button"
+                          class="filechip"
+                          title={`${attachment.filename} (${prettySize(attachment.size)})`}
+                          onclick={() => void openAttachment(comment, attachment)}
+                        >
+                          <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L4 7.5" /></svg>
+                          <span class="filename">{attachment.filename}</span>
+                        </button>
+                      {/if}
                     {/each}
                   </span>
                 {/if}
@@ -1284,6 +1305,10 @@
     <p class="empty loading">Loading asset.</p>
   {/if}
 </main>
+
+{#if lightbox}
+  <Lightbox url={lightbox.url} name={lightbox.name} onclose={() => (lightbox = null)} />
+{/if}
 
 <style>
   /* Review room world: strictly neutral, R=G=B, no gradients, no tinted
