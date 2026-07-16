@@ -690,6 +690,55 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
         expect(unsatisfiable.status).toBe(416);
       },
     );
+
+    ctx.itBlob(
+      "carries a working poster url on both share asset listings",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const fixture = await makeShare(h, seed);
+        const viewer = await accessShare(h, fixture.slug);
+        const listed = async (
+          path: string,
+        ): Promise<Record<string, unknown>> => {
+          const response = await req(h, path, { cookie: viewer.cookie });
+          expect(response.status).toBe(200);
+          const body = await json<{
+            items?: Array<Record<string, unknown>>;
+            assets?: Array<Record<string, unknown>>;
+          }>(response);
+          const items = body.items ?? body.assets ?? [];
+          expect(items).toHaveLength(1);
+          return items[0] as Record<string, unknown>;
+        };
+        // A share whose poster has not been produced yet is a normal state,
+        // and the client falls back to a text tile: null, never a broken URL.
+        expect(await listed(`/api/v1/s/${fixture.slug}/assets`)).toMatchObject({
+          poster_url: null,
+        });
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          kind: "poster",
+          content: "poster-png-bytes",
+        });
+        // The bootstrap and the list are one projection: both carry it, and
+        // the URL it carries is the thumbnail, not merely a string.
+        for (const path of [
+          `/api/v1/s/${fixture.slug}/assets`,
+          `/api/v1/s/${fixture.slug}`,
+        ]) {
+          const item = await listed(path);
+          const posterUrl = item.poster_url;
+          expect(typeof posterUrl).toBe("string");
+          const parsed = new URL(posterUrl as string);
+          const fetched = await req(h, parsed.pathname + parsed.search);
+          expect(fetched.status).toBe(200);
+          expect(await fetched.text()).toBe("poster-png-bytes");
+          const unsigned = await req(h, parsed.pathname);
+          expect(unsigned.status).toBe(401);
+        }
+      },
+    );
   });
 
   describe("share watermarking", () => {

@@ -29,6 +29,7 @@
     markers = [],
     renditions = [],
     allowDrawing = false,
+    chrome = 'full',
     watermark = null,
     filmstrip = null,
     waveformUrl = null,
@@ -49,6 +50,16 @@
     markers?: TimelineMarker[];
     renditions?: PlayerRendition[];
     allowDrawing?: boolean;
+    /* How much of the instrument to show.
+     *
+     * 'full' is the review room: everything here is a tool someone works the
+     * frame with. 'simple' presents the picture to a client instead, and the
+     * working tools go away -- the in/out marks and their readout, the lane
+     * toggles, the surround field, the quality ladder. What is left is what
+     * watching needs: the picture, the timecode, transport, volume, full
+     * screen, and the timeline. Playback and frame accuracy are identical in
+     * both; this only decides what is on screen. */
+    chrome?: 'full' | 'simple';
     watermark?: WatermarkOverlay | null;
     filmstrip?: { url: string; cues: SpriteCue[] } | null;
     waveformUrl?: string | null;
@@ -639,20 +650,25 @@
     if (key === 'j') { event.preventDefault(); playReverse(); }
     if (key === 'k') { event.preventDefault(); pausePlayback(); }
     if (key === 'l') { event.preventDefault(); playForward(); }
-    /* Shift jumps to the mark rather than setting it: I/O set, Shift+I/O go. */
-    if (key === 'i') {
-      event.preventDefault();
-      if (event.shiftKey) { if (inFrame !== null) jumpTo(inFrame); }
-      else inFrame = frame;
+    /* The marking keys travel with the marking UI. Left live under a simple
+       chrome they would set an in point nothing draws and start a loop nothing
+       explains, from keys a client has no reason to know they pressed. */
+    if (chrome === 'full') {
+      /* Shift jumps to the mark rather than setting it: I/O set, Shift+I/O go. */
+      if (key === 'i') {
+        event.preventDefault();
+        if (event.shiftKey) { if (inFrame !== null) jumpTo(inFrame); }
+        else inFrame = frame;
+      }
+      if (key === 'o') {
+        event.preventDefault();
+        if (event.shiftKey) { if (outFrame !== null) jumpTo(outFrame); }
+        else outFrame = frame;
+      }
+      /* X clears the marks: Avid's "mark clear" muscle memory. */
+      if (key === 'x') { event.preventDefault(); inFrame = null; outFrame = null; }
+      if (key === 'p') { event.preventDefault(); loop = !loop; }
     }
-    if (key === 'o') {
-      event.preventDefault();
-      if (event.shiftKey) { if (outFrame !== null) jumpTo(outFrame); }
-      else outFrame = frame;
-    }
-    /* X clears the marks: Avid's "mark clear" muscle memory. */
-    if (key === 'x') { event.preventDefault(); inFrame = null; outFrame = null; }
-    if (key === 'p') { event.preventDefault(); loop = !loop; }
     if (key === 'f') { event.preventDefault(); toggleFullscreen(); }
     if (key === 'm') { event.preventDefault(); muted = !muted; }
   };
@@ -805,7 +821,8 @@
 
         <!-- The marks and what they are set to, on the two bands: the readout
              used to live under the timeline, nowhere near the buttons that set
-             it. -->
+             it. A client presenting mode has no use for either. -->
+        {#if chrome === 'full'}
         <div class="marks">
           <button type="button" onclick={() => { inFrame = frame; }} aria-label="Set loop in" title="Mark in — I">Set in</button>
           <button type="button" onclick={() => { outFrame = frame; }} aria-label="Set loop out" title="Mark out — O">Set out</button>
@@ -821,6 +838,7 @@
           <span class="marks-sep" aria-hidden="true">/</span>
           <span class:unset={outFrame === null}>{outFrame === null ? 'out —' : tcAt(outFrame)}</span>
         </span>
+        {/if}
       </div>
 
       <div class="side right volume">
@@ -854,6 +872,9 @@
 
   <div class="transport">
     {#if !fullscreen}{@render deck()}{/if}
+    <!-- Nothing to settle, no row: a simple chrome with no drawing would
+         otherwise leave a band of empty space under the transport. -->
+    {#if allowDrawing || chrome === 'full'}
     <div class="transport-row settings">
       {#if allowDrawing}
         <button type="button" aria-pressed={drawMode} onclick={toggleDraw}>Draw</button>
@@ -875,6 +896,7 @@
         {/if}
       {/if}
       <span class="grow"></span>
+      {#if chrome === 'full'}
       {#if (hasFilmstrip || waveformUrl) && durationFrames !== null && durationFrames > 0}
         <span class="ctl-label" id="lanes-label">Lanes</span>
         <div class="seg" role="group" aria-labelledby="lanes-label">
@@ -903,7 +925,9 @@
           {/each}
         </div>
       {/if}
+      {/if}
     </div>
+    {/if}
     {#if durationFrames !== null && durationFrames !== undefined && durationFrames > 0}
       <Timeline
         {frame}

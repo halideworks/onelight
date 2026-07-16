@@ -13,6 +13,9 @@
      with no storage and no request. */
 
   interface Props {
+    /* Anything with an identity and a picture: a project, or a shared asset
+       drawing its poster. The generated case needs a name to letter and an id
+       to hash, which both have. */
     project: { id: string; name: string; palette: string; cover_url?: string | null };
     /* Grid cards want the monogram; a 34x24 list swatch would just show a
        cropped letter, so it gets the wash and the light alone. */
@@ -20,6 +23,18 @@
   }
 
   const { project, monogram = true }: Props = $props();
+
+  /* A cover URL that does not decode is the one case that used to reach the
+     viewer as a broken image: signed poster URLs expire, and a share can be
+     opened long after its link was minted. Falling back to the generated cover
+     keeps a picture in the frame, and it is the same picture this project
+     would have had with no cover at all. */
+  let broken = $state(false);
+  $effect(() => {
+    /* A new URL deserves a fresh attempt. */
+    project.cover_url;
+    broken = false;
+  });
 
   /* Two initials at most: "Fall Campaign" -> FC, "Reel" -> R. Splitting on
      whitespace keeps hyphenated and punctuated names from producing noise. */
@@ -48,9 +63,16 @@
   const tilt = $derived(((hash >>> 16) % 9) - 4);
 </script>
 
-{#if project.cover_url}
+{#if project.cover_url && !broken}
   <span class="cover" aria-hidden="true">
-    <img src={project.cover_url} alt="" loading="lazy" />
+    <img
+      src={project.cover_url}
+      alt=""
+      loading="lazy"
+      onerror={() => {
+        broken = true;
+      }}
+    />
   </span>
 {:else}
   <span

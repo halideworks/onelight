@@ -1910,7 +1910,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           .all()
       )[0];
       if (!cover)
-        throw errors.validation("cover_asset_id must name an asset in this project.");
+        throw errors.validation(
+          "cover_asset_id must name an asset in this project.",
+        );
     }
     await env.db
       .update(projects)
@@ -1959,7 +1961,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
      make a still out of footage, and this is already a still. */
   api.post("/projects/:id/cover", requireAuth, async (c) => {
     const actor = userFromContext(c);
-    const { project } = await requireProject(c.req.param("id"), actor, "manager");
+    const { project } = await requireProject(
+      c.req.param("id"),
+      actor,
+      "manager",
+    );
     const body = await jsonBody(c, bodies.projectCoverPut);
     const upload = await findUpload(body.upload_id, actor);
     if (upload.projectId !== project.id || upload.status !== "completed")
@@ -2013,7 +2019,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   /* The pictures uploaded for this project, current one included. */
   api.get("/projects/:id/covers", requireAuth, async (c) => {
     const actor = userFromContext(c);
-    const { project } = await requireProject(c.req.param("id"), actor, "viewer");
+    const { project } = await requireProject(
+      c.req.param("id"),
+      actor,
+      "viewer",
+    );
     const rows = await env.db
       .select()
       .from(projectCoverUploads)
@@ -2038,7 +2048,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
      to be swept. */
   api.delete("/projects/:id/covers/:uploadId", requireAuth, async (c) => {
     const actor = userFromContext(c);
-    const { project } = await requireProject(c.req.param("id"), actor, "manager");
+    const { project } = await requireProject(
+      c.req.param("id"),
+      actor,
+      "manager",
+    );
     const row = (
       await env.db
         .select()
@@ -2392,7 +2406,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           .limit(1)
           .all()
       )[0];
-      if (!parent) throw errors.validation("That parent folder does not exist.");
+      if (!parent)
+        throw errors.validation("That parent folder does not exist.");
       // Moving a share folder into the asset tree would put shares somewhere
       // only assets are read from: they would simply vanish from the rail.
       if (parent.kind !== folder.kind)
@@ -3592,17 +3607,19 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       {
         t: "project",
         page: async (after, take) =>
-          Promise.all((await matchingProjects(after, take)).map(async (row) => ({
-            id: row.id,
-            wire: {
-              type: "project",
+          Promise.all(
+            (await matchingProjects(after, take)).map(async (row) => ({
               id: row.id,
-              name: row.name,
-              palette: row.palette,
-              cover_url: await coverUrlFor(row),
-              updated_at: row.updatedAt,
-            },
-          }))),
+              wire: {
+                type: "project",
+                id: row.id,
+                name: row.name,
+                palette: row.palette,
+                cover_url: await coverUrlFor(row),
+                updated_at: row.updatedAt,
+              },
+            })),
+          ),
       },
       {
         t: "person",
@@ -3869,9 +3886,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
      subject: an export is not a version, and a project cover has no version at
      all. */
   type MediaScope =
-    | { versionId: string }
-    | { projectId: string }
-    | { exportId: string };
+    { versionId: string } | { projectId: string } | { exportId: string };
 
   const mediaScopeClaim = (scope: MediaScope): Record<string, string> =>
     "versionId" in scope
@@ -4287,7 +4302,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           .select({ id: assets.id })
           .from(assets)
           .where(
-            and(eq(assets.projectId, share.projectId), isNull(assets.deletedAt)),
+            and(
+              eq(assets.projectId, share.projectId),
+              isNull(assets.deletedAt),
+            ),
           )
           .all()
       ).map((asset: { id: string }) => asset.id),
@@ -4295,7 +4313,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (body.asset_ids.some((id) => !allowed.has(id)))
       throw errors.validation("Every shared asset must belong to the project.");
     const existing = await env.db
-      .select({ assetId: shareAssets.assetId, sortOrder: shareAssets.sortOrder })
+      .select({
+        assetId: shareAssets.assetId,
+        sortOrder: shareAssets.sortOrder,
+      })
       .from(shareAssets)
       .where(eq(shareAssets.shareId, share.id))
       .all();
@@ -4552,29 +4573,88 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     };
   };
 
+  // Posters for a whole share listing, in one rendition query.
+  //
+  // The app's own grid resolves posters per asset through the internal
+  // versions and renditions endpoints, which a share viewer cannot reach; a
+  // share also has no reason to spend a request per tile. Poster pixels follow
+  // the sidecar policy in the asset detail below: thumbnail-scale frames are
+  // exposed even on a watermarked share, whose sprite already carries them.
+  const posterUrlsFor = async (
+    share: typeof shares.$inferSelect,
+    shareAssets: PublicShareAsset[],
+  ): Promise<Map<string, string>> => {
+    const urls = new Map<string, string>();
+    const versionIds = shareAssets
+      .map((asset) => asset.currentVersionId)
+      .filter((id): id is string => Boolean(id));
+    if (!env.blobStore || !versionIds.length) return urls;
+    const posters = (await env.db
+      .select()
+      .from(renditions)
+      .where(
+        and(
+          inArray(renditions.versionId, versionIds),
+          eq(renditions.kind, "poster"),
+          isNull(renditions.shareId),
+        ),
+      )
+      .all()) as Array<typeof renditions.$inferSelect>;
+    const byVersion = new Map(
+      posters.map((poster) => [poster.versionId, poster]),
+    );
+    for (const asset of shareAssets) {
+      const poster = asset.currentVersionId
+        ? byVersion.get(asset.currentVersionId)
+        : undefined;
+      if (poster)
+        urls.set(
+          asset.id,
+          await publicMediaUrl(
+            share,
+            asset.id,
+            poster.versionId,
+            poster.blobKey,
+          ),
+        );
+    }
+    return urls;
+  };
+
+  // The one client-safe asset projection for a share, used by both the
+  // bootstrap and the assets list so the two cannot drift apart.
+  const publicShareAssetsWire = async (
+    share: typeof shares.$inferSelect,
+    shareAssets: PublicShareAsset[],
+  ) => {
+    const posters = await posterUrlsFor(share, shareAssets);
+    return shareAssets.map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      kind: asset.kind,
+      status: asset.status,
+      current_version_id: asset.currentVersionId,
+      poster_url: posters.get(asset.id) ?? null,
+      sort_order: asset.sort_order,
+    }));
+  };
+
   // Client-safe projection of a publicShare result: raw share and viewer rows
   // are replaced by the public wire shapes and assets are reduced to the
   // fields a share client needs, so no internal columns reach the wire.
-  const publicShareResponse = (projection: {
+  const publicShareResponse = async (projection: {
     share: typeof shares.$inferSelect;
     viewer: typeof shareViewers.$inferSelect | undefined;
     assets: PublicShareAsset[];
   }) => ({
     share: publicShareWire(projection.share),
     viewer: projection.viewer ? publicViewerWire(projection.viewer) : null,
-    assets: projection.assets.map((asset) => ({
-      id: asset.id,
-      name: asset.name,
-      kind: asset.kind,
-      status: asset.status,
-      current_version_id: asset.currentVersionId,
-      sort_order: asset.sort_order,
-    })),
+    assets: await publicShareAssetsWire(projection.share, projection.assets),
   });
 
   root.get("/s/:slug", async (c) =>
     c.json(
-      publicShareResponse(
+      await publicShareResponse(
         await publicShare(c, await shareBySlug(c.req.param("slug"))),
       ),
     ),
@@ -4600,7 +4680,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.get("/s/:slug", async (c) =>
     c.json(
-      publicShareResponse(
+      await publicShareResponse(
         await publicShare(c, await shareBySlug(c.req.param("slug"))),
       ),
     ),
@@ -4613,14 +4693,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     );
     if (!projection.viewer) throw errors.unauthorized();
     return c.json({
-      items: projection.assets.map((asset: PublicShareAsset) => ({
-        id: asset.id,
-        name: asset.name,
-        kind: asset.kind,
-        status: asset.status,
-        current_version_id: asset.currentVersionId,
-        sort_order: asset.sort_order,
-      })),
+      items: await publicShareAssetsWire(projection.share, projection.assets),
     });
   });
 
@@ -6117,7 +6190,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             size: rendition.size,
             created_at: rendition.createdAt,
             url: env.blobStore
-              ? await privateMediaUrl({ versionId: version.id }, rendition.blobKey)
+              ? await privateMediaUrl(
+                  { versionId: version.id },
+                  rendition.blobKey,
+                )
               : null,
             vtt_url:
               env.blobStore && vttKey

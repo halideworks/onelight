@@ -9705,6 +9705,12 @@
                               "null"
                             ]
                           },
+                          "poster_url": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "sort_order": {
                             "type": "integer"
                           }
@@ -9715,6 +9721,7 @@
                           "kind",
                           "status",
                           "current_version_id",
+                          "poster_url",
                           "sort_order"
                         ],
                         "additionalProperties": false
@@ -9823,6 +9830,12 @@
                               "null"
                             ]
                           },
+                          "poster_url": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "sort_order": {
                             "type": "integer"
                           }
@@ -9833,6 +9846,7 @@
                           "kind",
                           "status",
                           "current_version_id",
+                          "poster_url",
                           "sort_order"
                         ],
                         "additionalProperties": false

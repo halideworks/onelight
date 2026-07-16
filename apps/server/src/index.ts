@@ -20,6 +20,7 @@ import { LocalBlobStore } from "@onelight/worker";
 import { createMailerFromEnv } from "./mailer.js";
 import { maintenanceConfigFromEnv, startMaintenance } from "./maintenance.js";
 import { NodePasswordHasher } from "./password.js";
+import { isShareLandingPath } from "./share-shell.js";
 import { startWorkerPump } from "./worker-pump.js";
 
 const config = loadConfig(process.env);
@@ -121,7 +122,7 @@ const start = async (): Promise<void> => {
   };
   app.use("*", async (c, next) => {
     if (
-      c.req.path.startsWith("/s/") &&
+      isShareLandingPath(c.req.path) &&
       (c.req.header("accept") ?? "").includes("text/html")
     ) {
       const html = await loadShellHtml();

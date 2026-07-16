@@ -13,6 +13,8 @@
   import { page } from '$app/state';
   import { copyText } from '$lib/clipboard.js';
   import { replaceState } from '$app/navigation';
+  import ProjectCover from '$lib/ProjectCover.svelte';
+  import { pageWashFor } from '$lib/washes.js';
   import { api, apiPost, ApiError, messageFrom } from '$lib/api.js';
   import { annotationsFrom, markersFrom, type ReviewComment } from '$lib/comments.js';
   import { hashtagsIn, segmentCommentBody } from '../../projects/[id]/assets/[assetId]/comment-text.js';
@@ -26,7 +28,14 @@
     expires_at: number | null;
     watermark_spec: Record<string, unknown> | null;
   };
-  type Asset = { id: string; name: string; kind: string; status: string; sort_order: number };
+  type Asset = {
+    id: string;
+    name: string;
+    kind: string;
+    status: string;
+    sort_order: number;
+    poster_url: string | null;
+  };
   type Comment = ReviewComment;
   type AssetDetail = {
     asset: { id: string; name: string; kind: string; status: string };
@@ -80,6 +89,54 @@
   let restoreFocusTo: HTMLElement | null = null;
 
   const slug = $derived(page.params.slug);
+
+  /* The design doc's second share kind (section 11): review is comment-first,
+     presentation is branded and curated. A presentation drops the tools a
+     reviewer works the frame with -- the frame readout, the frame link,
+     drawing -- because its viewer is a client, not a reviewer. */
+  const presenting = $derived(share?.kind === 'presentation');
+
+  /* The notes rail is the review surface. A review room always carries it: a
+     viewer reads what was said even where allow_comments is off. A
+     presentation carries it only where the share allows comments, because
+     presentation is curated rather than comment-first -- but an owner who
+     turned comments on meant it, and a kind must not quietly overrule a
+     setting they set on purpose. Presentation with comments off is the clean
+     client room: picture, carousel, nothing else. */
+  const railOpen = $derived(Boolean(share && (!presenting || share.allow_comments)));
+
+  /* An approval state is agency language, so it stays out of a presentation.
+     "none" has no chip in the app and has none here. */
+  const STATUS_LABEL: Record<string, string> = {
+    in_review: 'In review',
+    approved: 'Approved',
+    changes_requested: 'Changes requested'
+  };
+
+  /* The tile picture: the asset's poster where the pipeline has made one, and
+     the app's own generated cover where it has not, so a share that is still
+     transcoding shows composed tiles rather than holes. Sumimai is this page's
+     wash, so those tiles belong to the page they sit on. */
+  const coverFor = (asset: Asset) => ({
+    id: asset.id,
+    name: asset.name,
+    palette: 'sumimai',
+    cover_url: asset.poster_url
+  });
+
+  /* The rest of the share, for the presentation carousel: a client moves
+     through the work without going back to the landing to do it. */
+  const others = $derived(assets.filter((asset) => asset.id !== selected?.id));
+
+  /* The page wash the rest of the app outside the review room uses, rather
+     than the full-length wash this page used to draw itself with. A wash run
+     the whole height of a share ends on its light stop, so the tiles and their
+     names sat on dirty cream and the page looked cheap exactly where a client
+     first sees it (washes.ts documents the effect). This one peaks behind the
+     title and resolves into ink before the work starts. A share carries no
+     palette on the public wire yet, so it takes the default; per-share
+     branding (design doc section 11) is where that becomes the client's. */
+  const wash = pageWashFor(null);
 
   const tagsOf = (comment: Comment): string[] =>
     Array.isArray(comment.tags) ? comment.tags : hashtagsIn(comment.body_text);
@@ -523,9 +580,9 @@
 </svelte:head>
 
 {#if error && !share && !locked}
-  <main class="shell"><p role="alert">{error}</p></main>
+  <main class="shell" style={`background-image: ${wash};`}><p role="alert">{error}</p></main>
 {:else if locked}
-  <main class="shell access">
+  <main class="shell access" style={`background-image: ${wash};`}>
     <p class="eyebrow">Shared review</p>
     <h1>Enter the review room.</h1>
     <form onsubmit={access}>
@@ -537,16 +594,26 @@
     </form>
   </main>
 {:else if share}
-  <main class="shell" inert={selected !== null}>
+  <main class="shell" inert={selected !== null} style={`background-image: ${wash};`}>
     <header>
-      <p class="eyebrow">{share.kind === 'presentation' ? 'Presentation' : 'Review room'}</p>
+      <p class="eyebrow">{presenting ? 'Presentation' : 'Review room'}</p>
       <h1>{share.title}</h1>
     </header>
     <section class={`assets ${share.layout}`} aria-label="Shared assets">
       {#each assets as asset (asset.id)}
         <button class="asset" type="button" onclick={() => openAsset(asset)}>
-          <span>{asset.name}</span>
-          <small>{asset.kind} / {asset.status}</small>
+          <!-- The picture leads. A list row is 56px of frame, too small for a
+               monogram to read as anything but a cropped letter, so it takes
+               the wash and the light alone. -->
+          <span class="frame">
+            <ProjectCover project={coverFor(asset)} monogram={share.layout !== 'list'} />
+          </span>
+          <span class="caption">
+            <span class="name">{asset.name}</span>
+            {#if !presenting && STATUS_LABEL[asset.status]}
+              <small class="status">{STATUS_LABEL[asset.status]}</small>
+            {/if}
+          </span>
         </button>
       {/each}
     </section>
@@ -566,7 +633,7 @@
     >
       <div class="preview-bar">
         <h2>{selected.name}</h2>
-        {#if playerActive}
+        {#if playerActive && !presenting}
           <span class="tc frame-readout">Frame {currentFrame}</span>
           <button type="button" class="copylink" onclick={() => void copyFrameLink()}>Copy link at this frame</button>
           {#if copyNotice}<span class="copy-note" role="status">{copyNotice}</span>{/if}
@@ -577,6 +644,16 @@
         <button type="button" class="close" onclick={closePreview}>Close preview</button>
       </div>
       {#if downloadNote}<p class="empty" role="status">{downloadNote}</p>{/if}
+      <!-- The picture and the notes, side by side, the way the review page
+           does it: notes below the fold made a viewer scroll away from the
+           footage to read what was said about it. A presentation with comments
+           off has no notes, so its picture takes the whole room.
+
+           A presentation also gets a simple player and a clean timeline: the
+           lanes are how a reviewer hunts for a moment to talk about, and a
+           client watching the work does not need the sound drawn for them. -->
+      <div class="room" class:solo={!railOpen}>
+      <div class="maincol">
       {#if playerActive}
         <Player
           bind:this={player}
@@ -588,9 +665,10 @@
           durationFrames={previewDurationFrames}
           {markers}
           renditions={previewRenditions}
-          filmstrip={previewFilmstrip}
-          waveformUrl={previewWaveformUrl}
-          allowDrawing={share.allow_comments}
+          filmstrip={presenting ? null : previewFilmstrip}
+          waveformUrl={presenting ? null : previewWaveformUrl}
+          allowDrawing={share.allow_comments && !presenting}
+          chrome={presenting ? 'simple' : 'full'}
           {watermark}
           onframechange={(frame) => {
             currentFrame = frame;
@@ -610,6 +688,21 @@
       {:else}
         <p class="empty">A review rendition is not ready.</p>
       {/if}
+      {#if presenting && others.length}
+        <nav class="carousel" aria-label="More in this share">
+          {#each others as asset (asset.id)}
+            <button class="reeltile" type="button" onclick={() => openAsset(asset)}>
+              <span class="reelframe">
+                <ProjectCover project={coverFor(asset)} monogram={false} />
+              </span>
+              <span class="reelname">{asset.name}</span>
+            </button>
+          {/each}
+        </nav>
+      {/if}
+      </div>
+      {#if railOpen}
+      <aside class="rail">
       <section class="comments" aria-label="Comments">
         <div class="c-bar">
           <h3>Comments</h3>
@@ -619,6 +712,7 @@
             </button>
           {/if}
         </div>
+        <div class="notelist">
         {#if visibleComments.length === 0}
           <p class="empty">{comments.length === 0 ? 'No comments yet.' : 'No comments match this tag.'}</p>
         {/if}
@@ -644,6 +738,7 @@
             </p>
           </article>
         {/each}
+        </div>
         {#if share.allow_comments}
           <form onsubmit={addComment}>
             <label>
@@ -665,28 +760,92 @@
           {#if error}<p class="error" role="alert">{error}</p>{/if}
         {/if}
       </section>
+      </aside>
+      {/if}
+      </div>
     </section>
   {/if}
 {/if}
 
 <style>
   /* Share landing: client world, gradient wash allowed. */
-  .shell { min-height: 100vh; padding: 48px clamp(24px, 8vw, 120px); color: var(--ink-text); background: linear-gradient(180deg, var(--sumimai-a) 0%, var(--sumimai-m) 58%, var(--sumimai-b) 108%); background-attachment: fixed; }
+  .shell { min-height: 100vh; padding: 48px clamp(24px, 8vw, 120px); color: var(--ink-text); background-color: var(--ink-000); background-repeat: no-repeat; }
   .access { display: grid; align-content: center; }
   .eyebrow { color: rgba(255, 255, 255, 0.68); font-size: var(--text-13); }
   h1 { max-width: 760px; margin: 24px 0 48px; font-family: var(--font-display); font-size: clamp(44px, 8vw, 92px); line-height: 0.98; }
   .shell form { display: grid; gap: 16px; max-width: 420px; }
   .shell label { display: grid; gap: 8px; }
   .shell input { border: 0; border-radius: var(--radius); background: rgba(13, 17, 23, 0.62); color: inherit; padding: 11px 12px; }
-  .shell button { border: 0; border-radius: var(--radius); background: #e7dfc8; color: #202832; padding: 12px 16px; text-align: left; font-weight: 500; }
-  .assets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; max-width: 1080px; }
-  .assets.list, .assets.reel { grid-template-columns: 1fr; max-width: 760px; }
-  .asset { min-height: 160px; display: grid; align-content: end; gap: 8px; padding: var(--pad-2); border-radius: var(--radius-lg); background: rgba(13, 17, 23, 0.54); color: inherit; }
-  .asset small { color: rgba(255, 255, 255, 0.64); }
+  /* The access form's button, and only it. Unscoped, this cream also painted
+     every asset tile (a tile is a button in this shell too), which put a
+     cream card and dark text around each poster. */
+  .shell form button { border: 0; border-radius: var(--radius); background: #e7dfc8; color: #202832; padding: 12px 16px; text-align: left; font-weight: 500; }
+  /* Three layouts, one tile. They differ in how much room the picture gets,
+     which is the whole of what grid, list and reel mean here, so the markup
+     stays one thing and the columns and the frame do the talking. */
+  .assets { display: grid; gap: 20px 16px; max-width: 1120px; }
+  .assets.grid { grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); }
+  .assets.list { grid-template-columns: 1fr; gap: 2px; max-width: 760px; }
+  /* Reel: one frame per row, as large as the page allows. This is the layout
+     for showing the work, so the work is what fills the screen. */
+  .assets.reel { grid-template-columns: 1fr; gap: 56px; max-width: 1000px; }
+
+  .asset { display: grid; gap: 10px; padding: 0; border: 0; border-radius: 0; background: none; color: inherit; text-align: left; }
+  .frame { display: block; overflow: hidden; border-radius: var(--radius-lg); background: rgba(13, 17, 23, 0.54); aspect-ratio: 16 / 9; }
+  .frame :global(.cover) { width: 100%; height: 100%; }
+  .caption { display: grid; gap: 3px; }
+  .name { font-size: var(--text-14); font-weight: 500; }
+  .status { color: rgba(255, 255, 255, 0.64); font-size: var(--text-13); }
+
+  /* A list row is a line of text with a picture on it, so the frame stops
+     leading and sits at the height of the name beside it. */
+  .assets.list .asset { grid-template-columns: 100px minmax(0, 1fr); align-items: center; gap: 14px; padding: 6px; border-radius: var(--radius); }
+  .assets.list .asset:hover { background: rgba(13, 17, 23, 0.42); }
+  .assets.reel .name { font-family: var(--font-display); font-size: clamp(20px, 2.4vw, 28px); font-weight: 500; }
+  .assets.reel .caption { gap: 5px; }
+
+  /* The picture lifts toward the viewer on hover. No border, no glow: the
+     frame is already the brightest thing in the row. */
+  .asset .frame { transition: transform 160ms ease; }
+  .asset:hover .frame { transform: translateY(-2px); }
+  @media (prefers-reduced-motion: reduce) {
+    .asset .frame { transition: none; }
+    .asset:hover .frame { transform: none; }
+  }
 
   /* Preview: review-room world. Full bleed, opaque, strictly neutral. */
-  .preview { position: fixed; inset: 0; z-index: 10; overflow: auto; padding: 0 0 var(--pad-4); background: var(--n-050); color: var(--n-800); font-size: var(--text-13); }
-  .preview-bar { display: flex; align-items: center; gap: var(--pad-2); padding: 10px var(--pad-2); background: var(--n-100); }
+  .preview { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; background: var(--n-050); color: var(--n-800); font-size: var(--text-13); }
+  .preview-bar { flex: none; display: flex; align-items: center; gap: var(--pad-2); padding: 10px var(--pad-2); background: var(--n-100); }
+
+  /* The picture and the rail divide what is left of the window, the way the
+     review page divides it. Not ".stage": the player owns that name for its
+     own picture area, and two different things under one class in a parent and
+     its child is a trap for anything selecting either. */
+  .room { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 420px); align-items: stretch; }
+  .room.solo { grid-template-columns: minmax(0, 1fr); }
+  /* A column too, so the player has a definite height to divide. overflow
+     hidden rather than auto: the picture shrinks to fit instead of the room
+     growing a scrollbar and hiding the transport below the fold. */
+  .maincol { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+  .maincol > :global(.player) { flex: 1; min-height: 0; }
+  .rail { display: flex; flex-direction: column; min-height: 0; background: var(--n-100); }
+  @media (max-width: 900px) {
+    .preview { overflow: auto; }
+    .room { grid-template-columns: minmax(0, 1fr); }
+    .maincol { overflow: visible; }
+    .maincol > :global(.player) { flex: none; }
+  }
+
+  /* Presentation carousel: the rest of the share, at the foot of the picture.
+     Neutral like everything else in this room, and thumbnails only, because
+     the point is to move, not to browse. */
+  .carousel { flex: none; display: flex; gap: 10px; overflow-x: auto; padding: 12px var(--pad-2); background: var(--n-100); }
+  .reeltile { flex: none; width: 148px; display: grid; gap: 6px; padding: 0; background: none; text-align: left; }
+  .preview .reeltile:hover { background: none; }
+  .reelframe { display: block; overflow: hidden; border-radius: var(--radius); background: var(--n-200); aspect-ratio: 16 / 9; }
+  .reelframe :global(.cover) { width: 100%; height: 100%; }
+  .reelname { color: var(--n-700); font-size: var(--text-13); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .preview .reeltile:hover .reelname { color: var(--n-900); }
   .preview h2 { flex: 1; margin: 0; font-family: var(--font-ui); font-size: var(--text-16); font-weight: 500; color: var(--n-900); }
   .preview { outline: none; }
   .preview button { border: 0; border-radius: var(--radius); background: var(--n-200); color: var(--n-800); padding: 8px 12px; font-size: var(--text-13); font-weight: 500; }
@@ -696,8 +855,12 @@
   .empty { color: var(--n-600); padding: var(--pad-2); }
   .frame-readout { color: var(--n-600); font-size: var(--text-13); }
   .copy-note { color: var(--n-600); font-size: var(--text-13); }
-  .comments { max-width: 760px; margin: var(--pad-3) auto 0; padding: 0 var(--pad-2); }
-  .c-bar { display: flex; align-items: center; gap: 12px; margin: 0 0 10px; }
+  /* The rail is a fixed head, a list that scrolls, and a composer docked at
+     the bottom: reading the notes never scrolls the composer away, and a long
+     thread never pushes it off the screen. */
+  .comments { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: var(--pad-2); }
+  .notelist { flex: 1; min-height: 0; overflow-y: auto; }
+  .c-bar { flex: none; display: flex; align-items: center; gap: 12px; margin: 0 0 10px; }
   .comments h3 { margin: 0; font-size: var(--text-13); font-weight: 600; color: var(--n-900); }
   .tagfilter { background: var(--n-300); color: var(--n-900); font-weight: 600; padding: 4px 10px; }
   .tagfilter span { color: var(--n-600); font-weight: 400; margin-left: 6px; }
@@ -715,9 +878,13 @@
   .chip { border: 0; border-radius: 2px; background: var(--n-700); color: var(--n-050); font-size: var(--text-11); font-weight: 600; padding: 1px 6px; cursor: pointer; }
   .chip:hover { background: var(--n-800); }
   .drawn { color: var(--warn); font-size: var(--text-13); }
-  .comments form { display: grid; gap: 12px; margin-top: var(--pad-3); padding: var(--pad-2); background: var(--n-100); border-radius: var(--radius); }
-  .comments form label { display: grid; gap: 8px; color: var(--n-600); font-size: var(--text-13); }
-  .comments textarea { border: 0; border-radius: var(--radius); background: var(--n-150); color: var(--n-900); padding: 8px 10px; min-height: 72px; }
+  /* The composer box is the form, not a field inside it: same shape the review
+     page's composer has. */
+  .comments form { flex: none; display: grid; gap: 8px; margin-top: 10px; padding: 10px; background: var(--n-150); border-radius: var(--radius-lg); box-shadow: inset 0 0 0 1px var(--n-200); }
+  .comments form:focus-within { box-shadow: inset 0 0 0 1px var(--n-400); }
+  .comments form label { display: grid; gap: 6px; color: var(--n-600); font-size: var(--text-13); }
+  .comments textarea { border: 0; background: none; color: var(--n-900); padding: 0; min-height: 64px; resize: vertical; }
+  .comments textarea:focus-visible { outline: none; }
   .anchor { color: var(--n-600); }
   .post-row { display: flex; align-items: center; gap: 12px; }
   .post { background: var(--n-800); color: var(--n-050); }

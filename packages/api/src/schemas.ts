@@ -570,6 +570,11 @@ const publicShareAsset = z.object({
   kind: z.string(),
   status: approvalStatus,
   current_version_id: z.string().nullable(),
+  /* Signed poster URL, so a share draws its thumbnails without a request per
+     asset. Null while the poster is still transcoding, when the asset has no
+     current version, and where no blob store is configured: the client falls
+     back to a text tile in all three cases. */
+  poster_url: z.string().nullable(),
   sort_order: z.number().int(),
 });
 
@@ -987,7 +992,8 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: { "200": ok(share) },
   },
   "POST /shares/:id/assets": {
-    summary: "Add assets to an existing share. Assets already in it are skipped.",
+    summary:
+      "Add assets to an existing share. Assets already in it are skipped.",
     request: bodies.shareAssetsAdd,
     responses: {
       "200": ok(z.object({ share, added: z.number().int() })),
@@ -1143,7 +1149,9 @@ export const routeDocs: Record<string, RouteDoc> = {
     query: {
       ...paging,
       folder_id: { description: "Filter by folder." },
-      share_id: { description: "Filter to the assets in one of this project's shares." },
+      share_id: {
+        description: "Filter to the assets in one of this project's shares.",
+      },
     },
     responses: { "200": ok(page(asset)) },
   },
