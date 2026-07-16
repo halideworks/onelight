@@ -20,7 +20,7 @@ CLAUDE.md and AGENTS.md are identical by policy (two agent families work in this
 ## Hard rules (from David, non-negotiable)
 
 - No emojis and no em or en dashes, anywhere: prose, UI copy, code comments, commit messages, docs. Use plain hyphens, commas, colons, or separate sentences. No decorative arrows in prose (ASCII `->` in technical diagrams is fine).
-- UI anti-slop list: no Inter, no gradient border highlights, no glassmorphism, no glow shadows, no decorative monospace labels, no random italics, no uppercase-tracked microcopy.
+- UI anti-slop list: no Inter, no gradient border highlights, no glassmorphism, no glow shadows, no decorative monospace labels, no random italics, no uppercase-tracked microcopy. No soft-3D surfaces: panels and cards are flat value steps, never gradient fills with inset highlights and drop shadows. Dropdown selects wear no focus outline; focus is a value step.
 - Two visual worlds with a hard boundary: review room (player, comparison, anything near footage) is strictly neutral grey, R=G=B, zero gradients. Everywhere else: dark ink + Japanese gradient washes, one grammar (vertical, dark top, light bottom).
 - Borders are exceptional; separate with value steps and space. Empty space must be intentional or informational, never leftover.
 - Type: Space Grotesk for display, Switzer for working UI, tabular-nums on all timecode. Nav/secondary text no smaller than 13px.
