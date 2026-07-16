@@ -137,11 +137,11 @@
     cover_url: asset.poster_url
   });
 
-  /* A presentation opens straight into the work: the client clicked a link
-     to watch something, not to choose from a menu first. Deep links (?a=)
+  /* Showtime opens straight into the work: the client clicked a link to
+     watch something, not to choose from a menu first. Deep links (?a=)
      still win; this only fills the silence when none is given. */
   const autoOpen = (): void => {
-    if (share?.kind !== 'presentation' || selected) return;
+    if (playerChrome !== 'simple' || selected) return;
     if (new URLSearchParams(location.search).get('a')) return;
     const first = assets[0];
     if (first) void openAsset(first);
@@ -164,11 +164,18 @@
   );
 
   /* Which instrument the viewer gets. A presentation is always the simple
-     player; a review share can choose it too (brand.player), for clients who
-     should read and leave notes without the colorist's deck in their hands. */
+     player; a review share can choose it too (brand.player). */
   const playerChrome = $derived<'full' | 'simple'>(
     presenting || share?.brand?.player === 'simple' ? 'simple' : 'full'
   );
+
+  /* Showtime is the whole beautiful room, and it follows the PLAYER choice,
+     not the share kind: picking the Presentation player means the client
+     experience -- wash walls, floating picture, cream controls, the carousel
+     -- on any share. The two-worlds rule protects the review player, and
+     only the review player; David has been explicit that presentation is the
+     other world. Notes still work in showtime when the share allows them. */
+  const showtime = $derived(playerChrome === 'simple');
 
   const tagsOf = (comment: Comment): string[] =>
     Array.isArray(comment.tags) ? comment.tags : hashtagsIn(comment.body_text);
@@ -676,7 +683,7 @@
             <span class="name">{asset.name}</span>
             <small class="status">
               {#if asset.duration_seconds !== null}<span class="tc">{clock(asset.duration_seconds)}</span>{/if}
-              {#if !presenting && STATUS_LABEL[asset.status]}{asset.duration_seconds !== null ? ' ' : ''}{STATUS_LABEL[asset.status]}{/if}
+              {#if !showtime && STATUS_LABEL[asset.status]}{asset.duration_seconds !== null ? ' ' : ''}{STATUS_LABEL[asset.status]}{/if}
             </small>
           </span>
         </button>
@@ -693,18 +700,18 @@
     <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role a11y_no_noninteractive_tabindex -->
     <section
       class="preview"
-      class:presenting
+      class:showtime
       role="dialog"
       aria-modal="true"
       aria-label={`Preview: ${selected.name}`}
       tabindex="-1"
       bind:this={previewEl}
       onkeydown={onPreviewKeydown}
-      style={presenting ? `background-image: ${wash}; background-size: 100% 100vh; background-attachment: fixed;` : ''}
+      style={showtime ? `background-image: ${wash}; background-size: 100% 100vh; background-attachment: fixed;` : ''}
     >
       <div class="preview-bar">
         <h2>{selected.name}</h2>
-        {#if playerActive && !presenting}
+        {#if playerActive && !showtime}
           <span class="tc frame-readout">Frame {currentFrame}</span>
           <button type="button" class="copylink" onclick={() => void copyFrameLink()}>Copy link at this frame</button>
           {#if copyNotice}<span class="copy-note" role="status">{copyNotice}</span>{/if}
@@ -740,7 +747,7 @@
           renditions={previewRenditions}
           filmstrip={previewFilmstrip}
           waveformUrl={previewWaveformUrl}
-          allowDrawing={share.allow_comments && !presenting}
+          allowDrawing={share.allow_comments && !showtime}
           chrome={playerChrome}
           {watermark}
           onframechange={(frame) => {
@@ -761,7 +768,7 @@
       {:else}
         <p class="empty">A review rendition is not ready.</p>
       {/if}
-      {#if presenting && assets.length > 1}
+      {#if showtime && assets.length > 1}
         <!-- The whole share, current one marked: the client skips through the
              work from here, never back out to a menu. -->
         <nav class="carousel" aria-label="In this share">
@@ -941,20 +948,20 @@
      the title in display type, the work centered with air around it, and the
      rest of the reel within reach. The review preview above stays strictly
      neutral; none of this applies there. */
-  .preview.presenting { background-color: var(--ink-000); color: var(--ink-text); }
-  .presenting .preview-bar { background: transparent; padding: 18px var(--pad-3) 8px; }
-  .presenting .preview-bar h2 { font-family: var(--font-display); font-size: clamp(20px, 2.2vw, 30px); font-weight: 700; letter-spacing: -0.02em; color: var(--ink-text); }
-  .presenting .preview-bar button { background: rgba(13, 17, 23, 0.55); color: var(--ink-text); }
-  .presenting .preview-bar button:hover { background: rgba(13, 17, 23, 0.8); color: #fff; }
+  .preview.showtime { background-color: var(--ink-000); color: var(--ink-text); }
+  .showtime .preview-bar { background: transparent; padding: 18px var(--pad-3) 8px; }
+  .showtime .preview-bar h2 { font-family: var(--font-display); font-size: clamp(20px, 2.2vw, 30px); font-weight: 700; letter-spacing: -0.02em; color: var(--ink-text); }
+  .showtime .preview-bar button { background: rgba(13, 17, 23, 0.55); color: var(--ink-text); }
+  .showtime .preview-bar button:hover { background: rgba(13, 17, 23, 0.8); color: #fff; }
   /* The picture gets a proscenium: inset from the walls, never wall to wall. */
-  .presenting .maincol { padding: 0 clamp(16px, 5vw, 96px); }
-  .presenting .maincol > :global(.player) { border-radius: var(--radius-lg); overflow: hidden; }
+  .showtime .maincol { padding: 0 clamp(16px, 5vw, 96px); }
+  .showtime .maincol > :global(.player) { border-radius: var(--radius-lg); overflow: hidden; }
   /* The instrument sheds the NLE grey. The player paints itself entirely in
      the neutral scale, so re-mapping that scale inside this container turns
      its slabs transparent (the wash shows through, the picture floats on the
-     gradient) and its controls to cream on translucent ink. Review rooms
-     never enter this branch; their neutrality is untouched. */
-  .presenting .maincol {
+     gradient) and its controls to cream on translucent ink. Only the full
+     review player keeps the neutral world. */
+  .showtime .maincol {
     --n-000: transparent;
     --n-050: transparent;
     --n-100: transparent;
@@ -970,21 +977,21 @@
     --n-800: rgba(250, 248, 244, 0.9);
     --n-900: #faf8f4;
   }
-  .presenting .empty, .presenting .open-media { color: var(--ink-text-dim); text-align: center; padding: var(--pad-4); }
-  .presenting .reelname { color: var(--ink-text-dim); }
-  .presenting .reeltile:hover .reelname, .presenting .reeltile.current .reelname { color: var(--ink-text); }
-  .presenting .reelframe { background: rgba(13, 17, 23, 0.5); }
+  .showtime .empty, .showtime .open-media { color: var(--ink-text-dim); text-align: center; padding: var(--pad-4); }
+  .showtime .reelname { color: var(--ink-text-dim); }
+  .showtime .reeltile:hover .reelname, .showtime .reeltile.current .reelname { color: var(--ink-text); }
+  .showtime .reelframe { background: rgba(13, 17, 23, 0.5); }
   /* Notes, when the share allows them, sit on ink rather than the review
      room's neutral grey. */
-  .presenting .rail { background: rgba(13, 17, 23, 0.45); }
-  .presenting .comments h3, .presenting .c-head strong, .presenting .comments article p { color: var(--ink-text); }
-  .presenting .comments .empty { color: var(--ink-text-dim); text-align: left; padding: 0; }
-  .presenting .comments article:hover { background: rgba(13, 17, 23, 0.5); }
-  .presenting .comments article.highlighted { background: rgba(13, 17, 23, 0.65); }
-  .presenting .comments form { background: rgba(13, 17, 23, 0.5); box-shadow: none; }
-  .presenting .comments textarea { color: var(--ink-text); }
-  .presenting .comments form label { color: var(--ink-text-dim); }
-  .presenting .anchor { color: var(--ink-text-dim); }
+  .showtime .rail { background: rgba(13, 17, 23, 0.45); }
+  .showtime .comments h3, .showtime .c-head strong, .showtime .comments article p { color: var(--ink-text); }
+  .showtime .comments .empty { color: var(--ink-text-dim); text-align: left; padding: 0; }
+  .showtime .comments article:hover { background: rgba(13, 17, 23, 0.5); }
+  .showtime .comments article.highlighted { background: rgba(13, 17, 23, 0.65); }
+  .showtime .comments form { background: rgba(13, 17, 23, 0.5); box-shadow: none; }
+  .showtime .comments textarea { color: var(--ink-text); }
+  .showtime .comments form label { color: var(--ink-text-dim); }
+  .showtime .anchor { color: var(--ink-text-dim); }
   .preview h2 { flex: 1; margin: 0; font-family: var(--font-ui); font-size: var(--text-16); font-weight: 500; color: var(--n-900); }
   .preview { outline: none; }
   .preview button { border: 0; border-radius: var(--radius); background: var(--n-200); color: var(--n-800); padding: 8px 12px; font-size: var(--text-13); font-weight: 500; }
