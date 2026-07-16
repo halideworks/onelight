@@ -2765,6 +2765,41 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.json(commentWire(completed));
   });
 
+  /* Resolving was one-way: completedAt could be set and never cleared, so a
+     note resolved by mistake -- or reopened because the fix did not hold, which
+     is the ordinary life of a note -- was stuck resolved forever. The inverse of
+     POST /complete is DELETE /complete. */
+  api.delete("/comments/:id/complete", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const comment = await commentForActor(
+      c.req.param("id"),
+      actor,
+      "commenter",
+    );
+    await env.db
+      .update(comments)
+      .set({ completedAt: null, completedBy: null })
+      .where(eq(comments.id, comment.id))
+      .run();
+    const reopened = (
+      await env.db
+        .select()
+        .from(comments)
+        .where(eq(comments.id, comment.id))
+        .limit(1)
+        .all()
+    )[0];
+    if (!reopened) throw errors.notFound();
+    const reopenedProjectId = await projectIdForVersion(reopened.versionId);
+    if (reopenedProjectId)
+      await appendProjectEvent(reopenedProjectId, "comment.updated", {
+        comment_id: reopened.id,
+        version_id: reopened.versionId,
+        frame_in: reopened.frameIn,
+      });
+    return c.json(commentWire(reopened));
+  });
+
   api.post("/comments/:id/reactions", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const comment = await commentForActor(

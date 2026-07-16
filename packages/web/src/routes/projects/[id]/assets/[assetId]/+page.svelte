@@ -12,7 +12,7 @@
   } from '@onelight/player';
   import { page } from '$app/state';
   import { replaceState } from '$app/navigation';
-  import { api, apiPatch, apiPost, messageFrom } from '$lib/api.js';
+  import { api, apiDelete, apiPatch, apiPost, messageFrom } from '$lib/api.js';
   import { projectEvents } from '$lib/sse.svelte.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
   import { annotationsFrom, markersFrom, type ReviewComment } from '$lib/comments.js';
@@ -704,6 +704,18 @@
   };
 
   const composerKeydown = (event: KeyboardEvent): void => {
+    /* Enter sends, shift+Enter breaks the line. The footer says so, so it has
+       to be true. The mention menu gets Enter first (handled below). */
+    if (
+      event.key === 'Enter' &&
+      !event.shiftKey &&
+      !(mentionQuery !== null && mentionMatches.length > 0)
+    ) {
+      event.preventDefault();
+      const form = (event.currentTarget as HTMLElement).closest('form');
+      if (form instanceof HTMLFormElement) form.requestSubmit();
+      return;
+    }
     if (mentionQuery === null || mentionMatches.length === 0) return;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
@@ -777,6 +789,18 @@
       commentError = '';
     } catch (caught) {
       commentError = messageFrom(caught, 'The note could not be completed.');
+    }
+  };
+
+  /* Resolving was one-way. A note resolved by mistake, or reopened because the
+     fix did not hold, had nowhere to go. */
+  const reopenComment = async (id: string): Promise<void> => {
+    try {
+      const reopened = await apiDelete<Comment>(`/api/v1/comments/${id}/complete`);
+      comments = comments.map((comment) => (comment.id === id ? { ...comment, ...reopened } : comment));
+      commentError = '';
+    } catch (caught) {
+      commentError = messageFrom(caught, 'The note could not be reopened.');
     }
   };
 
@@ -1049,6 +1073,7 @@
                     <button type="button" class="linky" onclick={() => completeComment(comment.id)}>Resolve</button>
                   {:else}
                     <span class="resolved">Resolved</span>
+                    <button type="button" class="linky" onclick={() => reopenComment(comment.id)}>Unresolve</button>
                   {/if}
                 </span>
               </div>
@@ -1128,7 +1153,12 @@
                 {/if}
               </span>
             </label>
-            <button type="submit" class="primary">{replyTo ? 'Reply' : 'Add note'}</button>
+            <div class="composer-foot">
+              <span class="composer-hint">
+                {#if replyTo}Reply to this note{:else if rangeActive}Note covers the marked range{:else}Enter to send{/if}
+              </span>
+              <button type="submit" class="primary" disabled={!bodyText.trim()}>{replyTo ? 'Reply' : 'Add note'}</button>
+            </div>
           </form>
           {#if commentError}<p class="error" role="alert">{commentError}</p>{/if}
           {/snippet}
@@ -1222,9 +1252,17 @@
   .content.notes-closed { grid-template-columns: minmax(0, 1fr) 0px; }
   .content.notes-closed .rail { overflow: hidden; }
   .maincol { min-width: 0; overflow-y: auto; }
-  /* The handle rides the rail's edge. */
-  .railtoggle { position: absolute; top: 10px; right: 0; z-index: 5; width: 22px; height: 34px; padding: 0; border-radius: var(--radius) 0 0 var(--radius); background: var(--n-200); color: var(--n-700); font-size: 14px; line-height: 1; }
+  /* The handle sits on the rail's LEFT edge, against the stage, where the rail
+     meets the picture. On the right it was pinned to the window edge, which is
+     both the last place you look and exactly where it disappears when the rail
+     is closed. Anchored to the rail's inside edge, it travels with the rail and
+     is always the thing between the two panes. */
+  .railtoggle { position: absolute; top: 10px; right: clamp(320px, 26vw, 420px); z-index: 5; width: 20px; height: 40px; padding: 0; border-radius: var(--radius) 0 0 var(--radius); background: var(--n-200); color: var(--n-700); font-size: 13px; line-height: 1; transition: right 180ms ease; }
   .railtoggle:hover { background: var(--n-300); color: var(--n-900); }
+  .content.notes-closed .railtoggle { right: 0; }
+  @media (prefers-reduced-motion: reduce) {
+    .railtoggle { transition: none; }
+  }
   @media (prefers-reduced-motion: reduce) {
     .content { transition: none; }
   }
@@ -1260,8 +1298,19 @@
   /* The list scrolls between a fixed head and a docked composer. */
   .thread-list { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
   .thread { margin-bottom: 10px; }
-  /* Same 10px inset as a note, so note text and composer text share a left edge. */
-  .composer-form { display: grid; gap: 8px; padding: 10px; background: var(--n-150); border-radius: var(--radius); }
+  /* One control, not a filled panel with a button loose beneath it. The surface
+     holds the anchor, the field and the send together and ends where the
+     control ends; the field itself is transparent so there is no box-inside-a-
+     box, and the whole thing lights up when it has focus. Same 10px inset as a
+     note, so note text and composer text share a left edge. */
+  .composer-form { display: grid; gap: 8px; padding: 10px; background: var(--n-150); border-radius: var(--radius-lg); box-shadow: inset 0 0 0 1px var(--n-200); }
+  .composer-form:focus-within { box-shadow: inset 0 0 0 1px var(--n-400); }
+  .composer-form textarea { background: none; padding: 0; min-height: 64px; resize: vertical; }
+  .composer-form textarea::placeholder { color: var(--n-500); }
+  .composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .composer-hint { color: var(--n-500); font-size: var(--text-11); }
+  .composer-form .primary { padding: 6px 14px; font-size: var(--text-12); }
+  .composer-form .primary:disabled { opacity: 0.45; cursor: default; }
   /* Docked, so the list scrolls behind it and the box is always there. */
   .composer-dock { position: sticky; bottom: 0; padding-top: 8px; background: var(--n-100); }
   /* A reply composes under its thread, indented to the same line as the replies
@@ -1307,7 +1356,10 @@
   .notes article.completed p { color: var(--n-500); }
   .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .head strong { color: var(--n-900); font-size: var(--text-13); font-weight: 600; }
-  .chip { border: 0; border-radius: 2px; background: var(--n-700); color: var(--n-050); font-size: var(--text-11); font-weight: 600; padding: 1px 6px; cursor: pointer; }
+  /* The timecode is the note's address: centred, tabular, and big enough to
+     read at a glance instead of squinting at 11px. */
+  .chip { display: inline-flex; align-items: center; justify-content: center; min-width: 92px; border-radius: var(--radius); background: var(--n-200); color: var(--n-900); padding: 3px 8px; font-size: var(--text-12); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
+  .chip:hover { background: var(--n-300); }
   .chip:hover { background: var(--n-800); }
   .drawn { color: var(--warn); font-size: var(--text-13); }
   .carried { color: var(--n-600); background: var(--n-150); border-radius: 2px; padding: 1px 6px; font-size: var(--text-11); }
