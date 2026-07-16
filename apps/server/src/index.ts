@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, statfs } from "node:fs/promises";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -93,6 +93,23 @@ const start = async (): Promise<void> => {
     path.join(path.dirname(config.DATABASE_PATH), "blobs");
   const blobStore = new LocalBlobStore(blobRoot);
   const mailer = createMailerFromEnv(process.env);
+  /* The blob volume's capacity, from the filesystem that actually holds it.
+     Object-storage deployments have no equivalent, which is why the field is
+     optional on AppEnv and null on the wire there. */
+  const diskInfo = async (): Promise<{
+    total_bytes: number;
+    free_bytes: number;
+  } | null> => {
+    try {
+      const stats = await statfs(blobRoot);
+      return {
+        total_bytes: stats.blocks * stats.bsize,
+        free_bytes: stats.bavail * stats.bsize,
+      };
+    } catch {
+      return null;
+    }
+  };
   const api = createApp({
     db,
     hasher: new NodePasswordHasher(),
@@ -101,6 +118,7 @@ const start = async (): Promise<void> => {
     config,
     version: process.env.ONELIGHT_VERSION ?? "0.1.0-dev",
     blobStore,
+    diskInfo,
     // AppEnv.mailer is optional and exactOptionalPropertyTypes is on, so
     // the field is present only when a mailer is configured.
     ...(mailer ? { mailer } : {}),

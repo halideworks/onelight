@@ -554,13 +554,12 @@
      is the "heavy" part. A light from above (one highlight along the top edge,
      a fill that falls away below it) gives each panel a top and a bottom, so
      the eye separates them without a single border. */
+  /* Flat surfaces, one value step off the page: no gradient fills, no
+     highlights, no drop shadows. */
   .panel {
     padding: var(--pad-2);
     border-radius: var(--radius-lg);
-    background: linear-gradient(180deg, color-mix(in oklab, var(--ink-100) 88%, var(--ink-200)) 0%, var(--ink-100) 46%);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.045),
-      0 1px 2px rgba(0, 0, 0, 0.28);
+    background: var(--ink-100);
   }
   .panel.wide { grid-column: 1 / -1; }
   /* Panel names in plain case: the anti-slop list bans uppercase-tracked
@@ -619,7 +618,8 @@
   button:disabled { opacity: 0.5; cursor: default; }
   .hint, .empty { margin: 0 var(--pad-4) 12px; color: var(--ink-text-dim); }
   .error { margin: 0 var(--pad-4) 12px; color: var(--warn); }
-  button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  select:focus-visible { outline: none; background: var(--ink-300); }
 
   /* Cover */
   .coverpreview { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: var(--radius); overflow: hidden; display: grid; }

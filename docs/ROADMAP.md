@@ -114,6 +114,29 @@ A third pass the same day, on the room's design and the admin surfaces:
   rows, project settings to 1600px, and the projects index grid fills the
   window with covers that scale (16:9) instead of clamping at one height.
 
+A fourth pass, on David's design notes:
+
+- **The presentation room is the client moment.** A presentation share opens
+  straight into the first clip (deep links still win), wearing the share's
+  brand wash as the walls: display-type title, the picture inset with a
+  proscenium, and the whole reel as a centered thumbnail carousel with the
+  current clip ringed. The review preview stays strictly neutral; the design
+  doc has always listed presentation pages in the washed world. The player
+  option in Appearance is named Presentation (wire value stays `simple`).
+- **Comments off means no comments furniture at all**: the rail exists only
+  when the share allows comments, in both rooms.
+- **Flat surfaces**: the gradient-fill-plus-inset-highlight-plus-drop-shadow
+  panel treatment is gone everywhere it existed (project settings, shares
+  list, share page). Panels are one value step off the page; hover is a
+  second step. Dropdown selects wear no focus outline; focus is the value
+  step too.
+- **Share list layout rows are cards**: 176px frames on a quiet surface,
+  instead of a bare filename floating beside an icon-sized thumbnail.
+- **`GET /workspace/usage` reports the media volume's capacity** where the
+  host can know it (Node server statfs on the blob root; null on object
+  storage, where the number means nothing). The storage page shows free of
+  total with a fill bar, and its copy was rewritten plainly.
+
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
 1. First green run of the integration and media-qc CI jobs on Linux: this exercises compose end to end, the HDR libplacebo tonemap on lavapipe (the new -init_hw_device vulkan flag), the zscale 601-to-709 conversion on partially-tagged sources, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Most of what used to be manual is now automated here; it just needs to run on a Linux runner with Docker.

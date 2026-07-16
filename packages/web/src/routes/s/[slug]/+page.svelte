@@ -102,14 +102,10 @@
      drawing -- because its viewer is a client, not a reviewer. */
   const presenting = $derived(share?.kind === 'presentation');
 
-  /* The notes rail is the review surface. A review room always carries it: a
-     viewer reads what was said even where allow_comments is off. A
-     presentation carries it only where the share allows comments, because
-     presentation is curated rather than comment-first -- but an owner who
-     turned comments on meant it, and a kind must not quietly overrule a
-     setting they set on purpose. Presentation with comments off is the clean
-     client room: picture, carousel, nothing else. */
-  const railOpen = $derived(Boolean(share && (!presenting || share.allow_comments)));
+  /* The notes rail exists only where the share allows comments: with them
+     off there is nothing to read and nothing to write, and an empty panel
+     titled Comments was furniture. The picture takes the whole room. */
+  const railOpen = $derived(Boolean(share?.allow_comments));
 
   /* An approval state is agency language, so it stays out of a presentation.
      "none" has no chip in the app and has none here. */
@@ -130,9 +126,15 @@
     cover_url: asset.poster_url
   });
 
-  /* The rest of the share, for the presentation carousel: a client moves
-     through the work without going back to the landing to do it. */
-  const others = $derived(assets.filter((asset) => asset.id !== selected?.id));
+  /* A presentation opens straight into the work: the client clicked a link
+     to watch something, not to choose from a menu first. Deep links (?a=)
+     still win; this only fills the silence when none is given. */
+  const autoOpen = (): void => {
+    if (share?.kind !== 'presentation' || selected) return;
+    if (new URLSearchParams(location.search).get('a')) return;
+    const first = assets[0];
+    if (first) void openAsset(first);
+  };
 
   /* The page wash the rest of the app outside the review room uses, rather
      than the full-length wash this page used to draw itself with. A wash run
@@ -270,6 +272,7 @@
         };
         await loadAssets(currentSlug);
         openFromUrl();
+        autoOpen();
       }
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 401) locked = true;
@@ -306,6 +309,7 @@
       error = '';
       await loadAssets(slug ?? '');
       openFromUrl();
+      autoOpen();
     } catch (caught) {
       error = messageFrom(caught, 'Access could not be granted.');
     }
@@ -665,17 +669,22 @@
     </div>
   </main>
   {#if selected}
-    <!-- Media is open: a full-bleed opaque neutral layer. No gradient is
-         visible anywhere behind footage. -->
+    <!-- Media is open. For a review this is a full-bleed opaque NEUTRAL
+         layer: no gradient near footage under review, per the two-worlds
+         rule. A presentation belongs to the other world -- the design doc
+         lists presentation pages with the washed surfaces -- so it wears the
+         share's brand and is built to be walked into. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role a11y_no_noninteractive_tabindex -->
     <section
       class="preview"
+      class:presenting
       role="dialog"
       aria-modal="true"
       aria-label={`Preview: ${selected.name}`}
       tabindex="-1"
       bind:this={previewEl}
       onkeydown={onPreviewKeydown}
+      style={presenting ? `background-image: ${wash}; background-size: 100% 100vh; background-attachment: fixed;` : ''}
     >
       <div class="preview-bar">
         <h2>{selected.name}</h2>
@@ -736,10 +745,18 @@
       {:else}
         <p class="empty">A review rendition is not ready.</p>
       {/if}
-      {#if presenting && others.length}
-        <nav class="carousel" aria-label="More in this share">
-          {#each others as asset (asset.id)}
-            <button class="reeltile" type="button" onclick={() => openAsset(asset)}>
+      {#if presenting && assets.length > 1}
+        <!-- The whole share, current one marked: the client skips through the
+             work from here, never back out to a menu. -->
+        <nav class="carousel" aria-label="In this share">
+          {#each assets as asset (asset.id)}
+            <button
+              class="reeltile"
+              class:current={selected?.id === asset.id}
+              type="button"
+              aria-current={selected?.id === asset.id}
+              onclick={() => { if (selected?.id !== asset.id) void openAsset(asset); }}
+            >
               <span class="reelframe">
                 <ProjectCover project={coverFor(asset)} monogram={false} />
               </span>
@@ -836,7 +853,7 @@
      stays one thing and the columns and the frame do the talking. */
   .assets { display: grid; gap: 20px 16px; max-width: 1120px; }
   .assets.grid { grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); }
-  .assets.list { grid-template-columns: 1fr; gap: 2px; max-width: 760px; margin-inline: auto; }
+  .assets.list { grid-template-columns: 1fr; gap: 10px; max-width: 880px; margin-inline: auto; }
   /* Reel: one frame per row, as large as the page allows. This is the layout
      for showing the work, so the work is what fills the screen. */
   .assets.reel { grid-template-columns: 1fr; gap: 56px; max-width: 1000px; margin-inline: auto; }
@@ -848,10 +865,14 @@
   .name { font-size: var(--text-14); font-weight: 500; }
   .status { color: rgba(255, 255, 255, 0.64); font-size: var(--text-13); }
 
-  /* A list row is a line of text with a picture on it, so the frame stops
-     leading and sits at the height of the name beside it. */
-  .assets.list .asset { grid-template-columns: 100px minmax(0, 1fr); align-items: center; gap: 14px; padding: 6px; border-radius: var(--radius); }
-  .assets.list .asset:hover { background: rgba(13, 17, 23, 0.42); }
+  /* A list row is still led by its picture, at a size where the frame reads
+     as a frame rather than an icon. Each row is a quiet surface -- a bare
+     filename floating beside a thumbnail read as unfinished. */
+  .assets.list .asset { grid-template-columns: 176px minmax(0, 1fr); align-items: center; gap: 18px; padding: 10px; border-radius: var(--radius-lg); background: rgba(13, 17, 23, 0.4); }
+  .assets.list .asset:hover { background: rgba(13, 17, 23, 0.62); }
+  .assets.list .asset:hover .frame { transform: none; }
+  .assets.list .name { font-size: var(--text-16); font-weight: 500; }
+  .assets.list .caption { gap: 4px; }
   .assets.reel .name { font-family: var(--font-display); font-size: clamp(20px, 2.4vw, 28px); font-weight: 500; }
   .assets.reel .caption { gap: 5px; }
 
@@ -887,16 +908,46 @@
     .maincol > :global(.player) { flex: none; }
   }
 
-  /* Presentation carousel: the rest of the share, at the foot of the picture.
-     Neutral like everything else in this room, and thumbnails only, because
-     the point is to move, not to browse. */
-  .carousel { flex: none; display: flex; gap: 10px; overflow-x: auto; padding: 12px var(--pad-2); background: var(--n-100); }
+  /* Presentation carousel: the whole share at the foot of the picture,
+     thumbnails only, because the point is to move, not to browse. */
+  .carousel { flex: none; display: flex; justify-content: center; gap: 12px; overflow-x: auto; padding: 14px var(--pad-2) 18px; }
   .reeltile { flex: none; width: 148px; display: grid; gap: 6px; padding: 0; background: none; text-align: left; }
   .preview .reeltile:hover { background: none; }
-  .reelframe { display: block; overflow: hidden; border-radius: var(--radius); background: var(--n-200); aspect-ratio: 16 / 9; }
+  .reelframe { display: block; overflow: hidden; border-radius: var(--radius); background: var(--n-200); aspect-ratio: 16 / 9; opacity: 0.66; transition: opacity 140ms ease; }
   .reelframe :global(.cover) { width: 100%; height: 100%; }
+  .reeltile:hover .reelframe, .reeltile.current .reelframe { opacity: 1; }
+  .reeltile.current .reelframe { box-shadow: 0 0 0 2px rgba(250, 248, 244, 0.85); }
   .reelname { color: var(--n-700); font-size: var(--text-13); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .preview .reeltile:hover .reelname { color: var(--n-900); }
+  .preview .reeltile:hover .reelname, .reeltile.current .reelname { color: var(--n-900); }
+
+  /* ---- the presentation room ---- */
+  /* The client's world, not the colorist's: the share's wash as the walls,
+     the title in display type, the work centered with air around it, and the
+     rest of the reel within reach. The review preview above stays strictly
+     neutral; none of this applies there. */
+  .preview.presenting { background-color: var(--ink-000); color: var(--ink-text); }
+  .presenting .preview-bar { background: transparent; padding: 18px var(--pad-3) 8px; }
+  .presenting .preview-bar h2 { font-family: var(--font-display); font-size: clamp(20px, 2.2vw, 30px); font-weight: 700; letter-spacing: -0.02em; color: var(--ink-text); }
+  .presenting .preview-bar button { background: rgba(13, 17, 23, 0.55); color: var(--ink-text); }
+  .presenting .preview-bar button:hover { background: rgba(13, 17, 23, 0.8); color: #fff; }
+  /* The picture gets a proscenium: inset from the walls, never wall to wall. */
+  .presenting .maincol { padding: 0 clamp(16px, 5vw, 96px); }
+  .presenting .maincol > :global(.player) { border-radius: var(--radius-lg); overflow: hidden; }
+  .presenting .empty, .presenting .open-media { color: var(--ink-text-dim); text-align: center; padding: var(--pad-4); }
+  .presenting .reelname { color: var(--ink-text-dim); }
+  .presenting .reeltile:hover .reelname, .presenting .reeltile.current .reelname { color: var(--ink-text); }
+  .presenting .reelframe { background: rgba(13, 17, 23, 0.5); }
+  /* Notes, when the share allows them, sit on ink rather than the review
+     room's neutral grey. */
+  .presenting .rail { background: rgba(13, 17, 23, 0.45); }
+  .presenting .comments h3, .presenting .c-head strong, .presenting .comments article p { color: var(--ink-text); }
+  .presenting .comments .empty { color: var(--ink-text-dim); text-align: left; padding: 0; }
+  .presenting .comments article:hover { background: rgba(13, 17, 23, 0.5); }
+  .presenting .comments article.highlighted { background: rgba(13, 17, 23, 0.65); }
+  .presenting .comments form { background: rgba(13, 17, 23, 0.5); box-shadow: none; }
+  .presenting .comments textarea { color: var(--ink-text); }
+  .presenting .comments form label { color: var(--ink-text-dim); }
+  .presenting .anchor { color: var(--ink-text-dim); }
   .preview h2 { flex: 1; margin: 0; font-family: var(--font-ui); font-size: var(--text-16); font-weight: 500; color: var(--n-900); }
   .preview { outline: none; }
   .preview button { border: 0; border-radius: var(--radius); background: var(--n-200); color: var(--n-800); padding: 8px 12px; font-size: var(--text-13); font-weight: 500; }

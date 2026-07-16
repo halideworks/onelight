@@ -483,8 +483,8 @@
                   onchange={() => void patchBrand({ ...brandOf(share), player: undefined }, 'Player saved')}
                 />
                 <span>
-                  <strong>Full</strong>
-                  <small>The review instrument: marks, loops, lanes, quality.</small>
+                  <strong>Review</strong>
+                  <small>The full instrument: marks, loops, lanes, quality.</small>
                 </span>
               </label>
               <label class="check">
@@ -495,13 +495,13 @@
                   onchange={() => void patchBrand({ ...brandOf(share), player: 'simple' }, 'Player saved')}
                 />
                 <span>
-                  <strong>Simple</strong>
-                  <small>Transport, timecode, volume, full screen. Notes still work.</small>
+                  <strong>Presentation</strong>
+                  <small>Just the work: transport, timecode, volume, full screen. Notes still work.</small>
                 </span>
               </label>
             </div>
           {:else}
-            <p class="hint">A presentation always uses the simple player.</p>
+            <p class="hint">Presentation shares always use the presentation player.</p>
           {/if}
         </section>
 
@@ -664,7 +664,7 @@
   .body { padding: 0 var(--pad-4); max-width: 1720px; display: grid; gap: 10px; }
 
   /* ---- the link card ---- */
-  .linkcard { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 18px 20px; border-radius: var(--radius-lg); background: linear-gradient(180deg, color-mix(in oklab, var(--ink-100) 82%, var(--ink-200)) 0%, var(--ink-100) 52%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 2px rgba(0, 0, 0, 0.28); }
+  .linkcard { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 18px 20px; border-radius: var(--radius-lg); background: var(--ink-100); }
   .linkcard .url { flex: 1 1 320px; min-width: 0; color: var(--ink-text); font-size: var(--text-14); overflow-wrap: anywhere; }
   .linkcard.dead .url { color: var(--ink-text-dim); text-decoration: line-through; }
   .linkacts { display: flex; align-items: center; gap: 8px; }
@@ -684,7 +684,9 @@
      hole in the page. */
   .panels { display: grid; gap: 10px; }
   .duo { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 10px; align-items: stretch; }
-  .panel { padding: var(--pad-2); border-radius: var(--radius-lg); background: linear-gradient(180deg, color-mix(in oklab, var(--ink-100) 88%, var(--ink-200)) 0%, var(--ink-100) 46%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 1px 2px rgba(0, 0, 0, 0.28); display: grid; gap: 10px; align-content: start; }
+  /* Flat surfaces, one value step off the page: no gradient fills, no
+     highlights, no drop shadows. */
+  .panel { padding: var(--pad-2); border-radius: var(--radius-lg); background: var(--ink-100); display: grid; gap: 10px; align-content: start; }
   /* Panel names, plain case: the anti-slop list bans uppercase-tracked
      microcopy, and a heading does not need to shout to be a heading. */
   .panel h2 { margin: 0; color: var(--ink-text); font-size: var(--text-13); font-weight: 600; }
@@ -733,7 +735,7 @@
   td { padding: 6px 10px 6px 0; }
   td.tc { font-variant-numeric: tabular-nums; }
 
-  .dangerzone { background: linear-gradient(180deg, color-mix(in oklab, var(--warn) 7%, var(--ink-100)) 0%, var(--ink-100) 60%); }
+  .dangerzone { background: color-mix(in oklab, var(--warn) 6%, var(--ink-100)); }
   .dangerrow { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
   .dangerrow span { display: grid; gap: 2px; }
   .dangerrow small { color: var(--ink-text-dim); }
@@ -748,5 +750,6 @@
   .empty { margin: 0; color: var(--ink-text-dim); }
   .error { margin: 0; color: var(--warn); }
   .page-error { padding: 0 var(--pad-4); }
-  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  button:focus-visible, a:focus-visible, input:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  select:focus-visible { outline: none; background: var(--ink-300); }
 </style>

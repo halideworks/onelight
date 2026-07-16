@@ -82,7 +82,8 @@
   input { min-width: min(420px, 80vw); }
   button { border: 0; border-radius: var(--radius); background: var(--accent); color: #071216; padding: 11px 16px; font-weight: 600; }
   button:hover { background: var(--accent-bright); }
-  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  button:focus-visible, a:focus-visible, input:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  select:focus-visible { outline: none; background: var(--ink-300); }
   .revealed { margin-top: 24px; padding: 16px; border-radius: var(--radius); background: var(--ink-100); }
   .revealed strong { flex-basis: 100%; }
   .list { max-width: 760px; }

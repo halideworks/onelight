@@ -18,6 +18,9 @@ export interface AppEnv {
   version: string;
   blobStore?: BlobStore;
   mailer?: Mailer;
+  /* Capacity of whatever holds the blobs, where the host can know it: the
+     Node server reports its filesystem, object storage reports nothing. */
+  diskInfo?: () => Promise<{ total_bytes: number; free_bytes: number } | null>;
 }
 
 export type Variables = {

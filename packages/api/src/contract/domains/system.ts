@@ -391,8 +391,12 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       expect(response.status).toBe(200);
       const body = await json<{
         totals: Record<string, number>;
+        disk: unknown;
         projects: Array<Record<string, unknown>>;
       }>(response);
+      // The contract harness has no filesystem behind its blob store, so
+      // capacity is the same null an object-storage deployment reports.
+      expect(body.disk).toBeNull();
       const row = body.projects.find((entry) => entry.id === project.id);
       expect(row).toBeDefined();
       // seedAssetVersion writes size 10; the rendition weighs its content.

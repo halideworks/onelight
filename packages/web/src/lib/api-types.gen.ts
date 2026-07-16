@@ -815,6 +815,10 @@ export interface paths {
                                 asset_count: number;
                                 version_count: number;
                             };
+                            disk: {
+                                total_bytes: number;
+                                free_bytes: number;
+                            } | null;
                             projects: {
                                 originals_bytes: number;
                                 renditions_bytes: number;

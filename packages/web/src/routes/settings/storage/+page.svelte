@@ -3,10 +3,8 @@
   import { api, messageFrom } from '$lib/api.js';
   import { formatBytes } from '$lib/upload.js';
 
-  /* What the workspace weighs, per project: originals against renditions, so
-     the number that grows on its own (every upload spawns a proxy ladder) is
-     visible next to the number someone chose to store. Admin only, like the
-     endpoint. */
+  /* What the workspace weighs, per project, plus the media volume's capacity
+     where the host reports one. Admin only, like the endpoint. */
 
   type Counters = {
     originals_bytes: number;
@@ -16,6 +14,7 @@
   };
   type Usage = {
     totals: Counters;
+    disk: { total_bytes: number; free_bytes: number } | null;
     projects: Array<Counters & { id: string; name: string }>;
   };
 
@@ -62,10 +61,16 @@
       <span class="tc">{formatBytes(usage.totals.originals_bytes)}</span> of originals,
       <span class="tc">{formatBytes(usage.totals.renditions_bytes)}</span> of renditions.
     </p>
-    <p class="note">
-      Summed from the database, not a disk walk. Trashed assets keep their bytes
-      until the purge sweep collects them, so they count here.
-    </p>
+    {#if usage.disk}
+      <p class="disk">
+        <span class="diskbar" aria-hidden="true">
+          <span class="diskfill" style={`width: ${Math.min(100, ((usage.disk.total_bytes - usage.disk.free_bytes) / Math.max(usage.disk.total_bytes, 1)) * 100)}%;`}></span>
+        </span>
+        <span class="tc">{formatBytes(usage.disk.free_bytes)}</span> free of
+        <span class="tc">{formatBytes(usage.disk.total_bytes)}</span> on the media volume.
+      </p>
+    {/if}
+    <p class="note">Trashed assets are included until the purge removes them.</p>
 
     {#if rows.length === 0}
       <p class="empty">No projects yet.</p>
@@ -143,6 +148,10 @@
   .key { display: inline-block; width: 12px; height: 10px; border-radius: 2px; }
   .key.originals { background: var(--accent); }
   .key.renditions { background: var(--ink-400, #33415a); margin-left: 10px; }
+
+  .disk { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
+  .diskbar { display: block; width: 220px; height: 10px; border-radius: 2px; overflow: hidden; background: var(--ink-100); }
+  .diskfill { display: block; height: 100%; background: var(--ink-400, #33415a); }
 
   .empty { color: var(--ink-text-dim); }
   .error { color: var(--warn); }

@@ -967,6 +967,29 @@
                       ],
                       "additionalProperties": false
                     },
+                    "disk": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "total_bytes": {
+                              "type": "integer"
+                            },
+                            "free_bytes": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "total_bytes",
+                            "free_bytes"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "projects": {
                       "type": "array",
                       "items": {
@@ -1005,6 +1028,7 @@
                   },
                   "required": [
                     "totals",
+                    "disk",
                     "projects"
                   ],
                   "additionalProperties": false

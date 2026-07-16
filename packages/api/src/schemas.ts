@@ -276,9 +276,9 @@ const workspace = z.object({
   oidc_enabled: z.boolean(),
 });
 
-/* What the workspace weighs, summed from the sizes the DB already tracks (no
-   blob walk). Originals include trashed assets, whose bytes stay on disk
-   until the purge sweep collects them; asset_count is live assets only. */
+/* Storage totals, from the sizes the database tracks. Originals include
+   trashed assets until the purge removes them; asset_count is live assets
+   only. */
 const usageCounters = z.object({
   originals_bytes: z.number().int(),
   renditions_bytes: z.number().int(),
@@ -287,6 +287,11 @@ const usageCounters = z.object({
 });
 const workspaceUsage = z.object({
   totals: usageCounters,
+  /* The blob volume's capacity where the host can know it (the Node server's
+     filesystem); null on object storage. */
+  disk: z
+    .object({ total_bytes: z.number().int(), free_bytes: z.number().int() })
+    .nullable(),
   projects: z.array(usageCounters.extend({ id: z.string(), name: z.string() })),
 });
 

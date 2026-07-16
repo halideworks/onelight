@@ -1262,6 +1262,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           0,
         ),
       },
+      // Null on object storage, where capacity is not a meaningful number.
+      disk: env.diskInfo ? await env.diskInfo() : null,
       projects: perProject,
     });
   });

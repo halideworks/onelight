@@ -451,11 +451,8 @@
   .shares { display: grid; gap: var(--pad); }
   /* A card that is a door: the whole surface opens the share's page via the
      stretched title link, and lifts a little to say so. */
-  .share { position: relative; padding: 16px 18px; border-radius: var(--radius-lg); background: linear-gradient(180deg, color-mix(in oklab, var(--ink-100) 88%, var(--ink-200)) 0%, var(--ink-100) 46%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 1px 2px rgba(0, 0, 0, 0.28); display: grid; gap: 10px; transition: box-shadow 120ms ease, transform 120ms ease; }
-  .share:hover { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 3px 14px rgba(0, 0, 0, 0.38); transform: translateY(-1px); }
-  @media (prefers-reduced-motion: reduce) {
-    .share, .share:hover { transition: none; transform: none; }
-  }
+  .share { position: relative; padding: 16px 18px; border-radius: var(--radius-lg); background: var(--ink-100); display: grid; gap: 10px; transition: background 100ms ease; }
+  .share:hover { background: var(--ink-200); }
   .share.dead { opacity: 0.6; }
   .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   h2 { margin: 0; font-size: var(--text-16); font-weight: 600; }
@@ -516,5 +513,7 @@
   .empty { margin: 0; color: var(--ink-text-dim); }
   .error { margin: 0; color: var(--warn); }
   .page-error { padding: var(--pad-3) var(--pad-4); }
-  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  button:focus-visible, a:focus-visible, input:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  /* A dropdown never wears an outline ring; focus is the value step. */
+  select:focus-visible { outline: none; background: var(--ink-300); }
 </style>

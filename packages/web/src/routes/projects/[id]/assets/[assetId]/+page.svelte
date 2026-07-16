@@ -1400,5 +1400,6 @@
   button.quiet:hover { color: var(--n-900); background: var(--n-200); }
   button[aria-pressed='true'] { background: var(--n-400); color: var(--n-900); }
   .tc { font-variant-numeric: tabular-nums; }
-  button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px solid var(--n-800); outline-offset: 2px; }
+  button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px solid var(--n-800); outline-offset: 2px; }
+  select:focus-visible { outline: none; background: var(--n-300); }
 </style>

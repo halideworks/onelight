@@ -2372,5 +2372,6 @@
   .empty { color: var(--ink-text-dim); margin-top: var(--pad-2); }
   .error { color: var(--warn); }
   .page-error { padding: var(--pad-3) var(--pad-4); }
-  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  button:focus-visible, a:focus-visible, input:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  select:focus-visible { outline: none; background: var(--ink-300); }
 </style>
