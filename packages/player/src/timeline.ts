@@ -10,8 +10,38 @@ export type TimelineMarker = {
   frameIn: number;
   frameOut?: number | null;
   author?: string | null;
+  /* Stable identity for colouring: names collide and change, ids do not. */
+  authorId?: string | null;
   text?: string | null;
   completed?: boolean;
+};
+
+/* Muted, desaturated, and R=G!=B only as far as the design doc allows: the
+   review room bans tinted chrome near the frame but explicitly permits "muted
+   desaturated functional colors" for markers. Ten hues, far enough apart to
+   tell two people's notes apart at a glance on a 36px lane. */
+export const MARKER_INKS = [
+  "#7f9bb5",
+  "#a58d76",
+  "#8fa87e",
+  "#a37f8f",
+  "#7ea3a3",
+  "#a89a7e",
+  "#8e8bb0",
+  "#a9877e",
+  "#78a08c",
+  "#9d9a86",
+];
+
+/* A stable index per author: the same person is the same colour on every
+   reload and for every reviewer, which is the only reason the colour means
+   anything. Unattributed notes fall to the last ink. */
+export const markerInkFor = (authorId: string | null | undefined): string => {
+  if (!authorId) return MARKER_INKS[MARKER_INKS.length - 1] as string;
+  let hash = 0;
+  for (let index = 0; index < authorId.length; index += 1)
+    hash = (hash * 31 + authorId.charCodeAt(index)) >>> 0;
+  return MARKER_INKS[hash % MARKER_INKS.length] as string;
 };
 
 /* Track x for the center of a frame. Each frame owns an equal slice of the

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { frameAtCurrentTime, mediaTimeInsideFrame } from "./frame-clock.js";
-import { frameForX, spanForRange, xForFrame } from "./timeline.js";
+import {
+  MARKER_INKS,
+  frameForX,
+  markerInkFor,
+  spanForRange,
+  xForFrame,
+} from "./timeline.js";
 
 /* The timeline is frame-indexed, so the math is rate-independent, but the
    durations exercised here are real 24000/1001 material lengths and the
@@ -81,5 +87,45 @@ describe("timeline position math", () => {
     expect(spanForRange(50, 20, duration).width).toBe(0.01);
     expect(spanForRange(-5, 500, duration)).toEqual({ left: 0, width: 1 });
     expect(spanForRange(1, 2, 0)).toEqual({ left: 0, width: 0 });
+  });
+});
+
+describe("marker ink", () => {
+  /* The colour only means something if it is the same colour every time, for
+     everyone: same author -> same ink across reloads and across reviewers. */
+  it("is stable for an author and spread across the palette", () => {
+    const ids = Array.from(
+      { length: 40 },
+      (_v, index) =>
+        `01ARZ3NDEKTSV4RRFFQ69G5F${String(index).padStart(2, "0")}`,
+    );
+    for (const id of ids) expect(markerInkFor(id)).toBe(markerInkFor(id));
+    const used = new Set(ids.map((id) => markerInkFor(id)));
+    // Not a proof of uniformity, but a wall of one colour would fail it.
+    expect(used.size).toBeGreaterThan(3);
+    for (const ink of used) expect(MARKER_INKS).toContain(ink);
+  });
+
+  it("gives unattributed notes a defined ink rather than undefined", () => {
+    expect(MARKER_INKS).toContain(markerInkFor(null));
+    expect(MARKER_INKS).toContain(markerInkFor(undefined));
+    expect(markerInkFor(null)).toBe(markerInkFor(undefined));
+  });
+
+  /* Muted and desaturated is a design-doc requirement for the review room, not
+     a preference: nothing saturated goes near the frame. */
+  it("keeps every ink muted and desaturated", () => {
+    for (const ink of MARKER_INKS) {
+      const [r, g, b] = [1, 3, 5].map((at) =>
+        parseInt(ink.slice(at, at + 2), 16),
+      ) as [number, number, number];
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const saturation = max === 0 ? 0 : (max - min) / max;
+      expect(saturation, `${ink} saturation`).toBeLessThan(0.35);
+      // and mid-value: nothing that glows or disappears against the lane
+      expect(max, `${ink} brightness`).toBeGreaterThan(90);
+      expect(max, `${ink} brightness`).toBeLessThan(200);
+    }
   });
 });

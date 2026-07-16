@@ -3583,7 +3583,89 @@ export interface paths {
                 };
             };
         };
-        delete?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            version_id: string;
+                            parent_id: string | null;
+                            author_user_id: string | null;
+                            author_name: string | null;
+                            author_email: string | null;
+                            frame_in: number | null;
+                            frame_out: number | null;
+                            body_text: string;
+                            annotation: {
+                                [key: string]: unknown;
+                            } | null;
+                            pin_xy: {
+                                [key: string]: unknown;
+                            } | null;
+                            page_no: number | null;
+                            internal: boolean;
+                            completed_at: number | null;
+                            completed_by: string | null;
+                            carried_from_comment_id: string | null;
+                            deleted_at: number | null;
+                            created_at: number;
+                            edited_at: number | null;
+                            tags: string[];
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
