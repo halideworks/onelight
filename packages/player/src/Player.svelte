@@ -141,6 +141,22 @@
   let muted = $state(false);
   let volume = $state(1);
   let fullscreen = $state(false);
+  /* Captions are off until asked for; the toggle drives the text track's
+     mode directly, and a source change re-applies the choice. */
+  let captionsOn = $state(false);
+  const applyCaptions = (): void => {
+    const track = video?.textTracks?.[0];
+    if (track) track.mode = captionsOn && captionsSrc ? 'showing' : 'disabled';
+  };
+  const toggleCaptions = (): void => {
+    captionsOn = !captionsOn;
+    applyCaptions();
+  };
+  $effect(() => {
+    void captionsSrc;
+    void captionsOn;
+    applyCaptions();
+  });
   /* Fullscreen controls appear on movement and get out of the way again. The
      footage is the point; chrome parked over it is not. */
   const OVERLAY_IDLE_MS = 2200;
@@ -1140,6 +1156,18 @@
       </div>
 
       <div class="side right volume">
+        {#if captionsSrc}
+          <button
+            type="button"
+            class="icon captions"
+            aria-pressed={captionsOn}
+            onclick={toggleCaptions}
+            aria-label={captionsOn ? 'Hide captions' : 'Show captions'}
+            title="Captions"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="3.5" width="13" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2" fill="none" /><path d="M7 7.2a1.6 1.6 0 1 0 0 1.6M12 7.2a1.6 1.6 0 1 0 0 1.6" stroke="currentColor" stroke-width="1.2" fill="none" /></svg>
+          </button>
+        {/if}
         <button type="button" class="icon" aria-pressed={muted} onclick={() => { muted = !muted; }} aria-label={muted ? 'Unmute' : 'Mute'} title="Mute — M">
           {#if muted || volume === 0}
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3L4 6H2v4h2l3 3z" /><path d="M10.5 6.5l3 3M13.5 6.5l-3 3" stroke="currentColor" stroke-width="1.3" fill="none" /></svg>

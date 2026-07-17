@@ -433,6 +433,32 @@ export const renditions = sqliteTable(
   }),
 );
 
+/* Caption sidecars: a WebVTT per language, uploaded by people or a
+   deployment's captioning hook. Not a rendition because the pipeline never
+   makes these. */
+export const captionTracks = sqliteTable(
+  "caption_tracks",
+  {
+    id: text("id").primaryKey(),
+    versionId: text("version_id")
+      .notNull()
+      .references(() => assetVersions.id, { onDelete: "cascade" }),
+    language: text("language").notNull(),
+    label: text("label").notNull(),
+    blobKey: text("blob_key").notNull(),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => ({
+    versionLanguageUnique: uniqueIndex("caption_tracks_version_lang_uq").on(
+      table.versionId,
+      table.language,
+    ),
+  }),
+);
+
 export const jobs = sqliteTable(
   "jobs",
   {

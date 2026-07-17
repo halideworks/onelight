@@ -15,6 +15,7 @@ export const migrationFiles = [
   "0009_share_folders.sql",
   "0010_project_cover_uploads.sql",
   "0011_user_avatars.sql",
+  "0012_caption_tracks.sql",
 ];
 
 const migrationPath = (file: string): string =>

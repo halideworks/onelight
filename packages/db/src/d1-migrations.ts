@@ -235,6 +235,14 @@ export const d1Migrations: D1Migration[] = [
     applied: usersHaveAvatarKey,
     statements: ["ALTER TABLE users ADD COLUMN avatar_key TEXT"],
   },
+  {
+    name: "0012_caption_tracks.sql",
+    applied: (binding) => tableExists(binding, "caption_tracks"),
+    statements: [
+      "CREATE TABLE caption_tracks (\n  id TEXT PRIMARY KEY,\n  version_id TEXT NOT NULL REFERENCES asset_versions(id) ON DELETE CASCADE,\n  language TEXT NOT NULL,\n  label TEXT NOT NULL,\n  blob_key TEXT NOT NULL,\n  created_by TEXT NOT NULL REFERENCES users(id),\n  created_at INTEGER NOT NULL\n)",
+      "CREATE UNIQUE INDEX caption_tracks_version_lang_uq ON caption_tracks(version_id, language)",
+    ],
+  },
 ];
 
 const migrate = async (binding: D1Database): Promise<void> => {

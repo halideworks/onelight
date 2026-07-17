@@ -34,6 +34,75 @@ const listNotifications = async (
   ).items;
 
 export const registerVersionsDomain = (ctx: SuiteContext): void => {
+  describe("captions", () => {
+    const vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello there\n";
+
+    it("uploads a WebVTT per language and serves it with the renditions", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const put = (
+        cookie: string,
+        query = "language=en&label=English",
+        body = vtt,
+      ) =>
+        req(h, `/api/v1/versions/${seed.media.versionId}/captions?${query}`, {
+          method: "PUT",
+          cookie,
+          headers: { "content-type": "text/vtt" },
+          body,
+        });
+      const denied = await put(seed.commenter.cookie);
+      expect(denied.status).toBe(403);
+      const notVtt = await put(
+        seed.editor.cookie,
+        "language=en",
+        "1\n00:00:01,000 --> 00:00:02,000\nSRT lines",
+      );
+      expect(notVtt.status).toBe(400);
+      const badLang = await put(seed.editor.cookie, "language=english!!");
+      expect(badLang.status).toBe(400);
+      const created = await put(seed.editor.cookie);
+      expect(created.status).toBe(201);
+      const track = await json<{
+        language: string;
+        label: string;
+        url: string;
+      }>(created);
+      expect(track).toMatchObject({ language: "en", label: "English" });
+      const parsedUrl = new URL(track.url, "http://contract.invalid");
+      const fetched = await req(h, parsedUrl.pathname + parsedUrl.search, {
+        cookie: seed.editor.cookie,
+      });
+      expect(fetched.status).toBe(200);
+      expect(await fetched.text()).toBe(vtt);
+      // Replace-on-put: same language, new content, still one track.
+      const replaced = await put(
+        seed.editor.cookie,
+        "language=en&label=English",
+        vtt.replace("Hello there", "Hello again"),
+      );
+      expect(replaced.status).toBe(201);
+      const listing = await json<{ captions: Array<{ language: string }> }>(
+        await req(h, `/api/v1/versions/${seed.media.versionId}/renditions`, {
+          cookie: seed.viewer.cookie,
+        }),
+      );
+      expect(listing.captions).toHaveLength(1);
+      const removed = await req(
+        h,
+        `/api/v1/versions/${seed.media.versionId}/captions/en`,
+        { method: "DELETE", cookie: seed.editor.cookie },
+      );
+      expect(removed.status).toBe(204);
+      const after = await json<{ captions: unknown[] }>(
+        await req(h, `/api/v1/versions/${seed.media.versionId}/renditions`, {
+          cookie: seed.viewer.cookie,
+        }),
+      );
+      expect(after.captions).toHaveLength(0);
+    });
+  });
+
   describe("version stacking", () => {
     /* Fresh users and project per test so notification rows never bleed. */
     const fixture = async () => {

@@ -48,6 +48,8 @@
     status: string;
     sort_order: number;
     poster_url: string | null;
+    sprite_url: string | null;
+    sprite_vtt_url: string | null;
     duration_seconds: number | null;
   };
   type Comment = ReviewComment & { mine?: boolean };
@@ -61,6 +63,7 @@
       sidecars?: {
         sprite?: { url: string; vtt_url: string | null } | null;
         peaks?: { url: string } | null;
+        captions?: Array<{ language: string; label: string; url: string | null }>;
       } | null;
       watermark: 'ready' | 'processing' | null;
     }>;
@@ -76,6 +79,7 @@
   let previewRenditions = $state<PlayerRendition[]>([]);
   let previewFilmstrip = $state<{ url: string; cues: SpriteCue[] } | null>(null);
   let previewWaveformUrl = $state<string | null>(null);
+  let previewCaptionsUrl = $state<string | null>(null);
   let watermarkPending = $state(false);
   let downloadNote = $state('');
   let comments = $state<Comment[]>([]);
@@ -152,6 +156,69 @@
     palette: 'sumimai',
     cover_url: asset.poster_url
   });
+
+  /* Hover scrub on the landing tiles, the way the app's own browser has it:
+     mouse X maps onto the sprite's cue list, geometry loads lazily on first
+     hover so the landing stays one poster request per tile. Mouse only; touch
+     opens the asset. */
+  type ScrubGeometry = {
+    tiles: Array<{ x: number; y: number; w: number; h: number }>;
+    sheet: { w: number; h: number };
+    url: string;
+  };
+  let scrubGeometry = $state<Record<string, ScrubGeometry | null>>({});
+  let scrubAt = $state<{ id: string; fraction: number; width: number } | null>(null);
+
+  const ensureScrub = (asset: Asset): void => {
+    const spriteUrl = asset.sprite_url;
+    const vttUrl = asset.sprite_vtt_url;
+    if (!spriteUrl || !vttUrl || asset.id in scrubGeometry) return;
+    scrubGeometry[asset.id] = null;
+    void (async () => {
+      try {
+        const response = await fetch(vttUrl);
+        if (!response.ok) return;
+        const tiles = parseSpriteVtt(await response.text());
+        if (!tiles.length) return;
+        const image = new Image();
+        image.onload = () => {
+          scrubGeometry[asset.id] = {
+            tiles,
+            sheet: { w: image.naturalWidth, h: image.naturalHeight },
+            url: spriteUrl
+          };
+        };
+        image.src = spriteUrl;
+      } catch {
+        /* The poster stands; scrub simply never engages. */
+      }
+    })();
+  };
+
+  const scrubMove = (asset: Asset, event: PointerEvent): void => {
+    if (event.pointerType !== 'mouse') return;
+    const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    if (bounds.width <= 0) return;
+    scrubAt = {
+      id: asset.id,
+      fraction: Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width)),
+      width: bounds.width
+    };
+  };
+
+  const scrubStyle = (asset: Asset): string | null => {
+    const geometry = scrubGeometry[asset.id];
+    if (!geometry || scrubAt?.id !== asset.id) return null;
+    const tile =
+      geometry.tiles[Math.min(geometry.tiles.length - 1, Math.floor(scrubAt.fraction * geometry.tiles.length))];
+    if (!tile) return null;
+    const scale = scrubAt.width / tile.w;
+    return [
+      `background-image: url("${geometry.url}")`,
+      `background-size: ${geometry.sheet.w * scale}px ${geometry.sheet.h * scale}px`,
+      `background-position: ${-tile.x * scale}px ${-tile.y * scale}px`
+    ].join('; ');
+  };
 
   /* A share holding exactly one thing opens straight into it: a landing
      with one tile is a menu with one item. With several, the landing is the
@@ -409,6 +476,7 @@
     previewRenditions = [];
     previewFilmstrip = null;
     previewWaveformUrl = null;
+    previewCaptionsUrl = null;
     watermarkPending = false;
     downloadNote = '';
     comments = [];
@@ -437,6 +505,8 @@
          filmstrip tile geometry. Absent sidecars mean absent lanes. */
       const sidecars = version?.sidecars;
       if (token === mediaPollToken && sidecars?.peaks?.url) previewWaveformUrl = sidecars.peaks.url;
+      if (token === mediaPollToken)
+        previewCaptionsUrl = sidecars?.captions?.find((track) => track.url)?.url ?? null;
       if (sidecars?.sprite?.url && sidecars.sprite.vtt_url) {
         const spriteUrl = sidecars.sprite.url;
         try {
@@ -499,6 +569,7 @@
     previewRenditions = [];
     previewFilmstrip = null;
     previewWaveformUrl = null;
+    previewCaptionsUrl = null;
     watermarkPending = false;
     downloadNote = '';
     comments = [];
@@ -822,8 +893,20 @@
           <!-- The picture leads. A list row is 56px of frame, too small for a
                monogram to read as anything but a cropped letter, so it takes
                the wash and the light alone. -->
-          <span class="frame">
+          <span
+            class="frame"
+            role="presentation"
+            onpointerenter={() => ensureScrub(asset)}
+            onpointermove={(event) => scrubMove(asset, event)}
+            onpointerleave={() => {
+              if (scrubAt?.id === asset.id) scrubAt = null;
+            }}
+          >
             <ProjectCover project={coverFor(asset)} monogram={share.layout !== 'list'} />
+            {#if scrubStyle(asset)}
+              <span class="scrubsheet" style={scrubStyle(asset)} aria-hidden="true"></span>
+              <span class="scrubline" style={`left: ${(scrubAt?.fraction ?? 0) * 100}%;`} aria-hidden="true"></span>
+            {/if}
           </span>
           <span class="caption">
             <span class="name">{asset.name}</span>
@@ -914,6 +997,7 @@
           renditions={previewRenditions}
           filmstrip={previewFilmstrip}
           waveformUrl={previewWaveformUrl}
+          captionsSrc={previewCaptionsUrl ?? undefined}
           allowDrawing={share.allow_comments}
           drawDefaultColor={inkChoice ?? myInk}
           chrome={playerChrome}
@@ -1175,8 +1259,10 @@
   .assets.reel { grid-template-columns: 1fr; gap: 56px; max-width: 1000px; margin-inline: auto; }
 
   .asset { display: grid; gap: 10px; padding: 0; border: 0; border-radius: 0; background: none; color: inherit; text-align: left; }
-  .frame { display: block; overflow: hidden; border-radius: var(--radius-lg); background: rgba(13, 17, 23, 0.54); aspect-ratio: 16 / 9; }
+  .frame { display: block; position: relative; overflow: hidden; border-radius: var(--radius-lg); background: rgba(13, 17, 23, 0.54); aspect-ratio: 16 / 9; }
   .frame :global(.cover) { width: 100%; height: 100%; }
+  .scrubsheet { position: absolute; inset: 0; background-repeat: no-repeat; }
+  .scrubline { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(232, 228, 220, 0.65); }
   .caption { display: grid; gap: 3px; }
   .name { font-size: var(--text-14); font-weight: 500; }
   .status { color: rgba(255, 255, 255, 0.64); font-size: var(--text-13); }

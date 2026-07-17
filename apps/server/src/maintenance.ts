@@ -8,6 +8,7 @@ import {
   assetVersions,
   assets,
   auditLog,
+  captionTracks,
   commentAttachments,
   comments,
   exportJobs,
@@ -716,6 +717,11 @@ export const referencedBlobKeys = async (db: AppDb): Promise<Set<string>> => {
   for (const row of await db
     .select({ key: projectCoverUploads.blobKey })
     .from(projectCoverUploads)
+    .all())
+    keys.add(row.key);
+  for (const row of await db
+    .select({ key: captionTracks.blobKey })
+    .from(captionTracks)
     .all())
     keys.add(row.key);
   return keys;

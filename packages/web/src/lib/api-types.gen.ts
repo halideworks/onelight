@@ -7224,6 +7224,8 @@ export interface paths {
                                 status: "none" | "in_review" | "approved" | "changes_requested";
                                 current_version_id: string | null;
                                 poster_url: string | null;
+                                sprite_url: string | null;
+                                sprite_vtt_url: string | null;
                                 duration_seconds: number | null;
                                 sort_order: number;
                             }[];
@@ -7309,6 +7311,8 @@ export interface paths {
                                 status: "none" | "in_review" | "approved" | "changes_requested";
                                 current_version_id: string | null;
                                 poster_url: string | null;
+                                sprite_url: string | null;
+                                sprite_vtt_url: string | null;
                                 duration_seconds: number | null;
                                 sort_order: number;
                             }[];
@@ -7423,6 +7427,11 @@ export interface paths {
                                     peaks: {
                                         url: string;
                                     } | null;
+                                    captions: {
+                                        language: string;
+                                        label: string;
+                                        url: string | null;
+                                    }[];
                                 };
                                 watermark: ("ready" | "processing") | null;
                             }[];
@@ -10040,6 +10049,11 @@ export interface paths {
                                 url: string | null;
                                 vtt_url: string | null;
                             }[];
+                            captions: {
+                                language: string;
+                                label: string;
+                                url: string | null;
+                            }[];
                         };
                     };
                 };
@@ -10084,6 +10098,165 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/versions/{id}/captions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Upload a WebVTT caption track (editor+), one per language, replace on re-put. Raw text/vtt body; ?language=<BCP 47>&label=<name>. This is the deployment captioning hook: a curl away. */
+        put: {
+            parameters: {
+                query?: {
+                    /** @description BCP 47 tag like en or pt-br. Defaults to en. */
+                    language?: string;
+                    /** @description Menu label. Defaults to the language tag. */
+                    label?: string;
+                };
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "text/vtt": string;
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            language: string;
+                            label: string;
+                            url: string | null;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/versions/{id}/captions/{language}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                    language: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description No content */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;

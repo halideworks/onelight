@@ -11301,6 +11301,18 @@
                               "null"
                             ]
                           },
+                          "sprite_url": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sprite_vtt_url": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "duration_seconds": {
                             "type": [
                               "number",
@@ -11318,6 +11330,8 @@
                           "status",
                           "current_version_id",
                           "poster_url",
+                          "sprite_url",
+                          "sprite_vtt_url",
                           "duration_seconds",
                           "sort_order"
                         ],
@@ -11433,6 +11447,18 @@
                               "null"
                             ]
                           },
+                          "sprite_url": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sprite_vtt_url": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "duration_seconds": {
                             "type": [
                               "number",
@@ -11450,6 +11476,8 @@
                           "status",
                           "current_version_id",
                           "poster_url",
+                          "sprite_url",
+                          "sprite_vtt_url",
                           "duration_seconds",
                           "sort_order"
                         ],
@@ -11693,11 +11721,38 @@
                                     "type": "null"
                                   }
                                 ]
+                              },
+                              "captions": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "language": {
+                                      "type": "string"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    },
+                                    "url": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "language",
+                                    "label",
+                                    "url"
+                                  ],
+                                  "additionalProperties": false
+                                }
                               }
                             },
                             "required": [
                               "sprite",
-                              "peaks"
+                              "peaks",
+                              "captions"
                             ],
                             "additionalProperties": false
                           },
@@ -16219,15 +16274,225 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "captions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "language": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "language",
+                          "label",
+                          "url"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
-                    "items"
+                    "items",
+                    "captions"
                   ],
                   "additionalProperties": false
                 }
               }
             }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/versions/{id}/captions": {
+      "put": {
+        "summary": "Upload a WebVTT caption track (editor+), one per language, replace on re-put. Raw text/vtt body; ?language=<BCP 47>&label=<name>. This is the deployment captioning hook: a curl away.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "language",
+            "in": "query",
+            "required": false,
+            "description": "BCP 47 tag like en or pt-br. Defaults to en.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "label",
+            "in": "query",
+            "required": false,
+            "description": "Menu label. Defaults to the language tag.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/vtt": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "language": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "language",
+                    "label",
+                    "url"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/versions/{id}/captions/{language}": {
+      "delete": {
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "language",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No content"
           },
           "400": {
             "description": "Validation failure",

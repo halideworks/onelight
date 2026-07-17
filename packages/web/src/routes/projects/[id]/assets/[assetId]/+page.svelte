@@ -65,6 +65,8 @@
   let renditionOptions = $state<PlayerRendition[]>([]);
   let filmstrip = $state<{ url: string; cues: SpriteCue[] } | null>(null);
   let waveformUrl = $state<string | null>(null);
+  /* First caption track's URL; the player takes one track. */
+  let captionsUrl = $state<string | null>(null);
   let rate = $state<{ num: number; den: number } | null>(null);
   let dropFrame = $state(false);
   let durationFrames = $state<number | null>(null);
@@ -298,8 +300,12 @@
 
   const loadRenditions = async (versionId: string, token: number): Promise<void> => {
     try {
-      const items = (await api<{ items: Rendition[] }>(`/api/v1/versions/${versionId}/renditions`)).items;
+      const listing = await api<{ items: Rendition[]; captions?: Array<{ url: string | null }> }>(
+        `/api/v1/versions/${versionId}/renditions`
+      );
+      const items = listing.items;
       if (token !== versionToken) return;
+      captionsUrl = listing.captions?.find((track) => track.url)?.url ?? null;
       renditionOptions = items
         .filter((candidate) => ['proxy_540', 'proxy_1080', 'proxy_2160'].includes(candidate.kind))
         .flatMap((candidate) => {
@@ -443,6 +449,7 @@
     source = '';
     renditionOptions = [];
     filmstrip = null;
+    captionsUrl = null;
     waveformUrl = null;
     comments = [];
     commentError = '';
@@ -1104,6 +1111,7 @@
             renditions={renditionOptions}
             {filmstrip}
             {waveformUrl}
+            captionsSrc={captionsUrl ?? undefined}
             allowDrawing
             drawDefaultColor={annotationInkFor(auth.user?.id ?? null)}
             onframechange={(frame) => {

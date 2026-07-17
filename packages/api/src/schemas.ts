@@ -633,6 +633,10 @@ const publicShareAsset = z.object({
      current version, and where no blob store is configured: the client falls
      back to a text tile in all three cases. */
   poster_url: z.string().nullable(),
+  /* Sprite sheet and its VTT for hover scrub on the landing, same sidecar
+     policy as the poster; null when the sprite or its VTT is missing. */
+  sprite_url: z.string().nullable(),
+  sprite_vtt_url: z.string().nullable(),
   /* Running time from the current version's probe; null until probed or for
      stills. */
   duration_seconds: z.number().nullable(),
@@ -680,11 +684,18 @@ const shareSource = z.object({
   height: z.number().int().nullable(),
 });
 
+const captionTrack = z.object({
+  language: z.string(),
+  label: z.string(),
+  url: z.string().nullable(),
+});
+
 const shareSidecars = z.object({
   sprite: z
     .object({ url: z.string(), vtt_url: z.string().nullable() })
     .nullable(),
   peaks: z.object({ url: z.string() }).nullable(),
+  captions: z.array(captionTrack),
 });
 
 const publicShareVersion = z.object({
@@ -1310,7 +1321,33 @@ export const routeDocs: Record<string, RouteDoc> = {
   "POST /assets/:id/restore": { responses: { "200": ok(asset) } },
   "GET /versions/:id": { responses: { "200": ok(version) } },
   "GET /versions/:id/renditions": {
-    responses: { "200": ok(list(renditionItem)) },
+    responses: {
+      "200": ok(
+        z.object({
+          items: z.array(renditionItem),
+          captions: z.array(captionTrack),
+        }),
+      ),
+    },
+  },
+  "PUT /versions/:id/captions": {
+    summary:
+      "Upload a WebVTT caption track (editor+), one per language, replace on re-put. Raw text/vtt body; ?language=<BCP 47>&label=<name>. This is the deployment captioning hook: a curl away.",
+    requestContentType: "text/vtt",
+    query: {
+      language: {
+        description: "BCP 47 tag like en or pt-br. Defaults to en.",
+        required: false,
+      },
+      label: {
+        description: "Menu label. Defaults to the language tag.",
+        required: false,
+      },
+    },
+    responses: { "201": created(captionTrack) },
+  },
+  "DELETE /versions/:id/captions/:language": {
+    responses: { "204": noContent },
   },
   "PATCH /versions/:id/stack": {
     request: bodies.stackPatch,

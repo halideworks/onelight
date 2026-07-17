@@ -37,6 +37,7 @@ import {
   apiTokens,
   assetVersions,
   assets,
+  captionTracks,
   comments,
   commentAttachments,
   commentReactions,
@@ -2790,7 +2791,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const versionForActor = async (
     id: string,
     actor: typeof users.$inferSelect,
-    minimum: "viewer" | "commenter" | "manager" = "viewer",
+    minimum: "viewer" | "commenter" | "editor" | "manager" = "viewer",
   ) => {
     const version = (
       await env.db
@@ -5190,7 +5191,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     };
   };
 
-  // Posters for a whole share listing, in one rendition query.
+  // Posters and sprites for a whole share listing, in one rendition query.
   //
   // The app's own grid resolves posters per asset through the internal
   // versions and renditions endpoints, which a share viewer cannot reach; a
@@ -5200,40 +5201,68 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const posterUrlsFor = async (
     share: typeof shares.$inferSelect,
     shareAssets: PublicShareAsset[],
-  ): Promise<Map<string, string>> => {
-    const urls = new Map<string, string>();
+  ): Promise<
+    Map<
+      string,
+      {
+        poster: string | null;
+        sprite: string | null;
+        sprite_vtt: string | null;
+      }
+    >
+  > => {
+    const urls = new Map<
+      string,
+      {
+        poster: string | null;
+        sprite: string | null;
+        sprite_vtt: string | null;
+      }
+    >();
     const versionIds = shareAssets
       .map((asset) => asset.currentVersionId)
       .filter((id): id is string => Boolean(id));
     if (!env.blobStore || !versionIds.length) return urls;
-    const posters = (await env.db
+    // Posters and sprites in one query: the landing draws the poster and
+    // hover-scrubs the sprite, both watermark-neutral sidecars.
+    const sidecarRows = (await env.db
       .select()
       .from(renditions)
       .where(
         and(
           inArray(renditions.versionId, versionIds),
-          eq(renditions.kind, "poster"),
+          inArray(renditions.kind, ["poster", "sprite"]),
           isNull(renditions.shareId),
         ),
       )
       .all()) as Array<typeof renditions.$inferSelect>;
-    const byVersion = new Map(
-      posters.map((poster) => [poster.versionId, poster]),
-    );
+    const postersBy = new Map<string, typeof renditions.$inferSelect>();
+    const spritesBy = new Map<string, typeof renditions.$inferSelect>();
+    for (const row of sidecarRows)
+      (row.kind === "poster" ? postersBy : spritesBy).set(row.versionId, row);
     for (const asset of shareAssets) {
-      const poster = asset.currentVersionId
-        ? byVersion.get(asset.currentVersionId)
-        : undefined;
-      if (poster)
-        urls.set(
-          asset.id,
-          await publicMediaUrl(
-            share,
-            asset.id,
-            poster.versionId,
-            poster.blobKey,
-          ),
-        );
+      const versionId = asset.currentVersionId;
+      if (!versionId) continue;
+      const poster = postersBy.get(versionId);
+      const sprite = spritesBy.get(versionId);
+      const spriteMeta = sprite ? parseJsonObject(sprite.metaJson) : {};
+      const vttKey =
+        typeof spriteMeta.vtt_blob_key === "string"
+          ? spriteMeta.vtt_blob_key
+          : undefined;
+      urls.set(asset.id, {
+        poster: poster
+          ? await publicMediaUrl(share, asset.id, versionId, poster.blobKey)
+          : null,
+        sprite:
+          sprite && vttKey
+            ? await publicMediaUrl(share, asset.id, versionId, sprite.blobKey)
+            : null,
+        sprite_vtt:
+          sprite && vttKey
+            ? await publicMediaUrl(share, asset.id, versionId, vttKey)
+            : null,
+      });
     }
     return urls;
   };
@@ -5292,7 +5321,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       kind: asset.kind,
       status: asset.status,
       current_version_id: asset.currentVersionId,
-      poster_url: posters.get(asset.id) ?? null,
+      poster_url: posters.get(asset.id)?.poster ?? null,
+      sprite_url: posters.get(asset.id)?.sprite ?? null,
+      sprite_vtt_url: posters.get(asset.id)?.sprite_vtt ?? null,
       duration_seconds: seconds.get(asset.id) ?? null,
       sort_order: asset.sort_order,
     }));
@@ -5543,6 +5574,27 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
                 ),
               }
             : null,
+        captions: env.blobStore
+          ? await Promise.all(
+              (
+                (await env.db
+                  .select()
+                  .from(captionTracks)
+                  .where(eq(captionTracks.versionId, version.id))
+                  .orderBy(asc(captionTracks.language))
+                  .all()) as Array<typeof captionTracks.$inferSelect>
+              ).map(async (track) => ({
+                language: track.language,
+                label: track.label,
+                url: await publicMediaUrl(
+                  share,
+                  asset.id,
+                  version.id,
+                  track.blobKey,
+                ),
+              })),
+            )
+          : [],
       };
       items.push({
         id: version.id,
@@ -7062,7 +7114,145 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           };
         }),
       ),
+      captions: await captionsWire(version.id),
     });
+  });
+
+  /* Caption tracks ride the renditions listing internally and the share
+     asset detail publicly; these routes are how they get there. The upload
+     is raw WebVTT, one track per language, replace-on-put -- simple enough
+     that a deployment's captioning hook is a curl. */
+  const CAPTION_MAX_BYTES = 1_048_576;
+  const captionsWire = async (versionId: string) => {
+    const rows = await env.db
+      .select()
+      .from(captionTracks)
+      .where(eq(captionTracks.versionId, versionId))
+      .orderBy(asc(captionTracks.language))
+      .all();
+    return Promise.all(
+      rows.map(async (track: typeof captionTracks.$inferSelect) => ({
+        language: track.language,
+        label: track.label,
+        url: env.blobStore
+          ? await privateMediaUrl({ versionId }, track.blobKey)
+          : null,
+      })),
+    );
+  };
+
+  api.put("/versions/:id/captions", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const version = await versionForActor(c.req.param("id"), actor, "editor");
+    if (!env.blobStore)
+      throw errors.internal("Blob storage is not configured.");
+    const language = (c.req.query("language") ?? "en").trim().toLowerCase();
+    if (!/^[a-z]{2,3}(-[a-z0-9]{2,8})?$/.test(language))
+      throw errors.validation(
+        "language must be a BCP 47 tag like en or pt-br.",
+      );
+    const label = (c.req.query("label") ?? "").trim() || language.toUpperCase();
+    if (label.length > 80) throw errors.validation("label is too long.");
+    const bytes = await c.req.arrayBuffer();
+    if (!bytes.byteLength)
+      throw errors.validation("The captions file is empty.");
+    if (bytes.byteLength > CAPTION_MAX_BYTES)
+      throw errors.validation("Captions must be under 1 MB.");
+    const head = new TextDecoder().decode(bytes.slice(0, 32));
+    if (
+      !head
+        .replace(/^\uFEFF/, "")
+        .trimStart()
+        .startsWith("WEBVTT")
+    )
+      throw errors.validation(
+        "Captions must be WebVTT; the file has to start with WEBVTT.",
+      );
+    const key = `captions/${version.id}/${language}-${env.ids.ulid()}.vtt`;
+    await env.blobStore.putStream(
+      key,
+      new Response(bytes).body as ReadableStream,
+      { contentType: "text/vtt", size: bytes.byteLength },
+    );
+    const now = env.clock.now();
+    const existing = (
+      await env.db
+        .select()
+        .from(captionTracks)
+        .where(
+          and(
+            eq(captionTracks.versionId, version.id),
+            eq(captionTracks.language, language),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (existing) {
+      await env.db
+        .update(captionTracks)
+        .set({ label, blobKey: key, createdBy: actor.id, createdAt: now })
+        .where(eq(captionTracks.id, existing.id))
+        .run();
+      try {
+        await env.blobStore.delete(existing.blobKey);
+      } catch {
+        // The row is the truth; a stranded blob is the GC's problem.
+      }
+    } else {
+      await env.db
+        .insert(captionTracks)
+        .values({
+          id: env.ids.ulid(),
+          versionId: version.id,
+          language,
+          label,
+          blobKey: key,
+          createdBy: actor.id,
+          createdAt: now,
+        })
+        .run();
+    }
+    return c.json(
+      {
+        language,
+        label,
+        url: await privateMediaUrl({ versionId: version.id }, key),
+      },
+      201,
+    );
+  });
+
+  api.delete("/versions/:id/captions/:language", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const version = await versionForActor(c.req.param("id"), actor, "editor");
+    const language = c.req.param("language").toLowerCase();
+    const existing = (
+      await env.db
+        .select()
+        .from(captionTracks)
+        .where(
+          and(
+            eq(captionTracks.versionId, version.id),
+            eq(captionTracks.language, language),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (!existing) throw errors.notFound("No captions in that language.");
+    await env.db
+      .delete(captionTracks)
+      .where(eq(captionTracks.id, existing.id))
+      .run();
+    if (env.blobStore) {
+      try {
+        await env.blobStore.delete(existing.blobKey);
+      } catch {
+        // See above: GC reconciles.
+      }
+    }
+    return c.body(null, 204);
   });
 
   api.patch("/versions/:id/stack", requireAuth, async (c) => {

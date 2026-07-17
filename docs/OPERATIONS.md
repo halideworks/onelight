@@ -26,6 +26,24 @@
   system page warns when backups are off and calls a newest snapshot older
   than a day stale.
 
+## Hooks
+
+Onelight generates what it can from the media itself and leaves the rest as
+open endpoints for a deployment to fill. **Captioning** is the first such
+hook: pipe a version through whatever ASR you run and PUT the WebVTT back,
+one track per language, replace on re-put:
+
+```
+curl -X PUT "$BASE/api/v1/versions/$VERSION/captions?language=en&label=English" \
+  -H "content-type: text/vtt" \
+  -H "authorization: Bearer $TOKEN" \
+  --data-binary @captions.vtt
+```
+
+The player grows a captions toggle wherever a track exists, in the review
+room and on shares alike. `DELETE /versions/:id/captions/:language` removes
+a track.
+
 ## Housekeeping that runs itself
 
 - Upload-session reaping, trash purge, and rate-limit pruning run on the

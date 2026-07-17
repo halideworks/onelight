@@ -41,6 +41,24 @@ All automated gates are green on this machine, including the qa suites executed 
   worker-less installs; exports are DB-to-file work and now always run (the
   PDF already degrades to no stills).
 
+## Player and share parity (2026-07-16)
+
+- **Hover scrub on the share landing**, the way the app's own browser has it:
+  the share assets wire gained `sprite_url`/`sprite_vtt_url` (same one-query,
+  watermark-neutral sidecar policy as the poster), and the landing tiles map
+  mouse X onto the sprite's cue list, geometry loading lazily on first hover.
+- **Captions, as the first deployment hook.** New `caption_tracks` table
+  (migration 0012, both legs): a WebVTT per language, uploaded with
+  `PUT /versions/:id/captions?language=..&label=..` (editor+, raw text/vtt,
+  replace-on-put, 1 MB cap, WEBVTT header enforced), removed with DELETE.
+  Tracks ride the internal renditions listing and the share asset detail's
+  sidecars; the player grew a CC toggle that appears wherever a track exists,
+  in the review room and on shares alike. GC counts caption blobs as
+  referenced. docs/OPERATIONS.md shows the curl -- pipe your own ASR in.
+- **Share analytics**: the viewer roster (name, email, last seen) was already
+  surfaced on the share page; deeper per-asset view analytics needs event
+  data the server does not yet record, noted below as open.
+
 ## The comparison viewer (2026-07-16)
 
 `/projects/:id/assets/:assetId/compare` puts two versions of an asset against
