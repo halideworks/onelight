@@ -115,6 +115,15 @@ CI installs webkit alongside chromium and firefox, so all three engines run
 there. Playwright webkit is not real Safari (it lacks the macOS media
 stack), so real Safari still belongs to the manual pass below.
 
+Playwright webkit on Linux decodes through its bundled GStreamer/GL path
+and reads the 75 percent bars low (a uniform -3 on the neutral plus -2
+more on the green channel of saturated patches, measured 2026-07-17).
+That deviation is pinned exactly in `PINNED_DECODE_DEVIATIONS` in
+`src/color-qc.spec.ts`, scoped to that engine and platform: the reference
+and its tolerances are never widened, and any drift in the pinned bytes
+(including WebKit fixing itself) fails the run until the pin is
+re-derived or deleted. The full analysis is recorded with the table.
+
 ### hdr-tonemap.spec.ts (Node only, ffmpeg + ffprobe)
 
 Runs the product's literal `HDR_TONEMAP_FILTER` string (imported from
