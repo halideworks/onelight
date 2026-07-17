@@ -1,6 +1,8 @@
 import {
   formatTimecode,
+  framesFromTimecode,
   isDropFrameRate,
+  parseTimecode,
   timecodeFromFrames,
   type FrameRate,
 } from "./timecode.js";
@@ -314,3 +316,114 @@ export const exportText = (
         `${timecodeLabel(sourceFrame(comment.frameIn, options), options)} ${comment.bodyText}`,
     )
     .join("\n") + "\n";
+
+/* ---- the way back: marker files into comments ---- */
+
+export interface ImportedMarker {
+  frameIn: number;
+  frameOut: number | null;
+  bodyText: string;
+}
+
+/* Parses the Resolve marker EDL this module writes (and what Resolve's own
+   Export > Timeline Markers to EDL produces): an event line carrying four
+   timecodes, then a continuation line with |M:<text> and |D:<duration>.
+   The record-in timecode anchors the marker; the duration reopens the span.
+   Unparseable lines are skipped rather than fatal, because these files come
+   from NLEs and converters with their own ideas about whitespace. */
+export const parseResolveEdl = (
+  content: string,
+  options: MarkerOptions,
+): ImportedMarker[] => {
+  const markers: ImportedMarker[] = [];
+  const lines = content.split(/\r?\n/);
+  const start =
+    options.timecodeBase === "record_run" ? 0 : (options.startFrame ?? 0);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const event =
+      /^\d+\s+\S+\s+\S+\s+\S+\s+(\d{2,}:\d{2}:\d{2}[:;]\d{2})\s+\d{2,}:\d{2}:\d{2}[:;]\d{2}\s+(\d{2,}:\d{2}:\d{2}[:;]\d{2})\s+\d{2,}:\d{2}:\d{2}[:;]\d{2}\s*$/.exec(
+        line,
+      );
+    if (!event) continue;
+    const continuation = lines[index + 1] ?? "";
+    const text = /\|M:(.*?)(?:\s*\|D:(\d+))?\s*$/.exec(continuation);
+    if (!text) continue;
+    const anchor = event[2] ?? event[1] ?? "";
+    let frame: number;
+    try {
+      frame = framesFromTimecode(
+        parseTimecode(anchor, options.rate),
+        options.rate,
+      );
+    } catch {
+      continue;
+    }
+    const frameIn = Math.max(0, frame - start);
+    const duration = text[2] ? Number(text[2]) : 1;
+    const body = (text[1] ?? "")
+      .replace(/^_(?=\d)/, "")
+      .split(ENCODED_NEWLINE)
+      .join("\n")
+      .trim();
+    if (!body) continue;
+    markers.push({
+      frameIn,
+      frameOut: duration > 1 ? frameIn + duration - 1 : null,
+      bodyText: body,
+    });
+    index += 1;
+  }
+  return markers;
+};
+
+/* Parses the CSV this module writes: quoted fields, columns
+   id,frame_in,frame_out,timecode,body,author. Frames are authoritative;
+   the timecode column is a label. */
+export const parseMarkersCsv = (content: string): ImportedMarker[] => {
+  const rows: string[][] = [];
+  let field = "";
+  let row: string[] = [];
+  let quoted = false;
+  for (let at = 0; at < content.length; at += 1) {
+    const char = content[at] ?? "";
+    if (quoted) {
+      if (char === '"' && content[at + 1] === '"') {
+        field += '"';
+        at += 1;
+      } else if (char === '"') quoted = false;
+      else field += char;
+    } else if (char === '"') quoted = true;
+    else if (char === ",") {
+      row.push(field);
+      field = "";
+    } else if (char === "\n" || char === "\r") {
+      if (char === "\r" && content[at + 1] === "\n") at += 1;
+      row.push(field);
+      field = "";
+      if (row.some((value) => value.length > 0)) rows.push(row);
+      row = [];
+    } else field += char;
+  }
+  row.push(field);
+  if (row.some((value) => value.length > 0)) rows.push(row);
+  const header = rows[0] ?? [];
+  const frameInAt = header.indexOf("frame_in");
+  const frameOutAt = header.indexOf("frame_out");
+  const bodyAt = header.indexOf("body");
+  if (frameInAt < 0 || bodyAt < 0) return [];
+  const markers: ImportedMarker[] = [];
+  for (const cells of rows.slice(1)) {
+    const frameIn = Number(cells[frameInAt]);
+    const body = (cells[bodyAt] ?? "").trim();
+    if (!Number.isInteger(frameIn) || frameIn < 0 || !body) continue;
+    const frameOut = frameOutAt >= 0 ? Number(cells[frameOutAt]) : NaN;
+    markers.push({
+      frameIn,
+      frameOut:
+        Number.isInteger(frameOut) && frameOut > frameIn ? frameOut : null,
+      bodyText: body,
+    });
+  }
+  return markers;
+};

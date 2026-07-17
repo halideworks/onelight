@@ -25,6 +25,8 @@ import {
   crc32cStream,
   days,
   errors,
+  parseMarkersCsv,
+  parseResolveEdl,
   projectRoleAtLeast,
   randomBytes,
   sha256,
@@ -2928,6 +2930,81 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.json(commentWire(comment), 201);
   });
 
+  /* Markers exported from an NLE come back as comments: the round trip. The
+     file's timecodes resolve against the version's own rate and start frame,
+     markers landing outside the version are counted rather than fatal, and no
+     notifications fan out (a marker file is not a conversation). */
+  api.post("/versions/:id/comments/import", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const version = await versionForActor(
+      c.req.param("id"),
+      actor,
+      "commenter",
+    );
+    const body = await jsonBody(c, bodies.commentsImport);
+    const options = {
+      rate: {
+        num: version.frameRateNum ?? 24,
+        den: version.frameRateDen ?? 1,
+      },
+      startFrame:
+        body.timecode_base === "source" ? (version.sourceStartFrame ?? 0) : 0,
+      dropFrame: Boolean(version.dropFrame),
+      timecodeBase: body.timecode_base,
+    };
+    const markers =
+      body.format === "resolve_edl"
+        ? parseResolveEdl(body.content, options)
+        : parseMarkersCsv(body.content);
+    if (!markers.length)
+      throw errors.validation(
+        "No markers were found in the file. Onelight reads the Resolve marker EDL and its own CSV.",
+      );
+    if (markers.length > 2000)
+      throw errors.validation("The file holds more than 2000 markers.");
+    const duration = version.durationFrames;
+    let imported = 0;
+    let skipped = 0;
+    const now = env.clock.now();
+    for (const marker of markers) {
+      if (duration !== null && duration !== undefined) {
+        if (marker.frameIn >= duration) {
+          skipped += 1;
+          continue;
+        }
+        if (marker.frameOut !== null && marker.frameOut >= duration)
+          marker.frameOut = duration - 1;
+      }
+      await env.db
+        .insert(comments)
+        .values({
+          id: env.ids.ulid(),
+          versionId: version.id,
+          parentId: null,
+          authorUserId: actor.id,
+          authorName: actor.name,
+          authorEmail: actor.email,
+          viewerKey: null,
+          frameIn: marker.frameIn,
+          frameOut: marker.frameOut,
+          bodyText: marker.bodyText,
+          annotationJson: null,
+          pinXyJson: null,
+          pageNo: null,
+          internal: false,
+          completedAt: null,
+          completedBy: null,
+          carriedFromCommentId: null,
+          deletedAt: null,
+          createdAt: now,
+          editedAt: null,
+        })
+        .run();
+      imported += 1;
+    }
+    return c.json({ imported, skipped }, 201);
+  });
+
   const commentForActor = async (
     id: string,
     actor: typeof users.$inferSelect,
@@ -4923,6 +5000,37 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         workspaceId: actor.workspaceId,
         requestedBy: actor.id,
         projectId: share.projectId,
+        format: body.format,
+        filtersJson: JSON.stringify(body.filters),
+        timecodeBase: body.timecode_base,
+        status: "queued",
+        resultBlobKey: null,
+        error: null,
+        createdAt: env.clock.now(),
+        finishedAt: null,
+      })
+      .run();
+    return c.json({ id, status: "queued" }, 202);
+  });
+
+  /* The project-scoped twin of the share export: same job, no share needed.
+     This is the entry point the review page uses. */
+  api.post("/projects/:id/export", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const { project } = await requireProject(
+      c.req.param("id"),
+      actor,
+      "viewer",
+    );
+    const body = await jsonBody(c, bodies.exportCreate);
+    const id = env.ids.ulid();
+    await env.db
+      .insert(exportJobs)
+      .values({
+        id,
+        workspaceId: actor.workspaceId,
+        requestedBy: actor.id,
+        projectId: project.id,
         format: body.format,
         filtersJson: JSON.stringify(body.filters),
         timecodeBase: body.timecode_base,

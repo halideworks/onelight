@@ -19,6 +19,7 @@ import {
 import { LocalBlobStore } from "@onelight/worker";
 import { createMailerFromEnv } from "./mailer.js";
 import { maintenanceConfigFromEnv, startMaintenance } from "./maintenance.js";
+import { backupConfigFromEnv, startBackups } from "./backup.js";
 import { NodePasswordHasher } from "./password.js";
 import { isShareLandingPath } from "./share-shell.js";
 import { startWorkerPump } from "./worker-pump.js";
@@ -184,6 +185,12 @@ const start = async (): Promise<void> => {
       : {}),
     blobRoot,
   });
+  const backupConfig = backupConfigFromEnv(process.env);
+  const stopBackups = backupConfig ? startBackups(sqlite, backupConfig) : null;
+  if (!backupConfig)
+    console.warn(
+      "[onelight] Backups are disabled: set BACKUP_DIR to write periodic database snapshots.",
+    );
   const stopMaintenance = startMaintenance(
     db,
     maintenanceConfigFromEnv(process.env, {
@@ -198,6 +205,7 @@ const start = async (): Promise<void> => {
   cleanups.push(
     () => clearInterval(webhookTimer),
     stopMaintenance,
+    ...(stopBackups ? [stopBackups] : []),
     stopWorkerPump,
     () => server.close(),
   );

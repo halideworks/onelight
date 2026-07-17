@@ -1295,12 +1295,13 @@ export const startWorkerPump = (
   db: AppDb,
   options: { workerUrl?: string; workerSecret?: string; blobRoot: string },
 ): (() => void) => {
-  if (!options.workerUrl || !options.workerSecret) {
+  // Exports are pure DB-to-file work, so the pump runs them even without a
+  // media worker; only probe/transcode (and the PDF's frame stills) need one.
+  const mediaEnabled = Boolean(options.workerUrl && options.workerSecret);
+  if (!mediaEnabled)
     console.warn(
-      "[onelight] Media processing is disabled: WORKER_URL and WORKER_SECRET are not both set. Probe and transcode jobs will stay queued until a worker is configured.",
+      "[onelight] Media processing is disabled: WORKER_URL and WORKER_SECRET are not both set. Probe and transcode jobs will stay queued until a worker is configured; comment exports still run.",
     );
-    return () => undefined;
-  }
   const workerId = new UlidGenerator().ulid();
   let active = false;
   let lastWatermarkSweep = 0;
@@ -1329,7 +1330,10 @@ export const startWorkerPump = (
       }
       // Reconcile missing watermarked renditions on a throttle rather than
       // every poll; the sweep itself is bounded per pass.
-      if (now - lastWatermarkSweep >= WATERMARK_SWEEP_INTERVAL_MS) {
+      if (
+        mediaEnabled &&
+        now - lastWatermarkSweep >= WATERMARK_SWEEP_INTERVAL_MS
+      ) {
         lastWatermarkSweep = now;
         try {
           await sweepWatermarkJobs(db);
@@ -1370,8 +1374,8 @@ export const startWorkerPump = (
             )
             .run();
           await processExportJob(db, pendingExport, options.blobRoot, {
-            workerUrl: options.workerUrl,
-            workerSecret: options.workerSecret,
+            workerUrl: mediaEnabled ? options.workerUrl : undefined,
+            workerSecret: mediaEnabled ? options.workerSecret : undefined,
           });
         } catch (error) {
           await db
@@ -1385,7 +1389,9 @@ export const startWorkerPump = (
             .run();
         }
       }
-      const job = await claimNextJob(db, now, workerId, ["cpu"]);
+      const job = mediaEnabled
+        ? await claimNextJob(db, now, workerId, ["cpu"])
+        : null;
       if (job) {
         try {
           await processJob(

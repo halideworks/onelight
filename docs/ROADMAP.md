@@ -16,6 +16,31 @@ v1 scope (phases 0-3) is implemented and feature-complete against the design doc
 
 All automated gates are green on this machine, including the qa suites executed against real ffmpeg-synthesized fixtures: typecheck, eslint, prettier, Node contract suite, D1 workers-pool suite, db:check, openapi:check, svelte-check, SPA build, qa, and the integration dry-run.
 
+## Backups and the NLE round trip (2026-07-16)
+
+- **Database backups.** `BACKUP_DIR` turns on periodic snapshots via SQLite's
+  online backup API (`BACKUP_INTERVAL_MS`, default 6h; `BACKUP_KEEP`, default
+  28), pruned oldest-first. docs/BACKUPS.md covers restore and the nyx layout
+  (`/data/backups` on the fast tier, carried to the RAID hourly by the host's
+  fast-replica.timer). Verified on the rig (15s interval, three snapshots,
+  logged sizes) and live (first snapshot on boot).
+- **The way back: marker files into comments.** `parseResolveEdl` and
+  `parseMarkersCsv` in core (round-trip tested against the exporters), and
+  `POST /versions/:id/comments/import` (commenter+, resolves timecodes against
+  the version's own rate/start/drop, skips markers outside the duration,
+  counts imported/skipped, no notification fan-out).
+- **A place to export from.** `POST /projects/:id/export` is the share
+  export's project-scoped twin, and the review page's notes rail grew an
+  Export panel: format + timecode base, export-this-version (queues, polls,
+  hands the browser the signed download), and an Import EDL/CSV picker.
+  Browser-verified round trip on the rig: a marker at source 01:00:02:00
+  lands as a note at 00:00:02:00 on a start-frame-86400 version, and comes
+  back out in the next export.
+- **Exports no longer need the media worker.** The pump used to be a no-op
+  without WORKER_URL/WORKER_SECRET, which silently queued exports forever on
+  worker-less installs; exports are DB-to-file work and now always run (the
+  PDF already degrades to no stills).
+
 ## The share room (2026-07-16)
 
 The share room (`/s/:slug`) is what a client sees, and it was the least finished

@@ -198,6 +198,13 @@ export const bodies = {
     filters: z.record(z.unknown()).default({}),
     timecode_base: z.enum(["source", "record_run"]).default("source"),
   }),
+  /* A marker file pasted or uploaded back in: the two formats NLEs round-trip
+     losslessly. Timecodes resolve against the version's own rate and start. */
+  commentsImport: z.object({
+    format: z.enum(["resolve_edl", "csv"]),
+    content: z.string().min(1).max(2_000_000),
+    timecode_base: z.enum(["source", "record_run"]).default("source"),
+  }),
   shareAccess: z.object({
     passphrase: z.string().optional(),
     name: z.string().min(1).max(200).optional(),
@@ -1102,6 +1109,26 @@ export const routeDocs: Record<string, RouteDoc> = {
         schema: z.object({ id: z.string(), status: z.literal("queued") }),
         description: "Export job accepted",
       },
+    },
+  },
+  "POST /projects/:id/export": {
+    request: bodies.exportCreate,
+    responses: {
+      "202": {
+        schema: z.object({ id: z.string(), status: z.literal("queued") }),
+        description: "Export job accepted",
+      },
+    },
+  },
+  "POST /versions/:id/comments/import": {
+    request: bodies.commentsImport,
+    responses: {
+      "201": created(
+        z.object({
+          imported: z.number().int(),
+          skipped: z.number().int(),
+        }),
+      ),
     },
   },
   "GET /exports/:id": { responses: { "200": ok(exportJob) } },

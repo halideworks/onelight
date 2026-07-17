@@ -1495,6 +1495,32 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
       expect(missingShare.status).toBe(404);
     });
 
+    it("queues project-scoped exports without a share", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const created = await req(
+        h,
+        `/api/v1/projects/${seed.project.id}/export`,
+        {
+          cookie: seed.admin.cookie,
+          json: { format: "resolve_edl" },
+        },
+      );
+      expect(created.status).toBe(202);
+      const exported = await json<{ id: string; status: string }>(created);
+      expect(exported.status).toBe("queued");
+      const status = await req(h, `/api/v1/exports/${exported.id}`, {
+        cookie: seed.admin.cookie,
+      });
+      expect(status.status).toBe(200);
+      const foreign = await req(
+        h,
+        `/api/v1/projects/${seed.project.id}/export`,
+        { cookie: seed.other.admin.cookie, json: { format: "csv" } },
+      );
+      expect(foreign.status).toBe(404);
+    });
+
     it("polls export status scoped to the workspace", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

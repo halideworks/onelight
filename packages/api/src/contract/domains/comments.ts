@@ -531,6 +531,135 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
     });
   });
 
+  describe("marker import", () => {
+    // The seed version is 24 fps, 100 frames, no source start (seed.ts), so
+    // 00:00:01:00 in an EDL lands on frame 24.
+    const edl = [
+      "TITLE: From Resolve",
+      "FCM: NON-DROP FRAME",
+      "",
+      "001  001      V     C        00:00:01:00 00:00:01:01 00:00:01:00 00:00:01:01",
+      " |C:ResolveColorBlue |M:tighten this cut |D:1",
+      "002  001      V     C        00:00:02:00 00:00:02:12 00:00:02:00 00:00:02:12",
+      " |C:ResolveColorBlue |M:hold the wide |D:12",
+    ].join("\n");
+
+    it("turns a Resolve marker EDL into comments on the version", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const media = await seedAssetVersion(h, {
+        workspaceId: seed.workspaceId,
+        projectId: seed.project.id,
+        userId: seed.admin.id,
+      });
+      const imported = await req(
+        h,
+        `/api/v1/versions/${media.versionId}/comments/import`,
+        {
+          cookie: seed.commenter.cookie,
+          json: { format: "resolve_edl", content: edl },
+        },
+      );
+      expect(imported.status).toBe(201);
+      expect(await json(imported)).toEqual({ imported: 2, skipped: 0 });
+      const listed = await req(
+        h,
+        `/api/v1/versions/${media.versionId}/comments`,
+        { cookie: seed.commenter.cookie },
+      );
+      const { items } = await json<{
+        items: Array<{
+          frame_in: number;
+          frame_out: number | null;
+          body_text: string;
+          author_user_id: string;
+        }>;
+      }>(listed);
+      expect(items).toHaveLength(2);
+      expect(items[0]).toMatchObject({
+        frame_in: 24,
+        frame_out: null,
+        body_text: "tighten this cut",
+        author_user_id: seed.commenter.id,
+      });
+      expect(items[1]).toMatchObject({
+        frame_in: 48,
+        frame_out: 59,
+        body_text: "hold the wide",
+      });
+    });
+
+    it("imports the CSV, skipping markers beyond the version", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const media = await seedAssetVersion(h, {
+        workspaceId: seed.workspaceId,
+        projectId: seed.project.id,
+        userId: seed.admin.id,
+      });
+      const csv = [
+        "id,frame_in,frame_out,timecode,body,author",
+        '"01A","10","10","00:00:00:10","from the csv","X"',
+        '"01B","500","520","00:00:20:20","past the end",""',
+      ].join("\n");
+      const imported = await req(
+        h,
+        `/api/v1/versions/${media.versionId}/comments/import`,
+        {
+          cookie: seed.commenter.cookie,
+          json: { format: "csv", content: csv },
+        },
+      );
+      expect(imported.status).toBe(201);
+      expect(await json(imported)).toEqual({ imported: 1, skipped: 1 });
+      const listed = await req(
+        h,
+        `/api/v1/versions/${media.versionId}/comments`,
+        { cookie: seed.commenter.cookie },
+      );
+      const { items } = await json<{
+        items: Array<{ frame_in: number; body_text: string }>;
+      }>(listed);
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        frame_in: 10,
+        body_text: "from the csv",
+      });
+    });
+
+    it("rejects viewers, unreadable files, and unknown formats", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const denied = await req(
+        h,
+        `/api/v1/versions/${seed.media.versionId}/comments/import`,
+        {
+          cookie: seed.viewer.cookie,
+          json: { format: "resolve_edl", content: edl },
+        },
+      );
+      expect(denied.status).toBe(403);
+      const unreadable = await req(
+        h,
+        `/api/v1/versions/${seed.media.versionId}/comments/import`,
+        {
+          cookie: seed.commenter.cookie,
+          json: { format: "resolve_edl", content: "not an edl at all" },
+        },
+      );
+      expect(unreadable.status).toBe(400);
+      const unknown = await req(
+        h,
+        `/api/v1/versions/${seed.media.versionId}/comments/import`,
+        {
+          cookie: seed.commenter.cookie,
+          json: { format: "omf", content: edl },
+        },
+      );
+      expect(unknown.status).toBe(400);
+    });
+  });
+
   describe("carry-forward", () => {
     it("copies only unresolved top-level comments with provenance", async () => {
       const h = ctx.h();

@@ -8,6 +8,8 @@ import {
   exportResolveEdl,
   exportText,
   exportXmeml,
+  parseMarkersCsv,
+  parseResolveEdl,
   type MarkerComment,
   type MarkerOptions,
 } from "./markers.js";
@@ -430,5 +432,65 @@ describe("defensive exporters", () => {
     const xmeml = exportXmeml(cdata, mistagged);
     expect(xmeml).not.toContain("]]>");
     expect(xmeml).toContain("]]&gt;");
+  });
+});
+
+describe("marker import (the way back)", () => {
+  const rate = { num: 24, den: 1 };
+  const comments = [
+    {
+      id: "01A",
+      frameIn: 24,
+      frameOut: null,
+      bodyText: "warmer mids",
+      authorName: "David",
+    },
+    {
+      id: "01B",
+      frameIn: 100,
+      frameOut: 147,
+      bodyText: "hold this\nlonger",
+      authorName: null,
+    },
+  ];
+
+  it("round-trips through the Resolve marker EDL", () => {
+    const edl = exportResolveEdl(comments, { rate, startFrame: 86400 });
+    const back = parseResolveEdl(edl, { rate, startFrame: 86400 });
+    expect(back).toHaveLength(2);
+    expect(back[0]).toMatchObject({ frameIn: 24, frameOut: null });
+    // The author is folded into the text on export; the words survive.
+    expect(back[0]?.bodyText).toContain("warmer mids");
+    expect(back[1]).toMatchObject({ frameIn: 100, frameOut: 147 });
+    expect(back[1]?.bodyText).toContain("hold this");
+    expect(back[1]?.bodyText).toContain("longer");
+  });
+
+  it("round-trips through the CSV", () => {
+    const csv = exportCsv(comments, { rate });
+    const back = parseMarkersCsv(csv);
+    expect(back).toHaveLength(2);
+    expect(back[0]).toEqual({
+      frameIn: 24,
+      frameOut: null,
+      bodyText: "warmer mids",
+    });
+    expect(back[1]).toMatchObject({ frameIn: 100, frameOut: 147 });
+  });
+
+  it("skips junk lines instead of failing the file", () => {
+    const edl = [
+      "TITLE: Hand-mangled",
+      "FCM: NON-DROP FRAME",
+      "",
+      "garbage line",
+      "001  001      V     C        00:00:01:00 00:00:01:01 00:00:01:00 00:00:01:01",
+      " |C:ResolveColorBlue |M:still here |D:1",
+      "002  broken event with no timecodes",
+    ].join("\n");
+    const back = parseResolveEdl(edl, { rate });
+    expect(back).toHaveLength(1);
+    expect(back[0]?.bodyText).toBe("still here");
+    expect(parseMarkersCsv("not,a,marker,csv\n1,2,3,4")).toEqual([]);
   });
 });

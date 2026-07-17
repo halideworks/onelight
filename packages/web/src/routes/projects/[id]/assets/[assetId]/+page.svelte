@@ -122,6 +122,26 @@
   let prevVersion = $state<Version | null>(null);
   let prevOpenCount = $state(0);
   let carrying = $state(false);
+  /* The NLE round trip: notes leave as marker files and marker files come
+     back as notes, both scoped to the version on screen. */
+  let exchangeOpen = $state(false);
+  let exportFormat = $state('resolve_edl');
+  let exportBase = $state<'source' | 'record_run'>('source');
+  let exportBusy = $state(false);
+  let importBusy = $state(false);
+  let exchangeNotice = $state('');
+  let exchangeError = $state('');
+  const EXPORT_FORMATS: ReadonlyArray<readonly [string, string]> = [
+    ['resolve_edl', 'Resolve marker EDL'],
+    ['avid_txt', 'Avid marker text'],
+    ['avid_xml', 'Avid marker XML'],
+    ['fcpxml', 'Final Cut Pro FCPXML'],
+    ['xmeml', 'Premiere / FCP7 XML'],
+    ['csv', 'CSV'],
+    ['json', 'JSON'],
+    ['text', 'Plain text'],
+    ['pdf', 'PDF report']
+  ];
   /* Comment id to version number, filled from every comment fetch, so
      carried badges can say which version a note came from. Reactive: the
      source version's comments often load after the visible ones render. */
@@ -320,6 +340,67 @@
       if (versionNo) rememberVersionNos(items, versionNo);
     } catch {
       /* Notes stay as they are; posting still works once the version is ready. */
+    }
+  };
+
+  /* Queue the export, wait for the worker, then hand the browser the signed
+     download. The job is project-scoped; the version filter keeps it to the
+     version on screen, which is what a review session means by "export". */
+  const runExport = async (): Promise<void> => {
+    if (!projectId || !selectedVersionId || exportBusy) return;
+    exportBusy = true;
+    exchangeError = '';
+    exchangeNotice = 'Preparing the export.';
+    try {
+      const job = await apiPost<{ id: string }>(`/api/v1/projects/${projectId}/export`, {
+        format: exportFormat,
+        timecode_base: exportBase,
+        filters: { version_id: selectedVersionId }
+      });
+      for (let waited = 0; ; waited += 800) {
+        if (waited > 60_000) throw new Error('The export is taking a while; it will keep running, try the download again shortly.');
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        const status = await api<{ status: string; error: string | null }>(`/api/v1/exports/${job.id}`);
+        if (status.status === 'failed') throw new Error(status.error ?? 'The export failed.');
+        if (status.status === 'complete') break;
+      }
+      const { url } = await api<{ url: string }>(`/api/v1/exports/${job.id}/download`);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = '';
+      link.click();
+      exchangeNotice = 'Export downloaded.';
+    } catch (caught) {
+      exchangeError = messageFrom(caught, 'The export failed.');
+      exchangeNotice = '';
+    } finally {
+      exportBusy = false;
+    }
+  };
+
+  const importMarkers = async (event: Event): Promise<void> => {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file || !selectedVersionId || importBusy) return;
+    importBusy = true;
+    exchangeError = '';
+    exchangeNotice = '';
+    try {
+      const content = await file.text();
+      const format = /\.csv$/i.test(file.name) ? 'csv' : 'resolve_edl';
+      const result = await apiPost<{ imported: number; skipped: number }>(
+        `/api/v1/versions/${selectedVersionId}/comments/import`,
+        { format, content, timecode_base: exportBase }
+      );
+      exchangeNotice =
+        `${result.imported} ${result.imported === 1 ? 'note' : 'notes'} imported` +
+        (result.skipped ? `, ${result.skipped} outside this version skipped.` : '.');
+      await refreshComments(selectedVersionId, versionToken);
+    } catch (caught) {
+      exchangeError = messageFrom(caught, 'The file could not be imported.');
+    } finally {
+      importBusy = false;
     }
   };
 
@@ -1059,6 +1140,50 @@
               <button type="button" aria-pressed={noteFilter === 'open'} onclick={() => { noteFilter = 'open'; }}>Open</button>
               <button type="button" aria-pressed={noteFilter === 'completed'} onclick={() => { noteFilter = 'completed'; }}>Completed</button>
             </div>
+            <div class="exchange">
+              <button
+                type="button"
+                class="exchange-trigger"
+                aria-expanded={exchangeOpen}
+                onclick={() => { exchangeOpen = !exchangeOpen; exchangeNotice = ''; exchangeError = ''; }}
+              >
+                Export <span class="caret" aria-hidden="true">▾</span>
+              </button>
+              {#if exchangeOpen}
+                <div class="exchange-panel" role="dialog" aria-label="Export and import notes">
+                  <p class="exchange-title">Send notes to the NLE</p>
+                  <label>Format
+                    <select bind:value={exportFormat}>
+                      {#each EXPORT_FORMATS as [value, label] (value)}
+                        <option {value}>{label}</option>
+                      {/each}
+                    </select>
+                  </label>
+                  <label>Timecode
+                    <select bind:value={exportBase}>
+                      <option value="source">Source timecode</option>
+                      <option value="record_run">From zero</option>
+                    </select>
+                  </label>
+                  <button type="button" class="exchange-run" onclick={() => void runExport()} disabled={exportBusy || !selectedVersionId}>
+                    {exportBusy ? 'Preparing' : 'Export this version'}
+                  </button>
+                  <p class="exchange-title">Bring markers back</p>
+                  <p class="exchange-hint">A Resolve marker EDL or an Onelight CSV becomes notes on this version.</p>
+                  <label class="filebtn exchange-import">
+                    {importBusy ? 'Importing' : 'Import EDL or CSV'}
+                    <input
+                      type="file"
+                      accept=".edl,.csv,text/plain,text/csv"
+                      onchange={(event) => void importMarkers(event)}
+                      disabled={importBusy || !selectedVersionId}
+                    />
+                  </label>
+                  {#if exchangeNotice}<p class="exchange-note" role="status">{exchangeNotice}</p>{/if}
+                  {#if exchangeError}<p class="error-text" role="alert">{exchangeError}</p>{/if}
+                </div>
+              {/if}
+            </div>
           </div>
           {#if carryAvailable && prevVersion}
             <div class="carry-row">
@@ -1465,6 +1590,20 @@
   .filters { display: flex; gap: 2px; background: var(--n-150); border-radius: var(--radius); padding: 2px; }
   .filters button { background: none; padding: 5px 10px; }
   .filters button[aria-pressed='true'] { background: var(--n-400); color: var(--n-900); }
+  .exchange { position: relative; }
+  .exchange-trigger { display: inline-flex; align-items: center; gap: 6px; background: var(--n-150); padding: 6px 10px; border-radius: var(--radius); font-size: var(--text-13); }
+  .exchange-trigger:hover, .exchange-trigger[aria-expanded='true'] { background: var(--n-300); color: var(--n-900); }
+  .exchange-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: 264px; display: flex; flex-direction: column; gap: 10px; background: var(--n-100); border: 1px solid var(--n-300); border-radius: var(--radius); padding: 14px; }
+  .exchange-panel label { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-13); color: var(--n-700); }
+  .exchange-panel select { width: 100%; }
+  .exchange-title { margin: 0; font-size: var(--text-13); font-weight: 600; color: var(--n-900); }
+  .exchange-run + .exchange-title { margin-top: 6px; }
+  .exchange-run { background: var(--n-800); color: var(--n-000); padding: 8px 12px; border-radius: var(--radius); }
+  .exchange-run:hover:not(:disabled) { background: var(--n-900); color: var(--n-000); }
+  .exchange-run:disabled { opacity: 0.6; cursor: default; }
+  .exchange-hint { margin: 0; font-size: var(--text-12); color: var(--n-600); }
+  .exchange-import { text-align: center; }
+  .exchange-note { margin: 0; font-size: var(--text-12); color: var(--n-700); }
   .tagfilter { margin-left: auto; background: var(--n-300); color: var(--n-900); font-weight: 600; padding: 4px 10px; }
   .tagfilter span { color: var(--n-600); font-weight: 400; margin-left: 6px; }
   .carry-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 12px; margin: 0 0 12px; background: var(--n-150); border-radius: var(--radius); color: var(--n-800); }
