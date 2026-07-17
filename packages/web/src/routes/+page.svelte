@@ -6,6 +6,8 @@
   import { pretty } from '$lib/ids.js';
   import { pageWashFor } from '$lib/washes.js';
   import { grainLayer } from '$lib/grain.js';
+  import HeroWash from '$lib/HeroWash.svelte';
+  import Player from '@onelight/player/Player.svelte';
 
   type Project = {
     id: string;
@@ -86,7 +88,30 @@
 
   /* The signed-out landing carries the full wash, dark into the light
      terminal at the very bottom edge, with the cover grammar's placed
-     light; content stays on the dark two thirds. */
+     light; content stays on the dark two thirds. The CSS wash is the
+     ground truth; the shader canvas covers it with the same ramp when
+     WebGL is available. */
+  let demoPlayer = $state<{ seekToFrame: (frame: number) => void } | undefined>();
+  const DEMO_FRAME = 90;
+  /* Land on the annotated frame once the media can actually seek: retry
+     until the player reports it, stop the moment the viewer drives. */
+  let demoLanded = false;
+  let demoTouched = false;
+  $effect(() => {
+    if (!auth.ready || auth.signedIn) return;
+    const timer = setInterval(() => {
+      if (demoLanded || demoTouched) {
+        clearInterval(timer);
+        return;
+      }
+      demoPlayer?.seekToFrame(DEMO_FRAME);
+    }, 350);
+    return () => clearInterval(timer);
+  });
+  const demoFrame = (frame: number): void => {
+    if (frame === DEMO_FRAME) demoLanded = true;
+    else if (demoLanded) demoTouched = true;
+  };
   const heroWash = [
     grainLayer,
     'radial-gradient(90% 62% at 70% 12%, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0) 60%)',
@@ -149,6 +174,7 @@
       </div>
     </section>
   {:else if auth.ready}
+    <HeroWash />
     <div class="hero">
       <span class="lockup">
         <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
@@ -160,12 +186,58 @@
         </svg>
         Onelight
       </span>
-      <div class="pitch">
-        <h1>Review work with the frame still in view.</h1>
-        <p class="lede">A self-hosted review room for post-production teams.</p>
-        <div class="doors">
-          <a class="signin" href="/login">Sign in</a>
-          {#if setupRequired}<a class="setup" href="/setup">First run setup</a>{/if}
+      <div class="stage">
+        <div class="pitch">
+          <h1>Color-true. Frame-exact. Yours.</h1>
+          <p class="lede">A self-hosted review room for post-production teams.</p>
+          <div class="doors">
+            <a class="signin" href="/login">Sign in</a>
+            {#if setupRequired}<a class="setup" href="/setup">First run setup</a>{/if}
+          </div>
+        </div>
+        <!-- The product, not a picture of it: the real player on a public
+             domain reel, opened on an annotated frame. -->
+        <div class="demo">
+          <div class="demoplayer">
+            <Player
+              bind:this={demoPlayer}
+              src="/demo/destination-earth.mp4"
+              rate={{ num: 30000, den: 1001 }}
+              durationFrames={360}
+              chrome="simple"
+              annotations={[
+                {
+                  frame: DEMO_FRAME,
+                  strokes: [
+                    {
+                      tool: 'ellipse',
+                      color: '#6aa5d8',
+                      width: 0.004,
+                      points: [
+                        [0.42, 0.4],
+                        [0.72, 0.88]
+                      ]
+                    }
+                  ]
+                }
+              ]}
+              markers={[
+                {
+                  id: 'demo-note',
+                  frameIn: DEMO_FRAME,
+                  author: 'Onelight',
+                  text: 'Cape lining drifts magenta. Pull it toward the wall red.'
+                }
+              ]}
+              onframechange={demoFrame}
+            />
+          </div>
+          <div class="demonote">
+            <span class="ink" aria-hidden="true"></span>
+            <span class="tc">00:00:03:00</span>
+            <span class="notetext">Cape lining drifts magenta. Pull it toward the wall red.</span>
+          </div>
+          <p class="reel">Destination Earth (1956), public domain.</p>
         </div>
       </div>
       <p class="facts">Self-hosted. AGPL-3.0.</p>
@@ -182,10 +254,44 @@
   /* Signed in this is a working page, not a landing page: less air, no hero. */
   .shell.signed-in { padding: 6vh 9vw; background-repeat: repeat, no-repeat; }
 
-  .hero { position: relative; display: grid; grid-template-rows: auto 1fr auto; min-height: calc(100vh - 24vh); }
+  .hero { position: relative; z-index: 1; display: grid; grid-template-rows: auto 1fr auto; min-height: calc(100vh - 24vh); }
+  .stage { align-self: center; display: grid; grid-template-columns: minmax(380px, 1fr) auto; align-items: center; gap: clamp(32px, 5vw, 80px); padding: 6vh 0; }
+  @media (max-width: 1080px) { .stage { grid-template-columns: 1fr; } }
+  /* The reel is 4:3 and owns its half: the player gets a definite box sized
+     from the viewport so the picture fills it edge to edge, with the
+     transport underneath at the same width. */
+  .demo { width: min(46vw, calc((66vh - 150px) * 1.3333 + 24px), 720px); }
+  @media (max-width: 1080px) { .demo { width: min(92vw, 640px); justify-self: center; } }
+  .demoplayer { height: min(66vh, calc((46vw - 24px) * 0.75 + 150px)); }
+  @media (max-width: 1080px) { .demoplayer { height: auto; } }
+  /* The instrument sheds its grey for the landing exactly as the
+     presentation room does: the player's neutral scale re-maps so its
+     slabs vanish into the wash, the picture floats on the gradient with
+     its own corner radius, and the transport reads in cream on
+     translucent ink. */
+  .demoplayer {
+    --n-000: transparent;
+    --n-050: transparent;
+    --n-100: transparent;
+    --n-150: rgba(250, 248, 244, 0.14);
+    --vol-track: rgba(250, 248, 244, 0.22);
+    --n-200: rgba(13, 17, 23, 0.5);
+    --n-300: rgba(13, 17, 23, 0.66);
+    --n-400: rgba(13, 17, 23, 0.85);
+    --n-500: rgba(250, 248, 244, 0.42);
+    --n-600: rgba(250, 248, 244, 0.6);
+    --n-700: rgba(250, 248, 244, 0.75);
+    --n-800: rgba(250, 248, 244, 0.9);
+    --n-900: #faf8f4;
+  }
+  .demoplayer :global(video) { border-radius: var(--radius-lg); }
+  .demonote { display: flex; align-items: baseline; gap: 10px; margin-top: 14px; font-size: var(--text-13); color: rgba(255, 255, 255, 0.86); }
+  .demonote .ink { flex: none; width: 9px; height: 9px; border-radius: 50%; background: #6aa5d8; align-self: center; }
+  .demonote .tc { font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.6); }
+  .reel { margin: 10px 0 0; font-size: var(--text-12); color: rgba(255, 255, 255, 0.45); }
   .lockup { display: inline-flex; align-items: center; gap: 9px; font-family: var(--font-display); font-size: var(--text-16); font-weight: 700; color: var(--ink-text); }
   .lockup svg { flex: none; }
-  .pitch { align-self: center; max-width: 720px; padding: 8vh 0; }
+  .pitch { max-width: 720px; }
   .pitch .lede { color: rgba(255, 255, 255, 0.74); }
   .doors { display: flex; align-items: center; gap: 22px; margin-top: 44px; }
   .signin { display: inline-block; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 11px 26px; font-size: var(--text-14); font-weight: 600; }

@@ -71,14 +71,17 @@
     const x = first[0] * width;
     const y = first[1] * height;
     context.beginPath();
-    context.moveTo(x, y);
     if (stroke.tool === 'rect' || stroke.tool === 'ellipse') {
+      /* No moveTo first: a current point makes ellipse() draw a connector
+         line from the drag's corner to the arc start. rect() is immune but
+         needs no starting point either. */
       const last = points[points.length - 1] ?? first;
       const endX = last[0] * width;
       const endY = last[1] * height;
       if (stroke.tool === 'rect') context.rect(x, y, endX - x, endY - y);
       else context.ellipse((x + endX) / 2, (y + endY) / 2, Math.abs(endX - x) / 2, Math.abs(endY - y) / 2, 0, 0, Math.PI * 2);
     } else {
+      context.moveTo(x, y);
       for (const point of points.slice(1)) context.lineTo(point[0] * width, point[1] * height);
       if (stroke.tool === 'arrow') {
         /* Arrowheads are computed in pixel space after projecting the endpoints,
