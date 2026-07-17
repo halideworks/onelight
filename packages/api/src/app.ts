@@ -1471,10 +1471,44 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       db_size_bytes: host.db_size_bytes,
       backups: host.backups,
       disk: env.diskInfo ? await env.diskInfo() : null,
+      mail:
+        env.mailState ??
+        (env.mailer
+          ? { state: "ready", detail: null }
+          : { state: "disabled", detail: null }),
       media_jobs: countBy(jobRows),
       export_jobs: countBy(exportRows),
       webhook_deliveries: countBy(deliveryRows),
     });
+  });
+
+  /* A test email is the only way an operator can tell a configured
+     transport from a working one without waiting for a notification to
+     fail silently. It goes to the caller's own address on purpose: the
+     admin pressing the button is the person watching the inbox. */
+  api.post("/admin/system/test-email", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    if (actor.role !== "admin") throw errors.forbidden();
+    if (!env.mailer)
+      throw errors.conflict(
+        "Email is not configured: set SMTP_URL or SMTP_HOST plus MAIL_FROM and restart.",
+      );
+    try {
+      await env.mailer.send({
+        to: actor.email,
+        subject: "Onelight test email",
+        text: [
+          "This is a test email from your Onelight instance.",
+          "",
+          "If you are reading it, outgoing email works.",
+        ].join("\n"),
+      });
+    } catch (caught) {
+      throw errors.conflict(
+        `The mail transport refused the message: ${caught instanceof Error ? caught.message : String(caught)}`,
+      );
+    }
+    return c.json({ sent: true, to: actor.email });
   });
 
   api.patch("/workspace", requireAuth, async (c) => {

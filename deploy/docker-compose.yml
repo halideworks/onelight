@@ -29,11 +29,18 @@ services:
       ONELIGHT_GC_DELETE: ${ONELIGHT_GC_DELETE:-false}
       WORKER_URL: ${WORKER_URL:-http://onelight-worker:8080}
       WORKER_SECRET: ${WORKER_SECRET:?WORKER_SECRET is required}
-      # Outgoing email is optional: uncomment and set SMTP_URL (or the
-      # discrete SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS/SMTP_SECURE
-      # settings) together with MAIL_FROM to enable it.
-      # SMTP_URL: ${SMTP_URL}
-      # MAIL_FROM: ${MAIL_FROM}
+      # Outgoing email: set SMTP_URL (or the discrete SMTP_HOST/SMTP_PORT/
+      # SMTP_USER/SMTP_PASS/SMTP_SECURE settings) together with MAIL_FROM in
+      # .env to enable it. These were commented out until 2026-07-17, which
+      # meant a .env with SMTP settings was silently ignored, the exact trap
+      # the note above describes.
+      SMTP_URL: ${SMTP_URL:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_SECURE: ${SMTP_SECURE:-}
+      MAIL_FROM: ${MAIL_FROM:-}
     volumes:
       - onelight-data:/data
     healthcheck:

@@ -17,7 +17,11 @@ import {
   workspaces,
 } from "@onelight/db";
 import { LocalBlobStore } from "@onelight/worker";
-import { createMailerFromEnv } from "./mailer.js";
+import {
+  createMailerFromEnv,
+  isSmtpConfigError,
+  parseSmtpConfig,
+} from "./mailer.js";
 import { maintenanceConfigFromEnv, startMaintenance } from "./maintenance.js";
 import { backupConfigFromEnv, startBackups } from "./backup.js";
 import { NodePasswordHasher } from "./password.js";
@@ -95,6 +99,16 @@ const start = async (): Promise<void> => {
     path.join(path.dirname(config.DATABASE_PATH), "blobs");
   const blobStore = new LocalBlobStore(blobRoot);
   const mailer = createMailerFromEnv(process.env);
+  /* The status page distinguishes "never configured" from "configured but
+     unusable": both leave mailer null, and the second must not read as the
+     operator having chosen silence. */
+  const mailConfig = parseSmtpConfig(process.env);
+  const mailState =
+    mailConfig === null
+      ? ({ state: "disabled", detail: null } as const)
+      : isSmtpConfigError(mailConfig)
+        ? ({ state: "error", detail: mailConfig.error } as const)
+        : ({ state: "ready", detail: null } as const);
   /* The blob volume's capacity, from the filesystem that actually holds it.
      Object-storage deployments have no equivalent, which is why the field is
      optional on AppEnv and null on the wire there. */
@@ -160,6 +174,7 @@ const start = async (): Promise<void> => {
     systemInfo,
     startedAt: Date.now(),
     frameMatcher: spriteFrameMatcher(db, blobRoot),
+    mailState,
     // AppEnv.mailer is optional and exactOptionalPropertyTypes is on, so
     // the field is present only when a mailer is configured.
     ...(mailer ? { mailer } : {}),

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, messageFrom } from '$lib/api.js';
+  import { api, apiPost, messageFrom } from '$lib/api.js';
   import { formatBytes } from '$lib/upload.js';
   import { whenRelative } from '$lib/format.js';
 
@@ -14,6 +14,7 @@
     db_size_bytes: number | null;
     backups: { count: number; newest_at: number | null } | null;
     disk: { total_bytes: number; free_bytes: number } | null;
+    mail: { state: 'ready' | 'disabled' | 'error'; detail: string | null };
     media_jobs: Record<string, number>;
     export_jobs: Record<string, number>;
     webhook_deliveries: Record<string, number>;
@@ -21,6 +22,24 @@
 
   let status = $state<Status | null>(null);
   let error = $state('');
+  let mailTesting = $state(false);
+  let mailTestResult = $state('');
+  let mailTestFailed = $state(false);
+
+  const sendTestEmail = async (): Promise<void> => {
+    mailTesting = true;
+    mailTestResult = '';
+    mailTestFailed = false;
+    try {
+      const result = await apiPost<{ sent: true; to: string }>('/api/v1/admin/system/test-email', {});
+      mailTestResult = `Sent to ${result.to}. Check that inbox.`;
+    } catch (caught) {
+      mailTestFailed = true;
+      mailTestResult = messageFrom(caught, 'The test email could not be sent.');
+    } finally {
+      mailTesting = false;
+    }
+  };
 
   const load = async (): Promise<void> => {
     try {
@@ -113,6 +132,26 @@
         {/if}
       </section>
 
+      <section class="card" aria-label="Email">
+        <h2>Email</h2>
+        {#if status.mail.state === 'ready'}
+          <p>Outgoing email is configured.</p>
+          <button type="button" class="mailtest" onclick={() => void sendTestEmail()} disabled={mailTesting}>
+            {mailTesting ? 'Sending' : 'Send a test email'}
+          </button>
+        {:else if status.mail.state === 'error'}
+          <p class="warn">The mail configuration is present but unusable{status.mail.detail ? `: ${status.mail.detail}` : '.'}</p>
+        {:else}
+          <p class="warn">
+            Email is off: password resets, invites, and notification digests will not be delivered.
+            Set SMTP_URL (or SMTP_HOST) plus MAIL_FROM in .env and restart.
+          </p>
+        {/if}
+        {#if mailTestResult}
+          <p class:warn={mailTestFailed} role="status">{mailTestResult}</p>
+        {/if}
+      </section>
+
       {#if status.disk}
         <section class="card" aria-label="Media volume">
           <h2>Media volume</h2>
@@ -183,6 +222,12 @@
   .disk { margin: 0 0 10px; }
   .diskbar { display: block; width: 100%; height: 10px; border-radius: 2px; overflow: hidden; background: var(--ink-200); }
   .diskfill { display: block; height: 100%; background: var(--ink-400, #33415a); }
+
+  .card p { margin: 0 0 10px; }
+  .card p:last-child { margin-bottom: 0; }
+  .mailtest { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 14px; font-size: var(--text-13); }
+  .mailtest:hover { background: var(--ink-300); }
+  .mailtest:disabled { opacity: 0.5; }
 
   .hint { margin: 12px 0 0; color: var(--ink-text-dim); }
   .hint.footer { margin-top: 20px; }

@@ -1351,6 +1351,30 @@
                         }
                       ]
                     },
+                    "mail": {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "disabled",
+                            "error"
+                          ]
+                        },
+                        "detail": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "detail"
+                      ],
+                      "additionalProperties": false
+                    },
                     "media_jobs": {
                       "type": "object",
                       "additionalProperties": {
@@ -1376,9 +1400,81 @@
                     "db_size_bytes",
                     "backups",
                     "disk",
+                    "mail",
                     "media_jobs",
                     "export_jobs",
                     "webhook_deliveries"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/system/test-email": {
+      "post": {
+        "summary": "Send a test email to the calling administrator's own address, proving the configured mail transport end to end. 409 when email is not configured or the transport refuses the message.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sent": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "to": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "sent",
+                    "to"
                   ],
                   "additionalProperties": false
                 }

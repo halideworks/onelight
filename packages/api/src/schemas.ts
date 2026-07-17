@@ -1441,11 +1441,22 @@ export const routeDocs: Record<string, RouteDoc> = {
               free_bytes: z.number(),
             })
             .nullable(),
+          mail: z.object({
+            state: z.enum(["ready", "disabled", "error"]),
+            detail: z.string().nullable(),
+          }),
           media_jobs: z.record(z.number()),
           export_jobs: z.record(z.number()),
           webhook_deliveries: z.record(z.number()),
         }),
       ),
+    },
+  },
+  "POST /admin/system/test-email": {
+    summary:
+      "Send a test email to the calling administrator's own address, proving the configured mail transport end to end. 409 when email is not configured or the transport refuses the message.",
+    responses: {
+      "200": ok(z.object({ sent: z.literal(true), to: z.string() })),
     },
   },
   "PUT /users/me/avatar": {

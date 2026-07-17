@@ -839,7 +839,10 @@
   const resizeText = (index: number, delta: number): void => {
     const stroke = pendingStrokes[index];
     if (!stroke) return;
-    const next = Math.min(0.09, Math.max(0.018, (stroke.width ?? 0.035) + delta));
+    /* The floor is small on purpose: a caption-sized aside next to a detail
+       is a legitimate note. The canvas renderer scales with the frame, so a
+       small size stays proportionally small at every viewport. */
+    const next = Math.min(0.09, Math.max(0.008, (stroke.width ?? 0.035) + delta));
     updateStrokeAt(index, { ...stroke, width: next });
   };
 
@@ -1200,6 +1203,19 @@
         strokeWidth={DRAW_WIDTH}
         onstroke={commitStroke}
         ontextplace={(point) => {
+          /* Clicking the frame with words already in a box applies them; it
+             does not move the caret to a new spot. The overlay's pointerdown
+             lands before the input's blur, so committing here first keeps
+             the typed text from being replaced by the empty draft the blur
+             handler would then read. An empty box just moves. */
+          if (textDraft?.value.trim()) {
+            commitTextDraft();
+            return;
+          }
+          if (textEdit) {
+            commitTextEdit();
+            return;
+          }
           textDraft = { point, value: '' };
         }}
       />

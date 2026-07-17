@@ -1328,6 +1328,16 @@
                   <button type="button" class="exchange-run" onclick={() => void runExport()} disabled={exportBusy || !selectedVersionId}>
                     {exportBusy ? 'Preparing' : 'Export this version'}
                   </button>
+                  {#if exportFormat === 'resolve_edl'}
+                    <!-- Resolve has two EDL doors and the obvious one conforms
+                         cuts; the one that makes markers is buried. Say it here,
+                         at the moment it matters. -->
+                    <p class="exchange-hint">
+                      In Resolve: right-click the timeline in the Media Pool, then
+                      Timelines, Import, Timeline Markers from EDL. The regular
+                      timeline import makes cuts, not markers.
+                    </p>
+                  {/if}
                   <p class="exchange-title">Bring markers back</p>
                   <p class="exchange-hint">A Resolve marker EDL or an Onelight CSV becomes notes on this version.</p>
                   <label class="filebtn exchange-import">

@@ -107,6 +107,7 @@ const AUTHED_ENDPOINTS: Array<[string, string]> = [
   ["GET", `/api/v1/jobs/${ID}`],
   ["GET", "/api/v1/admin/jobs"],
   ["GET", "/api/v1/admin/system"],
+  ["POST", "/api/v1/admin/system/test-email"],
   ["GET", "/api/v1/media/some/key.mp4"],
 ];
 

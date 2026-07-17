@@ -437,6 +437,7 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
         db_size_bytes: number | null;
         backups: unknown;
         disk: unknown;
+        mail: { state: string; detail: string | null };
         media_jobs: Record<string, number>;
         export_jobs: Record<string, number>;
         webhook_deliveries: Record<string, number>;
@@ -447,6 +448,9 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       expect(body.db_size_bytes).toBeNull();
       expect(body.backups).toBeNull();
       expect(body.disk).toBeNull();
+      // Mail posture mirrors the leg: the Node harness carries a stub
+      // mailer, the Workers harness carries none.
+      expect(body.mail.state).toBe(h.mailer ? "ready" : "disabled");
       expect(body.export_jobs.queued).toBeGreaterThanOrEqual(1);
       expect(assertSnakeCaseKeys(body)).toEqual([]);
       // Queues are workspace-scoped: the other workspace's admin does not
@@ -457,6 +461,36 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
         }),
       );
       expect(foreign.export_jobs.queued ?? 0).toBe(0);
+    });
+
+    it("sends a test email to the calling admin, or refuses plainly", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const member = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      const forbidden = await req(h, "/api/v1/admin/system/test-email", {
+        method: "POST",
+        cookie: member.cookie,
+      });
+      expect(forbidden.status).toBe(403);
+      const response = await req(h, "/api/v1/admin/system/test-email", {
+        method: "POST",
+        cookie: seed.admin.cookie,
+      });
+      if (h.mailer) {
+        expect(response.status).toBe(200);
+        const body = await json<{ sent: boolean; to: string }>(response);
+        expect(body.sent).toBe(true);
+        const delivered = h.mailer.messages[h.mailer.messages.length - 1];
+        expect(delivered?.to).toBe(body.to);
+        expect(delivered?.subject).toContain("test email");
+      } else {
+        // The Workers leg has no mail transport: the refusal is a plain
+        // conflict, not a silent 200.
+        expect(response.status).toBe(409);
+      }
     });
   });
 
@@ -724,6 +758,7 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       "post /api/v1/assets/{id}/trash",
       "post /api/v1/assets/{id}/restore",
       "post /api/v1/users/me/totp",
+      "post /api/v1/admin/system/test-email",
     ]);
 
     it("documents every registered /api/v1 route with schemas", async () => {

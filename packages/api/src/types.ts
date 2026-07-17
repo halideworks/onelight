@@ -28,6 +28,14 @@ export interface AppEnv {
     db_size_bytes: number | null;
     backups: { count: number; newest_at: number | null } | null;
   }>;
+  /* Outgoing-email posture for the admin status page. The Node server sets
+     it from its SMTP parse so a present-but-broken configuration reads as
+     an error rather than as silence; when absent, the route falls back to
+     reporting on the mailer's presence alone. */
+  mailState?: {
+    state: "ready" | "disabled" | "error";
+    detail: string | null;
+  };
   /* Process start, for uptime on the status page. */
   startedAt?: number;
   /* Re-anchoring hook for carry-forward: given two version ids, returns a

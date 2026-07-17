@@ -397,6 +397,37 @@ An eighth pass: pictures inline, timecode everywhere, words on the frame.
   immutable; editing those means editing the comment, which is a separate
   decision.
 
+## The pro-tool push (2026-07-17, direction from David)
+
+The goal is stated plainly: full feature parity with the commercial review
+tools (frame.io, Krock) so teams have a real open-source alternative, a
+full pro tool. Standing decisions from this direction:
+
+- **NLE integration ships as an official plugin, not a script.** Nobody
+  runs a random Python file against their Resolve; the deliverable is the
+  phase 6 Workflow Integration panel (Studio, Workspace > Workflow
+  Integrations, the same API Krock/EditShare/ShareBrowser use and the
+  niche frame.io v4 vacated). The marker EDL stays as the manual fallback
+  and its Export panel copy must name Resolve's actual import path
+  (Timelines > Import > Timeline Markers from EDL), because the obvious
+  import conforms cuts. The scripting facts that make the plugin the right
+  bet: Timeline.AddMarker carries full unicode text, exact colors, ranged
+  durations, and a customData field invisible to the UI that makes sync
+  idempotent and two-way (GetMarkerByCustomData and friends).
+- **Email is a first-class subsystem, not an env footnote.** The compose
+  file did not pass SMTP_URL or MAIL_FROM through (the exact silent-.env
+  trap its own comment warns about), so no compose deployment could ever
+  send mail; fixed 2026-07-17, all SMTP_* settings now flow. The admin
+  System page shows the mail posture (ready, disabled, or present-but-
+  broken with the parse error) and sends a test email to the pressing
+  admin through POST /admin/system/test-email, contract-tested both legs.
+- **Annotation text grew down and stopped eating words.** The size floor
+  dropped to 0.008 of the frame diagonal (a caption-sized aside is a
+  legitimate note), and clicking the frame with words in an open text box
+  now applies them; it used to spawn a fresh empty draft before the blur
+  handler could commit, destroying the typed text. Enter still commits,
+  Escape still discards.
+
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
 1. DONE 2026-07-17: first green run of the integration and media-qc CI jobs on Linux, exercising compose end to end, the HDR libplacebo tonemap on lavapipe, the zscale conversion, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Getting there surfaced and fixed: CI had never actually executed (a pnpm/action-setup version pin conflicted with packageManager and killed every run at setup); the node job was missing the web:check gate and the SPA build the workers pool needs; the qa HDR smoke run omitted the worker's VULKAN_HWDEVICE_ARGS so libplacebo refused lavapipe (the spec now mirrors the worker invocation exactly); and Playwright WebKit on Linux reads the 75 percent bars low (a GStreamer/GL decode artifact, not real Safari; the exact deviation is pinned per-engine-and-platform in the qa color spec so any decoder drift still fails, and the reference tolerances were never widened).
