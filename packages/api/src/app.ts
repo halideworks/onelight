@@ -4488,7 +4488,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     blobKey: string,
     disposition?: string,
   ) =>
-    `${env.config.PUBLIC_URL.replace(/\/$/, "")}/s/${share.slug}/assets/${assetId}/media/file?token=${encodeURIComponent(await issueMediaToken(share, assetId, versionId, blobKey, disposition))}`;
+    /* Origin-relative on purpose: the page fetches these from whatever origin
+       it was loaded on, so the same deployment works via LAN IP and the public
+       domain without PUBLIC_URL having to match the request. Links that leave
+       the browser (emails, OG tags, the copyable share URL) still use
+       PUBLIC_URL. */
+    `/s/${share.slug}/assets/${assetId}/media/file?token=${encodeURIComponent(await issueMediaToken(share, assetId, versionId, blobKey, disposition))}`;
 
   /**
    * The watermarked rendition this share may serve for a version: kind
@@ -4575,7 +4580,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     blobKey: string,
     disposition?: string,
   ) =>
-    `${env.config.PUBLIC_URL.replace(/\/$/, "")}/api/v1/media/${blobKey.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(await issuePrivateMediaToken(scope, blobKey, disposition))}`;
+    /* Origin-relative for the same reason as publicMediaUrl above. */
+    `/api/v1/media/${blobKey.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(await issuePrivateMediaToken(scope, blobKey, disposition))}`;
 
   /* These must match what the worker actually writes. The sidecars are PNG
      (media.ts writes poster.png, sprite.png, audio_peaks.png) and were served
