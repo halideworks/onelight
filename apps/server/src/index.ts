@@ -21,6 +21,7 @@ import { createMailerFromEnv } from "./mailer.js";
 import { maintenanceConfigFromEnv, startMaintenance } from "./maintenance.js";
 import { backupConfigFromEnv, startBackups } from "./backup.js";
 import { NodePasswordHasher } from "./password.js";
+import { spriteFrameMatcher } from "./reanchor.js";
 import { isShareLandingPath } from "./share-shell.js";
 import { startWorkerPump } from "./worker-pump.js";
 
@@ -158,6 +159,7 @@ const start = async (): Promise<void> => {
     diskInfo,
     systemInfo,
     startedAt: Date.now(),
+    frameMatcher: spriteFrameMatcher(db, blobRoot),
     // AppEnv.mailer is optional and exactOptionalPropertyTypes is on, so
     // the field is present only when a mailer is configured.
     ...(mailer ? { mailer } : {}),

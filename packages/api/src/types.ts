@@ -30,6 +30,16 @@ export interface AppEnv {
   }>;
   /* Process start, for uptime on the status page. */
   startedAt?: number;
+  /* Re-anchoring hook for carry-forward: given two version ids, returns a
+     frame mapping from the source's timeline to the target's, or null when
+     the versions cannot be compared. A mapped frame of null means "the
+     pictures do not vouch for a match; keep the original frame". The Node
+     server implements this over sprite-tile perceptual hashes; Workers
+     leave it absent and carry-forward keeps frames as-is. */
+  frameMatcher?: (
+    sourceVersionId: string,
+    targetVersionId: string,
+  ) => Promise<((frame: number) => number | null) | null>;
 }
 
 export type Variables = {

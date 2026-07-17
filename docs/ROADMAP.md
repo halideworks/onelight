@@ -41,6 +41,22 @@ All automated gates are green on this machine, including the qa suites executed 
   worker-less installs; exports are DB-to-file work and now always run (the
   PDF already degrades to no stills).
 
+## Re-anchoring (2026-07-16)
+
+Carried-forward notes now follow the picture across a recut instead of the
+arithmetic. The sprite sheet every version already has is a per-second
+visual index; `packages/worker/reanchor.ts` dHashes its tiles, matches them
+between versions with an ambiguity margin (a near-tie is not evidence), and
+a consensus pass keeps only matches that agree with the field's median
+shift -- similar-looking but unrelated footage produces individually
+plausible matches that scatter, and the first rig run proved exactly that
+failure before the margin and consensus went in. The Node server exposes
+the mapping to the API as the optional `frameMatcher` env hook (absent on
+Workers, where carry-forward keeps frames as-is), and every failure path
+means "keep the original frame". Verified live both ways: unrelated
+footage left a note at frame 24 untouched; a two-second head shift carried
+it to exactly frame 72.
+
 ## Metadata intelligence (2026-07-16)
 
 The review page grew an Info drawer that renders the version's full probe

@@ -575,11 +575,32 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         ),
       )
       .all();
+    /* Re-anchor where the host can see the pictures: frames follow the
+       footage across a recut instead of the arithmetic. An unavailable or
+       unconvinced matcher changes nothing. */
+    let remap: ((frame: number) => number | null) | null = null;
+    if (env.frameMatcher && sourceComments.length) {
+      try {
+        remap = await env.frameMatcher(sourceVersionId, targetVersionId);
+      } catch {
+        remap = null;
+      }
+    }
     const copied: string[] = [];
     for (const sourceComment of sourceComments as Array<
       typeof comments.$inferSelect
     >) {
       const id = env.ids.ulid();
+      let frameIn = sourceComment.frameIn;
+      let frameOut = sourceComment.frameOut;
+      if (remap && frameIn !== null) {
+        const moved = remap(frameIn);
+        if (moved !== null && moved !== frameIn) {
+          if (frameOut !== null)
+            frameOut = Math.max(moved, frameOut + (moved - frameIn));
+          frameIn = moved;
+        }
+      }
       await env.db
         .insert(comments)
         .values({
@@ -590,8 +611,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           authorName: sourceComment.authorName,
           authorEmail: sourceComment.authorEmail,
           viewerKey: sourceComment.viewerKey,
-          frameIn: sourceComment.frameIn,
-          frameOut: sourceComment.frameOut,
+          frameIn,
+          frameOut,
           bodyText: sourceComment.bodyText,
           annotationJson: sourceComment.annotationJson,
           pinXyJson: sourceComment.pinXyJson,
