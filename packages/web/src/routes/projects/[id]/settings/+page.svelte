@@ -9,12 +9,14 @@
   import { uploadFile } from '$lib/upload.js';
   import Avatar from '$lib/Avatar.svelte';
   import ProjectCover from '$lib/ProjectCover.svelte';
-  import { idFrom } from '$lib/ids.js';
+  import { canonicalizePath } from '$lib/canonical.js';
+  import { idFrom, pretty } from '$lib/ids.js';
   import { pageWashFor, washFor } from '$lib/washes.js';
   import { auth } from '$lib/auth.svelte.js';
 
   type Project = {
     id: string;
+    public_id: string;
     name: string;
     palette: string;
     status: string;
@@ -39,7 +41,10 @@
     viewer: 'Watch only.'
   };
 
-  const projectId = $derived(idFrom(page.params.id));
+  const routeId = $derived(idFrom(page.params.id));
+  /* Canonical ULID once the project loads; the route may carry the short
+     public id, which only the project fetch understands. */
+  let projectId = $state('');
 
   let project = $state<Project | null>(null);
   let members = $state<Member[]>([]);
@@ -75,9 +80,13 @@
   onMount(() => {
     void (async () => {
       try {
-        const [loadedProject, loadedMembers, loadedUsers, loadedAssets, loadedCovers] =
+        const loadedProject = await api<Project>(`/api/v1/projects/${routeId}`);
+        projectId = loadedProject.id;
+        canonicalizePath(
+          `/projects/${pretty(loadedProject.public_id, loadedProject.name)}/settings`
+        );
+        const [loadedMembers, loadedUsers, loadedAssets, loadedCovers] =
           await Promise.all([
-          api<Project>(`/api/v1/projects/${projectId}`),
           api<{ items: Member[] }>(`/api/v1/projects/${projectId}/members`),
           /* Everyone in the workspace, so someone can actually be added --
              including yourself, if you removed your own grant. */
@@ -307,7 +316,7 @@
     <nav class="crumbs" aria-label="Breadcrumb">
       <a href="/">Projects</a>
       <span aria-hidden="true">/</span>
-      <a href={`/projects/${projectId}`}>{project?.name ?? 'Project'}</a>
+      <a href={`/projects/${project ? pretty(project.public_id, project.name) : routeId}`}>{project?.name ?? 'Project'}</a>
     </nav>
     <div class="washrow">
       <h1>Settings</h1>

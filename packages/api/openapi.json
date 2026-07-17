@@ -4089,6 +4089,9 @@
                           "id": {
                             "type": "string"
                           },
+                          "public_id": {
+                            "type": "string"
+                          },
                           "name": {
                             "type": "string"
                           },
@@ -4146,6 +4149,7 @@
                         },
                         "required": [
                           "id",
+                          "public_id",
                           "name",
                           "status",
                           "palette",
@@ -4277,6 +4281,9 @@
                     "id": {
                       "type": "string"
                     },
+                    "public_id": {
+                      "type": "string"
+                    },
                     "name": {
                       "type": "string"
                     },
@@ -4334,6 +4341,7 @@
                   },
                   "required": [
                     "id",
+                    "public_id",
                     "name",
                     "status",
                     "palette",
@@ -4416,6 +4424,9 @@
                     "id": {
                       "type": "string"
                     },
+                    "public_id": {
+                      "type": "string"
+                    },
                     "name": {
                       "type": "string"
                     },
@@ -4473,6 +4484,7 @@
                   },
                   "required": [
                     "id",
+                    "public_id",
                     "name",
                     "status",
                     "palette",
@@ -4612,6 +4624,9 @@
                     "id": {
                       "type": "string"
                     },
+                    "public_id": {
+                      "type": "string"
+                    },
                     "name": {
                       "type": "string"
                     },
@@ -4669,6 +4684,7 @@
                   },
                   "required": [
                     "id",
+                    "public_id",
                     "name",
                     "status",
                     "palette",
@@ -4895,6 +4911,9 @@
                     "id": {
                       "type": "string"
                     },
+                    "public_id": {
+                      "type": "string"
+                    },
                     "name": {
                       "type": "string"
                     },
@@ -4952,6 +4971,7 @@
                   },
                   "required": [
                     "id",
+                    "public_id",
                     "name",
                     "status",
                     "palette",
@@ -8425,6 +8445,9 @@
                     "id": {
                       "type": "string"
                     },
+                    "public_id": {
+                      "type": "string"
+                    },
                     "project_id": {
                       "type": "string"
                     },
@@ -8490,6 +8513,7 @@
                   },
                   "required": [
                     "id",
+                    "public_id",
                     "project_id",
                     "folder_id",
                     "name",
@@ -9159,6 +9183,9 @@
                               "id": {
                                 "type": "string"
                               },
+                              "public_id": {
+                                "type": "string"
+                              },
                               "name": {
                                 "type": "string"
                               },
@@ -9178,6 +9205,7 @@
                             "required": [
                               "type",
                               "id",
+                              "public_id",
                               "name",
                               "project_id",
                               "current_version_id",
@@ -9243,6 +9271,9 @@
                               "id": {
                                 "type": "string"
                               },
+                              "public_id": {
+                                "type": "string"
+                              },
                               "name": {
                                 "type": "string"
                               },
@@ -9262,6 +9293,7 @@
                             "required": [
                               "type",
                               "id",
+                              "public_id",
                               "name",
                               "palette",
                               "cover_url",
@@ -9566,6 +9598,9 @@
                         "id": {
                           "type": "string"
                         },
+                        "public_id": {
+                          "type": "string"
+                        },
                         "project_id": {
                           "type": "string"
                         },
@@ -9667,6 +9702,7 @@
                       },
                       "required": [
                         "id",
+                        "public_id",
                         "project_id",
                         "folder_id",
                         "slug",
@@ -9767,6 +9803,9 @@
                         "type": "object",
                         "properties": {
                           "id": {
+                            "type": "string"
+                          },
+                          "public_id": {
                             "type": "string"
                           },
                           "project_id": {
@@ -9870,6 +9909,7 @@
                         },
                         "required": [
                           "id",
+                          "public_id",
                           "project_id",
                           "folder_id",
                           "slug",
@@ -9963,6 +10003,9 @@
                   "type": "object",
                   "properties": {
                     "id": {
+                      "type": "string"
+                    },
+                    "public_id": {
                       "type": "string"
                     },
                     "project_id": {
@@ -10089,6 +10132,7 @@
                   },
                   "required": [
                     "id",
+                    "public_id",
                     "project_id",
                     "folder_id",
                     "slug",
@@ -10315,6 +10359,9 @@
                     "id": {
                       "type": "string"
                     },
+                    "public_id": {
+                      "type": "string"
+                    },
                     "project_id": {
                       "type": "string"
                     },
@@ -10416,6 +10463,7 @@
                   },
                   "required": [
                     "id",
+                    "public_id",
                     "project_id",
                     "folder_id",
                     "slug",
@@ -10706,6 +10754,9 @@
                         "id": {
                           "type": "string"
                         },
+                        "public_id": {
+                          "type": "string"
+                        },
                         "project_id": {
                           "type": "string"
                         },
@@ -10807,6 +10858,7 @@
                       },
                       "required": [
                         "id",
+                        "public_id",
                         "project_id",
                         "folder_id",
                         "slug",
@@ -17830,6 +17882,74 @@
         }
       }
     },
+    "/api/v1/s/{slug}/zip": {
+      "get": {
+        "summary": "The whole share as one streamed zip, under the share's download policy. Watermarked shares refuse.",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Binary payload",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/uploads/{id}/parts/{partNo}/url": {
       "get": {
         "parameters": [
@@ -18487,6 +18607,9 @@
                           "id": {
                             "type": "string"
                           },
+                          "public_id": {
+                            "type": "string"
+                          },
                           "project_id": {
                             "type": "string"
                           },
@@ -18552,6 +18675,7 @@
                         },
                         "required": [
                           "id",
+                          "public_id",
                           "project_id",
                           "folder_id",
                           "name",
@@ -18649,6 +18773,9 @@
                     "id": {
                       "type": "string"
                     },
+                    "public_id": {
+                      "type": "string"
+                    },
                     "project_id": {
                       "type": "string"
                     },
@@ -18714,6 +18841,7 @@
                   },
                   "required": [
                     "id",
+                    "public_id",
                     "project_id",
                     "folder_id",
                     "name",
@@ -18841,6 +18969,9 @@
                     "id": {
                       "type": "string"
                     },
+                    "public_id": {
+                      "type": "string"
+                    },
                     "project_id": {
                       "type": "string"
                     },
@@ -18906,6 +19037,7 @@
                   },
                   "required": [
                     "id",
+                    "public_id",
                     "project_id",
                     "folder_id",
                     "name",
@@ -19267,6 +19399,9 @@
                         "id": {
                           "type": "string"
                         },
+                        "public_id": {
+                          "type": "string"
+                        },
                         "project_id": {
                           "type": "string"
                         },
@@ -19332,6 +19467,7 @@
                       },
                       "required": [
                         "id",
+                        "public_id",
                         "project_id",
                         "folder_id",
                         "name",
@@ -19601,6 +19737,9 @@
                     "id": {
                       "type": "string"
                     },
+                    "public_id": {
+                      "type": "string"
+                    },
                     "project_id": {
                       "type": "string"
                     },
@@ -19666,6 +19805,7 @@
                   },
                   "required": [
                     "id",
+                    "public_id",
                     "project_id",
                     "folder_id",
                     "name",
@@ -20011,6 +20151,181 @@
                     "captions"
                   ],
                   "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/versions/{id}/download": {
+      "get": {
+        "summary": "Signed download for a version: kind=original (editor) or kind=proxy (viewer).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "description": "original (default) or proxy.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string"
+                    },
+                    "expires_at": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "url",
+                    "expires_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/zip": {
+      "get": {
+        "summary": "A folder, a selection, or the whole project as one streamed zip of originals (editor).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "folder_id",
+            "in": "query",
+            "required": false,
+            "description": "Limit to one folder and its subfolders.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "asset_ids",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated asset ids to include.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Binary payload",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }

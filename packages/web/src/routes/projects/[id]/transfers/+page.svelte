@@ -4,14 +4,15 @@
   import { copyText } from '$lib/clipboard.js';
   import { formatBytes } from '$lib/upload.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
-  import { idFrom } from '$lib/ids.js';
+  import { canonicalizePath } from '$lib/canonical.js';
+  import { idFrom, pretty } from '$lib/ids.js';
   import { pageWashFor } from '$lib/washes.js';
 
   /* The index of a project's transfer links. A package sends files out; a
      request brings files in. Cards carry their own controls: the link is the
      product, so copying it stays one click. */
 
-  type Project = { id: string; name: string; palette: string };
+  type Project = { id: string; public_id: string; name: string; palette: string };
   type Asset = { id: string; name: string; kind: string };
   type Folder = { id: string; name: string };
   type Transfer = {
@@ -40,9 +41,15 @@
     created_at: number;
   };
 
-  const projectId = $derived(idFrom(page.params.id));
+  const routeId = $derived(idFrom(page.params.id));
+  /* Canonical ULID once the project loads; the route may carry the short
+     public id, which only the project fetch understands. */
+  let projectId = $state<string | null>(null);
 
   let project = $state<Project | null>(null);
+  const projectPath = $derived(
+    project ? pretty(project.public_id, project.name) : routeId
+  );
   let transfers = $state<Transfer[]>([]);
   let assets = $state<Asset[]>([]);
   let folders = $state<Folder[]>([]);
@@ -53,11 +60,18 @@
 
   const wash = $derived(pageWashFor(project?.palette));
 
-  const load = async (id: string): Promise<void> => {
+  const load = async (routeRef: string): Promise<void> => {
     project = null; transfers = []; assets = []; folders = [];
     pageError = ''; listError = ''; receiptsFor = {};
+    projectId = null;
+    let id = routeRef;
     try {
-      project = await api<Project>(`/api/v1/projects/${id}`);
+      const loaded = await api<Project>(`/api/v1/projects/${routeRef}`);
+      if (routeRef !== routeId) return;
+      project = loaded;
+      projectId = loaded.id;
+      id = loaded.id;
+      canonicalizePath(`/projects/${pretty(loaded.public_id, loaded.name)}/transfers`);
     } catch (caught) {
       pageError = messageFrom(caught, 'This project is not available.');
       return;
@@ -96,7 +110,7 @@
   };
 
   $effect(() => {
-    const id = projectId;
+    const id = routeId;
     if (id) void load(id);
   });
 
@@ -250,7 +264,7 @@
     <nav class="crumbs" aria-label="Breadcrumb">
       <a href="/">Projects</a>
       <span aria-hidden="true">/</span>
-      <a href={`/projects/${projectId}`}>{project?.name ?? 'Project'}</a>
+      <a href={`/projects/${projectPath}`}>{project?.name ?? 'Project'}</a>
     </nav>
     <h1>Transfers</h1>
   </header>
@@ -453,6 +467,11 @@
   .create-form h2 { font-size: var(--text-20); font-family: var(--font-display); margin: 0 0 2px; }
   .field { display: grid; gap: 6px; color: var(--ink-text-dim); font-weight: 500; }
   .field input, .field select, .field textarea { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 10px; font-size: var(--text-13); font-family: inherit; resize: vertical; }
+  /* Native number spinners do not dress for this room; the field reads as
+     a plain field and takes typed digits. */
+  .field input[type='number'] { appearance: textfield; -moz-appearance: textfield; }
+  .field input[type='number']::-webkit-outer-spin-button,
+  .field input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: end; }
   fieldset { border: 0; margin: 0; padding: 12px; border-radius: var(--radius); background: var(--ink-000); display: grid; gap: 10px; }
   legend { padding: 0 4px; color: var(--ink-text-dim); font-size: var(--text-13); font-weight: 600; }

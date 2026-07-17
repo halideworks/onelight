@@ -2,7 +2,6 @@
   import { page } from '$app/state';
   import { PALETTES } from '@onelight/core';
   import { api, apiPost, messageFrom } from '$lib/api.js';
-  import { idFrom } from '$lib/ids.js';
   import {
     filesFromDataTransfer,
     filesFromInput,
@@ -41,7 +40,9 @@
     files: TransferFile[];
   };
 
-  const slug = $derived(idFrom(page.params.slug));
+  /* The whole route param IS the slug: transfer slugs carry hyphens by
+     design, so nothing here may try to parse an id out of them. */
+  const slug = $derived(page.params.slug ?? '');
 
   let shell = $state<Shell | null>(null);
   let error = $state('');

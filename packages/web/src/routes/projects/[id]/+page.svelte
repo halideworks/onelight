@@ -5,6 +5,7 @@
   import { page } from '$app/state';
   import { api, apiDelete, apiPatch, apiPost, createAssetVersion, messageFrom } from '$lib/api.js';
   import { copyText } from '$lib/clipboard.js';
+  import { canonicalizePath } from '$lib/canonical.js';
   import { idFrom, pretty } from '$lib/ids.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import AssetSelect from '$lib/AssetSelect.svelte';
@@ -26,6 +27,7 @@
 
   type Asset = {
     id: string;
+    public_id: string;
     project_id: string;
     folder_id: string | null;
     name: string;
@@ -35,7 +37,7 @@
     created_at: number;
     updated_at: number;
   };
-  type Project = { id: string; name: string; palette: string; status: string };
+  type Project = { id: string; public_id: string; name: string; palette: string; status: string };
   type Folder = { id: string; parent_id: string | null; kind?: 'assets' | 'shares'; name: string };
   type TreeNode = { folder: Folder; childIds: string[] | null; expanded: boolean };
   type UploadItem = {
@@ -56,6 +58,7 @@
   let project = $state<Project | null>(null);
   type Share = {
     id: string;
+    public_id: string;
     title: string;
     slug: string;
     folder_id: string | null;
@@ -109,7 +112,11 @@
   let dropTarget = $state<string | null>(null);
   let dragging = $state<string | null>(null);
 
-  const projectId = $derived(idFrom(page.params.id));
+  const routeId = $derived(idFrom(page.params.id));
+  /* Canonical ULID, set once the project loads. The route may carry the
+     short public id, which only the bootstrap fetch understands; every
+     other call in this file goes out with the canonical id. */
+  let projectId = $state<string | null>(null);
   const wash = $derived(pageWashFor(project?.palette));
 
   const media = createMediaCache();
@@ -213,10 +220,15 @@
     shares = []; shareError = ''; shareMenu = null; rowMenu = null;
     renaming = null; treeError = ''; newFolderName = '';
     selected = []; anchor = null; batch = { running: false, label: '', done: 0, total: 0, errors: [] };
+    projectId = null;
+    let canonical = '';
     try {
       const loaded = await api<Project>(`/api/v1/projects/${id}`);
-      if (id !== projectId) return;
+      if (id !== routeId) return;
       project = loaded;
+      projectId = loaded.id;
+      canonical = loaded.id;
+      canonicalizePath(`/projects/${pretty(loaded.public_id, loaded.name)}`);
     } catch (caught) {
       error = messageFrom(caught, 'This project is not available.');
       return;
@@ -226,13 +238,18 @@
     } catch (caught) {
       treeError = messageFrom(caught, 'Folders could not be loaded.');
     }
-    await Promise.all([loadAssets(id), loadShares(id)]);
+    await Promise.all([loadAssets(canonical), loadShares(canonical)]);
   };
 
   $effect(() => {
-    const id = projectId;
+    const id = routeId;
     if (id) void load(id);
   });
+
+  /* The pretty path segment for links out of this page. */
+  const projectPath = $derived(
+    project ? pretty(project.public_id, project.name) : routeId
+  );
 
   /* ---- live updates (project SSE) ---- */
 
@@ -379,7 +396,7 @@
      a worse copy of that page. */
   const openShare = (id: string): void => {
     const share = shares.find((entry) => entry.id === id);
-    void goto(`/projects/${pretty(projectId ?? '', project?.name)}/shares/${pretty(id, share?.title)}`);
+    void goto(`/projects/${projectPath}/shares/${pretty(share?.public_id ?? id, share?.title)}`);
   };
 
   const loadShares = async (id: string): Promise<void> => {
@@ -1113,8 +1130,10 @@
     selected = selected.length === displayed.length ? [] : displayed.map((asset) => asset.id);
   };
 
-  const assetHref = (id: string): string =>
-    `/projects/${pretty(projectId ?? '', project?.name)}/assets/${pretty(id, nameOf(id))}`;
+  const assetHref = (id: string): string => {
+    const asset = assets.find((entry) => entry.id === id);
+    return `/projects/${projectPath}/assets/${pretty(asset?.public_id ?? id, nameOf(id))}`;
+  };
 
   const onItemKeydown = (event: KeyboardEvent, id: string): void => {
     if (event.key === ' ') {
@@ -1137,6 +1156,57 @@
       : status === 'failed'
         ? 'Transcode failed'
         : null;
+
+  /* ---- downloads ---- */
+
+  /* One asset downloads its original through a signed URL; an editor gets
+     the negative, anyone else falls back to the proxy. Several assets, or a
+     folder, download as one streamed zip of originals. */
+  const menuDownload = async (ids: string[]): Promise<void> => {
+    const id = projectId;
+    if (!id || ids.length === 0) return;
+    if (ids.length > 1) {
+      window.location.assign(
+        `/api/v1/projects/${id}/zip?asset_ids=${encodeURIComponent(ids.join(','))}`
+      );
+      return;
+    }
+    const asset = assets.find((entry) => entry.id === ids[0]);
+    const versionId = asset?.current_version_id;
+    if (!versionId) {
+      listError = 'This file has no downloadable version yet.';
+      return;
+    }
+    try {
+      const signed = await api<{ url: string }>(`/api/v1/versions/${versionId}/download`);
+      window.location.assign(signed.url);
+    } catch {
+      try {
+        const signed = await api<{ url: string }>(
+          `/api/v1/versions/${versionId}/download?kind=proxy`
+        );
+        window.location.assign(signed.url);
+      } catch (caught) {
+        listError = messageFrom(caught, 'The download could not start.');
+      }
+    }
+  };
+
+  const downloadSelection = (): void => {
+    const id = projectId;
+    if (!id || selected.length === 0) return;
+    window.location.assign(
+      `/api/v1/projects/${id}/zip?asset_ids=${encodeURIComponent(selected.join(','))}`
+    );
+  };
+
+  const downloadFolder = (folderId: string): void => {
+    const id = projectId;
+    if (id)
+      window.location.assign(
+        `/api/v1/projects/${id}/zip?folder_id=${encodeURIComponent(folderId)}`
+      );
+  };
 
   /* ---- batch operations ---- */
 
@@ -1488,13 +1558,13 @@
            found by shape before it is read. -->
       <!-- Transfers moves files in and out of the project; it sits beside
            settings because both are rooms of this project, not of a file. -->
-      <a class="settingslink" href={`/projects/${projectId}/transfers`}>
+      <a class="settingslink" href={`/projects/${projectPath}/transfers`}>
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
           <path d="M5 2.5L2 5.5h2V10h2V5.5h2L5 2.5zM11 13.5l3-3h-2V6h-2v4.5H8l3 3z" fill="currentColor" />
         </svg>
         Transfers
       </a>
-      <a class="settingslink" href={`/projects/${projectId}/settings`}>
+      <a class="settingslink" href={`/projects/${projectPath}/settings`}>
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
           <path d="M8 10.2a2.2 2.2 0 110-4.4 2.2 2.2 0 010 4.4zm5.6-1.3l1.2-.9-1.2-2.1-1.4.5a4.7 4.7 0 00-1.2-.7L10.8 4H8.4l-.2 1.7a4.7 4.7 0 00-1.2.7l-1.4-.5-1.2 2.1 1.2.9a4.6 4.6 0 000 1.4l-1.2.9 1.2 2.1 1.4-.5c.36.3.77.53 1.2.7l.2 1.5h2.4l.2-1.5c.43-.17.84-.4 1.2-.7l1.4.5 1.2-2.1-1.2-.9a4.6 4.6 0 000-1.4z" fill="currentColor" />
         </svg>
@@ -1819,6 +1889,7 @@
             {:else if selected.length > 0}
               <span class="tc">{selected.length} selected</span>
               <button type="button" class="quiet" onclick={() => void openMove()}>Move to folder</button>
+              <button type="button" class="quiet" onclick={downloadSelection}>Download zip</button>
               <span class="approval">
                 <select bind:value={shareChoice} aria-label="Share to add to">
                   <option value="">New share…</option>
@@ -2055,6 +2126,7 @@
     {#if menu.ids.length === 1}
       <button type="button" role="menuitem" onclick={() => menuOpen(takeMenuIds())}>Open</button>
     {/if}
+    <button type="button" role="menuitem" onclick={() => void menuDownload(takeMenuIds())}>Download</button>
 
     <p class="ctxlabel">Move to</p>
     <div class="ctxscroll">
@@ -2111,7 +2183,7 @@
       <button type="button" role="menuitem" onclick={() => { takeRowMenu(); void menuNewFolderIn(null, 'shares'); }}>
         New folder…
       </button>
-      <button type="button" role="menuitem" onclick={() => { takeRowMenu(); void goto(`/projects/${projectId}/shares`); }}>
+      <button type="button" role="menuitem" onclick={() => { takeRowMenu(); void goto(`/projects/${projectPath}/shares`); }}>
         All shares
       </button>
     {:else if menu.kind === 'folder'}
@@ -2120,6 +2192,11 @@
       <button type="button" role="menuitem" onclick={() => { const taken = takeRowMenu(); if (taken?.kind === 'folder') void menuNewFolderIn(taken.id, kindOf(taken.id)); }}>
         New folder inside…
       </button>
+      {#if menu.kind === 'folder' && kindOf(menu.id) === 'assets'}
+        <button type="button" role="menuitem" onclick={() => { const taken = takeRowMenu(); if (taken?.kind === 'folder') downloadFolder(taken.id); }}>
+          Download as zip
+        </button>
+      {/if}
       <button type="button" role="menuitem" onclick={() => { const taken = takeRowMenu(); if (taken?.kind === 'folder') startRename(taken.id); }}>
         Rename
       </button>

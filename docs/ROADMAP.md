@@ -473,6 +473,31 @@ full pro tool. Standing decisions from this direction:
   CRC32C, and writing a manifest; documented in OPERATIONS.md. Backlog:
   a transfers e2e flow in the integration job, and notification digest
   copy for the two new kinds.
+- **Addresses read as names, not machine ids (2026-07-17, direction from
+  David).** Projects, assets, and shares carry a public_id: 10 lowercase
+  hex characters, random (so links neither collide nor enumerate),
+  unique-indexed, backfilled in pure SQL (migration 0017, both legs).
+  URLs are name-first: /projects/autumn-spot-a3f9c02b17. The ULID stays
+  canonical everywhere inside: aliases resolve ONLY at the three
+  bootstrap GETs (project, asset, share), so a mutation can never write
+  an alias into a row, and every page resolves its route param once,
+  then talks canonical. Every legacy form still parses (bare ULID, old
+  ULID-first pretty links), and each entity page rewrites the address
+  bar to the pretty form on load, so a ULID deep link from a
+  notification lands reading like a name. Renames never break links:
+  the name part is decoration, the tail id is the key.
+- **The download system grew its internal half (2026-07-17).** Versions
+  download inside the app at last: originals at editor (the negative),
+  the review proxy at viewer, via short-lived signed URLs with
+  attachment dispositions. A folder, a selection, or a whole project
+  streams as one zip of originals (editor), with the folder tree as
+  archive paths. Shares gained Download all: one streamed zip under the
+  share's own policy (original bundles negatives, proxy bundles review
+  files, watermarked refuses so clean files never leave in bulk, and a
+  proxy zip with a rendition still processing refuses rather than ship
+  a partial archive that reads as complete). All of it rides the core
+  zip writer with exact Content-Length. Still open: per-project
+  download gating on top of these roles.
 
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 

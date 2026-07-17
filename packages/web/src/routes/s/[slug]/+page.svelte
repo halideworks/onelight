@@ -911,6 +911,13 @@
     <header>
       {#if share.logo_url}<img class="sharelogo" src={share.logo_url} alt="" />{/if}
       <h1>{share.title}</h1>
+      {#if share.allow_download !== 'none' && !share.watermark_spec && assets.length > 1}
+        <!-- The whole share in one archive, under the same policy as the
+             per-file buttons. Watermarked shares download one at a time. -->
+        <a class="zipall" href={`/api/v1/s/${slug}/zip`} download>
+          Download all ({assets.length} files)
+        </a>
+      {/if}
     </header>
     <section class={`assets ${share.layout}`} aria-label="Shared assets">
       {#each assets as asset, index (asset.id)}
@@ -1515,6 +1522,8 @@
   .anchor { color: var(--n-600); }
   .composer-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
   .sharelogo { display: block; max-height: 56px; max-width: 240px; margin: 0 0 20px; object-fit: contain; }
+  .zipall { display: inline-block; margin-top: 10px; padding: 9px 14px; border-radius: var(--radius); background: rgba(231, 223, 200, 0.16); color: inherit; font-size: var(--text-13); font-weight: 500; text-decoration: none; }
+  .zipall:hover { background: rgba(231, 223, 200, 0.26); }
   /* The decision buttons: quiet verbs until taken, then they wear it. */
   .approval { display: inline-flex; gap: 6px; }
   .approval .approve[aria-pressed='true'] { background: #3f7d5c; color: #eafff3; }

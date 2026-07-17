@@ -44,6 +44,15 @@ const projectsHaveCover = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes("cover_asset_id"));
 };
 
+const projectsHavePublicId = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='projects'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("public_id"));
+};
+
 const usersHaveGuest = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -294,6 +303,21 @@ export const d1Migrations: D1Migration[] = [
       "CREATE TABLE transfer_items (\n  transfer_id TEXT NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,\n  asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,\n  sort_order INTEGER NOT NULL,\n  PRIMARY KEY (transfer_id, asset_id)\n)",
       "CREATE TABLE transfer_receipts (\n  id TEXT PRIMARY KEY,\n  transfer_id TEXT NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,\n  upload_session_id TEXT NOT NULL UNIQUE REFERENCES upload_sessions(id) ON DELETE CASCADE,\n  sender_name TEXT NOT NULL,\n  asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,\n  created_at INTEGER NOT NULL\n)",
       "CREATE INDEX transfer_receipts_transfer_idx ON transfer_receipts(transfer_id, id)",
+    ],
+  },
+  {
+    name: "0017_public_ids.sql",
+    applied: projectsHavePublicId,
+    statements: [
+      "ALTER TABLE projects ADD COLUMN public_id TEXT",
+      "ALTER TABLE assets ADD COLUMN public_id TEXT",
+      "ALTER TABLE shares ADD COLUMN public_id TEXT",
+      "UPDATE projects SET public_id = lower(hex(randomblob(5))) WHERE public_id IS NULL",
+      "UPDATE assets SET public_id = lower(hex(randomblob(5))) WHERE public_id IS NULL",
+      "UPDATE shares SET public_id = lower(hex(randomblob(5))) WHERE public_id IS NULL",
+      "CREATE UNIQUE INDEX projects_public_id_uq ON projects(public_id)",
+      "CREATE UNIQUE INDEX assets_public_id_uq ON assets(public_id)",
+      "CREATE UNIQUE INDEX shares_public_id_uq ON shares(public_id)",
     ],
   },
 ];

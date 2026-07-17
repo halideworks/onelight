@@ -315,6 +315,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     );
     return {
       id: project.id,
+      public_id: project.publicId ?? project.id,
       name: project.name,
       status: project.status,
       palette: project.palette,
@@ -368,6 +369,104 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       throw errors.forbidden("Archived projects are read-only.");
     if (minimum && !projectRoleAtLeast(role, minimum)) throw errors.forbidden();
     return { project, role };
+  };
+
+  /* Short random URL identity: 10 lowercase hex characters, 40 random bits.
+     Random rather than derived, so addresses neither collide with names nor
+     enumerate; the unique index is the arbiter and a clash just redraws. */
+  const newPublicId = async (
+    exists: (candidate: string) => Promise<boolean>,
+  ): Promise<string> => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const candidate = Array.from(randomBytes(5))
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+      if (!(await exists(candidate))) return candidate;
+    }
+    throw errors.internal("Could not allocate a public id.");
+  };
+
+  const newProjectPublicId = () =>
+    newPublicId(
+      async (candidate) =>
+        (
+          await env.db
+            .select({ id: projects.id })
+            .from(projects)
+            .where(eq(projects.publicId, candidate))
+            .limit(1)
+            .all()
+        ).length > 0,
+    );
+
+  const newAssetPublicId = () =>
+    newPublicId(
+      async (candidate) =>
+        (
+          await env.db
+            .select({ id: assets.id })
+            .from(assets)
+            .where(eq(assets.publicId, candidate))
+            .limit(1)
+            .all()
+        ).length > 0,
+    );
+
+  const newSharePublicId = () =>
+    newPublicId(
+      async (candidate) =>
+        (
+          await env.db
+            .select({ id: shares.id })
+            .from(shares)
+            .where(eq(shares.publicId, candidate))
+            .limit(1)
+            .all()
+        ).length > 0,
+    );
+
+  /* URL params arrive as either the canonical ULID or the short public id.
+     Resolution happens ONCE, at the entity's own GET: every other endpoint
+     and every mutation takes canonical ids only, so an alias can never be
+     written into a row. A ULID is exactly 26 characters and a public id is
+     not, so the forms cannot collide. */
+  const projectParam = async (param: string): Promise<string> => {
+    if (param.length === 26) return param;
+    const row = (
+      await env.db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(eq(projects.publicId, param))
+        .limit(1)
+        .all()
+    )[0];
+    return row?.id ?? param;
+  };
+
+  const assetParam = async (param: string): Promise<string> => {
+    if (param.length === 26) return param;
+    const row = (
+      await env.db
+        .select({ id: assets.id })
+        .from(assets)
+        .where(eq(assets.publicId, param))
+        .limit(1)
+        .all()
+    )[0];
+    return row?.id ?? param;
+  };
+
+  const shareParam = async (param: string): Promise<string> => {
+    if (param.length === 26) return param;
+    const row = (
+      await env.db
+        .select({ id: shares.id })
+        .from(shares)
+        .where(eq(shares.publicId, param))
+        .limit(1)
+        .all()
+    )[0];
+    return row?.id ?? param;
   };
 
   const audit = async (
@@ -840,6 +939,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   const assetWire = (asset: typeof assets.$inferSelect) => ({
     id: asset.id,
+    public_id: asset.publicId ?? asset.id,
     project_id: asset.projectId,
     folder_id: asset.folderId,
     name: asset.name,
@@ -996,6 +1096,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   const shareWire = (share: typeof shares.$inferSelect) => ({
     id: share.id,
+    public_id: share.publicId ?? share.id,
     project_id: share.projectId,
     folder_id: share.folderId,
     slug: share.slug,
@@ -2701,6 +2802,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .insert(projects)
       .values({
         id,
+        publicId: await newProjectPublicId(),
         workspaceId: user.workspaceId,
         name: body.name.trim(),
         status: "active",
@@ -2741,7 +2843,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.get("/projects/:id", requireAuth, async (c) => {
     const user = userFromContext(c);
-    const { project } = await requireProject(c.req.param("id"), user, "viewer");
+    const { project } = await requireProject(
+      await projectParam(c.req.param("id")),
+      user,
+      "viewer",
+    );
     return c.json(await projectWire(project, user.id, user.role));
   });
 
@@ -4575,6 +4681,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             wire: {
               type: "asset",
               id: row.assets.id,
+              public_id: row.assets.publicId ?? row.assets.id,
               name: row.assets.name,
               project_id: row.assets.projectId,
               /* Enough to draw the row without a second request per hit: the
@@ -4611,6 +4718,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               wire: {
                 type: "project",
                 id: row.id,
+                public_id: row.publicId ?? row.id,
                 name: row.name,
                 palette: row.palette,
                 cover_url: await coverUrlFor(row),
@@ -5076,6 +5184,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .insert(shares)
       .values({
         id,
+        publicId: await newSharePublicId(),
         projectId: body.project_id,
         slug,
         kind: body.kind,
@@ -5146,7 +5255,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       await env.db
         .select()
         .from(shares)
-        .where(eq(shares.id, c.req.param("id")))
+        .where(eq(shares.id, await shareParam(c.req.param("id"))))
         .limit(1)
         .all()
     )[0];
@@ -8010,6 +8119,112 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.json(await listPartsResponse(upload));
   });
 
+  /* The whole share as one streamed zip, under the same policy as the
+     per-file downloads: none refuses, original bundles the negatives, proxy
+     bundles review files (originals for stills and documents, which have no
+     lesser form). A watermarked share never bundles: the burned renditions
+     download one at a time, and the clean files never leave in ANY mode. */
+  api.get("/s/:slug/zip", async (c) => {
+    const projection = await publicShare(
+      c,
+      await shareBySlug(c.req.param("slug")),
+    );
+    if (!projection.viewer) throw errors.unauthorized();
+    const share = projection.share;
+    if (share.allowDownload === "none")
+      throw errors.forbidden("Downloads are disabled for this share.");
+    if (shareIsWatermarked(share))
+      throw errors.forbidden("Watermarked shares download one file at a time.");
+    const store = requireBlobStore();
+    const versionIds = projection.assets
+      .map((asset: PublicShareAsset) => asset.currentVersionId)
+      .filter((id: string | null): id is string => id !== null);
+    if (!versionIds.length) throw errors.notFound("Nothing to download.");
+    const versionRows = (await env.db
+      .select()
+      .from(assetVersions)
+      .where(inArray(assetVersions.id, versionIds))
+      .all()) as Array<typeof assetVersions.$inferSelect>;
+    const versionsById = new Map(versionRows.map((row) => [row.id, row]));
+    const proxyRows =
+      share.allowDownload === "proxy"
+        ? ((await env.db
+            .select()
+            .from(renditions)
+            .where(
+              and(
+                inArray(renditions.versionId, versionIds),
+                eq(renditions.kind, "proxy_1080"),
+                isNull(renditions.shareId),
+              ),
+            )
+            .all()) as Array<typeof renditions.$inferSelect>)
+        : [];
+    const proxiesByVersion = new Map(
+      proxyRows.map((row) => [row.versionId, row]),
+    );
+    const used = new Set<string>();
+    const entries: ZipEntry[] = [];
+    for (const asset of projection.assets) {
+      const version = asset.currentVersionId
+        ? versionsById.get(asset.currentVersionId)
+        : undefined;
+      if (!version) continue;
+      let source: { size: number; blobKey: string; filename: string };
+      if (share.allowDownload === "proxy" && asset.kind === "video") {
+        const proxy = proxiesByVersion.get(version.id);
+        /* A partial archive would read as complete; refuse instead. */
+        if (!proxy)
+          throw errors.conflict(
+            "A review rendition is still processing. Try again shortly.",
+          );
+        const baseName =
+          version.originalFilename.replace(/\.[^.]+$/, "") || "download";
+        source = {
+          size: proxy.size,
+          blobKey: proxy.blobKey,
+          filename: `${baseName}-proxy.mp4`,
+        };
+      } else {
+        source = {
+          size: version.size,
+          blobKey: version.originalBlobKey,
+          filename: version.originalFilename,
+        };
+      }
+      let name = zipEntryName(source.filename);
+      if (used.has(name)) {
+        const dot = name.lastIndexOf(".");
+        const stem = dot > 0 ? name.slice(0, dot) : name;
+        const extension = dot > 0 ? name.slice(dot) : "";
+        let suffix = 2;
+        while (used.has(`${stem} (${suffix})${extension}`)) suffix += 1;
+        name = `${stem} (${suffix})${extension}`;
+      }
+      used.add(name);
+      entries.push({
+        name,
+        size: source.size,
+        modifiedAt: version.createdAt,
+        open: () => store.getStream(source.blobKey),
+      });
+    }
+    if (!entries.length) throw errors.notFound("Nothing to download.");
+    const zipName = `${
+      share.title
+        .replace(/[^\w.-]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 80) || "share"
+    }.zip`;
+    return new Response(zipStream(entries), {
+      headers: {
+        "content-type": "application/zip",
+        "content-length": String(zipLength(entries)),
+        "content-disposition": attachmentDisposition(zipName),
+      },
+    });
+  });
+
   api.get("/uploads/:id/parts/:partNo/url", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const upload = await findUpload(c.req.param("id"), actor);
@@ -8256,6 +8471,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .insert(assets)
       .values({
         id: assetId,
+        publicId: await newAssetPublicId(),
         projectId: upload.projectId,
         folderId: options.folderId,
         name,
@@ -8442,7 +8658,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.get("/assets/:id", requireAuth, async (c) => {
     const actor = userFromContext(c);
-    const asset = await assetForActor(c.req.param("id"), actor);
+    const asset = await assetForActor(
+      await assetParam(c.req.param("id")),
+      actor,
+    );
     return c.json(assetWire(asset));
   });
 
@@ -8786,6 +9005,171 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       })),
     );
   };
+
+  /* Internal downloads. Originals are the camera negatives of the room, so
+     they take editor; the proxy is what any member already streams, so it
+     downloads at viewer. Both hand back a short-lived signed URL with an
+     attachment disposition. */
+  api.get("/versions/:id/download", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const kind = c.req.query("kind") === "proxy" ? "proxy" : "original";
+    const version = await versionForActor(
+      c.req.param("id"),
+      actor,
+      kind === "original" ? "editor" : "viewer",
+    );
+    if (!env.blobStore) throw errors.notFound("Media is not available.");
+    const expiresAt = env.clock.now() + 15 * 60 * 1000;
+    if (kind === "original")
+      return c.json({
+        url: await privateMediaUrl(
+          { versionId: version.id },
+          version.originalBlobKey,
+          attachmentDisposition(version.originalFilename),
+        ),
+        expires_at: expiresAt,
+      });
+    const proxyRows = (await env.db
+      .select()
+      .from(renditions)
+      .where(
+        and(
+          eq(renditions.versionId, version.id),
+          inArray(renditions.kind, ["proxy_1080", "proxy_540", "proxy_2160"]),
+          isNull(renditions.shareId),
+        ),
+      )
+      .all()) as Array<typeof renditions.$inferSelect>;
+    const order = ["proxy_1080", "proxy_540", "proxy_2160"];
+    const proxy = proxyRows.sort(
+      (a, b) => order.indexOf(a.kind) - order.indexOf(b.kind),
+    )[0];
+    if (!proxy) throw errors.notFound("A review rendition is not ready.");
+    const baseName =
+      version.originalFilename.replace(/\.[^.]+$/, "") || "download";
+    return c.json({
+      url: await privateMediaUrl(
+        { versionId: version.id },
+        proxy.blobKey,
+        attachmentDisposition(`${baseName}-proxy.mp4`),
+      ),
+      expires_at: expiresAt,
+    });
+  });
+
+  /* A folder, a selection, or the whole project as one streamed zip of
+     originals. Editor for the same reason the single original is: this is
+     the negative, not the screener. */
+  api.get("/projects/:id/zip", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const projectId = c.req.param("id");
+    await requireProject(projectId, actor, "editor");
+    const store = requireBlobStore();
+    const folderId = c.req.query("folder_id") ?? null;
+    const wantedIds = (c.req.query("asset_ids") ?? "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    /* The folder tree, for archive paths and for expanding a folder pick
+       into its descendants. */
+    const folderRows = (await env.db
+      .select()
+      .from(folders)
+      .where(and(eq(folders.projectId, projectId), eq(folders.kind, "assets")))
+      .all()) as Array<typeof folders.$inferSelect>;
+    const foldersById = new Map(folderRows.map((row) => [row.id, row]));
+    const pathOf = (id: string | null): string[] => {
+      const segments: string[] = [];
+      let cursor = id;
+      let guard = 0;
+      while (cursor && guard < 64) {
+        const row = foldersById.get(cursor);
+        if (!row) break;
+        segments.unshift(row.name);
+        cursor = row.parentId;
+        guard += 1;
+      }
+      return segments;
+    };
+    const insideWanted = (id: string | null): boolean => {
+      if (!folderId) return true;
+      let cursor = id;
+      let guard = 0;
+      while (cursor && guard < 64) {
+        if (cursor === folderId) return true;
+        cursor = foldersById.get(cursor)?.parentId ?? null;
+        guard += 1;
+      }
+      return false;
+    };
+    if (folderId && !foldersById.has(folderId))
+      throw errors.notFound("Folder was not found.");
+    const rows = (await env.db
+      .select({ asset: assets, version: assetVersions })
+      .from(assets)
+      .innerJoin(assetVersions, eq(assets.currentVersionId, assetVersions.id))
+      .where(and(eq(assets.projectId, projectId), isNull(assets.deletedAt)))
+      .orderBy(asc(assets.id))
+      .all()) as Array<{
+      asset: typeof assets.$inferSelect;
+      version: typeof assetVersions.$inferSelect;
+    }>;
+    const wanted = new Set(wantedIds);
+    const chosen = rows.filter(
+      (row) =>
+        (wanted.size === 0 || wanted.has(row.asset.id)) &&
+        insideWanted(row.asset.folderId),
+    );
+    if (!chosen.length) throw errors.notFound("Nothing to download.");
+    const used = new Set<string>();
+    const entries: ZipEntry[] = [];
+    for (const row of chosen) {
+      const version = row.version;
+      const directory = pathOf(row.asset.folderId)
+        .map((segment) => zipEntryName(segment))
+        .join("/");
+      let name = zipEntryName(version.originalFilename);
+      if (directory) name = `${directory}/${name}`;
+      if (used.has(name)) {
+        const dot = name.lastIndexOf(".");
+        const stem = dot > 0 ? name.slice(0, dot) : name;
+        const extension = dot > 0 ? name.slice(dot) : "";
+        let suffix = 2;
+        while (used.has(`${stem} (${suffix})${extension}`)) suffix += 1;
+        name = `${stem} (${suffix})${extension}`;
+      }
+      used.add(name);
+      entries.push({
+        name,
+        size: version.size,
+        modifiedAt: version.createdAt,
+        open: () => store.getStream(version.originalBlobKey),
+      });
+    }
+    const scopeName = folderId
+      ? (foldersById.get(folderId)?.name ?? "folder")
+      : ((
+          await env.db
+            .select({ name: projects.name })
+            .from(projects)
+            .where(eq(projects.id, projectId))
+            .limit(1)
+            .all()
+        )[0]?.name ?? "project");
+    const zipName = `${
+      scopeName
+        .replace(/[^\w.-]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 80) || "files"
+    }.zip`;
+    return new Response(zipStream(entries), {
+      headers: {
+        "content-type": "application/zip",
+        "content-length": String(zipLength(entries)),
+        "content-disposition": attachmentDisposition(zipName),
+      },
+    });
+  });
 
   api.put("/versions/:id/captions", requireAuth, async (c) => {
     const actor = userFromContext(c);

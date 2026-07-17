@@ -2942,6 +2942,7 @@ export interface paths {
                         "application/json": {
                             items: {
                                 id: string;
+                                public_id: string;
                                 name: string;
                                 /** @enum {string} */
                                 status: "active" | "archived";
@@ -3027,6 +3028,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             id: string;
+                            public_id: string;
                             name: string;
                             /** @enum {string} */
                             status: "active" | "archived";
@@ -3114,6 +3116,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             id: string;
+                            public_id: string;
                             name: string;
                             /** @enum {string} */
                             status: "active" | "archived";
@@ -3261,6 +3264,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             id: string;
+                            public_id: string;
                             name: string;
                             /** @enum {string} */
                             status: "active" | "archived";
@@ -3426,6 +3430,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             id: string;
+                            public_id: string;
                             name: string;
                             /** @enum {string} */
                             status: "active" | "archived";
@@ -5454,6 +5459,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             id: string;
+                            public_id: string;
                             project_id: string;
                             folder_id: string | null;
                             name: string;
@@ -6002,6 +6008,7 @@ export interface paths {
                                 /** @constant */
                                 type: "asset";
                                 id: string;
+                                public_id: string;
                                 name: string;
                                 project_id: string;
                                 current_version_id: string | null;
@@ -6020,6 +6027,7 @@ export interface paths {
                                 /** @constant */
                                 type: "project";
                                 id: string;
+                                public_id: string;
                                 name: string;
                                 palette: string;
                                 cover_url: string | null;
@@ -6118,6 +6126,7 @@ export interface paths {
                         "application/json": {
                             items: {
                                 id: string;
+                                public_id: string;
                                 project_id: string;
                                 folder_id: string | null;
                                 slug: string;
@@ -6245,6 +6254,7 @@ export interface paths {
                         "application/json": {
                             share: {
                                 id: string;
+                                public_id: string;
                                 project_id: string;
                                 folder_id: string | null;
                                 slug: string;
@@ -6343,6 +6353,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             id: string;
+                            public_id: string;
                             project_id: string;
                             folder_id: string | null;
                             slug: string;
@@ -6520,6 +6531,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             id: string;
+                            public_id: string;
                             project_id: string;
                             folder_id: string | null;
                             slug: string;
@@ -6705,6 +6717,7 @@ export interface paths {
                         "application/json": {
                             share: {
                                 id: string;
+                                public_id: string;
                                 project_id: string;
                                 folder_id: string | null;
                                 slug: string;
@@ -10937,6 +10950,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/s/{slug}/zip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The whole share as one streamed zip, under the share's download policy. Watermarked shares refuse. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    slug: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Binary payload */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/zip": string;
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/uploads/{id}/parts/{partNo}/url": {
         parameters: {
             query?: never;
@@ -11363,6 +11450,7 @@ export interface paths {
                         "application/json": {
                             items: {
                                 id: string;
+                                public_id: string;
                                 project_id: string;
                                 folder_id: string | null;
                                 name: string;
@@ -11529,6 +11617,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             id: string;
+                            public_id: string;
                             project_id: string;
                             folder_id: string | null;
                             name: string;
@@ -11673,6 +11762,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             id: string;
+                            public_id: string;
                             project_id: string;
                             folder_id: string | null;
                             name: string;
@@ -11850,6 +11940,7 @@ export interface paths {
                         "application/json": {
                             asset: {
                                 id: string;
+                                public_id: string;
                                 project_id: string;
                                 folder_id: string | null;
                                 name: string;
@@ -12035,6 +12126,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             id: string;
+                            public_id: string;
                             project_id: string;
                             folder_id: string | null;
                             name: string;
@@ -12235,6 +12327,165 @@ export interface paths {
                                 url: string | null;
                             }[];
                         };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/versions/{id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Signed download for a version: kind=original (editor) or kind=proxy (viewer). */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description original (default) or proxy. */
+                    kind?: string;
+                };
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            url: string;
+                            expires_at: number;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/zip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A folder, a selection, or the whole project as one streamed zip of originals (editor). */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Limit to one folder and its subfolders. */
+                    folder_id?: string;
+                    /** @description Comma-separated asset ids to include. */
+                    asset_ids?: string;
+                };
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Binary payload */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/zip": string;
                     };
                 };
                 /** @description Validation failure */

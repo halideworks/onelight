@@ -22,14 +22,23 @@
   import { auth } from '$lib/auth.svelte.js';
   import Avatar from '$lib/Avatar.svelte';
   import Lightbox from '$lib/Lightbox.svelte';
-  import { idFrom } from '$lib/ids.js';
+  import { canonicalizePath } from '$lib/canonical.js';
+  import { idFrom, pretty } from '$lib/ids.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
   import { formatBytes } from '$lib/upload.js';
   import { annotationsFrom, markersFrom, type ReviewComment } from '$lib/comments.js';
   import { markerInkFor } from '@onelight/player';
   import { hashtagsIn, segmentCommentBody } from './comment-text.js';
 
-  type Asset = { id: string; name: string; kind: string; status: string; current_version_id: string | null };
+  type Asset = {
+    id: string;
+    public_id: string;
+    project_id: string;
+    name: string;
+    kind: string;
+    status: string;
+    current_version_id: string | null;
+  };
   type Version = {
     id: string;
     asset_id: string;
@@ -270,8 +279,20 @@
   /* Bumped on every asset or version switch; stale async loads stand down. */
   let versionToken = 0;
 
-  const projectId = $derived(idFrom(page.params.id));
-  const assetId = $derived(idFrom(page.params.assetId));
+  const routeAssetId = $derived(idFrom(page.params.assetId));
+  /* Canonical ULIDs, set once the asset loads. The route may carry short
+     public ids, which only the bootstrap fetch understands; every other
+     call in this file goes out with canonical ids. */
+  let assetId = $state<string | null>(null);
+  let projectId = $state<string | null>(null);
+  let projectInfo = $state<{ public_id: string; name: string } | null>(null);
+  let projectRole = $state<string | null>(null);
+  const projectSeg = $derived(
+    projectInfo ? pretty(projectInfo.public_id, projectInfo.name) : (page.params.id ?? '')
+  );
+  const assetSeg = $derived(
+    asset ? pretty(asset.public_id, asset.name) : (page.params.assetId ?? '')
+  );
   const selectedVersion = $derived(versions.find((version) => version.id === selectedVersionId) ?? null);
   const newestVersion = $derived(versions[0] ?? null);
   const isNewestSelected = $derived(Boolean(selectedVersion && newestVersion && selectedVersion.id === newestVersion.id));
@@ -617,22 +638,47 @@
     error = ''; comments = []; commentError = ''; highlightedId = null; pendingDrawing = null;
     noteFilter = 'all'; activeTag = null; railError = ''; prevVersion = null; prevOpenCount = 0;
     versionNoByComment = {};
+    assetId = null;
+    projectId = null;
+    let canonical = '';
     try {
       const loaded = await api<Asset>(`/api/v1/assets/${id}`);
-      if (id !== assetId) return;
+      if (id !== routeAssetId) return;
       asset = loaded;
+      assetId = loaded.id;
+      projectId = loaded.project_id;
+      canonical = loaded.id;
     } catch (caught) {
       error = messageFrom(caught, 'This asset is not available.');
       return;
     }
     const pid = projectId;
-    if (pid) void loadMembers(pid);
+    if (pid) {
+      void loadMembers(pid);
+      /* The project's public identity, for the address bar and the links
+         out; the page works before it arrives. */
+      void api<{ id: string; public_id: string; name: string; my_role?: string | null }>(
+        `/api/v1/projects/${pid}`
+      )
+        .then((loadedProject) => {
+          if (asset?.project_id !== loadedProject.id) return;
+          projectInfo = { public_id: loadedProject.public_id, name: loadedProject.name };
+          projectRole = loadedProject.my_role ?? null;
+          if (asset)
+            canonicalizePath(
+              `/projects/${pretty(loadedProject.public_id, loadedProject.name)}/assets/${pretty(asset.public_id, asset.name)}`
+            );
+        })
+        .catch(() => {
+          /* Cosmetic only. */
+        });
+    }
     try {
-      versions = (await api<{ items: Version[] }>(`/api/v1/assets/${id}/versions`)).items;
+      versions = (await api<{ items: Version[] }>(`/api/v1/assets/${canonical}/versions`)).items;
     } catch {
       versions = [];
     }
-    if (id !== assetId) return;
+    if (id !== routeAssetId) return;
     /* Deep links may pin a specific version (?v=); location.search is read
        directly so this load never re-runs on ?f= rewrites. */
     const pinned = new URLSearchParams(location.search).get('v');
@@ -645,9 +691,29 @@
   };
 
   $effect(() => {
-    const id = assetId;
+    const id = routeAssetId;
     if (id) void load(id);
   });
+
+  /* The original is the negative and downloads at editor; anyone else gets
+     the review proxy. One button, the best file the role allows. */
+  let downloadBusy = $state(false);
+  const downloadCurrent = async (): Promise<void> => {
+    const versionId = selectedVersionId;
+    if (!versionId || downloadBusy) return;
+    downloadBusy = true;
+    try {
+      const wantOriginal = projectRole === 'editor' || projectRole === 'manager';
+      const signed = await api<{ url: string }>(
+        `/api/v1/versions/${versionId}/download${wantOriginal ? '' : '?kind=proxy'}`
+      );
+      window.location.assign(signed.url);
+    } catch (caught) {
+      railError = messageFrom(caught, 'The download could not start.');
+    } finally {
+      downloadBusy = false;
+    }
+  };
 
   /* ---- version rail actions ---- */
 
@@ -1120,7 +1186,7 @@
 
 <main class="review">
   <header class="topbar">
-    <a href={`/projects/${projectId}`}>Back to project</a>
+    <a href={`/projects/${projectSeg}`}>Back to project</a>
     {#if asset}
       <!-- Rename in place. PATCH /assets/:id has always taken a name; nothing
            in the UI ever offered it, so a mis-named upload stayed mis-named. -->
@@ -1241,10 +1307,23 @@
       {#if versions.length >= 2}
         <a
           class="compare-link"
-          href={`/projects/${projectId}/assets/${assetId}/compare${selectedVersionId ? `?a=${selectedVersionId}` : ''}`}
+          href={`/projects/${projectSeg}/assets/${assetSeg}/compare${selectedVersionId ? `?a=${selectedVersionId}` : ''}`}
         >
           Compare
         </a>
+      {/if}
+      {#if selectedVersionId}
+        <button
+          type="button"
+          class="compare-link download-link"
+          disabled={downloadBusy}
+          title={projectRole === 'editor' || projectRole === 'manager'
+            ? 'Download the original file'
+            : 'Download the review proxy'}
+          onclick={() => void downloadCurrent()}
+        >
+          Download
+        </button>
       {/if}
       <label class="approval">Approval
         <select value={asset.status} onchange={(event) => updateApproval((event.currentTarget as HTMLSelectElement).value)}>
@@ -1658,6 +1737,8 @@
 
   /* Versions menu: says which version you are on, and opens the rest. */
   .compare-link { display: inline-flex; align-items: center; background: var(--n-150); color: var(--n-800); padding: 8px 12px; border-radius: var(--radius); font-size: var(--text-13); font-weight: 500; text-decoration: none; }
+  .download-link { border: 0; cursor: pointer; font-family: inherit; }
+  .download-link:disabled { opacity: 0.6; cursor: default; }
   .compare-link:hover { background: var(--n-300); color: var(--n-900); }
   .infowrap { position: relative; }
   .info-trigger { background: var(--n-150); color: var(--n-800); padding: 8px 12px; border-radius: var(--radius); font-size: var(--text-13); font-weight: 500; }

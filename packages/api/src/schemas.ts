@@ -405,6 +405,8 @@ const tokenItem = z.object({
 
 const project = z.object({
   id: z.string(),
+  /* Short random identity for URLs; id stays canonical for API calls. */
+  public_id: z.string(),
   name: z.string(),
   status: z.enum(["active", "archived"]),
   palette: z.string(),
@@ -492,6 +494,7 @@ const sessionItem = z.object({
 const searchAssetHit = z.object({
   type: z.literal("asset"),
   id: z.string(),
+  public_id: z.string(),
   name: z.string(),
   project_id: z.string(),
   /* Lets a result draw its poster without a request per hit. */
@@ -514,6 +517,7 @@ const searchCommentHit = z.object({
 const searchProjectHit = z.object({
   type: z.literal("project"),
   id: z.string(),
+  public_id: z.string(),
   name: z.string(),
   palette: z.string(),
   cover_url: z.string().nullable(),
@@ -547,6 +551,8 @@ const searchHit = z.discriminatedUnion("type", [
 
 const share = z.object({
   id: z.string(),
+  /* Short random identity for the settings page URL. */
+  public_id: z.string(),
   project_id: z.string(),
   folder_id: z.string().nullable(),
   slug: z.string(),
@@ -708,6 +714,8 @@ const upload = z.object({
 
 const asset = z.object({
   id: z.string(),
+  /* Short random identity for URLs; id stays canonical for API calls. */
+  public_id: z.string(),
   project_id: z.string(),
   folder_id: z.string().nullable(),
   name: z.string(),
@@ -1324,6 +1332,28 @@ export const routeDocs: Record<string, RouteDoc> = {
     summary:
       "Share viewer roster (share owner or project manager). The viewer_key is never on the wire.",
     responses: { "200": ok(list(shareViewerItem)) },
+  },
+  "GET /versions/:id/download": {
+    summary:
+      "Signed download for a version: kind=original (editor) or kind=proxy (viewer).",
+    query: {
+      kind: { description: "original (default) or proxy." },
+    },
+    responses: { "200": ok(signedUrl) },
+  },
+  "GET /projects/:id/zip": {
+    summary:
+      "A folder, a selection, or the whole project as one streamed zip of originals (editor).",
+    query: {
+      folder_id: { description: "Limit to one folder and its subfolders." },
+      asset_ids: { description: "Comma-separated asset ids to include." },
+    },
+    responses: { "200": binary("application/zip") },
+  },
+  "GET /s/:slug/zip": {
+    summary:
+      "The whole share as one streamed zip, under the share's download policy. Watermarked shares refuse.",
+    responses: { "200": binary("application/zip") },
   },
   "POST /transfers": {
     summary:

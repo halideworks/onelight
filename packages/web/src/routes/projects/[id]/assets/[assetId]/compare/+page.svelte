@@ -11,6 +11,7 @@
      promising motion lockstep, because two decoders never advance as one. */
 
   type Asset = { id: string; name: string; current_version_id: string | null };
+  /* The compare room resolves its route param once and works canonical. */
   type Version = {
     id: string;
     version_no: number;
@@ -37,7 +38,7 @@
   let wipe = $state(50);
   let draggingWipe = false;
 
-  const projectId = $derived(idFrom(page.params.id));
+  const projectId = $derived(page.params.id ?? '');
   const assetId = $derived(idFrom(page.params.assetId));
   const versionA = $derived(versions.find((version) => version.id === aId) ?? null);
   const versionB = $derived(versions.find((version) => version.id === bId) ?? null);
@@ -162,7 +163,7 @@
       try {
         if (!assetId) return;
         asset = await api<Asset>(`/api/v1/assets/${assetId}`);
-        versions = (await api<{ items: Version[] }>(`/api/v1/assets/${assetId}/versions`)).items;
+        versions = (await api<{ items: Version[] }>(`/api/v1/assets/${asset.id}/versions`)).items;
         const params = page.url.searchParams;
         const wantedA = params.get('a');
         const wantedB = params.get('b');
@@ -206,7 +207,7 @@
 
 <main class="compare">
   <header class="topbar">
-    <a href={`/projects/${projectId}/assets/${assetId}`}>Back to review</a>
+    <a href={`/projects/${projectId}/assets/${page.params.assetId ?? ''}`}>Back to review</a>
     {#if asset}<h1>{asset.name}</h1>{/if}
     <span class="grow"></span>
     <div class="pickers">

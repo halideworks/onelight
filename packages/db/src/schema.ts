@@ -149,6 +149,8 @@ export const projects = sqliteTable(
   "projects",
   {
     id: text("id").primaryKey(),
+    /** Short random identity for URLs; the ULID stays canonical inside. */
+    publicId: text("public_id").unique(),
     workspaceId: text("workspace_id")
       .notNull()
       .references(() => workspaces.id),
@@ -321,6 +323,8 @@ export const assets = sqliteTable(
   "assets",
   {
     id: text("id").primaryKey(),
+    /** Short random identity for URLs; the ULID stays canonical inside. */
+    publicId: text("public_id").unique(),
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
@@ -681,6 +685,9 @@ export const notificationPreferences = sqliteTable("notification_preferences", {
 
 export const shares = sqliteTable("shares", {
   id: text("id").primaryKey(),
+  /** Short random identity for the internal settings page URL; the public
+      room keeps its own secret slug. */
+  publicId: text("public_id").unique(),
   projectId: text("project_id")
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),

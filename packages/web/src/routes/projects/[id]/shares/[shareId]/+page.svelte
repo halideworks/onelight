@@ -7,6 +7,7 @@
   import { copyText } from '$lib/clipboard.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
+  import { canonicalizePath } from '$lib/canonical.js';
   import { idFrom, pretty } from '$lib/ids.js';
   import { pageWashFor, pageWashFromStops, washFor } from '$lib/washes.js';
 
@@ -16,13 +17,20 @@
      head. Here the share's link leads -- copying it is the page's number one
      job -- and each setting sits in its own panel and saves as it changes. */
 
-  type Project = { id: string; name: string; palette: string };
-  type Asset = { id: string; name: string; kind: string; current_version_id?: string | null };
+  type Project = { id: string; public_id: string; name: string; palette: string };
+  type Asset = { id: string; public_id: string; name: string; kind: string; current_version_id?: string | null };
 
-  const projectId = $derived(idFrom(page.params.id));
-  const shareId = $derived(idFrom(page.params.shareId));
+  const routeProjectId = $derived(idFrom(page.params.id));
+  const routeShareId = $derived(idFrom(page.params.shareId));
+  /* Canonical ULIDs once the share loads; the route may carry short public
+     ids, which only the two bootstrap fetches understand. */
+  let projectId = $state<string | null>(null);
+  let shareId = $state<string | null>(null);
 
   let project = $state<Project | null>(null);
+  const projectPath = $derived(
+    project ? pretty(project.public_id, project.name) : routeProjectId
+  );
   let share = $state<Share | null>(null);
   let assets = $state<Asset[]>([]);
   let viewers = $state<ShareViewer[] | null>(null);
@@ -41,39 +49,48 @@
   const expired = $derived(Boolean(share?.expires_at && share.expires_at <= Date.now()));
   const dead = $derived(Boolean(share?.revoked_at) || expired);
 
-  const load = async (id: string): Promise<void> => {
+  const load = async (routeRef: string): Promise<void> => {
     project = null; share = null; assets = []; viewers = null;
     pageError = ''; error = ''; saved = '';
+    projectId = null; shareId = null;
     try {
       const [loadedShare, loadedProject] = await Promise.all([
-        api<Share>(`/api/v1/shares/${id}`),
-        api<Project>(`/api/v1/projects/${projectId}`)
+        api<Share>(`/api/v1/shares/${routeRef}`),
+        api<Project>(`/api/v1/projects/${routeProjectId}`)
       ]);
-      if (id !== shareId) return;
+      if (routeRef !== routeShareId) return;
       share = loadedShare;
       project = loadedProject;
+      shareId = loadedShare.id;
+      projectId = loadedProject.id;
+      canonicalizePath(
+        `/projects/${pretty(loadedProject.public_id, loadedProject.name)}/shares/${pretty(loadedShare.public_id, loadedShare.title)}`
+      );
     } catch (caught) {
       pageError = messageFrom(caught, 'This share is not available.');
       return;
     }
+    const canonicalShare = shareId;
+    const canonicalProject = projectId;
+    if (!canonicalShare || !canonicalProject) return;
     try {
       const loaded = await api<{ items: Asset[] }>(
-        `/api/v1/projects/${projectId}/assets?share_id=${encodeURIComponent(id)}&limit=200`
+        `/api/v1/projects/${canonicalProject}/assets?share_id=${encodeURIComponent(canonicalShare)}&limit=200`
       );
-      if (id === shareId) assets = loaded.items;
+      if (routeRef === routeShareId) assets = loaded.items;
     } catch {
       /* The contents panel reports the empty list itself. */
     }
     try {
-      const roster = await listShareViewers(id);
-      if (id === shareId) viewers = roster.items;
+      const roster = await listShareViewers(canonicalShare);
+      if (routeRef === routeShareId) viewers = roster.items;
     } catch {
       viewers = null;
     }
   };
 
   $effect(() => {
-    const id = shareId;
+    const id = routeShareId;
     if (id) void load(id);
   });
 
@@ -385,9 +402,9 @@
     <nav class="crumbs" aria-label="Breadcrumb">
       <a href="/">Projects</a>
       <span aria-hidden="true">/</span>
-      <a href={`/projects/${projectId}`}>{project?.name ?? 'Project'}</a>
+      <a href={`/projects/${projectPath}`}>{project?.name ?? 'Project'}</a>
       <span aria-hidden="true">/</span>
-      <a href={`/projects/${projectId}/shares`}>Shares</a>
+      <a href={`/projects/${projectPath}/shares`}>Shares</a>
     </nav>
     {#if share}
       <div class="titlerow">
@@ -711,7 +728,7 @@
                 >
                   <a
                     class="content"
-                    href={`/projects/${pretty(projectId ?? '', project?.name)}/assets/${pretty(asset.id, asset.name)}`}
+                    href={`/projects/${projectPath}/assets/${pretty(asset.public_id, asset.name)}`}
                     title={asset.name}
                     use:observeMedia={asset}
                   >

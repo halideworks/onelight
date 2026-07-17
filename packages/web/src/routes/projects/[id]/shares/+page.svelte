@@ -6,6 +6,7 @@
   import { copyText } from '$lib/clipboard.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
+  import { canonicalizePath } from '$lib/canonical.js';
   import { idFrom, pretty } from '$lib/ids.js';
   import { pageWashFor } from '$lib/washes.js';
 
@@ -17,12 +18,18 @@
      thing about one share required finding it in a list and holding a
      twenty-field form; that dialog now only creates. */
 
-  type Project = { id: string; name: string; palette: string };
+  type Project = { id: string; public_id: string; name: string; palette: string };
   type Asset = { id: string; name: string; kind: string; current_version_id?: string | null };
 
-  const projectId = $derived(idFrom(page.params.id));
+  const routeId = $derived(idFrom(page.params.id));
+  /* Canonical ULID once the project loads; the route may carry the short
+     public id, which only the project fetch understands. */
+  let projectId = $state<string | null>(null);
 
   let project = $state<Project | null>(null);
+  const projectPath = $derived(
+    project ? pretty(project.public_id, project.name) : routeId
+  );
   let shares = $state<Share[]>([]);
   let assets = $state<Asset[]>([]);
   let pageError = $state('');
@@ -37,11 +44,17 @@
   const observeMedia = media.observe;
   const wash = $derived(pageWashFor(project?.palette));
 
-  const load = async (id: string): Promise<void> => {
+  const load = async (routeRef: string): Promise<void> => {
     project = null; shares = []; assets = []; pageError = ''; listError = '';
-    viewerCounts = {};
+    viewerCounts = {}; projectId = null;
+    let id = routeRef;
     try {
-      project = await api<Project>(`/api/v1/projects/${id}`);
+      const loaded = await api<Project>(`/api/v1/projects/${routeRef}`);
+      if (routeRef !== routeId) return;
+      project = loaded;
+      projectId = loaded.id;
+      id = loaded.id;
+      canonicalizePath(`/projects/${pretty(loaded.public_id, loaded.name)}/shares`);
     } catch (caught) {
       pageError = messageFrom(caught, 'This project is not available.');
       return;
@@ -80,7 +93,7 @@
   };
 
   $effect(() => {
-    const id = projectId;
+    const id = routeId;
     if (id) void load(id);
   });
 
@@ -213,7 +226,7 @@
       });
       dialog?.close();
       /* Straight to the new share's page, where its link is the headline. */
-      await goto(`/projects/${pretty(id, project?.name)}/shares/${pretty(created.share.id, created.share.title)}`);
+      await goto(`/projects/${projectPath}/shares/${pretty(created.share.public_id, created.share.title)}`);
     } catch (caught) {
       formError = messageFrom(caught, 'The share could not be saved.');
     } finally {
@@ -229,7 +242,7 @@
     <nav class="crumbs" aria-label="Breadcrumb">
       <a href="/">Projects</a>
       <span aria-hidden="true">/</span>
-      <a href={`/projects/${projectId}`}>{project?.name ?? 'Project'}</a>
+      <a href={`/projects/${projectPath}`}>{project?.name ?? 'Project'}</a>
     </nav>
     <h1>Shares</h1>
   </header>
@@ -255,7 +268,7 @@
               <h2>
                 <!-- The stretched link: the whole card opens the share's page,
                      and the two buttons sit above it. -->
-                <a class="cardlink" href={`/projects/${pretty(projectId ?? '', project?.name)}/shares/${pretty(share.id, share.title)}`}>{share.title}</a>
+                <a class="cardlink" href={`/projects/${projectPath}/shares/${pretty(share.public_id, share.title)}`}>{share.title}</a>
               </h2>
               <span class="chip">{share.kind}</span>
               <span class="chip dim">{share.layout}</span>
