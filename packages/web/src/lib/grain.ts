@@ -1,10 +1,20 @@
-/* A 64px tile of quantized monochrome noise, at most ~5% opacity per
-   speck, tiled under every wash. Long subtle ramps band on 8-bit panels;
-   one part film grain breaks the contours without reading as texture.
-   Pre-baked alpha, so it needs no blend mode: it simply sits as the top
-   background layer of the wash it protects. Generated once (see the
-   commit); regenerate only deliberately. */
-export const GRAIN_URL =
-  "data:image/png;base64,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";
+/* Grain for the page washes. Long subtle ramps band on 8-bit panels; a
+   whisper of noise breaks the contours.
 
-export const grainLayer = `url("${GRAIN_URL}")`;
+   This is SVG turbulence rather than a bitmap tile on purpose: the browser
+   rasterizes SVG backgrounds at the device's pixel ratio, so the grain
+   stays at true pixel scale on every display instead of upscaling into
+   visible chunks, and stitchTiles makes the 256px tile seamless. The rect
+   opacity is the entire strength control; keep it low enough that the
+   grain is felt, never seen. */
+const GRAIN_SVG = [
+  '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256">',
+  '<filter id="g" x="0" y="0" width="100%" height="100%">',
+  '<feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch" seed="5"/>',
+  '<feColorMatrix type="saturate" values="0"/>',
+  "</filter>",
+  '<rect width="256" height="256" filter="url(#g)" opacity="0.04"/>',
+  "</svg>",
+].join("");
+
+export const grainLayer = `url("data:image/svg+xml,${encodeURIComponent(GRAIN_SVG)}")`;

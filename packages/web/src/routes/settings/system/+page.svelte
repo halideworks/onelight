@@ -142,10 +142,7 @@
         {:else if status.mail.state === 'error'}
           <p class="warn">The mail configuration is present but unusable{status.mail.detail ? `: ${status.mail.detail}` : '.'}</p>
         {:else}
-          <p class="warn">
-            Email is off: password resets, invites, and notification digests will not be delivered.
-            Set SMTP_URL (or SMTP_HOST) plus MAIL_FROM in .env and restart.
-          </p>
+          <p class="warn">Email is off.</p>
         {/if}
         {#if mailTestResult}
           <p class:warn={mailTestFailed} role="status">{mailTestResult}</p>

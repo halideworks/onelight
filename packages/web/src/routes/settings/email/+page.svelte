@@ -212,7 +212,6 @@
 <main class="page">
   <h1>Email</h1>
   <p class="lede">
-    Outgoing mail carries password resets, invites, and notification digests.
     Settings saved here apply immediately and take precedence over the server environment.
   </p>
 
@@ -223,7 +222,7 @@
       {:else if view.active.state === 'error'}
         Email is broken{view.active.detail ? `: ${view.active.detail}` : '.'}
       {:else}
-        Email is off. Nothing will be delivered until a transport is configured.
+        Email is off.
       {/if}
       {#if view.active.state === 'ready'}
         <button type="button" class="quiet" onclick={() => void sendTest()} disabled={testBusy}>
