@@ -83,7 +83,6 @@
 <svelte:head><title>Job queue | Onelight</title></svelte:head>
 
 <main class="page">
-  <a href="/settings">Settings</a>
   <h1>Job queue</h1>
   {#if !auth.ready}
     <p class="empty">Checking access.</p>
@@ -140,9 +139,9 @@
 
 <style>
   /* App world, no borders: rows separate by value step. */
-  .page { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
+  .page { padding: 44px 0 72px; }
   a { color: var(--ink-text-dim); }
-  h1 { margin: 48px 0 24px; font-family: var(--font-display); font-size: clamp(40px, 7vw, 72px); font-weight: 700; letter-spacing: -0.02em; }
+  h1 { margin: 48px 0 24px; font-family: var(--font-display); font-size: clamp(26px, 3vw, 36px); font-weight: 700; letter-spacing: -0.02em; }
   .tabs { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 28px; }
   .tab { border: 0; border-radius: var(--radius); background: var(--ink-100); color: var(--ink-text-dim); padding: 7px 14px; font-size: var(--text-13); font-weight: 500; }
   .tab:hover { color: var(--ink-text); }

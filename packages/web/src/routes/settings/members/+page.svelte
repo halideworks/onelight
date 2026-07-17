@@ -62,7 +62,6 @@
 
 <svelte:head><title>Members | Onelight</title></svelte:head>
 <main class="page">
-  <a href="/settings">Settings</a>
   <h1>Members</h1>
   <form class="invite" onsubmit={invite}><label>Email <input type="email" bind:value={email} required /></label><button type="submit">Invite member</button></form>
   {#if inviteUrl}<section class="revealed" aria-live="polite"><strong>Invite link</strong><input readonly value={inviteUrl} aria-label="Invite link" /><button type="button" onclick={() => void copyText(inviteUrl)}>Copy link</button></section>{/if}
@@ -73,9 +72,8 @@
 
 <style>
   /* App world, no borders: rows and fields separate by value step. */
-  .page { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
-  a { color: var(--ink-text-dim); }
-  h1 { margin: 48px 0 28px; font-family: var(--font-display); font-size: clamp(40px, 7vw, 72px); font-weight: 700; letter-spacing: -0.02em; }
+  .page { padding: 44px 0 72px; }
+  h1 { margin: 48px 0 28px; font-family: var(--font-display); font-size: clamp(26px, 3vw, 36px); font-weight: 700; letter-spacing: -0.02em; }
   h2 { margin: 44px 0 12px; font-size: var(--text-16); }
   .invite, .revealed { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
   label { display: grid; gap: 8px; color: var(--ink-text-dim); font-size: var(--text-13); }
@@ -83,7 +81,7 @@
   input { min-width: min(420px, 80vw); }
   button { border: 0; border-radius: var(--radius); background: var(--accent); color: #071216; padding: 11px 16px; font-weight: 600; }
   button:hover { background: var(--accent-bright); }
-  button:focus-visible, a:focus-visible, input:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  button:focus-visible, input:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
   select:focus-visible { outline: none; background: var(--ink-300); }
   .revealed { margin-top: 24px; padding: 16px; border-radius: var(--radius); background: var(--ink-100); }
   .revealed strong { flex-basis: 100%; }

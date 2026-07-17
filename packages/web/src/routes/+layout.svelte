@@ -232,13 +232,17 @@
   nav a[aria-current='page'] {
     color: var(--ink-text);
   }
-  /* An icon button, so it opts out of the app's filled-button convention. */
+  /* An icon button, so it opts out of the app's filled-button convention.
+     margin-left auto: the search field caps its own width, so the leftover
+     space belongs behind it, not to the right of the avatar. The bell and
+     the avatar anchor the frame's right edge. */
   .bell {
     position: relative;
     display: inline-flex;
     align-items: center;
     padding: 8px;
     margin: -8px;
+    margin-left: auto;
     border: 0;
     border-radius: var(--radius);
     background: none;

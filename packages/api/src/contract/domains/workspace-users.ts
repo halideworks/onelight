@@ -148,6 +148,104 @@ export const registerWorkspaceUsersDomain = (ctx: SuiteContext): void => {
       expect((await json(renamed)).name).toBe("Renamed Person");
     });
 
+    it("changes the sign-in email with the password as proof", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const user = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      const nextEmail = uniqueEmail();
+      const wrongPassword = await req(h, "/api/v1/users/me", {
+        method: "PATCH",
+        cookie: user.cookie,
+        json: { email: { value: nextEmail, password: "not-the-password" } },
+      });
+      expect(wrongPassword.status).toBe(401);
+      const takenAddress = await req(h, "/api/v1/users/me", {
+        method: "PATCH",
+        cookie: user.cookie,
+        json: { email: { value: seed.admin.email, password: PASSWORD } },
+      });
+      expect(takenAddress.status).toBe(400);
+      const changed = await req(h, "/api/v1/users/me", {
+        method: "PATCH",
+        cookie: user.cookie,
+        json: { email: { value: nextEmail, password: PASSWORD } },
+      });
+      expect(changed.status).toBe(200);
+      expect((await json(changed)).email).toBe(nextEmail.toLowerCase());
+      // The new address signs in; the old one no longer exists.
+      const fresh = await req(h, "/api/v1/auth/login", {
+        json: { email: nextEmail, password: PASSWORD },
+        headers: { "x-forwarded-for": uniqueIp() },
+      });
+      expect(fresh.status).toBe(200);
+      const stale = await req(h, "/api/v1/auth/login", {
+        json: { email: user.email, password: PASSWORD },
+        headers: { "x-forwarded-for": uniqueIp() },
+      });
+      expect(stale.status).toBe(401);
+    });
+
+    it("deactivates the account on DELETE /users/me, sparing the last admin", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const user = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      const wrongPassword = await req(h, "/api/v1/users/me", {
+        method: "DELETE",
+        cookie: user.cookie,
+        json: { password: "not-the-password" },
+      });
+      expect(wrongPassword.status).toBe(401);
+      const gone = await req(h, "/api/v1/users/me", {
+        method: "DELETE",
+        cookie: user.cookie,
+        json: { password: PASSWORD },
+      });
+      expect(gone.status).toBe(204);
+      // The session died with the account, and the password no longer works.
+      const after = await req(h, "/api/v1/users/me", { cookie: user.cookie });
+      expect(after.status).toBe(401);
+      const login = await req(h, "/api/v1/auth/login", {
+        json: { email: user.email, password: PASSWORD },
+        headers: { "x-forwarded-for": uniqueIp() },
+      });
+      expect(login.status).toBe(401);
+      // An admin can bring the account back.
+      const restored = await req(h, `/api/v1/users/${user.id}`, {
+        method: "PATCH",
+        cookie: seed.admin.cookie,
+        json: { disabled: false },
+      });
+      expect(restored.status).toBe(200);
+      // A workspace with one active admin keeps them.
+      const workspaceId = h.ids.ulid();
+      await h.db
+        .insert(workspaces)
+        .values({
+          id: workspaceId,
+          name: "Last Admin Stand",
+          settingsJson: "{}",
+          createdAt: h.clock.now(),
+        })
+        .run();
+      const lastAdmin = await createUser(h, {
+        workspaceId,
+        passwordHash: seed.passwordHash,
+        role: "admin",
+      });
+      const refused = await req(h, "/api/v1/users/me", {
+        method: "DELETE",
+        cookie: lastAdmin.cookie,
+        json: { password: PASSWORD },
+      });
+      expect(refused.status).toBe(400);
+    });
+
     it("changes roles and toggles disabled via PATCH /users/:id", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

@@ -75,7 +75,6 @@
 <svelte:head><title>Audit log | Onelight</title></svelte:head>
 
 <main class="page">
-  <nav class="crumbs" aria-label="Breadcrumb"><a href="/settings">Settings</a></nav>
   <h1>Audit log</h1>
 
   <div class="bar">
@@ -117,11 +116,8 @@
 </main>
 
 <style>
-  .page { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 48px clamp(24px, 5vw, 96px); background: var(--ink-000); color: var(--ink-text); font-size: var(--text-13); }
-  .crumbs { margin: 0 0 8px; }
-  .crumbs a { color: var(--ink-text-dim); font-size: var(--text-13); text-decoration: none; }
-  .crumbs a:hover { color: var(--ink-text); }
-  h1 { margin: 0 0 20px; font-family: var(--font-display); font-size: clamp(28px, 4vw, 44px); font-weight: 700; letter-spacing: -0.02em; }
+  .page { padding: 44px 0 72px; color: var(--ink-text); font-size: var(--text-13); }
+  h1 { margin: 0 0 20px; font-family: var(--font-display); font-size: clamp(26px, 3vw, 36px); font-weight: 700; letter-spacing: -0.02em; }
 
   .bar { display: flex; align-items: center; gap: 16px; margin: 0 0 16px; }
   input[type='search'] { width: min(360px, 100%); border: 0; border-radius: var(--radius); background: var(--ink-100); color: var(--ink-text); padding: 9px 12px; font: inherit; }
@@ -143,5 +139,5 @@
   .more:disabled { opacity: 0.5; }
   .empty { color: var(--ink-text-dim); }
   .error { margin: 0; color: var(--warn); }
-  a:focus-visible, input:focus-visible, button:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  input:focus-visible, button:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
 </style>

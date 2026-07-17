@@ -68,7 +68,6 @@
 <svelte:head><title>Sessions | Onelight</title></svelte:head>
 
 <main class="page">
-  <a href="/settings">Settings</a>
   <h1>Sessions</h1>
   <p class="lede">Browsers currently signed in to your account. Revoking the session you are using right now signs you out.</p>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -95,9 +94,8 @@
 
 <style>
   /* App world, no borders: rows separate by value step. */
-  .page { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
-  a { color: var(--ink-text-dim); }
-  h1 { margin: 48px 0 12px; font-family: var(--font-display); font-size: clamp(40px, 7vw, 72px); font-weight: 700; letter-spacing: -0.02em; }
+  .page { padding: 44px 0 72px; }
+  h1 { margin: 0 0 12px; font-family: var(--font-display); font-size: clamp(26px, 3vw, 36px); font-weight: 700; letter-spacing: -0.02em; }
   .lede { max-width: 560px; margin: 0 0 32px; color: var(--ink-text-dim); }
   .list { max-width: 760px; display: grid; gap: 2px; }
   article { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 14px; margin: 0 -14px; border-radius: var(--radius); background: var(--ink-100); }
@@ -107,7 +105,7 @@
   .agent { color: var(--ink-text-dim); font-size: var(--text-13); overflow-wrap: anywhere; }
   button { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 9px 16px; font-size: var(--text-13); font-weight: 600; }
   button:hover { background: var(--ink-300); }
-  button:focus-visible, a:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  button:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
   .empty { color: var(--ink-text-dim); }
   .error { color: var(--warn); }
 </style>

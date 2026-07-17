@@ -41,6 +41,29 @@ All automated gates are green on this machine, including the qa suites executed 
   worker-less installs; exports are DB-to-file work and now always run (the
   PDF already degrades to no stills).
 
+## Identity in one place, and the settings rail (2026-07-17)
+
+- **Avatars take any photo now.** The browser normalizes the picture to a
+  512 px cover-cropped square JPEG (orientation baked in) before upload, so
+  the server's byte cap stops being the user's problem; the e2e suite
+  uploads a deliberately oversized photo as the regression net. Removing
+  the picture is a plainly labeled button, and the avatar column holds the
+  right side of the identity card. The topbar's bell and avatar now anchor
+  the frame's right edge instead of trailing the width-capped search field.
+- **The profile page is the identity page**: name, picture, the sign-in
+  address (changing it takes the current password; `PATCH /users/me` grew a
+  password-confirmed `email` field), the password (UI for the existing
+  endpoint; other sessions die), two-factor, and deactivation
+  (`DELETE /users/me`: password plus a code when two-factor is on, refuses
+  the last active admin, kills sessions and API tokens, keeps notes
+  attributed, admin can re-enable). Both endpoints contract-tested on both
+  legs and browser-verified end to end, including the wrong-password paths
+  staying in the form instead of bouncing to sign-in.
+- **Settings is one room now**: a persistent left rail (grouped You /
+  Workspace / System, admin-gated), the index redirects into Profile, the
+  per-page breadcrumbs and oversized landing titles are gone, and every
+  section renders inside the same frame.
+
 ## Operational security (2026-07-16)
 
 - **TOTP two-factor** end to end: RFC 6238 in core over WebCrypto (tested

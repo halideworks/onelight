@@ -44,7 +44,6 @@
 
 <svelte:head><title>API tokens | Onelight</title></svelte:head>
 <main class="page">
-  <a href="/settings">Settings</a>
   <h1>API tokens</h1>
   <p class="lede">Create tokens for command-line tools and integrations. The secret is shown once.</p>
   <form onsubmit={create} class="create">
@@ -61,16 +60,15 @@
 
 <style>
   /* App world, no borders: rows and fields separate by value step. */
-  .page { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
-  a { color: var(--ink-text-dim); }
-  h1 { margin: 48px 0 12px; font-family: var(--font-display); font-size: clamp(40px, 7vw, 72px); font-weight: 700; letter-spacing: -0.02em; }
+  .page { padding: 44px 0 72px; }
+  h1 { margin: 0 0 12px; font-family: var(--font-display); font-size: clamp(26px, 3vw, 36px); font-weight: 700; letter-spacing: -0.02em; }
   .lede { max-width: 560px; color: var(--ink-text-dim); }
   .create, .revealed { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 32px 0; }
   label { display: grid; gap: 8px; color: var(--ink-text-dim); font-size: var(--text-13); }
   input { min-width: min(420px, 80vw); border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 10px 12px; }
   button { border: 0; border-radius: var(--radius); background: var(--accent); color: #071216; padding: 11px 16px; font-weight: 600; }
   button:hover { background: var(--accent-bright); }
-  button:focus-visible, a:focus-visible, input:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  button:focus-visible, input:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
   .revealed { padding: 16px; border-radius: var(--radius); background: var(--ink-100); }
   .revealed strong { flex-basis: 100%; }
   .list { max-width: 760px; }

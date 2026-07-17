@@ -1711,9 +1711,54 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.patch("/users/me", requireAuth, async (c) => {
     const user = userFromContext(c);
     const body = await jsonBody(c, bodies.usersMePatch);
-    const update: { name?: string; passwordHash?: string; updatedAt: number } =
-      { updatedAt: env.clock.now() };
+    const update: {
+      name?: string;
+      email?: string;
+      passwordHash?: string;
+      updatedAt: number;
+    } = { updatedAt: env.clock.now() };
     if (body.name) update.name = body.name.trim();
+    if (body.email) {
+      /* The address is the credential's name, so changing it takes the
+         credential. SSO accounts have no password and keep the address the
+         identity provider asserts. */
+      if (c.get("authType") !== "session") throw errors.forbidden();
+      if (!user.passwordHash)
+        throw errors.validation(
+          "This account signs in through SSO; its address belongs to the identity provider.",
+        );
+      if (!(await env.hasher.verify(body.email.password, user.passwordHash)))
+        throw errors.invalidCredentials();
+      const nextEmail = body.email.value.trim().toLowerCase();
+      if (nextEmail !== user.email) {
+        const taken = (
+          await env.db
+            .select({ id: users.id })
+            .from(users)
+            .where(
+              and(
+                eq(users.workspaceId, user.workspaceId),
+                eq(users.email, nextEmail),
+                ne(users.id, user.id),
+              ),
+            )
+            .limit(1)
+            .all()
+        )[0];
+        if (taken)
+          throw errors.validation(
+            "That address already belongs to another account here.",
+          );
+        update.email = nextEmail;
+        await audit(
+          user.workspaceId,
+          user.id,
+          "user.email_changed",
+          `user:${user.id}`,
+          { from: user.email, to: nextEmail },
+        );
+      }
+    }
     if (body.password) {
       assertPassword(body.password.new);
       if (
@@ -1746,6 +1791,71 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (!updated) throw errors.notFound();
     await audit(user.workspaceId, user.id, "user.update", `user:${user.id}`);
     return c.json(userWire(updated));
+  });
+
+  /* Deactivation, self-service: the account stops signing in and its
+     sessions and API tokens die, but the rows stay -- notes keep their
+     author, and an admin can re-enable from Members. The last active admin
+     cannot deactivate; a workspace must always have someone with the keys. */
+  api.delete("/users/me", requireAuth, async (c) => {
+    const user = userFromContext(c);
+    if (c.get("authType") !== "session") throw errors.forbidden();
+    const body = await jsonBody(c, bodies.usersMeDelete);
+    if (!user.passwordHash)
+      throw errors.validation(
+        "This account signs in through SSO; ask an admin to disable it.",
+      );
+    if (!(await env.hasher.verify(body.password, user.passwordHash)))
+      throw errors.invalidCredentials();
+    if (user.totpVerifiedAt && user.totpSecret) {
+      const code = (body.code ?? "").trim();
+      let passed = await verifyTotp(user.totpSecret, code, env.clock.now());
+      if (!passed && /^[A-Za-z2-7]{10}$/.test(code)) {
+        const stored = JSON.parse(user.totpBackupCodesJson) as string[];
+        passed = stored.includes(await sha256Hex(code.toUpperCase()));
+      }
+      if (!passed)
+        throw errors.validation(
+          "Deactivating this account needs a two-factor code.",
+        );
+    }
+    if (user.role === "admin") {
+      const otherAdmin = (
+        await env.db
+          .select({ id: users.id })
+          .from(users)
+          .where(
+            and(
+              eq(users.workspaceId, user.workspaceId),
+              eq(users.role, "admin"),
+              isNull(users.disabledAt),
+              ne(users.id, user.id),
+            ),
+          )
+          .limit(1)
+          .all()
+      )[0];
+      if (!otherAdmin)
+        throw errors.validation(
+          "You are the last active admin; the workspace needs one.",
+        );
+    }
+    const now = env.clock.now();
+    await env.db
+      .update(users)
+      .set({ disabledAt: now, updatedAt: now })
+      .where(eq(users.id, user.id))
+      .run();
+    await env.db.delete(sessions).where(eq(sessions.userId, user.id)).run();
+    await env.db.delete(apiTokens).where(eq(apiTokens.userId, user.id)).run();
+    await audit(
+      user.workspaceId,
+      user.id,
+      "user.deactivated_self",
+      `user:${user.id}`,
+    );
+    clearSessionCookie(c);
+    return c.body(null, 204);
   });
 
   api.patch("/users/:id", requireAuth, async (c) => {

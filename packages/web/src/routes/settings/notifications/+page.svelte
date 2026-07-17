@@ -95,8 +95,8 @@
 </main>
 
 <style>
-  .page { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 48px clamp(24px, 8vw, 120px); background: var(--ink-000); }
-  h1 { margin: 0 0 12px; font-family: var(--font-display); font-size: var(--text-56); font-weight: 700; letter-spacing: -0.02em; }
+  .page { padding: 44px 0 72px; }
+  h1 { margin: 0 0 12px; font-family: var(--font-display); font-size: clamp(26px, 3vw, 36px); font-weight: 700; letter-spacing: -0.02em; }
   .lede { margin: 0 0 32px; color: var(--ink-text-dim); font-size: var(--text-13); }
   .prefs { max-width: 560px; }
   fieldset { border: 0; margin: 0 0 24px; padding: 0; display: grid; gap: 10px; }

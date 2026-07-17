@@ -81,6 +81,16 @@ export const bodies = {
   usersMePatch: z.object({
     name: z.string().min(1).max(200).optional(),
     password: z.object({ current: z.string(), new: z.string() }).optional(),
+    /* Changing the address that signs you in takes the current password. */
+    email: z
+      .object({ value: z.string().email(), password: z.string() })
+      .optional(),
+  }),
+  /* Deactivating an account takes the password, plus a TOTP or backup code
+     when two-factor is on. */
+  usersMeDelete: z.object({
+    password: z.string(),
+    code: z.string().min(1).max(64).optional(),
   }),
   userPatch: z.object({
     role: workspaceRole.optional(),
@@ -893,6 +903,12 @@ export const routeDocs: Record<string, RouteDoc> = {
   "PATCH /users/me": {
     request: bodies.usersMePatch,
     responses: { "200": ok(user) },
+  },
+  "DELETE /users/me": {
+    summary:
+      "Deactivate your own account (password-confirmed, plus a code when two-factor is on). Sessions and API tokens die; an admin can re-enable it. The last active admin cannot deactivate.",
+    request: bodies.usersMeDelete,
+    responses: { "204": noContent },
   },
   "PATCH /users/:id": {
     request: bodies.userPatch,

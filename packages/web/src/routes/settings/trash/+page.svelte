@@ -54,7 +54,6 @@
 <svelte:head><title>Trash | Onelight</title></svelte:head>
 
 <main class="page">
-  <nav class="crumbs" aria-label="Breadcrumb"><a href="/settings">Settings</a></nav>
   <h1>Trash</h1>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
 
@@ -87,11 +86,8 @@
 </main>
 
 <style>
-  .page { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 48px clamp(24px, 5vw, 96px); background: var(--ink-000); color: var(--ink-text); font-size: var(--text-13); }
-  .crumbs { margin: 0 0 8px; }
-  .crumbs a { color: var(--ink-text-dim); font-size: var(--text-13); text-decoration: none; }
-  .crumbs a:hover { color: var(--ink-text); }
-  h1 { margin: 0 0 20px; font-family: var(--font-display); font-size: clamp(28px, 4vw, 44px); font-weight: 700; letter-spacing: -0.02em; }
+  .page { padding: 44px 0 72px; color: var(--ink-text); font-size: var(--text-13); }
+  h1 { margin: 0 0 20px; font-family: var(--font-display); font-size: clamp(26px, 3vw, 36px); font-weight: 700; letter-spacing: -0.02em; }
   .note { margin: 0 0 16px; color: var(--ink-text-dim); }
 
   table { width: 100%; max-width: 1000px; border-collapse: collapse; }
