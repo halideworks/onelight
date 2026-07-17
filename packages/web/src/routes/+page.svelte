@@ -367,9 +367,11 @@
      a thin wash of ink with the frame blurred through it. Where
      backdrop-filter is unsupported the ink deepens to keep legibility. */
   .demoplayer :global(button[title="Full screen (F)"]) { display: none; }
+  .demoplayer :global(.scrub-mark) { display: none; }
   .demoplayer :global(.transport) { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; background: rgba(13, 17, 23, 0.55); border-radius: 0; padding-bottom: 30px; }
   @supports (backdrop-filter: blur(1px)) {
     .demoplayer :global(button[title="Full screen (F)"]) { display: none; }
+  .demoplayer :global(.scrub-mark) { display: none; }
   .demoplayer :global(.transport) { background: rgba(13, 17, 23, 0.28); backdrop-filter: blur(16px); }
   }
   /* Horizontal inset comes from left/right, never padding: the scrub

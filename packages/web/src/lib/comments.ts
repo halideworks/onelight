@@ -66,8 +66,9 @@ export const markersFrom = (comments: ReviewComment[]): TimelineMarker[] =>
       frameIn: comment.frame_in as number,
       frameOut: comment.frame_out,
       author: comment.author_name,
-      /* Colour is keyed to the author's id, not their name. */
-      authorId: comment.author_user_id ?? null,
+      /* Colour keys to the author's id; share viewers have no id on the
+         public wire, so their name stands in and stays stable per viewer. */
+      authorId: comment.author_user_id ?? comment.author_name ?? null,
       text: comment.body_text,
       completed: comment.completed_at !== null,
     }));

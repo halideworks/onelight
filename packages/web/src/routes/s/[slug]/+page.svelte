@@ -23,6 +23,7 @@
   import { askConfirm } from '$lib/confirm.svelte.js';
   import { formatTimecode, timecodeFromFrames } from '@onelight/core';
   import { annotationsFrom, markersFrom, type CommentAttachment, type ReviewComment } from '$lib/comments.js';
+  import { markerInkFor } from '@onelight/player';
   import { hashtagsIn, segmentCommentBody } from '../../projects/[id]/assets/[assetId]/comment-text.js';
 
   type Brand = {
@@ -790,17 +791,40 @@
     player?.setDrawColor(ink);
   };
 
+  /* A note can cover a stretch of time. The range lives in the composer
+     (simple chrome has no marks), reads as plain from/to, and nudges by
+     single frames. */
+  let noteRange = $state<{ in: number; out: number } | null>(null);
+  const openNoteRange = (): void => {
+    if (!playerActive) return;
+    const rate = previewRate ? previewRate.num / previewRate.den : 24;
+    const last = Math.max(1, (previewDurationFrames ?? 1) - 1);
+    const start = Math.min(currentFrame, last - 1);
+    noteRange = { in: start, out: Math.min(last, start + Math.round(rate * 2)) };
+  };
+  const nudgeNoteRange = (end: 'in' | 'out', delta: number): void => {
+    if (!noteRange) return;
+    const nextIn = end === 'in' ? noteRange.in + delta : noteRange.in;
+    const nextOut = end === 'out' ? noteRange.out + delta : noteRange.out;
+    if (nextIn < 0 || nextOut <= nextIn) return;
+    noteRange = { in: nextIn, out: nextOut };
+  };
+
   const addComment = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
     if (!selected || !bodyText.trim()) return;
     const drawing = pendingDrawing;
-    const anchorFrame = drawing ? drawing.frame : playerActive ? currentFrame : null;
+    const anchorFrame = drawing
+      ? drawing.frame
+      : (noteRange?.in ?? (playerActive ? currentFrame : null));
     try {
       const created = await apiPost<Comment>(`/api/v1/s/${slug}/assets/${selected.id}/comments`, {
         body_text: bodyText,
         ...(anchorFrame !== null ? { frame_in: anchorFrame } : {}),
+        ...(noteRange && !drawing ? { frame_out: noteRange.out } : {}),
         ...(drawing ? { annotation: { strokes: drawing.strokes } } : {})
       });
+      noteRange = null;
       /* Files ride the new note; a failure names the file and keeps it on
          the composer for another try. */
       const uploaded: CommentAttachment[] = [];
@@ -1080,6 +1104,7 @@
             <span class="c-head">
               <Avatar name={comment.author_name ?? 'Viewer'} size={22} />
               <strong>{comment.author_name ?? 'Viewer'}</strong>
+              <span class="noteink" style={`background: ${markerInkFor(comment.author_name)};`} aria-hidden="true"></span>
               {#if comment.frame_in !== null}
                 <button type="button" class="chip tc" onclick={() => seekToComment(comment)} aria-label={`Go to ${anchorLabel(comment.frame_in)}`}>{anchorLabel(comment.frame_in)}{comment.frame_out != null && comment.frame_out > comment.frame_in ? ` / ${anchorLabel(comment.frame_out)}` : ''}</button>
               {/if}
@@ -1149,8 +1174,21 @@
                 Add a note
                 {#if pendingDrawing}
                   <span class="tc anchor">with drawing at {anchorLabel(pendingDrawing.frame)}</span>
+                {:else if noteRange}
+                  <span class="rangechip">
+                    <span class="rangeword">from</span>
+                    <button type="button" onclick={() => nudgeNoteRange('in', -1)} aria-label="Start one frame earlier">◂</button>
+                    <span class="tc anchor">{anchorLabel(noteRange.in)}</span>
+                    <button type="button" onclick={() => nudgeNoteRange('in', 1)} aria-label="Start one frame later">▸</button>
+                    <span class="rangeword">to</span>
+                    <button type="button" onclick={() => nudgeNoteRange('out', -1)} aria-label="End one frame earlier">◂</button>
+                    <span class="tc anchor">{anchorLabel(noteRange.out)}</span>
+                    <button type="button" onclick={() => nudgeNoteRange('out', 1)} aria-label="End one frame later">▸</button>
+                    <button type="button" class="linky" onclick={() => { noteRange = null; }}>Just this moment</button>
+                  </span>
                 {:else if playerActive}
                   <span class="tc anchor">at {anchorLabel(currentFrame)}</span>
+                  <button type="button" class="linky" onclick={openNoteRange} title="The note covers a stretch of time instead of one moment">Cover a range</button>
                 {/if}
               </span>
               <textarea
@@ -1458,6 +1496,13 @@
   .c-head strong { color: var(--n-900); font-size: var(--text-13); font-weight: 600; }
   .chip { border: 0; border-radius: 2px; background: var(--n-700); color: var(--n-050); font-size: var(--text-11); font-weight: 600; padding: 1px 6px; cursor: pointer; }
   .chip:hover { background: var(--n-800); }
+  .noteink { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .rangechip { display: inline-flex; align-items: center; gap: 4px; }
+  .rangechip button { border: 0; background: none; color: var(--ink-text-dim); padding: 0 2px; cursor: pointer; }
+  .rangechip button:hover { color: var(--ink-text); }
+  .rangeword { color: var(--ink-text-dim); font-size: var(--text-12); }
+  .linky { border: 0; background: none; padding: 0; color: var(--ink-text-dim); font-size: var(--text-12); cursor: pointer; }
+  .linky:hover { color: var(--ink-text); }
   .drawn { color: var(--warn); font-size: var(--text-13); }
   /* The composer box is the form, not a field inside it: same shape the review
      page's composer has. */

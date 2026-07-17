@@ -25,6 +25,7 @@
   import { whenAbsolute, whenRelative } from '$lib/format.js';
   import { formatBytes } from '$lib/upload.js';
   import { annotationsFrom, markersFrom, type ReviewComment } from '$lib/comments.js';
+  import { markerInkFor } from '@onelight/player';
   import { hashtagsIn, segmentCommentBody } from './comment-text.js';
 
   type Asset = { id: string; name: string; kind: string; status: string; current_version_id: string | null };
@@ -1422,6 +1423,7 @@
                     size={22}
                   />
                   <strong>{comment.author_name ?? 'Reviewer'}</strong>
+                  <span class="noteink" style={`background: ${markerInkFor(comment.author_user_id ?? comment.author_name)};`} aria-hidden="true"></span>
                   {#if comment.frame_in !== null && !isReply}
                     <button
                       type="button"
@@ -1501,13 +1503,14 @@
                   <!-- The player's loop in/out IS the range: one set of marks,
                        and the timeline draws the span the moment it opens. -->
                   <span class="stepper range" title="The note covers this range">
-                    <button type="button" onclick={() => nudgeRange('in', -1)} aria-label="In point one frame earlier">◂</button>
+                    <span class="rangeword">from</span>
+                    <button type="button" onclick={() => nudgeRange('in', -1)} aria-label="Start one frame earlier">◂</button>
                     <span class="tc anchor-tc">{timecodeAt(playerRange.in as number)}</span>
-                    <button type="button" onclick={() => nudgeRange('in', 1)} aria-label="In point one frame later">▸</button>
-                    <span class="rangedash" aria-hidden="true">/</span>
-                    <button type="button" onclick={() => nudgeRange('out', -1)} aria-label="Out point one frame earlier">◂</button>
+                    <button type="button" onclick={() => nudgeRange('in', 1)} aria-label="Start one frame later">▸</button>
+                    <span class="rangeword">to</span>
+                    <button type="button" onclick={() => nudgeRange('out', -1)} aria-label="End one frame earlier">◂</button>
                     <span class="tc anchor-tc">{timecodeAt(playerRange.out as number)}</span>
-                    <button type="button" onclick={() => nudgeRange('out', 1)} aria-label="Out point one frame later">▸</button>
+                    <button type="button" onclick={() => nudgeRange('out', 1)} aria-label="End one frame later">▸</button>
                   </span>
                   <span class="anchor-hint">{(playerRange.out as number) - (playerRange.in as number) + 1} frames</span>
                   <button type="button" class="linky" onclick={() => player?.clearRange()}>Single frame</button>
@@ -1520,7 +1523,7 @@
                     <span class="tc anchor-tc" aria-live="off">{timecodeAt(anchorFrame)}</span>
                     <button type="button" onclick={() => nudgeAnchor(1)} aria-label="One frame later">▸</button>
                   </span>
-                  <button type="button" class="linky" onclick={openRange} title="Cover a range of frames instead (or mark it with I and O)">Add out point</button>
+                  <button type="button" class="linky" onclick={openRange} title="The note covers a stretch of time instead of one frame (or mark it with I and O)">Cover a range</button>
                   {#if anchorIsPlayhead}
                     <span class="anchor-hint">follows the playhead</span>
                   {:else}
@@ -1788,7 +1791,8 @@
   .stepper button:hover { background: var(--n-300); color: var(--n-900); }
   .anchor-tc { padding: 0 6px; color: var(--n-900); font-weight: 600; }
   .stepper.range { padding: 4px 2px; }
-  .rangedash { color: var(--n-600); }
+  .rangeword { color: var(--ink-text-dim); font-size: var(--text-12); }
+  .noteink { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   .anchor-hint { color: var(--n-500); font-size: var(--text-11); }
   .replying { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--n-700); }
   .replying strong { color: var(--n-900); font-weight: 600; }

@@ -1560,6 +1560,32 @@
                handle inside the carrier. -->
           <div class="scrub-track">
             <div class="scrub-played" style={`transform: scaleX(${scrubPct});`}></div>
+            <!-- Notes are visible on the simple bar too: a tick in the
+                 author's ink per note, a translucent band for a range. -->
+            {#if durationFrames && durationFrames > 1}
+              {#each markers as marker (marker.id)}
+                {@const pct = Math.min(1, marker.frameIn / (durationFrames - 1))}
+                {#if marker.frameOut != null && marker.frameOut > marker.frameIn}
+                  <button
+                    type="button"
+                    class="scrub-mark span"
+                    style={`--ink: ${markerInkFor(marker.authorId)}; left: ${(pct * 100).toFixed(3)}%; width: ${(((Math.min(marker.frameOut, durationFrames - 1) - marker.frameIn) / (durationFrames - 1)) * 100).toFixed(3)}%;`}
+                    aria-label={`Note from ${marker.author ?? 'a reviewer'}`}
+                    onpointerdown={(event) => event.stopPropagation()}
+                    onclick={(event) => { event.stopPropagation(); handleMarkerSelect(marker.id, marker.frameIn); }}
+                  ></button>
+                {:else}
+                  <button
+                    type="button"
+                    class="scrub-mark"
+                    style={`--ink: ${markerInkFor(marker.authorId)}; left: ${(pct * 100).toFixed(3)}%;`}
+                    aria-label={`Note from ${marker.author ?? 'a reviewer'}`}
+                    onpointerdown={(event) => event.stopPropagation()}
+                    onclick={(event) => { event.stopPropagation(); handleMarkerSelect(marker.id, marker.frameIn); }}
+                  ></button>
+                {/if}
+              {/each}
+            {/if}
             <div class="scrub-carrier" style={`transform: translateX(${(scrubPct * scrubWidth).toFixed(2)}px);`}>
               <div class="scrub-handle"></div>
             </div>
@@ -1630,6 +1656,9 @@
      scale, so a themed room recolours it with everything else. */
   .scrub { padding: 12px 0 8px; cursor: pointer; touch-action: none; outline: none; }
   .scrub-track { position: relative; height: 5px; border-radius: 3px; background: var(--n-150, #1c1c1c); transition: height 140ms ease; }
+  .scrub-mark { position: absolute; top: -3px; bottom: -3px; width: 3px; padding: 0; border: 0; border-radius: 1px; background: var(--ink); transform: translateX(-50%); cursor: pointer; opacity: 0.9; }
+  .scrub-mark.span { transform: none; min-width: 3px; opacity: 0.5; border-radius: 2px; }
+  .scrub-mark:hover { opacity: 1; }
   .scrub:hover .scrub-track, .scrub.scrubbing .scrub-track, .scrub:focus-visible .scrub-track { height: 7px; }
   .scrub-played { position: absolute; top: 0; bottom: 0; left: 0; width: 100%; border-radius: 3px; background: var(--n-900, #e9e9e9); transform-origin: left center; will-change: transform; }
   .scrub-carrier { position: absolute; top: 0; bottom: 0; left: 0; width: 0; will-change: transform; }
