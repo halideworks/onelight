@@ -396,6 +396,8 @@ An eighth pass: pictures inline, timecode everywhere, words on the frame.
 ## Hardening backlog (post-v1.0, rough priority)
 
 - Worker pump over signed URLs so the media worker can run against R2/S3 storage instead of a shared filesystem (unblocks full CF transcode and split-host deployments; design sketch in apps/cf/src/index.ts). This is the largest remaining architectural item.
+- Browser color self-check, detect and disclose (decided 2026-07-17): at session start the player decodes a tiny known clip, reads reference patches the way the qa color harness does, and if the browser's decode is off-spec badges the session as not color-accurate with a pointer to a browser that is. The deviation becomes information for the reviewer; the app never bends pixels to compensate (that decision is recorded here: a corrective transform cannot be targeted, cannot be kept true across browser updates, and breaks the player's promise that what you see is what the file contains). First flagged offender: Playwright WebKit on Linux, 3-5/255 low on the 75 percent bars.
+- Reference-mode decode, pulled forward from phase 7 (decided 2026-07-17): decode via WebCodecs and perform the 709 matrix and range expansion in our own WebGL/WebGPU shader, removing the browser's YUV-to-RGB conversion from the path entirely so every engine that can hand us frames produces identical pixels by construction. The qa harness already trusts WebCodecs as its frame-accuracy ground truth, and the WebKit color finding above is the motivating case. The self-check is the cheap first step; reference mode is the structural fix.
 - Storage usage accounting reconciliation surfaced in the UI (the GC reconciliation and reaping sweeps exist server-side).
 - A separate export pump so a long export does not head-of-line-block transcode on the single pump.
 - Uppy-based uploader if the directory uploader proves insufficient for camera-card ingest at scale.
@@ -415,7 +417,7 @@ An eighth pass: pictures inline, timecode everywhere, words on the frame.
 - Phase 4, realtime collaboration: presence, watch-together, live mirrored drawing, comparison viewer. Acceptance: sync drift <= 2 frames p95 on 100ms RTT.
 - Phase 5, Cloudflare target completion: R2 event notifications -> Queues -> Container transcode pipeline, DO realtime hub, deploy button, Stream adapter, CF e2e against a live staging account. Note: R2 storage, D1, scheduled webhook delivery, and SPA serving already landed in the v1 remainder pass; phase 5 is the transcode pipeline and productization.
 - Phase 6, ecosystem: CLI (push/pull/sync/watch/export/import portability), Resolve Workflow Integration plugin (the flagship), Premiere UXP panel, Tauri transfer app, C2C-style device ingest.
-- Phase 7, color-critical and intelligence: reference-mode proxies, WebGPU scopes, LUT preview, comment re-anchoring across versions (perceptual hash), whisper transcription, per-session burned watermarking, HLS/ABR option, EXR/DPX ingest, BRAW/R3D plugins pending licensing.
+- Phase 7, color-critical and intelligence: reference-mode proxies (pulled forward to the hardening backlog 2026-07-17, see above), WebGPU scopes, LUT preview, comment re-anchoring across versions (perceptual hash), whisper transcription, per-session burned watermarking, HLS/ABR option, EXR/DPX ingest, BRAW/R3D plugins pending licensing.
 - Order of phases 4 and 5 may swap based on community pull after v1 (design doc open question 7).
 
 ## Standing rules
