@@ -20,10 +20,11 @@ jobs:
       - run: pnpm lint
       - run: pnpm openapi:check
       - run: pnpm format
-      - run: pnpm web:check
-      # The SPA build also satisfies the wrangler assets.directory the
-      # workers pool config requires to exist.
+      # The SPA build runs svelte-kit sync, generating the .svelte-kit
+      # tsconfig that web:check extends; it also satisfies the wrangler
+      # assets.directory the workers pool config requires to exist.
       - run: pnpm --filter @onelight/web build
+      - run: pnpm web:check
       - run: pnpm test
       - run: pnpm test:workers
   docker:
