@@ -155,23 +155,32 @@
   const SAMPLE_W = 256;
   const SAMPLE_H = 144;
   let sampleCanvas: HTMLCanvasElement | null = null;
-  /* What the last trace was drawn from: skip the canvas readback entirely
-     while the picture sits still on the same frame in the same mode. */
+  /* What the last trace was drawn from -- time, mode, AND canvas, so a
+     reopened panel's fresh canvas never inherits the memo of the old one.
+     Skip the readback entirely while the picture sits still. */
   let scopeDrawnAt = -1;
   let scopeDrawnMode: 'waveform' | 'parade' | null = null;
+  let scopeDrawnOn: HTMLCanvasElement | null = null;
+  /* The trace buffer is reused between renders: a fresh ImageData per frame
+     was 360 KB of allocation at playback rate, and the collector's pauses
+     read as playhead jitter. */
+  let scopeImage: ImageData | null = null;
 
-  const renderScope = (): void => {
+  /* True when the trace is current (drawn, or nothing new to draw); false
+     when the caller should retry shortly (mid-seek, decoder not ready). */
+  const renderScope = (): boolean => {
     const target = scopeCanvas;
-    if (!target || !video || video.videoWidth === 0) return;
+    if (!target || !video || video.videoWidth === 0) return false;
     /* Mid-seek the element still presents the old frame; drawing now would
        memoize stale pixels under the new time. Wait for the seek to land. */
-    if (video.seeking) return;
+    if (video.seeking) return false;
     if (
       video.paused &&
       video.currentTime === scopeDrawnAt &&
-      scopeMode === scopeDrawnMode
+      scopeMode === scopeDrawnMode &&
+      target === scopeDrawnOn
     )
-      return;
+      return true;
     if (!sampleCanvas) {
       sampleCanvas = document.createElement('canvas');
       sampleCanvas.width = SAMPLE_W;
@@ -179,17 +188,20 @@
     }
     const sampler = sampleCanvas.getContext('2d', { willReadFrequently: true });
     const ctx = target.getContext('2d');
-    if (!sampler || !ctx) return;
+    if (!sampler || !ctx) return true;
     sampler.drawImage(video, 0, 0, SAMPLE_W, SAMPLE_H);
     let data: Uint8ClampedArray;
     try {
       data = sampler.getImageData(0, 0, SAMPLE_W, SAMPLE_H).data;
     } catch {
-      return;
+      return true;
     }
     scopeDrawnAt = video.currentTime;
     scopeDrawnMode = scopeMode;
-    const out = ctx.createImageData(SCOPE_W, SCOPE_H);
+    scopeDrawnOn = target;
+    if (!scopeImage) scopeImage = ctx.createImageData(SCOPE_W, SCOPE_H);
+    const out = scopeImage;
+    out.data.fill(0);
     const px = out.data;
     const plot = (x: number, value: number, r: number, g: number, b: number): void => {
       const y = Math.max(0, Math.min(SCOPE_H - 1, Math.round((1 - value / 255) * (SCOPE_H - 1))));
@@ -238,21 +250,25 @@
         ctx.stroke();
       }
     }
+    return true;
   };
 
+  /* Scope rendering is keyed to presented frames (`frame` advances per
+     rVFC), not to a free-running 60 Hz rAF loop: 24 fps footage gets 24
+     scope draws a second and the main thread keeps its headroom, which is
+     what the playhead's smoothness is made of. The rAF chain below only
+     spins while a draw could not land yet (mid-seek), and stops the moment
+     it does. */
   $effect(() => {
     if (!scopesOn) return;
+    void frame;
     void scopeMode;
-    /* The panel's canvas is fresh on every open: forget the last trace so
-       the still-frame skip cannot leave it blank. */
-    scopeDrawnAt = -1;
-    scopeDrawnMode = null;
+    void scopeCanvas;
     let raf = 0;
-    const loop = (): void => {
-      renderScope();
-      raf = requestAnimationFrame(loop);
+    const attempt = (): void => {
+      if (!renderScope()) raf = requestAnimationFrame(attempt);
     };
-    raf = requestAnimationFrame(loop);
+    attempt();
     return () => cancelAnimationFrame(raf);
   });
 

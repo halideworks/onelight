@@ -1239,6 +1239,29 @@
      left edge of a wide screen; text stays left-aligned inside it. */
   .inner { width: min(1120px, 100%); margin: 0 auto; }
   .access { display: grid; align-content: center; }
+  /* The gate's fields must read on ANY brand wash: a translucent dark card
+     behind the form guarantees the labels contrast, and the inputs carry a
+     visible ring so they exist before they are focused. Scoped to the access
+     screen; the room's composer keeps its own dress. */
+  .access form {
+    padding: 26px;
+    border-radius: var(--radius-lg);
+    background: rgba(10, 13, 18, 0.6);
+    backdrop-filter: blur(18px);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  }
+  .access label { color: rgba(240, 236, 226, 0.86); font-size: var(--text-13); font-weight: 500; }
+  .access input {
+    background: rgba(255, 255, 255, 0.09);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+    color: #f4f1e8;
+  }
+  /* The shell's accent focus outline still applies; this brightens the field
+     itself so focus reads even where the outline sits on a busy wash. */
+  .access input:focus-visible {
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.7);
+    background: rgba(255, 255, 255, 0.13);
+  }
   .eyebrow { color: rgba(255, 255, 255, 0.68); font-size: var(--text-13); }
   h1 { max-width: 760px; margin: 0 0 48px; font-family: var(--font-display); font-size: clamp(44px, 8vw, 92px); line-height: 0.98; }
   .shell form { display: grid; gap: 16px; max-width: 420px; }
