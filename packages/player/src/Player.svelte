@@ -141,6 +141,111 @@
   let muted = $state(false);
   let volume = $state(1);
   let fullscreen = $state(false);
+  /* ---- scopes ----
+     A luma waveform and an RGB parade, sampled from the on-screen frame at
+     reduced resolution every animation frame. The proxy is same-origin, so
+     the canvas never taints. These read the 8-bit proxy after the browser's
+     own conversion; they are a judgement aid, not a mastering scope, and the
+     panel says which one is on. */
+  let scopesOn = $state(false);
+  let scopeMode = $state<'waveform' | 'parade'>('waveform');
+  let scopeCanvas = $state<HTMLCanvasElement | null>(null);
+  const SCOPE_W = 512;
+  const SCOPE_H = 180;
+  const SAMPLE_W = 256;
+  const SAMPLE_H = 144;
+  let sampleCanvas: HTMLCanvasElement | null = null;
+
+  const renderScope = (): void => {
+    const target = scopeCanvas;
+    if (!target || !video || video.videoWidth === 0) return;
+    if (!sampleCanvas) {
+      sampleCanvas = document.createElement('canvas');
+      sampleCanvas.width = SAMPLE_W;
+      sampleCanvas.height = SAMPLE_H;
+    }
+    const sampler = sampleCanvas.getContext('2d', { willReadFrequently: true });
+    const ctx = target.getContext('2d');
+    if (!sampler || !ctx) return;
+    sampler.drawImage(video, 0, 0, SAMPLE_W, SAMPLE_H);
+    let data: Uint8ClampedArray;
+    try {
+      data = sampler.getImageData(0, 0, SAMPLE_W, SAMPLE_H).data;
+    } catch {
+      return;
+    }
+    const out = ctx.createImageData(SCOPE_W, SCOPE_H);
+    const px = out.data;
+    const plot = (x: number, value: number, r: number, g: number, b: number): void => {
+      const y = Math.max(0, Math.min(SCOPE_H - 1, Math.round((1 - value / 255) * (SCOPE_H - 1))));
+      const at = (y * SCOPE_W + x) * 4;
+      px[at] = Math.min(255, (px[at] ?? 0) + r);
+      px[at + 1] = Math.min(255, (px[at + 1] ?? 0) + g);
+      px[at + 2] = Math.min(255, (px[at + 2] ?? 0) + b);
+      px[at + 3] = 255;
+    };
+    if (scopeMode === 'waveform') {
+      for (let sy = 0; sy < SAMPLE_H; sy += 1) {
+        for (let sx = 0; sx < SAMPLE_W; sx += 1) {
+          const at = (sy * SAMPLE_W + sx) * 4;
+          const luma =
+            0.2126 * (data[at] ?? 0) + 0.7152 * (data[at + 1] ?? 0) + 0.0722 * (data[at + 2] ?? 0);
+          plot(Math.floor((sx / SAMPLE_W) * SCOPE_W), luma, 34, 44, 34);
+        }
+      }
+    } else {
+      const third = SCOPE_W / 3;
+      for (let sy = 0; sy < SAMPLE_H; sy += 1) {
+        for (let sx = 0; sx < SAMPLE_W; sx += 1) {
+          const at = (sy * SAMPLE_W + sx) * 4;
+          const x = (sx / SAMPLE_W) * third;
+          plot(Math.floor(x), data[at] ?? 0, 48, 10, 10);
+          plot(Math.floor(third + x), data[at + 1] ?? 0, 10, 48, 10);
+          plot(Math.floor(third * 2 + x), data[at + 2] ?? 0, 10, 10, 48);
+        }
+      }
+    }
+    ctx.putImageData(out, 0, 0);
+    ctx.strokeStyle = 'rgba(233, 233, 233, 0.16)';
+    ctx.lineWidth = 1;
+    for (const stop of [0, 0.25, 0.5, 0.75, 1]) {
+      const y = Math.round((1 - stop) * (SCOPE_H - 1)) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(SCOPE_W, y);
+      ctx.stroke();
+    }
+    if (scopeMode === 'parade') {
+      for (const x of [SCOPE_W / 3, (SCOPE_W / 3) * 2]) {
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x) + 0.5, 0);
+        ctx.lineTo(Math.round(x) + 0.5, SCOPE_H);
+        ctx.stroke();
+      }
+    }
+  };
+
+  $effect(() => {
+    if (!scopesOn) return;
+    void scopeMode;
+    let raf = 0;
+    const loop = (): void => {
+      renderScope();
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  });
+
+  const setScope = (mode: 'waveform' | 'parade'): void => {
+    if (scopesOn && scopeMode === mode) {
+      scopesOn = false;
+      return;
+    }
+    scopeMode = mode;
+    scopesOn = true;
+  };
+
   /* Captions are off until asked for; the toggle drives the text track's
      mode directly, and a source change re-applies the choice. */
   let captionsOn = $state(false);
@@ -1196,6 +1301,18 @@
     </div>
   {/snippet}
 
+  {#if scopesOn && chrome === 'full'}
+    <div class="scopes">
+      <canvas
+        bind:this={scopeCanvas}
+        width={SCOPE_W}
+        height={SCOPE_H}
+        aria-label={scopeMode === 'waveform' ? 'Luma waveform' : 'RGB parade'}
+      ></canvas>
+      <span class="scopes-note">{scopeMode === 'waveform' ? 'Luma waveform' : 'RGB parade'}, read from the playback proxy</span>
+    </div>
+  {/if}
+
   <div class="transport">
     {#if !fullscreen}{@render deck()}{/if}
     <!-- The settings row is the full instrument's. Simple chrome hosts its
@@ -1243,6 +1360,11 @@
           {/if}
         </div>
       {/if}
+      <span class="ctl-label" id="scopes-label">Scopes</span>
+      <div class="seg" role="group" aria-labelledby="scopes-label">
+        <button type="button" aria-pressed={scopesOn && scopeMode === 'waveform'} onclick={() => setScope('waveform')}>Waveform</button>
+        <button type="button" aria-pressed={scopesOn && scopeMode === 'parade'} onclick={() => setScope('parade')}>Parade</button>
+      </div>
       <span class="ctl-label" id="surround-label">Surround</span>
       <div class="seg" role="group" aria-labelledby="surround-label">
         <button type="button" aria-pressed={surround === 'dark'} onclick={() => setSurround('dark')}>Dark</button>
@@ -1395,6 +1517,9 @@
   .watermark:not(.tiled)[data-position='bottom_left'] { align-items: flex-end; justify-content: flex-start; }
   .watermark:not(.tiled)[data-position='bottom_right'] { align-items: flex-end; justify-content: flex-end; }
   .watermark:not(.tiled)[data-position='center'] { align-items: center; justify-content: center; }
+  .scopes { flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0 0; }
+  .scopes canvas { display: block; width: min(100%, 720px); height: 180px; background: var(--n-000, #0a0a0a); border: 1px solid var(--n-200, #232323); border-radius: var(--radius, 3px); }
+  .scopes-note { font-size: var(--text-12, 0.75rem); color: var(--n-500, #565656); }
   .transport { flex: none; padding-top: 12px; font-family: var(--font-ui, system-ui); }
   .transport-row { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
   /* One row, three tracks. The outer two are equal, so whatever they hold, the
