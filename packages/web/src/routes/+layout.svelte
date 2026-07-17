@@ -101,7 +101,18 @@
 
 {#if chrome}
   <header class="topbar">
-    <a class="wordmark" href="/">Onelight</a>
+    <a class="wordmark" href="/">
+      <!-- The chip, same mark as the favicon: tab and masthead are one
+           system. Inline so it never waits on a fetch. -->
+      <svg viewBox="0 0 32 32" width="20" height="20" aria-hidden="true">
+        <rect x="0.5" y="0.5" width="31" height="31" rx="8.5" fill="#10151d" />
+        <rect x="5" y="8" width="5" height="16" rx="1.2" fill="#2c3f56" />
+        <rect x="11" y="8" width="5" height="16" rx="1.2" fill="#934337" />
+        <rect x="17" y="8" width="5" height="16" rx="1.2" fill="#cf8a56" />
+        <rect x="23" y="8" width="4" height="16" rx="1.2" fill="#F7E1A0" />
+      </svg>
+      Onelight
+    </a>
     <nav aria-label="Primary">
       <a href="/" aria-current={current('/')}>Projects</a>
       <a href="/settings" aria-current={current('/settings')}>Settings</a>
@@ -205,11 +216,17 @@
     font-size: var(--text-13);
   }
   .wordmark {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     font-family: var(--font-display);
     font-size: var(--text-14);
     font-weight: 700;
     color: var(--ink-text);
     text-decoration: none;
+  }
+  .wordmark svg {
+    flex: none;
   }
   nav {
     display: flex;

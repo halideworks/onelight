@@ -9,6 +9,7 @@
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import AssetSelect from '$lib/AssetSelect.svelte';
   import ScrubThumb from '$lib/ScrubThumb.svelte';
+  import { arrives } from '$lib/media-load.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
   import { projectEvents } from '$lib/sse.svelte.js';
   import type { ProjectEvent } from '$lib/sse.svelte.js';
@@ -1986,7 +1987,7 @@
                          row, and it is the same image the grid already has. -->
                     <span class="rowthumb" aria-hidden="true">
                       {#if detail?.posterUrl}
-                        <img src={detail.posterUrl} alt="" loading="lazy" />
+                        <img src={detail.posterUrl} alt="" loading="lazy" use:arrives />
                       {/if}
                     </span>
                     <a href={assetHref(asset.id)} onclick={(event) => event.stopPropagation()}>{asset.name}</a>
@@ -2334,7 +2335,8 @@
   /* List rows carry the same poster the grid does, at row height. */
   .namecell { display: flex; align-items: center; gap: 10px; }
   .rowthumb { flex: none; width: 44px; height: 26px; border-radius: 2px; overflow: hidden; background: var(--ink-200); }
-  .rowthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .rowthumb img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; }
+  .rowthumb img:global([data-arrived]) { opacity: 1; transition: opacity 280ms ease; }
   .card { display: grid; gap: 8px; padding: 8px; margin: -8px; border-radius: var(--radius-lg); }
   .card:hover { background: var(--ink-100); }
   .card.picked { background: var(--ink-200); }

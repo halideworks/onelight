@@ -110,7 +110,7 @@
     object-fit: cover;
     display: block;
     opacity: 0;
-    transition: opacity 160ms ease;
+    transition: opacity 280ms ease;
   }
   img.ready { opacity: 1; }
 

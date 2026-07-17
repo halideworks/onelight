@@ -125,6 +125,86 @@
     env: 'the server environment',
     none: 'nothing'
   };
+
+  /* Provider presets: one press fills what the provider fixes and the hint
+     says exactly which secret goes in the password field. Values are the
+     providers' long-stable SMTP endpoints. */
+  type Preset = {
+    name: string;
+    host: string;
+    port: number;
+    user: string | null;
+    userPlaceholder?: string;
+    hint: string;
+  };
+  const PRESETS: Preset[] = [
+    {
+      name: 'Resend',
+      host: 'smtp.resend.com',
+      port: 465,
+      user: 'resend',
+      hint: 'Password is your Resend API key.'
+    },
+    {
+      name: 'Postmark',
+      host: 'smtp.postmarkapp.com',
+      port: 587,
+      user: null,
+      userPlaceholder: 'Server API token',
+      hint: 'Username and password are both the Server API token.'
+    },
+    {
+      name: 'SendGrid',
+      host: 'smtp.sendgrid.net',
+      port: 587,
+      user: 'apikey',
+      hint: 'Username is literally "apikey"; password is your SendGrid API key.'
+    },
+    {
+      name: 'Mailgun',
+      host: 'smtp.mailgun.org',
+      port: 587,
+      user: null,
+      userPlaceholder: 'postmaster@your-domain',
+      hint: 'Username is postmaster@ your sending domain; password is its SMTP password.'
+    },
+    {
+      name: 'Amazon SES',
+      host: 'email-smtp.us-east-1.amazonaws.com',
+      port: 587,
+      user: null,
+      userPlaceholder: 'SMTP username',
+      hint: 'Change the region in the host to yours; credentials are SES SMTP credentials, not your AWS keys.'
+    },
+    {
+      name: 'Gmail',
+      host: 'smtp.gmail.com',
+      port: 587,
+      user: null,
+      userPlaceholder: 'you@gmail.com',
+      hint: 'Password is an app password (Google account > Security), not your account password.'
+    },
+    {
+      name: 'Fastmail',
+      host: 'smtp.fastmail.com',
+      port: 465,
+      user: null,
+      userPlaceholder: 'you@fastmail.com',
+      hint: 'Password is an app password from Fastmail settings.'
+    }
+  ];
+  let presetHint = $state('');
+  let userPlaceholder = $state('');
+  const applyPreset = (preset: Preset): void => {
+    mode = 'fields';
+    host = preset.host;
+    port = String(preset.port);
+    user = preset.user ?? '';
+    userPlaceholder = preset.userPlaceholder ?? '';
+    presetHint = preset.hint;
+    notice = '';
+    error = '';
+  };
 </script>
 
 <svelte:head><title>Email | Onelight</title></svelte:head>
@@ -154,6 +234,13 @@
     {#if testResult}<p class:warn={testFailed} role="status">{testResult}</p>{/if}
 
     <form class="panel" onsubmit={save}>
+      <div class="presets" role="group" aria-label="Provider presets">
+        {#each PRESETS as preset (preset.name)}
+          <button type="button" onclick={() => applyPreset(preset)}>{preset.name}</button>
+        {/each}
+      </div>
+      {#if presetHint}<p class="presethint">{presetHint}</p>{/if}
+
       <div class="modes" role="group" aria-label="Configuration shape">
         <button type="button" aria-pressed={mode === 'fields'} onclick={() => { mode = 'fields'; }}>Host and port</button>
         <button type="button" aria-pressed={mode === 'url'} onclick={() => { mode = 'url'; }}>Connection URL</button>
@@ -172,7 +259,7 @@
             <input bind:value={port} placeholder="587" inputmode="numeric" autocomplete="off" />
           </label>
           <label>Username
-            <input bind:value={user} autocomplete="off" />
+            <input bind:value={user} placeholder={userPlaceholder} autocomplete="off" />
           </label>
           <label>Password
             <input type="password" bind:value={pass} placeholder={hasStoredPass ? 'Stored; type to replace' : ''} autocomplete="new-password" />
@@ -210,6 +297,11 @@
   .status { display: flex; align-items: center; gap: 14px; margin: 0 0 18px; }
 
   .panel { background: var(--ink-100); border-radius: var(--radius); padding: 22px; max-width: 560px; display: grid; gap: 14px; }
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; }
+  .presets button { border: 0; border-radius: var(--radius); background: var(--ink-000); color: var(--ink-text-dim); padding: 6px 11px; font-size: var(--text-12); }
+  .presets button:hover { background: var(--ink-200); color: var(--ink-text); }
+  .presethint { margin: 0; color: var(--ink-text-dim); font-size: var(--text-12); }
+
   .modes { display: flex; gap: 2px; padding: 2px; border-radius: var(--radius); background: var(--ink-000); width: fit-content; }
   .modes button { border: 0; border-radius: 2px; background: none; color: var(--ink-text-dim); padding: 5px 12px; font-size: var(--text-12); font-weight: 500; }
   .modes button[aria-pressed='true'] { background: var(--ink-300); color: #fff; }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { arrives } from './media-load.js';
   import { parseSpriteVtt } from './asset-media.svelte.js';
   import type { SpriteTile } from './asset-media.svelte.js';
 
@@ -79,7 +80,7 @@
     ></div>
     <div class="playhead" style={`left: ${(fraction ?? 0) * 100}%;`} aria-hidden="true"></div>
   {:else if poster}
-    <img src={poster} {alt} loading="lazy" draggable="false" />
+    <img src={poster} {alt} loading="lazy" draggable="false" use:arrives />
   {:else}
     <div class="blank" aria-hidden="true"></div>
   {/if}
@@ -98,6 +99,17 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
+    /* Ease in on arrival; the ink ground beneath holds the frame until the
+       pixels are whole, so no progressive scan ever shows. */
+    opacity: 0;
+  }
+  img:global([data-arrived]) {
+    opacity: 1;
+    transition: opacity 280ms ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    img { opacity: 1; }
+    img:global([data-arrived]) { transition: none; }
   }
   .sheet {
     position: absolute;

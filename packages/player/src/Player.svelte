@@ -1180,7 +1180,7 @@
     <div class="frame-box" bind:this={frameBox} style:width={boxWidth > 0 ? `${String(boxWidth)}px` : undefined}>
       <video
         bind:this={video}
-        class:arrived={chrome === 'full' || pictureIn}
+        class:arrived={pictureIn}
         src={currentSrc || src}
         bind:muted
         bind:volume
@@ -1627,10 +1627,12 @@
   @media (prefers-reduced-motion: reduce) {
     .scrub-track, .scrub-handle { transition: none; }
   }
-  /* Simple chrome fades the picture in on first data instead of popping it.
-     The review player never fades footage: arrived is always on there. */
+  /* The picture eases in on first data instead of popping, in every chrome
+     (David, 2026-07-17: all media arrives, none of it flashes). Only the
+     FIRST frame of a source fades; seeks and steps are untouched, so frame
+     accuracy and color judgement lose nothing. */
   video:not(.arrived) { opacity: 0; }
-  video.arrived { opacity: 1; transition: opacity 480ms ease; }
+  video.arrived { opacity: 1; transition: opacity 360ms ease; }
   @media (prefers-reduced-motion: reduce) {
     video:not(.arrived) { opacity: 1; }
     video.arrived { transition: none; }

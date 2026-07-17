@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { CommentAttachment } from '$lib/comments.js';
+  import { arrives } from '$lib/media-load.js';
 
   /* An attached image, shown as itself: the thumbnail resolves its signed
      URL on mount and refreshes it once if it expires under the viewer.
@@ -58,7 +59,7 @@
       }
     }}
   >
-    <img src={url} alt={attachment.filename} loading="lazy" onerror={() => void onError()} />
+    <img src={url} alt={attachment.filename} loading="lazy" use:arrives onerror={() => void onError()} />
   </button>
 {:else if failed}
   <span class="dead">{attachment.filename}</span>
@@ -68,7 +69,8 @@
   .thumb { display: block; max-width: 220px; border: 0; border-radius: var(--radius, 3px); overflow: hidden; padding: 0; background: none; cursor: zoom-in; }
   /* Minimum bounds keep a tiny image a real target; cover scales it up
      rather than leaving a sliver nobody can click. */
-  .thumb img { display: block; min-width: 56px; min-height: 36px; max-width: 100%; max-height: 140px; object-fit: cover; border-radius: inherit; }
-  .thumb:hover img { opacity: 0.9; }
+  .thumb img { display: block; min-width: 56px; min-height: 36px; max-width: 100%; max-height: 140px; object-fit: cover; border-radius: inherit; opacity: 0; }
+  .thumb img:global([data-arrived]) { opacity: 1; transition: opacity 280ms ease; }
+  .thumb:hover img:global([data-arrived]) { opacity: 0.9; }
   .dead { color: inherit; opacity: 0.6; font-size: 12px; }
 </style>
