@@ -27,9 +27,12 @@ import {
   errors,
   generateBackupCodes,
   generateTotpSecret,
+  isSmtpConfigError,
+  mailSettingsToInput,
   otpauthUrl,
   parseMarkersCsv,
   parseResolveEdl,
+  parseSmtpConfig,
   projectRoleAtLeast,
   randomBytes,
   utf8,
@@ -37,7 +40,7 @@ import {
   sha256,
   sha256Hex,
 } from "@onelight/core";
-import type { MultipartBlobStore } from "@onelight/core";
+import type { MultipartBlobStore, StoredMailSettings } from "@onelight/core";
 import {
   apiTokens,
   assetVersions,
@@ -71,6 +74,7 @@ import {
   notifications,
   notificationPreferences,
   passwordResets,
+  appSettings,
 } from "@onelight/db/schema";
 import {
   authMiddleware,
@@ -110,6 +114,34 @@ import {
 const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const root = new Hono<{ Variables: Variables }>();
   const api = new Hono<{ Variables: Variables }>();
+
+  /* One mail surface for every route: the platform's dynamic control when
+     present (the Node server, which resolves admin settings over the
+     environment), else a static facade over the injected mailer (the
+     contract harness), else undefined (mail disabled). */
+  const mailControl =
+    env.mail ??
+    (env.mailer
+      ? {
+          status: () =>
+            Promise.resolve({
+              state: "ready" as const,
+              detail: null,
+              source: "env" as const,
+            }),
+          send: (message: { to: string; subject: string; text: string }) =>
+            env.mailer!.send(message),
+          reload: (): void => {},
+        }
+      : undefined);
+  const mailStatus = async (): Promise<{
+    state: "ready" | "disabled" | "error";
+    detail: string | null;
+    source: "settings" | "env" | "none";
+  }> =>
+    mailControl
+      ? mailControl.status()
+      : { state: "disabled", detail: null, source: "none" };
 
   root.use("*", authMiddleware(env));
   root.use("*", requireOrigin(env));
@@ -1236,8 +1268,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           usedAt: null,
         })
         .run();
-      if (env.mailer) {
-        await env.mailer.send({
+      if (mailControl && (await mailStatus()).state === "ready") {
+        await mailControl.send({
           to: user.email,
           subject: "Reset your Onelight password",
           text: [
@@ -1471,11 +1503,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       db_size_bytes: host.db_size_bytes,
       backups: host.backups,
       disk: env.diskInfo ? await env.diskInfo() : null,
-      mail:
-        env.mailState ??
-        (env.mailer
-          ? { state: "ready", detail: null }
-          : { state: "disabled", detail: null }),
+      mail: await mailStatus(),
       media_jobs: countBy(jobRows),
       export_jobs: countBy(exportRows),
       webhook_deliveries: countBy(deliveryRows),
@@ -1489,12 +1517,15 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.post("/admin/system/test-email", requireAuth, async (c) => {
     const actor = userFromContext(c);
     if (actor.role !== "admin") throw errors.forbidden();
-    if (!env.mailer)
+    const status = await mailStatus();
+    if (!mailControl || status.state !== "ready")
       throw errors.conflict(
-        "Email is not configured: set SMTP_URL or SMTP_HOST plus MAIL_FROM and restart.",
+        status.state === "error" && status.detail
+          ? `Email is misconfigured: ${status.detail}`
+          : "Email is not configured: set it up under Settings, or set SMTP_URL plus MAIL_FROM in the environment.",
       );
     try {
-      await env.mailer.send({
+      await mailControl.send({
         to: actor.email,
         subject: "Onelight test email",
         text: [
@@ -1509,6 +1540,140 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       );
     }
     return c.json({ sent: true, to: actor.email });
+  });
+
+  /* ---- mail settings (admin, session only): the SMTP transport, editable
+     from the UI and stored in app_settings under the "mail" key. Stored
+     settings take precedence over the environment; DELETE falls back to
+     the environment. The password never leaves the server: projections
+     carry has_pass, and a URL is masked of its credential. ---- */
+
+  const MAIL_SETTINGS_KEY = "mail";
+
+  const readStoredMail = async (): Promise<StoredMailSettings | null> => {
+    const rows = await env.db
+      .select()
+      .from(appSettings)
+      .where(eq(appSettings.key, MAIL_SETTINGS_KEY))
+      .all();
+    const row = rows[0];
+    if (!row) return null;
+    try {
+      return JSON.parse(row.valueJson) as StoredMailSettings;
+    } catch {
+      return null;
+    }
+  };
+
+  const maskedMailUrl = (
+    raw: string,
+  ): { url: string; hadCredential: boolean } => {
+    try {
+      const url = new URL(raw);
+      const hadCredential = url.password.length > 0;
+      if (hadCredential) url.password = "";
+      return { url: url.toString(), hadCredential };
+    } catch {
+      return { url: raw, hadCredential: false };
+    }
+  };
+
+  const mailSettingsWire = (stored: StoredMailSettings) => {
+    const masked = stored.smtp_url ? maskedMailUrl(stored.smtp_url) : null;
+    return {
+      smtp_url: masked ? masked.url : null,
+      host: stored.host,
+      port: stored.port,
+      user: stored.user,
+      has_pass: Boolean(stored.pass) || Boolean(masked?.hadCredential),
+      secure: stored.secure,
+      mail_from: stored.mail_from,
+    };
+  };
+
+  const mailSettingsResponse = async (c: Context<{ Variables: Variables }>) => {
+    const stored = await readStoredMail();
+    return c.json({
+      stored: stored ? mailSettingsWire(stored) : null,
+      active: await mailStatus(),
+    });
+  };
+
+  api.get("/admin/settings/mail", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    if (actor.role !== "admin") throw errors.forbidden();
+    return mailSettingsResponse(c);
+  });
+
+  api.put("/admin/settings/mail", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    if (actor.role !== "admin") throw errors.forbidden();
+    /* SMTP credentials are as sensitive as a second factor: an API token
+       must not be able to redirect the instance's outgoing mail. */
+    if (c.get("authType") !== "session") throw errors.forbidden();
+    const body = await jsonBody(c, bodies.mailSettingsPut);
+    const prior = await readStoredMail();
+    const next: StoredMailSettings = {
+      smtp_url: body.smtp_url ?? null,
+      host: body.host ?? null,
+      port: body.port ?? null,
+      user: body.user ?? null,
+      /* An omitted password keeps the stored one, so editing the host does
+         not force retyping the secret; explicit null clears it. */
+      pass: body.pass === undefined ? (prior?.pass ?? null) : body.pass,
+      secure: body.secure ?? null,
+      mail_from: body.mail_from ?? null,
+    };
+    const parsed = parseSmtpConfig(mailSettingsToInput(next));
+    if (parsed === null)
+      throw errors.validation(
+        "Provide SMTP_URL or SMTP_HOST together with MAIL_FROM; to fall back to the environment, remove the settings instead.",
+      );
+    if (isSmtpConfigError(parsed)) throw errors.validation(parsed.error);
+    const now = env.clock.now();
+    await env.db
+      .insert(appSettings)
+      .values({
+        key: MAIL_SETTINGS_KEY,
+        valueJson: JSON.stringify(next),
+        updatedAt: now,
+        updatedBy: actor.id,
+      })
+      .onConflictDoUpdate({
+        target: appSettings.key,
+        set: {
+          valueJson: JSON.stringify(next),
+          updatedAt: now,
+          updatedBy: actor.id,
+        },
+      })
+      .run();
+    env.mail?.reload();
+    await audit(
+      actor.workspaceId,
+      actor.id,
+      "settings.mail.update",
+      "settings:mail",
+    );
+    return mailSettingsResponse(c);
+  });
+
+  api.delete("/admin/settings/mail", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    if (actor.role !== "admin") throw errors.forbidden();
+    if (c.get("authType") !== "session") throw errors.forbidden();
+    await env.db
+      .delete(appSettings)
+      .where(eq(appSettings.key, MAIL_SETTINGS_KEY))
+      .run();
+    env.mail?.reload();
+    await audit(
+      actor.workspaceId,
+      actor.id,
+      "settings.mail.clear",
+      "settings:mail",
+    );
+    return c.body(null, 204);
   });
 
   api.patch("/workspace", requireAuth, async (c) => {

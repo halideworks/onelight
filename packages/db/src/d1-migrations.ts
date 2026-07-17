@@ -261,6 +261,13 @@ export const d1Migrations: D1Migration[] = [
       "ALTER TABLE users ADD COLUMN totp_backup_codes_json TEXT NOT NULL DEFAULT '[]'",
     ],
   },
+  {
+    name: "0014_app_settings.sql",
+    applied: (binding) => tableExists(binding, "app_settings"),
+    statements: [
+      "CREATE TABLE app_settings (\n  key TEXT PRIMARY KEY,\n  value_json TEXT NOT NULL,\n  updated_at INTEGER NOT NULL,\n  updated_by TEXT REFERENCES users(id)\n)",
+    ],
+  },
 ];
 
 const migrate = async (binding: D1Database): Promise<void> => {

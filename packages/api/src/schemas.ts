@@ -78,6 +78,19 @@ export const bodies = {
     name: z.string().min(1).max(200).optional(),
     settings: z.record(z.unknown()).optional(),
   }),
+  /* Full-replace semantics except `pass`: omitted keeps the stored secret,
+     explicit null clears it. The response never carries the password. */
+  mailSettingsPut: z
+    .object({
+      smtp_url: z.string().trim().max(500).nullable().optional(),
+      host: z.string().trim().max(255).nullable().optional(),
+      port: z.number().int().min(1).max(65535).nullable().optional(),
+      user: z.string().max(255).nullable().optional(),
+      pass: z.string().max(500).nullable().optional(),
+      secure: z.boolean().nullable().optional(),
+      mail_from: z.string().trim().max(320).nullable().optional(),
+    })
+    .strict(),
   usersMePatch: z.object({
     name: z.string().min(1).max(200).optional(),
     password: z.object({ current: z.string(), new: z.string() }).optional(),
@@ -801,6 +814,25 @@ const created = (schema: z.ZodTypeAny): ResponseDoc => ({
   description: "Created",
 });
 const noContent: ResponseDoc = { description: "No content" };
+
+const mailSettingsView = z.object({
+  stored: z
+    .object({
+      smtp_url: z.string().nullable(),
+      host: z.string().nullable(),
+      port: z.number().nullable(),
+      user: z.string().nullable(),
+      has_pass: z.boolean(),
+      secure: z.boolean().nullable(),
+      mail_from: z.string().nullable(),
+    })
+    .nullable(),
+  active: z.object({
+    state: z.enum(["ready", "disabled", "error"]),
+    detail: z.string().nullable(),
+    source: z.enum(["settings", "env", "none"]),
+  }),
+});
 const redirect: ResponseDoc = { description: "Redirect" };
 const binary = (contentType: string): ResponseDoc => ({
   contentType,
@@ -1444,6 +1476,7 @@ export const routeDocs: Record<string, RouteDoc> = {
           mail: z.object({
             state: z.enum(["ready", "disabled", "error"]),
             detail: z.string().nullable(),
+            source: z.enum(["settings", "env", "none"]),
           }),
           media_jobs: z.record(z.number()),
           export_jobs: z.record(z.number()),
@@ -1458,6 +1491,22 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: {
       "200": ok(z.object({ sent: z.literal(true), to: z.string() })),
     },
+  },
+  "GET /admin/settings/mail": {
+    summary:
+      "The stored SMTP settings (password masked) and the active mail posture with its source: admin settings, the environment, or none.",
+    responses: { "200": ok(mailSettingsView) },
+  },
+  "PUT /admin/settings/mail": {
+    summary:
+      "Replace the stored SMTP settings (admin, session auth only). An omitted pass keeps the stored secret. Stored settings take precedence over the environment.",
+    request: bodies.mailSettingsPut,
+    responses: { "200": ok(mailSettingsView) },
+  },
+  "DELETE /admin/settings/mail": {
+    summary:
+      "Remove the stored SMTP settings and fall back to the environment (admin, session auth only).",
+    responses: { "204": noContent },
   },
   "PUT /users/me/avatar": {
     requestContentType: "image/png",

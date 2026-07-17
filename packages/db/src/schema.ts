@@ -511,6 +511,15 @@ export const projectEvents = sqliteTable(
   }),
 );
 
+/* Instance-level settings editable from the admin UI (migration 0014).
+   One row per key; the value is JSON. First occupant: "mail". */
+export const appSettings = sqliteTable("app_settings", {
+  key: text("key").primaryKey(),
+  valueJson: text("value_json").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+  updatedBy: text("updated_by"),
+});
+
 export const auditLog = sqliteTable(
   "audit_log",
   {
@@ -856,6 +865,7 @@ export const schema = {
   webhookDeliveries,
   exportJobs,
   auditLog,
+  appSettings,
 };
 
 export type Workspace = typeof workspaces.$inferSelect;

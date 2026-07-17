@@ -492,6 +492,121 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
         expect(response.status).toBe(409);
       }
     });
+
+    it("stores, masks, and clears admin mail settings", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const member = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      const forbidden = await req(h, "/api/v1/admin/settings/mail", {
+        cookie: member.cookie,
+      });
+      expect(forbidden.status).toBe(403);
+
+      type MailView = {
+        stored: {
+          smtp_url: string | null;
+          host: string | null;
+          port: number | null;
+          user: string | null;
+          has_pass: boolean;
+          secure: boolean | null;
+          mail_from: string | null;
+        } | null;
+        active: { state: string; detail: string | null; source: string };
+      };
+      const initial = await json<MailView>(
+        await req(h, "/api/v1/admin/settings/mail", {
+          cookie: seed.admin.cookie,
+        }),
+      );
+      expect(initial.stored).toBeNull();
+
+      // An incomplete configuration is refused with the parser's message.
+      const incomplete = await req(h, "/api/v1/admin/settings/mail", {
+        method: "PUT",
+        cookie: seed.admin.cookie,
+        json: { host: "mail.example.com" },
+      });
+      expect(incomplete.status).toBe(400);
+
+      const put = await req(h, "/api/v1/admin/settings/mail", {
+        method: "PUT",
+        cookie: seed.admin.cookie,
+        json: {
+          host: "mail.example.com",
+          port: 587,
+          user: "onelight",
+          pass: "a-secret",
+          mail_from: "Onelight <mail@example.com>",
+        },
+      });
+      expect(put.status).toBe(200);
+      const stored = (await json<MailView>(put)).stored;
+      expect(stored?.host).toBe("mail.example.com");
+      expect(stored?.has_pass).toBe(true);
+      expect(stored && "pass" in stored).toBe(false);
+      expect(assertSnakeCaseKeys(stored as Record<string, unknown>)).toEqual(
+        [],
+      );
+
+      // Editing without retyping the password keeps the stored secret.
+      const edited = await json<MailView>(
+        await req(h, "/api/v1/admin/settings/mail", {
+          method: "PUT",
+          cookie: seed.admin.cookie,
+          json: {
+            host: "mail2.example.com",
+            port: 587,
+            user: "onelight",
+            mail_from: "Onelight <mail@example.com>",
+          },
+        }),
+      );
+      expect(edited.stored?.host).toBe("mail2.example.com");
+      expect(edited.stored?.has_pass).toBe(true);
+
+      // A URL with a credential comes back masked but remembered.
+      const viaUrl = await json<MailView>(
+        await req(h, "/api/v1/admin/settings/mail", {
+          method: "PUT",
+          cookie: seed.admin.cookie,
+          json: {
+            smtp_url: "smtps://onelight:hunter2@mail.example.com:465",
+            mail_from: "mail@example.com",
+          },
+        }),
+      );
+      expect(viaUrl.stored?.smtp_url).not.toContain("hunter2");
+      expect(viaUrl.stored?.has_pass).toBe(true);
+
+      // An API token must not be able to redirect the instance's mail.
+      const tokenResponse = await req(h, "/api/v1/tokens", {
+        cookie: seed.admin.cookie,
+        json: { name: "mail-settings-probe" },
+      });
+      const token = await json<{ token: string }>(tokenResponse);
+      const viaToken = await req(h, "/api/v1/admin/settings/mail", {
+        method: "PUT",
+        bearer: token.token,
+        json: { host: "evil.example.com", mail_from: "x@example.com" },
+      });
+      expect(viaToken.status).toBe(403);
+
+      const cleared = await req(h, "/api/v1/admin/settings/mail", {
+        method: "DELETE",
+        cookie: seed.admin.cookie,
+      });
+      expect(cleared.status).toBe(204);
+      const after = await json<MailView>(
+        await req(h, "/api/v1/admin/settings/mail", {
+          cookie: seed.admin.cookie,
+        }),
+      );
+      expect(after.stored).toBeNull();
+    });
   });
 
   describe("trash", () => {

@@ -11,3 +11,4 @@ export * from "./ports.js";
 export * from "./timecode.js";
 export * from "./markers.js";
 export * from "./totp.js";
+export * from "./mail-config.js";

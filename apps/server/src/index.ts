@@ -9,19 +9,25 @@ import {
   createApp,
   deliverDueWebhookDeliveries,
 } from "@onelight/api";
-import { loadConfig, UlidGenerator, systemClock } from "@onelight/core";
+import {
+  loadConfig,
+  UlidGenerator,
+  isSmtpConfigError,
+  mailSettingsToInput,
+  parseSmtpConfig,
+  systemClock,
+} from "@onelight/core";
+import type { Mailer, SmtpConfig, StoredMailSettings } from "@onelight/core";
+import { eq } from "drizzle-orm";
 import {
   applyNodeMigrations,
   createNodeDb,
   users,
   workspaces,
 } from "@onelight/db";
+import { appSettings } from "@onelight/db/schema";
 import { LocalBlobStore } from "@onelight/worker";
-import {
-  createMailerFromEnv,
-  isSmtpConfigError,
-  parseSmtpConfig,
-} from "./mailer.js";
+import { createMailerForConfig } from "./mailer.js";
 import { maintenanceConfigFromEnv, startMaintenance } from "./maintenance.js";
 import { backupConfigFromEnv, startBackups } from "./backup.js";
 import { NodePasswordHasher } from "./password.js";
@@ -98,17 +104,97 @@ const start = async (): Promise<void> => {
     process.env.BLOB_ROOT ??
     path.join(path.dirname(config.DATABASE_PATH), "blobs");
   const blobStore = new LocalBlobStore(blobRoot);
-  const mailer = createMailerFromEnv(process.env);
-  /* The status page distinguishes "never configured" from "configured but
-     unusable": both leave mailer null, and the second must not read as the
-     operator having chosen silence. */
-  const mailConfig = parseSmtpConfig(process.env);
-  const mailState =
-    mailConfig === null
-      ? ({ state: "disabled", detail: null } as const)
-      : isSmtpConfigError(mailConfig)
-        ? ({ state: "error", detail: mailConfig.error } as const)
-        : ({ state: "ready", detail: null } as const);
+  /* Dynamic mail control: admin settings (app_settings key "mail") take
+     precedence over the environment, resolved per use so a settings change
+     applies without a restart. The status distinguishes "never configured"
+     from "configured but unusable": neither can send, but the second must
+     not read as the operator having chosen silence. */
+  type MailResolution = {
+    state: "ready" | "disabled" | "error";
+    detail: string | null;
+    source: "settings" | "env" | "none";
+    config: SmtpConfig | null;
+  };
+  const resolveMail = async (): Promise<MailResolution> => {
+    const rows = await db
+      .select()
+      .from(appSettings)
+      .where(eq(appSettings.key, "mail"))
+      .all();
+    const row = rows[0];
+    if (row) {
+      let stored: StoredMailSettings | null = null;
+      try {
+        stored = JSON.parse(row.valueJson) as StoredMailSettings;
+      } catch {
+        stored = null;
+      }
+      const parsed = stored
+        ? parseSmtpConfig(mailSettingsToInput(stored))
+        : null;
+      if (parsed === null)
+        return {
+          state: "error",
+          detail: "The stored mail settings are unreadable.",
+          source: "settings",
+          config: null,
+        };
+      if (isSmtpConfigError(parsed))
+        return {
+          state: "error",
+          detail: parsed.error,
+          source: "settings",
+          config: null,
+        };
+      return {
+        state: "ready",
+        detail: null,
+        source: "settings",
+        config: parsed,
+      };
+    }
+    const fromEnv = parseSmtpConfig(process.env);
+    if (fromEnv === null)
+      return { state: "disabled", detail: null, source: "none", config: null };
+    if (isSmtpConfigError(fromEnv))
+      return {
+        state: "error",
+        detail: fromEnv.error,
+        source: "env",
+        config: null,
+      };
+    return { state: "ready", detail: null, source: "env", config: fromEnv };
+  };
+  let mailTransportCache: { json: string; mailer: Mailer } | null = null;
+  const mail = {
+    status: async (): Promise<Omit<MailResolution, "config">> => {
+      const resolution = await resolveMail();
+      return {
+        state: resolution.state,
+        detail: resolution.detail,
+        source: resolution.source,
+      };
+    },
+    send: async (message: {
+      to: string;
+      subject: string;
+      text: string;
+    }): Promise<void> => {
+      const resolution = await resolveMail();
+      if (!resolution.config)
+        throw new Error(resolution.detail ?? "Email is not configured.");
+      const json = JSON.stringify(resolution.config);
+      if (!mailTransportCache || mailTransportCache.json !== json)
+        mailTransportCache = {
+          json,
+          mailer: createMailerForConfig(resolution.config),
+        };
+      await mailTransportCache.mailer.send(message);
+    },
+    reload: (): void => {
+      mailTransportCache = null;
+    },
+  };
   /* The blob volume's capacity, from the filesystem that actually holds it.
      Object-storage deployments have no equivalent, which is why the field is
      optional on AppEnv and null on the wire there. */
@@ -174,10 +260,7 @@ const start = async (): Promise<void> => {
     systemInfo,
     startedAt: Date.now(),
     frameMatcher: spriteFrameMatcher(db, blobRoot),
-    mailState,
-    // AppEnv.mailer is optional and exactOptionalPropertyTypes is on, so
-    // the field is present only when a mailer is configured.
-    ...(mailer ? { mailer } : {}),
+    mail,
   });
   const webRoot = process.env.WEB_ROOT ?? "packages/web/build";
   const app = new Hono();
@@ -261,7 +344,8 @@ const start = async (): Promise<void> => {
       publicUrl: config.PUBLIC_URL,
       blobStore,
     }),
-    mailer,
+    async () =>
+      (await mail.status()).state === "ready" ? { send: mail.send } : null,
   );
   const webhookTimer = setInterval(() => {
     void deliverDueWebhookDeliveries(db, Date.now());

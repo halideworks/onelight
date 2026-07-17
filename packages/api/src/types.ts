@@ -28,13 +28,24 @@ export interface AppEnv {
     db_size_bytes: number | null;
     backups: { count: number; newest_at: number | null } | null;
   }>;
-  /* Outgoing-email posture for the admin status page. The Node server sets
-     it from its SMTP parse so a present-but-broken configuration reads as
-     an error rather than as silence; when absent, the route falls back to
-     reporting on the mailer's presence alone. */
-  mailState?: {
-    state: "ready" | "disabled" | "error";
-    detail: string | null;
+  /* Dynamic mail control (the Node server): status resolves the ACTIVE
+     configuration, admin settings first, environment second, so a
+     present-but-broken configuration reads as an error rather than as
+     silence; send delivers through it; reload drops transport caches after
+     the admin settings change. Platforms without it fall back to the
+     static `mailer` above (the contract harness) or to disabled. */
+  mail?: {
+    status: () => Promise<{
+      state: "ready" | "disabled" | "error";
+      detail: string | null;
+      source: "settings" | "env" | "none";
+    }>;
+    send: (message: {
+      to: string;
+      subject: string;
+      text: string;
+    }) => Promise<void>;
+    reload: () => void;
   };
   /* Process start, for uptime on the status page. */
   startedAt?: number;

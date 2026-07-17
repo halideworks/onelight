@@ -150,6 +150,7 @@
         {#if mailTestResult}
           <p class:warn={mailTestFailed} role="status">{mailTestResult}</p>
         {/if}
+        <p class="hint"><a href="/settings/email">Configure email.</a></p>
       </section>
 
       {#if status.disk}

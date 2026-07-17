@@ -1367,11 +1367,20 @@
                             "string",
                             "null"
                           ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "settings",
+                            "env",
+                            "none"
+                          ]
                         }
                       },
                       "required": [
                         "state",
-                        "detail"
+                        "detail",
+                        "source"
                       ],
                       "additionalProperties": false
                     },
@@ -1480,6 +1489,454 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/settings/mail": {
+      "get": {
+        "summary": "The stored SMTP settings (password masked) and the active mail posture with its source: admin settings, the environment, or none.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "stored": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "smtp_url": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "host": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "port": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "user": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "has_pass": {
+                              "type": "boolean"
+                            },
+                            "secure": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            },
+                            "mail_from": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "smtp_url",
+                            "host",
+                            "port",
+                            "user",
+                            "has_pass",
+                            "secure",
+                            "mail_from"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "active": {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "disabled",
+                            "error"
+                          ]
+                        },
+                        "detail": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "settings",
+                            "env",
+                            "none"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "detail",
+                        "source"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "stored",
+                    "active"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Replace the stored SMTP settings (admin, session auth only). An omitted pass keeps the stored secret. Stored settings take precedence over the environment.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "smtp_url": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 500
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "host": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 255
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "port": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 65535
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "user": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 255
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "pass": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 500
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "secure": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "mail_from": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 320
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "stored": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "smtp_url": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "host": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "port": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "user": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "has_pass": {
+                              "type": "boolean"
+                            },
+                            "secure": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            },
+                            "mail_from": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "smtp_url",
+                            "host",
+                            "port",
+                            "user",
+                            "has_pass",
+                            "secure",
+                            "mail_from"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "active": {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "disabled",
+                            "error"
+                          ]
+                        },
+                        "detail": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "settings",
+                            "env",
+                            "none"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "detail",
+                        "source"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "stored",
+                    "active"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove the stored SMTP settings and fall back to the environment (admin, session auth only).",
+        "responses": {
+          "204": {
+            "description": "No content"
           },
           "400": {
             "description": "Validation failure",

@@ -31,6 +31,7 @@
   ];
   const SYSTEM: Item[] = [
     { href: '/settings/system', label: 'System' },
+    { href: '/settings/email', label: 'Email' },
     { href: '/settings/jobs', label: 'Job queue' },
     { href: '/settings/webhooks', label: 'Webhooks' }
   ];

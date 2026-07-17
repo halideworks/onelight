@@ -777,7 +777,9 @@ const runBlobGc = async (
 export const startMaintenance = (
   db: AppDb,
   config: MaintenanceConfig,
-  mailer: Mailer | null,
+  /* Resolved each tick, so mail settings changed in the admin UI apply to
+     the next sweep without a restart. */
+  getMailer: () => Promise<Mailer | null>,
 ): (() => void) => {
   let active = false;
   let lastGcAt = 0;
@@ -787,7 +789,7 @@ export const startMaintenance = (
     try {
       const now = Date.now();
       try {
-        await sweepNotificationEmails(db, config, mailer, now);
+        await sweepNotificationEmails(db, config, await getMailer(), now);
       } catch (error) {
         warn(`email sweep failed: ${errorText(error)}`);
       }
