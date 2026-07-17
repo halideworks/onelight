@@ -7,7 +7,6 @@
   import { pageWashFor } from '$lib/washes.js';
   import { grainLayer } from '$lib/grain.js';
   import HeroWash from '$lib/HeroWash.svelte';
-  import LandingScope from '$lib/LandingScope.svelte';
   import Player from '@onelight/player/Player.svelte';
 
   type Project = {
@@ -171,14 +170,20 @@
           color: '#d8a069',
           width: 0.004,
           points: [
-            [0.33, 0.6],
-            [0.31, 0.7],
-            [0.34, 0.8],
-            [0.42, 0.84],
-            [0.48, 0.78],
-            [0.47, 0.66],
-            [0.4, 0.58],
-            [0.34, 0.61]
+            [0.32, 0.63],
+            [0.3, 0.72],
+            [0.35, 0.67],
+            [0.33, 0.79],
+            [0.39, 0.71],
+            [0.38, 0.84],
+            [0.44, 0.74],
+            [0.45, 0.85],
+            [0.49, 0.72],
+            [0.47, 0.64],
+            [0.42, 0.7],
+            [0.41, 0.6],
+            [0.36, 0.66],
+            [0.34, 0.6]
           ] as Array<[number, number]>
         }
       ]
@@ -304,9 +309,6 @@
               }))}
               onframechange={demoFrame}
             />
-            <div class="demoscope" aria-hidden="true">
-              <LandingScope source={() => demoBox?.querySelector('video')} />
-            </div>
             <div class="demoticks">
               {#each DEMO_NOTES as note (note.frame)}
                 <button
@@ -364,15 +366,16 @@
   /* The control band reads as a light veil over the picture, not a slab:
      a thin wash of ink with the frame blurred through it. Where
      backdrop-filter is unsupported the ink deepens to keep legibility. */
+  .demoplayer :global(button[title="Full screen (F)"]) { display: none; }
   .demoplayer :global(.transport) { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; background: rgba(13, 17, 23, 0.55); border-radius: 0; padding-bottom: 30px; }
   @supports (backdrop-filter: blur(1px)) {
-    .demoplayer :global(.transport) { background: rgba(13, 17, 23, 0.28); backdrop-filter: blur(16px); }
+    .demoplayer :global(button[title="Full screen (F)"]) { display: none; }
+  .demoplayer :global(.transport) { background: rgba(13, 17, 23, 0.28); backdrop-filter: blur(16px); }
   }
-  .demoplayer :global(.scrub) { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; padding: 0 12px 10px; background: transparent; }
-  .demoscope { position: absolute; top: 12px; right: 12px; z-index: 2; width: clamp(150px, 30%, 220px); padding: 6px 8px; border-radius: var(--radius); background: rgba(13, 17, 23, 0.5); }
-  @supports (backdrop-filter: blur(1px)) {
-    .demoscope { background: rgba(13, 17, 23, 0.26); backdrop-filter: blur(14px); }
-  }
+  /* Horizontal inset comes from left/right, never padding: the scrub
+     measures its clientWidth to place the handle, and padding would count
+     into it and walk the playhead off the track. */
+  .demoplayer :global(.scrub) { position: absolute; left: 12px; right: 12px; bottom: 0; z-index: 3; padding: 0 0 10px; background: transparent; }
   .demoticks { position: absolute; left: 0; right: 0; bottom: 6px; height: 16px; z-index: 4; pointer-events: none; }
   .demoticks .tick { position: absolute; top: 0; width: 3px; height: 100%; padding: 0; border: 0; border-radius: 1px; cursor: pointer; pointer-events: auto; opacity: 0.9; }
   .demoticks .tick:hover { opacity: 1; }
