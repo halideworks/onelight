@@ -4,8 +4,13 @@
 # proxy colorimetry and tmcd assertions via ffprobe, Range serving, the
 # watermarked share flow (202 while pending, burned rendition differs from
 # the clean proxy), a Resolve marker EDL export, and an HDR PQ leg that
-# exercises libplacebo on lavapipe inside the worker container. Finishes by
-# asserting the server shuts down gracefully within 15 seconds of SIGTERM.
+# exercises libplacebo on lavapipe inside the worker container. The browser
+# e2e suite (e2e/, Firefox in the Playwright container) then runs against
+# the project and transcoded assets that exercise left behind, reaching the
+# stack on the runner's LAN address so it is a distinct, non-localhost
+# origin (admitted via ONELIGHT_ALLOWED_ORIGINS, which this exercises too).
+# Finishes by asserting the server shuts down gracefully within 15 seconds
+# of SIGTERM.
 name: Integration
 
 on:
@@ -34,10 +39,39 @@ jobs:
       # The workspace install lets the e2e script compute CRC32C through the
       # product implementation (@onelight/core via tsx).
       - run: pnpm install --frozen-lockfile
+      # The browser suite must reach the stack on a non-localhost origin
+      # (localhost is always a secure context and would hide that class of
+      # bug; see e2e/README.md), so the runner's own address is admitted as
+      # an extra origin for the CSRF check.
+      - name: Admit the runner's LAN address as a browser origin
+        run: |
+          runner_ip=$(hostname -I | awk '{print $1}')
+          echo "RUNNER_IP=${runner_ip}" >> "$GITHUB_ENV"
+          echo "ONELIGHT_ALLOWED_ORIGINS=http://${runner_ip}:3000" >> "$GITHUB_ENV"
       - name: Build and start the stack (waits on both healthchecks)
         run: docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
       - name: Run the end-to-end exercise
         run: node scripts/integration-e2e.mjs
+        env:
+          ONELIGHT_E2E_STATE_FILE: ${{ runner.temp }}/e2e-state.json
+      # The browser suite (Firefox: the bundled Playwright Chromium has no
+      # H.264) drives the share room, presentation room, annotations,
+      # attachments, and settings surfaces against the project the exercise
+      # just transcoded. The playwright npm version must match the
+      # container tag so the driver finds the image's browsers.
+      - name: Browser end-to-end suite
+        env:
+          STATE_FILE: ${{ runner.temp }}/e2e-state.json
+        run: |
+          project_id=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.STATE_FILE, "utf8")).project_id')
+          docker run --rm --network host \
+            -v "$PWD/e2e:/e2e" -w /e2e \
+            -e BASE_URL="http://${RUNNER_IP}:3000" \
+            -e E2E_EMAIL=e2e-admin@example.com \
+            -e E2E_PASSWORD=integration-only-password \
+            -e E2E_PROJECT_ID="$project_id" \
+            mcr.microsoft.com/playwright:v1.56.1-noble \
+            sh -c 'npm i --silent --no-save playwright@1.56.1 >/dev/null 2>&1 && node share-flows.e2e.mjs && node settings.e2e.mjs'
       - name: Graceful shutdown within 15 seconds
         run: |
           started=$(date +%s)

@@ -20,6 +20,11 @@
  *                          equal the stack's PUBLIC_URL or origin checks fail
  *   ONELIGHT_E2E_EMAIL     admin email (default e2e-admin@example.com)
  *   ONELIGHT_E2E_PASSWORD  admin password (default an e2e-only value)
+ *   ONELIGHT_E2E_STATE_FILE  when set, a JSON summary of what the run
+ *                          left on the instance (the project id and its
+ *                          two transcoded assets) is written here, so the
+ *                          browser e2e suite (e2e/) can run against the
+ *                          same stack without seeding its own media
  *   FFMPEG_PATH / FFPROBE_PATH  tool overrides, same as the qa package
  *
  * The DF/NDF fixture decision: the SDR leg is ONE coherent drop-frame
@@ -884,6 +889,14 @@ const main = async () => {
     );
     await edlExportLeg(client, share, commentBody);
     await hdrLeg(client, project.id, workDir);
+
+    if (process.env.ONELIGHT_E2E_STATE_FILE) {
+      await writeFile(
+        process.env.ONELIGHT_E2E_STATE_FILE,
+        JSON.stringify({ project_id: project.id }),
+      );
+      log(`state written to ${process.env.ONELIGHT_E2E_STATE_FILE}`);
+    }
 
     log("all integration assertions passed");
   } finally {

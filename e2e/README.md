@@ -14,6 +14,12 @@ Chromium has no H.264, so footage checks would fail there for the wrong
 reason). It seeds its own share and revokes it afterwards; it needs an
 existing project holding at least two transcoded video assets.
 
+In CI the Integration workflow runs it automatically: the integration
+exercise writes the id of the project it created and transcoded to
+ONELIGHT_E2E_STATE_FILE, and the suite runs from the Playwright container
+against that project, reaching the stack on the runner's LAN address so
+the origin is non-localhost.
+
 ```
 docker run --rm --network host \
   -v "$PWD/e2e:/e2e" -w /e2e \

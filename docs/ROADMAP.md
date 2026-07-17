@@ -275,7 +275,10 @@ A ninth pass closed the loop on the client workflow and the admin surfaces:
   padding at small widths -- is still open.
 - **The browser e2e suite is committed** (`e2e/`): self-seeding, env-driven
   specs for the share flows and the manager surfaces, run from the Playwright
-  container against a live instance. Wiring it into CI is open.
+  container against a live instance. Wired into CI 2026-07-17: the
+  Integration job runs it against the project its own exercise transcodes,
+  on the runner's LAN address so the browser origin is non-localhost
+  (admitted through ONELIGHT_ALLOWED_ORIGINS, which this exercises too).
 
 A fourth pass, on David's design notes:
 
@@ -388,7 +391,7 @@ An eighth pass: pictures inline, timecode everywhere, words on the frame.
 
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
-1. First green run of the integration and media-qc CI jobs on Linux: this exercises compose end to end, the HDR libplacebo tonemap on lavapipe (the new -init_hw_device vulkan flag), the zscale 601-to-709 conversion on partially-tagged sources, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Update 2026-07-17: CI had never actually executed (a pnpm/action-setup version pin conflicted with packageManager and killed every run at setup). With that fixed, the Integration job went green on its first real run. media-qc surfaced two findings: the qa HDR smoke run omitted the worker's VULKAN_HWDEVICE_ARGS so libplacebo refused lavapipe (fixed, the spec now mirrors the worker invocation), and Playwright WebKit on Linux reads the 75 percent bars low (a GStreamer/GL decode artifact, not real Safari; the exact deviation is pinned per-engine-and-platform in the qa color spec so any decoder drift still fails, and the reference tolerances were never widened).
+1. DONE 2026-07-17: first green run of the integration and media-qc CI jobs on Linux, exercising compose end to end, the HDR libplacebo tonemap on lavapipe, the zscale conversion, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Getting there surfaced and fixed: CI had never actually executed (a pnpm/action-setup version pin conflicted with packageManager and killed every run at setup); the node job was missing the web:check gate and the SPA build the workers pool needs; the qa HDR smoke run omitted the worker's VULKAN_HWDEVICE_ARGS so libplacebo refused lavapipe (the spec now mirrors the worker invocation exactly); and Playwright WebKit on Linux reads the 75 percent bars low (a GStreamer/GL decode artifact, not real Safari; the exact deviation is pinned per-engine-and-platform in the qa color spec so any decoder drift still fails, and the reference tolerances were never widened).
 2. Real NLE import round-trips of the marker exporters (Resolve EDL, Avid text, xmeml, FCPXML) against actual applications, recorded per the golden-file protocol in the design doc. Fixtures are byte-exact and fuzz-hardened; the NLEs are the judges.
 3. Full-app browser pass on the review room and share flows (keyboard map, focus order, drawing, watermark overlay, modal a11y) with screenshots checked against section 24 and the mockups.
 4. The curated real-camera corpus of design doc section 21 (ProRes/DNx/XAVC, VFR phone clip, 8ch MXF, broken files) as CI fixtures where licensing allows; synthetic PQ/HLG fixtures already run.
@@ -405,7 +408,6 @@ An eighth pass: pictures inline, timecode everywhere, words on the frame.
 - SQLite FTS5 search on Node with LIKE fallback on D1 (the spec supersession keeps LIKE everywhere until D1 FTS5 support is verified).
 - Webhook signed timestamp for replay bounding; DNS-rebinding-safe webhook delivery.
 - A true tiled watermark grid (v1 approximates with three diagonal placements); watermarked sprite sidecars (the scrubber filmstrip on a watermarked share currently shows clean low-res frames).
-- Wire the committed browser e2e suite (`e2e/`) into CI; it currently runs only by hand against a live instance.
 - Per-asset share view analytics: the viewer roster exists, but per-asset view events are not recorded server-side.
 - Viewer-side attachment deletion on share comments (viewers can post attachments but have no endpoint to remove one).
 - Phone polish in the share room beyond the wrap fix: transport density and proscenium padding at small widths.
