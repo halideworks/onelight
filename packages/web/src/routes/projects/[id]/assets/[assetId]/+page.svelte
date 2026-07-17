@@ -13,6 +13,7 @@
   } from '@onelight/player';
   import { page } from '$app/state';
   import { copyText } from '$lib/clipboard.js';
+  import { dismissable } from '$lib/dismiss.js';
   import { replaceState } from '$app/navigation';
   import { api, apiDelete, apiPatch, apiPost, messageFrom } from '$lib/api.js';
   import { projectEvents } from '$lib/sse.svelte.js';
@@ -1132,7 +1133,7 @@
       </span>
       <!-- Versions: a menu that states which version you are looking at, rather
            than a rail competing with the notes for the same space. -->
-      <div class="vmenu">
+      <div class="vmenu" use:dismissable={() => { versionMenuOpen = false; }}>
         <button
           type="button"
           class="vtrigger"
@@ -1184,7 +1185,7 @@
           </div>
         {/if}
       </div>
-      <div class="infowrap">
+      <div class="infowrap" use:dismissable={() => { infoOpen = false; }}>
         <button type="button" class="info-trigger" aria-expanded={infoOpen} onclick={toggleInfo}>Info</button>
         {#if infoOpen}
           <div class="info-panel" role="dialog" aria-label="Version details">
@@ -1299,7 +1300,7 @@
               <button type="button" aria-pressed={noteFilter === 'open'} onclick={() => { noteFilter = 'open'; }}>Open</button>
               <button type="button" aria-pressed={noteFilter === 'completed'} onclick={() => { noteFilter = 'completed'; }}>Completed</button>
             </div>
-            <div class="exchange">
+            <div class="exchange" use:dismissable={() => { exchangeOpen = false; }}>
               <button
                 type="button"
                 class="exchange-trigger"

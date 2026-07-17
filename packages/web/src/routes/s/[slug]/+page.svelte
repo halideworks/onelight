@@ -902,7 +902,7 @@
               if (scrubAt?.id === asset.id) scrubAt = null;
             }}
           >
-            <ProjectCover project={coverFor(asset)} monogram={share.layout !== 'list'} />
+            <ProjectCover project={coverFor(asset)} monogram={share.layout !== 'list'} eager />
             {#if scrubStyle(asset)}
               <span class="scrubsheet" style={scrubStyle(asset)} aria-hidden="true"></span>
               <span class="scrubline" style={`left: ${(scrubAt?.fraction ?? 0) * 100}%;`} aria-hidden="true"></span>
@@ -1052,7 +1052,7 @@
               onclick={() => { if (selected?.id !== asset.id) void openAsset(asset); }}
             >
               <span class="reelframe">
-                <ProjectCover project={coverFor(asset)} monogram={false} />
+                <ProjectCover project={coverFor(asset)} monogram={false} eager />
               </span>
               <span class="reelname">{asset.name}</span>
             </button>

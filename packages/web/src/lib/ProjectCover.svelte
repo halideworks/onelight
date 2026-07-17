@@ -10,7 +10,13 @@
      its own. It is built from what the project already has: the palette wash it
      was assigned at creation, its monogram, and a light source placed by
      hashing the id. Same project, same cover, every session and every machine,
-     with no storage and no request. */
+     with no storage and no request.
+
+     When there IS a cover URL, the generated cover is still the ground the
+     frame stands on: the poster layers over it once it decodes, so the tile is
+     never a flat empty box while the bytes are in flight, and a URL that fails
+     to decode (signed poster URLs expire; shares get opened long after their
+     link was minted) simply never covers it. */
 
   interface Props {
     /* Anything with an identity and a picture: a project, or a shared asset
@@ -20,20 +26,25 @@
     /* Grid cards want the monogram; a 34x24 list swatch would just show a
        cropped letter, so it gets the wash and the light alone. */
     monogram?: boolean;
+    /* Landings with a handful of tiles (a share's reel) want the poster now;
+       the app's forty-project grid keeps lazy loading. */
+    eager?: boolean;
   }
 
-  const { project, monogram = true }: Props = $props();
+  const { project, monogram = true, eager = false }: Props = $props();
 
-  /* A cover URL that does not decode is the one case that used to reach the
-     viewer as a broken image: signed poster URLs expire, and a share can be
-     opened long after its link was minted. Falling back to the generated cover
-     keeps a picture in the frame, and it is the same picture this project
-     would have had with no cover at all. */
   let broken = $state(false);
+  let loaded = $state(false);
+  let img = $state<HTMLImageElement | undefined>();
   $effect(() => {
     /* A new URL deserves a fresh attempt. */
     project.cover_url;
     broken = false;
+    loaded = false;
+  });
+  /* A cached image can be complete before the load listener attaches. */
+  $effect(() => {
+    if (img && img.complete && img.naturalWidth > 0) loaded = true;
   });
 
   /* Two initials at most: "Fall Campaign" -> FC, "Reel" -> R. Splitting on
@@ -63,32 +74,45 @@
   const tilt = $derived(((hash >>> 16) % 9) - 4);
 </script>
 
-{#if project.cover_url && !broken}
-  <span class="cover" aria-hidden="true">
+<span
+  class="cover generated"
+  aria-hidden="true"
+  style={`background-image: radial-gradient(120% 90% at ${lightX}% ${lightY}%, rgba(255, 255, 255, 0.17), rgba(255, 255, 255, 0) 62%), ${washFor(project.palette)};`}
+>
+  {#if monogram && initials}
+    <span class="mono" style={`transform: rotate(${tilt}deg);`}>{initials}</span>
+  {/if}
+  {#if project.cover_url && !broken}
     <img
+      bind:this={img}
+      class:ready={loaded}
       src={project.cover_url}
       alt=""
-      loading="lazy"
+      loading={eager ? 'eager' : 'lazy'}
+      decoding="async"
+      onload={() => {
+        loaded = true;
+      }}
       onerror={() => {
         broken = true;
       }}
     />
-  </span>
-{:else}
-  <span
-    class="cover generated"
-    aria-hidden="true"
-    style={`background-image: radial-gradient(120% 90% at ${lightX}% ${lightY}%, rgba(255, 255, 255, 0.17), rgba(255, 255, 255, 0) 62%), ${washFor(project.palette)};`}
-  >
-    {#if monogram && initials}
-      <span class="mono" style={`transform: rotate(${tilt}deg);`}>{initials}</span>
-    {/if}
-  </span>
-{/if}
+  {/if}
+</span>
 
 <style>
   .cover { display: block; position: relative; overflow: hidden; background-size: 100% 100%; background-color: var(--ink-200); }
-  img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    opacity: 0;
+    transition: opacity 160ms ease;
+  }
+  img.ready { opacity: 1; }
 
   /* The cover is its own container, so the monogram is sized against the box it
      sits in rather than a fixed pixel size that only suits one of them: the

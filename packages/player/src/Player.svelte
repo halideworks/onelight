@@ -13,7 +13,7 @@
   } from '@onelight/core';
   import AnnotationOverlay from './AnnotationOverlay.svelte';
   import Timeline from './Timeline.svelte';
-  import { isVerifyStale, seeksLocked } from './transport-state.js';
+  import { applyMark, isVerifyStale, seeksLocked } from './transport-state.js';
   import { ANNOTATION_INKS } from './annotations.js';
   import type { AnnotationPoint, AnnotationStroke, FrameAnnotation, PendingDrawing } from './annotations.js';
   import type { TimelineMarker } from './timeline.js';
@@ -94,6 +94,14 @@
   let inFrame = $state<number | null>(null);
   let outFrame = $state<number | null>(null);
   let loop = $state(false);
+  /* A mark never creates an inverted range; the ordering rule lives in
+     transport-state.ts where it is tested directly. */
+  const setInMark = (at: number): void => {
+    ({ in: inFrame, out: outFrame } = applyMark('in', at, inFrame, outFrame));
+  };
+  const setOutMark = (at: number): void => {
+    ({ in: inFrame, out: outFrame } = applyMark('out', at, inFrame, outFrame));
+  };
   let hasRvfc = $state(false);
   let forwardSpeed = $state(0);
   let reverseSpeed = $state(0);
@@ -1118,12 +1126,12 @@
       if (key === 'i') {
         event.preventDefault();
         if (event.shiftKey) { if (inFrame !== null) jumpTo(inFrame); }
-        else inFrame = frame;
+        else setInMark(frame);
       }
       if (key === 'o') {
         event.preventDefault();
         if (event.shiftKey) { if (outFrame !== null) jumpTo(outFrame); }
-        else outFrame = frame;
+        else setOutMark(frame);
       }
       /* X clears the marks: Avid's "mark clear" muscle memory. */
       if (key === 'x') { event.preventDefault(); inFrame = null; outFrame = null; }
@@ -1352,8 +1360,8 @@
              it. A client presenting mode has no use for either. -->
         {#if chrome === 'full'}
         <div class="marks">
-          <button type="button" onclick={() => { inFrame = frame; }} aria-label="Set loop in" title="Mark in (I)">Set in</button>
-          <button type="button" onclick={() => { outFrame = frame; }} aria-label="Set loop out" title="Mark out (O)">Set out</button>
+          <button type="button" onclick={() => setInMark(frame)} aria-label="Set loop in" title="Mark in (I)">Set in</button>
+          <button type="button" onclick={() => setOutMark(frame)} aria-label="Set loop out" title="Mark out (O)">Set out</button>
           <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }} title="Loop the marked range (P)">Loop</button>
           {#if inFrame !== null || outFrame !== null}
             <button type="button" class="icon clearmarks" onclick={() => { inFrame = null; outFrame = null; }} aria-label="Clear marks" title="Clear marks (X)">

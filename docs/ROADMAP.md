@@ -180,6 +180,11 @@ and Chromium:
   carousel of the rest of the share. It respects `allow_comments` rather than
   overruling it: comments off is the clean client room, comments on keeps the
   rail. What it still lacks is branding and an approval action (both below).
+  Superseded in part 2026-07-17 (David, after the browser pass): the frame
+  readout and the note composer's drawing stay in the presentation room. A
+  client saying "this frame" is the product working, not a reviewer's tool;
+  what presentation still drops is the instrument chrome (marks, loops,
+  lanes, scopes, quality) and the marking keys.
 - **`Player` takes `chrome: 'full' | 'simple'`** (default `full`, so the review
   room is unchanged). `simple` hides the in/out marks and their readout, the
   lane toggles, the surround field and the quality ladder, and takes the marking
@@ -289,6 +294,9 @@ A fourth pass, on David's design notes:
   current clip ringed. The review preview stays strictly neutral; the design
   doc has always listed presentation pages in the washed world. The player
   option in Appearance is named Presentation (wire value stays `simple`).
+  Superseded 2026-07-17 (David, after the browser pass): a presentation
+  share opens on its layout landing (grid, list, or reel) like every other
+  share, not straight into the first clip; the room is what a tile opens.
 - **Comments off means no comments furniture at all**: the rail exists only
   when the share allows comments, in both rooms.
 - **Flat surfaces**: the gradient-fill-plus-inset-highlight-plus-drop-shadow

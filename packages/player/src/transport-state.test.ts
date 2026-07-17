@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isVerifyStale, seeksLocked } from "./transport-state.js";
+import { applyMark, isVerifyStale, seeksLocked } from "./transport-state.js";
 
 describe("draw-mode seek lock", () => {
   it("does not lock while no strokes are pending", () => {
@@ -50,5 +50,29 @@ describe("seek verify generation", () => {
 
     expect(isVerifyStale(firstGen, current)).toBe(true);
     expect(isVerifyStale(secondGen, current)).toBe(false);
+  });
+});
+
+describe("mark ordering", () => {
+  it("keeps a coherent range when marks are set in order", () => {
+    expect(applyMark("in", 10, null, null)).toEqual({ in: 10, out: null });
+    expect(applyMark("out", 50, 10, null)).toEqual({ in: 10, out: 50 });
+  });
+
+  it("setting an in at or past the out drops the out", () => {
+    /* Models the found bug: out at 34, then I pressed at 44 left the readout
+       showing out before in. The fresh in wins; the stale out clears. */
+    expect(applyMark("in", 44, null, 34)).toEqual({ in: 44, out: null });
+    expect(applyMark("in", 34, null, 34)).toEqual({ in: 34, out: null });
+  });
+
+  it("setting an out at or before the in drops the in", () => {
+    expect(applyMark("out", 20, 40, null)).toEqual({ in: null, out: 20 });
+    expect(applyMark("out", 40, 40, 90)).toEqual({ in: null, out: 40 });
+  });
+
+  it("re-marking on the valid side leaves the other mark alone", () => {
+    expect(applyMark("in", 5, 10, 50)).toEqual({ in: 5, out: 50 });
+    expect(applyMark("out", 90, 10, 50)).toEqual({ in: 10, out: 90 });
   });
 });
