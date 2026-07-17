@@ -67,6 +67,14 @@
       : null
   );
 
+  /* Device-pixel-snapped playhead offset; see the comment at the element. */
+  const playheadX = $derived.by(() => {
+    if (laneWidth <= 0) return 0;
+    const raw = (percentFor(frame) / 100) * laneWidth;
+    const ratio = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
+    return Math.round(raw * ratio) / ratio;
+  });
+
   /* ---- filmstrip lane (sprite sheet tiles across the width) ---- */
   const FILM_LANE_HEIGHT = 36;
   const showFilmstrip = $derived(Boolean(filmstrip && filmstrip.cues.length > 0));
@@ -296,11 +304,14 @@
          the compositor, while a left change invalidates layout and repaints
          every lane under the line -- with the waveform open that meant
          re-rasterizing a filtered full-width image on every presented frame,
-         which is exactly the stutter it caused. -->
-    <div
-      class="playhead"
-      style:transform={`translateX(${laneWidth > 0 ? ((percentFor(frame) / 100) * laneWidth).toFixed(2) : 0}px)`}
-    ></div>
+         which is exactly the stutter it caused.
+
+         The offset snaps to device pixels: at fractional positions the 1px
+         line antialiases smoothly while the border-drawn cap rounds to whole
+         pixels, and the two drift against each other -- the cap visibly
+         warbled over the line. On a shared device-pixel boundary they move
+         as one mark. -->
+    <div class="playhead" style:transform={`translateX(${playheadX}px)`}></div>
   </div>
   {#if hovered}
     <div class="tip" style:left={`${hoveredPercent}%`} role="status">

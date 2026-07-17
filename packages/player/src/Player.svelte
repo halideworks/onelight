@@ -140,6 +140,25 @@
   });
   let muted = $state(false);
   let volume = $state(1);
+  /* The level survives the session: restored before the video binds, saved
+     whenever it moves. Mute is part of the same memory. */
+  const VOLUME_KEY = 'onelight.player.volume';
+  try {
+    const stored = JSON.parse(localStorage.getItem(VOLUME_KEY) ?? '');
+    if (typeof stored?.volume === 'number')
+      volume = Math.min(1, Math.max(0, stored.volume));
+    if (typeof stored?.muted === 'boolean') muted = stored.muted;
+  } catch {
+    /* No stored level, or storage unavailable: the defaults stand. */
+  }
+  $effect(() => {
+    const level = { volume, muted };
+    try {
+      localStorage.setItem(VOLUME_KEY, JSON.stringify(level));
+    } catch {
+      /* Non-persistent; the level still applies for this session. */
+    }
+  });
   let fullscreen = $state(false);
   /* ---- scopes ----
      A luma waveform and an RGB parade, sampled from the on-screen frame at
@@ -241,6 +260,20 @@
       ctx.moveTo(0, y);
       ctx.lineTo(SCOPE_W, y);
       ctx.stroke();
+    }
+    /* The graticule says what it measures: percent of full range, labelled
+       at every line so a level can be read off the trace directly. */
+    ctx.fillStyle = 'rgba(233, 233, 233, 0.55)';
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    for (const stop of [0, 0.25, 0.5, 0.75, 1]) {
+      const y = Math.round((1 - stop) * (SCOPE_H - 1));
+      ctx.textBaseline = stop === 1 ? 'top' : stop === 0 ? 'bottom' : 'middle';
+      ctx.fillText(
+        `${String(Math.round(stop * 100))}%`,
+        4,
+        stop === 1 ? y + 3 : stop === 0 ? y - 2 : y,
+      );
     }
     if (scopeMode === 'parade') {
       for (const x of [SCOPE_W / 3, (SCOPE_W / 3) * 2]) {
@@ -1673,8 +1706,15 @@
   .icon.step svg { opacity: 0.9; }
   .shuttle { color: var(--n-700, #9a9a9a); font-size: 11px; line-height: 1; font-weight: 600; min-height: 1em; }
   /* Volume: a neutral track, no accent fill. */
-  .vol { width: 84px; height: 3px; appearance: none; background: var(--vol-track, var(--n-300, #2e2e2e)); border-radius: 2px; padding: 0; }
-  .vol::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; border-radius: 50%; background: var(--n-800, #c4c4c4); }
+  /* The input is 18px tall so a click anywhere on the bar lands (a 3px hit
+     area missed almost every click); the visible track stays thin, drawn by
+     the track pseudo-elements inside it. Range inputs set their value at the
+     clicked position natively once they can actually be hit. */
+  .vol { width: 84px; height: 18px; appearance: none; background: none; border-radius: 2px; padding: 0; cursor: pointer; }
+  .vol::-webkit-slider-runnable-track { height: 3px; border-radius: 2px; background: var(--vol-track, var(--n-300, #2e2e2e)); }
+  .vol::-moz-range-track { height: 3px; border-radius: 2px; background: var(--vol-track, var(--n-300, #2e2e2e)); }
+  .vol::-moz-range-progress { height: 3px; border-radius: 2px; background: var(--n-700, #9a9a9a); }
+  .vol::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; margin-top: -4px; border-radius: 50%; background: var(--n-800, #c4c4c4); }
   .vol::-moz-range-thumb { width: 11px; height: 11px; border: 0; border-radius: 50%; background: var(--n-800, #c4c4c4); }
   .vol:hover::-webkit-slider-thumb { background: var(--n-900, #e9e9e9); }
   .vol:hover::-moz-range-thumb { background: var(--n-900, #e9e9e9); }
