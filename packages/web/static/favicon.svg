@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- The Onelight mark: the step wedge reading the sumimai wash as
+       densities, ink to ember to copper, ending on the one light. The chip
+       keeps it legible on any browser chrome. See mockups/logo.html. -->
+  <rect x="0.5" y="0.5" width="31" height="31" rx="8.5" fill="#10151d"/>
+  <rect x="5" y="8" width="5" height="16" rx="1.2" fill="#2c3f56"/>
+  <rect x="11" y="8" width="5" height="16" rx="1.2" fill="#934337"/>
+  <rect x="17" y="8" width="5" height="16" rx="1.2" fill="#cf8a56"/>
+  <rect x="23" y="8" width="4" height="16" rx="1.2" fill="#F7E1A0"/>
+</svg>
