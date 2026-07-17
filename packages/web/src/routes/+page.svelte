@@ -108,9 +108,20 @@
     }, 350);
     return () => clearInterval(timer);
   });
+  let demoFrameNow = $state(0);
   const demoFrame = (frame: number): void => {
+    demoFrameNow = frame;
     if (frame === DEMO_FRAME) demoLanded = true;
     else if (demoLanded) demoTouched = true;
+  };
+  /* The reel loops; the player's frame clock follows the element. */
+  let demoBox = $state<HTMLDivElement | undefined>();
+  $effect(() => {
+    const video = demoBox?.querySelector('video');
+    if (video) video.loop = true;
+  });
+  const demoSeekBack = (): void => {
+    demoPlayer?.seekToFrame(DEMO_FRAME);
   };
   const heroWash = [
     grainLayer,
@@ -198,7 +209,7 @@
         <!-- The product, not a picture of it: the real player on a public
              domain reel, opened on an annotated frame. -->
         <div class="demo">
-          <div class="demoplayer">
+          <div class="demoplayer" bind:this={demoBox}>
             <Player
               bind:this={demoPlayer}
               src="/demo/destination-earth.mp4"
@@ -231,12 +242,16 @@
               ]}
               onframechange={demoFrame}
             />
+            <div class="demoscope" aria-hidden="true">
+              <img src="/demo/waveform.png" alt="" />
+              <span class="scopehead" style={`left: ${((demoFrameNow / 360) * 100).toFixed(2)}%;`}></span>
+            </div>
           </div>
-          <div class="demonote">
+          <button type="button" class="demonote" onclick={demoSeekBack}>
             <span class="ink" aria-hidden="true"></span>
             <span class="tc">00:00:03:00</span>
             <span class="notetext">Cape lining drifts magenta. Pull it toward the wall red.</span>
-          </div>
+          </button>
           <p class="reel">Destination Earth (1956), public domain.</p>
         </div>
       </div>
@@ -250,20 +265,31 @@
      on the light terminal like a horizon, and the content keeps to the dark
      two thirds so nothing ever sits on cream. Signed in, it takes the same
      page wash as every working page. */
-  .shell { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 12vh 9vw; background-color: var(--ink-000); background-repeat: repeat, no-repeat, no-repeat; }
+  .shell { position: relative; min-height: calc(100vh - var(--topbar-h, 0px)); padding: 12vh 9vw; background-color: var(--ink-000); background-repeat: repeat, no-repeat, no-repeat; }
+  .shell:not(.signed-in) { height: 100vh; min-height: 0; padding: 4vh 8vw 5vh; overflow: hidden; }
   /* Signed in this is a working page, not a landing page: less air, no hero. */
   .shell.signed-in { padding: 6vh 9vw; background-repeat: repeat, no-repeat; }
 
-  .hero { position: relative; z-index: 1; display: grid; grid-template-rows: auto 1fr auto; min-height: calc(100vh - 24vh); }
-  .stage { align-self: center; display: grid; grid-template-columns: minmax(380px, 1fr) auto; align-items: center; gap: clamp(32px, 5vw, 80px); padding: 6vh 0; }
+  .hero { position: relative; z-index: 1; display: grid; grid-template-rows: auto 1fr auto; height: 100%; }
+  .stage { align-self: center; display: grid; grid-template-columns: minmax(380px, 1fr) auto; align-items: center; gap: clamp(32px, 5vw, 80px); padding: 2vh 0; }
   @media (max-width: 1080px) { .stage { grid-template-columns: 1fr; } }
   /* The reel is 4:3 and owns its half: the player gets a definite box sized
      from the viewport so the picture fills it edge to edge, with the
      transport underneath at the same width. */
-  .demo { width: min(46vw, calc((66vh - 150px) * 1.3333 + 24px), 720px); }
+  .demo { width: min(46vw, 96vh, 760px); }
   @media (max-width: 1080px) { .demo { width: min(92vw, 640px); justify-self: center; } }
-  .demoplayer { height: min(66vh, calc((46vw - 24px) * 0.75 + 150px)); }
-  @media (max-width: 1080px) { .demoplayer { height: auto; } }
+  .demoplayer { position: relative; aspect-ratio: 4 / 3; }
+  /* The controls live ON the picture: translucent ink strips over the
+     bottom edge, the scrub beneath them, the waveform scope in the top
+     corner. Compression for effect; the review room keeps its layout. */
+  .demoplayer :global(.player) { position: absolute; inset: 0; padding: 0 !important; }
+  .demoplayer :global(.stage) { height: 100% !important; padding: 0 !important; }
+  .demoplayer :global(.frame-box) { width: 100% !important; }
+  .demoplayer :global(.transport) { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; background: rgba(13, 17, 23, 0.6); border-radius: 0; padding-bottom: 30px; }
+  .demoplayer :global(.scrub) { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; padding: 0 12px 10px; background: transparent; }
+  .demoscope { position: absolute; top: 12px; right: 12px; z-index: 2; width: clamp(110px, 26%, 180px); padding: 5px 7px; border-radius: var(--radius); background: rgba(13, 17, 23, 0.5); }
+  .demoscope img { display: block; width: 100%; height: 26px; object-fit: fill; opacity: 0.72; }
+  .demoscope .scopehead { position: absolute; top: 4px; bottom: 4px; width: 1px; background: rgba(250, 248, 244, 0.85); margin-left: 7px; }
   /* The instrument sheds its grey for the landing exactly as the
      presentation room does: the player's neutral scale re-maps so its
      slabs vanish into the wash, the picture floats on the gradient with
@@ -285,7 +311,8 @@
     --n-900: #faf8f4;
   }
   .demoplayer :global(video) { border-radius: var(--radius-lg); }
-  .demonote { display: flex; align-items: baseline; gap: 10px; margin-top: 14px; font-size: var(--text-13); color: rgba(255, 255, 255, 0.86); }
+  .demonote { display: flex; align-items: baseline; gap: 10px; margin-top: 14px; padding: 0; border: 0; background: none; text-align: left; font-size: var(--text-13); color: rgba(255, 255, 255, 0.86); cursor: pointer; }
+  .demonote:hover .notetext { color: #fff; }
   .demonote .ink { flex: none; width: 9px; height: 9px; border-radius: 50%; background: #6aa5d8; align-self: center; }
   .demonote .tc { font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.6); }
   .reel { margin: 10px 0 0; font-size: var(--text-12); color: rgba(255, 255, 255, 0.45); }
