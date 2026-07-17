@@ -1,7 +1,12 @@
+import { grainLayer } from "./grain.js";
+
 /* Project identity washes, one grammar: vertical, dark anchor at top, light
    terminal at bottom. Stops follow mockups/projects.html where the mockup
    defines the wash. Shared by the project subpages so a project keeps one
-   identity everywhere outside the review room. */
+   identity everywhere outside the review room. Page-scale washes carry the
+   grain tile as their top layer (see pageWashFromStops): the ramps are long
+   and subtle, and without a little noise they band. Swatch-scale washes
+   (covers, avatars) stay clean; at their size banding cannot form. */
 
 export const WASHES: Record<string, string> = {
   kuwanomi:
@@ -23,6 +28,19 @@ export const WASHES: Record<string, string> = {
     "linear-gradient(180deg, var(--kachitetsu-a) 0%, var(--kachitetsu-m) 55%, var(--kachitetsu-b) 105%)",
   mokutan:
     "linear-gradient(180deg, var(--mokutan-a) 0%, var(--mokutan-m) 55%, var(--mokutan-b) 105%)",
+  kuro: "linear-gradient(180deg, var(--kuro-a) 0%, var(--kuro-m) 58%, var(--kuro-b) 108%)",
+  azuki:
+    "linear-gradient(180deg, var(--azuki-a) 0%, var(--azuki-m) 60%, var(--azuki-b) 110%)",
+  sabiasagi:
+    "linear-gradient(180deg, var(--sabiasagi-a) 0%, var(--sabiasagi-m) 55%, var(--sabiasagi-b) 105%)",
+  ikkonzome:
+    "linear-gradient(180deg, var(--ikkonzome-a) 0%, var(--ikkonzome-m) 55%, var(--ikkonzome-b) 108%)",
+  shikkoku:
+    "linear-gradient(180deg, var(--shikkoku-a) 0%, var(--shikkoku-m) 62%, var(--shikkoku-b) 115%)",
+  kesuzumi:
+    "linear-gradient(180deg, var(--kesuzumi-a) 0%, var(--kesuzumi-m) 55%, var(--kesuzumi-b) 105%)",
+  nibisumi:
+    "linear-gradient(180deg, var(--nibisumi-a) 0%, var(--nibisumi-m) 58%, var(--nibisumi-b) 108%)",
 };
 
 export const washFor = (palette: string | null | undefined): string =>
@@ -54,6 +72,13 @@ const PAGE_TOPS: Record<string, [string, string]> = {
   yoai: ["var(--yoai-a)", "var(--yoai-m)"],
   kachitetsu: ["var(--kachitetsu-a)", "var(--kachitetsu-m)"],
   mokutan: ["var(--mokutan-a)", "var(--mokutan-m)"],
+  kuro: ["var(--kuro-a)", "var(--kuro-m)"],
+  azuki: ["var(--azuki-a)", "var(--azuki-m)"],
+  sabiasagi: ["var(--sabiasagi-a)", "var(--sabiasagi-m)"],
+  ikkonzome: ["var(--ikkonzome-a)", "var(--ikkonzome-m)"],
+  shikkoku: ["var(--shikkoku-a)", "var(--shikkoku-m)"],
+  kesuzumi: ["var(--kesuzumi-a)", "var(--kesuzumi-m)"],
+  nibisumi: ["var(--nibisumi-a)", "var(--nibisumi-m)"],
 };
 
 export const pageWashFor = (palette: string | null | undefined): string => {
@@ -67,6 +92,7 @@ export const pageWashFor = (palette: string | null | undefined): string => {
    reads as this app rather than as two raw hexes stretched down a page. */
 export const pageWashFromStops = (anchor: string, mid: string): string =>
   [
+    `${grainLayer},`,
     "linear-gradient(180deg,",
     `color-mix(in oklab, ${anchor} 88%, var(--ink-000)) 0px,`,
     /* The colour peaks around the header, where the page's name is, and is

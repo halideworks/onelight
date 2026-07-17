@@ -1234,7 +1234,7 @@
 
 <style>
   /* Share landing: client world, gradient wash allowed. */
-  .shell { min-height: 100vh; padding: 48px clamp(24px, 5vw, 96px); color: var(--ink-text); background-color: var(--ink-000); background-repeat: no-repeat; }
+  .shell { min-height: 100vh; padding: 48px clamp(24px, 5vw, 96px); color: var(--ink-text); background-color: var(--ink-000); background-repeat: repeat, no-repeat; }
   /* The content column sits centered in the window rather than hugging the
      left edge of a wide screen; text stays left-aligned inside it. */
   .inner { width: min(1120px, 100%); margin: 0 auto; }

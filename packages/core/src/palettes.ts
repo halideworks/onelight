@@ -9,6 +9,13 @@ export const PALETTES = [
   "yoai",
   "kachitetsu",
   "mokutan",
+  "kuro",
+  "azuki",
+  "sabiasagi",
+  "ikkonzome",
+  "shikkoku",
+  "kesuzumi",
+  "nibisumi",
 ] as const;
 
 export type Palette = (typeof PALETTES)[number];

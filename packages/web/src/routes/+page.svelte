@@ -4,6 +4,7 @@
   import { auth } from '$lib/auth.svelte.js';
   import ProjectCover from '$lib/ProjectCover.svelte';
   import { pretty } from '$lib/ids.js';
+  import { pageWashFor } from '$lib/washes.js';
 
   type Project = {
     id: string;
@@ -85,7 +86,7 @@
 
 <svelte:head><title>Onelight</title></svelte:head>
 
-<main class="shell" class:signed-in={auth.signedIn}>
+<main class="shell" class:signed-in={auth.signedIn} style={`background-image: ${pageWashFor(null)}`}>
   <p class="eyebrow">One-light dailies</p>
   <!-- Signed out this is a hero and earns its size. Signed in it is a page
        heading over a list you came here to use, so it stops shouting. -->
@@ -147,7 +148,9 @@
 <style>
   /* The landing wash, resolving into ink like every other page rather than
      ending the screen in pale tan with white text on it. */
-  .shell { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 12vh 9vw; background-color: var(--ink-000); background-repeat: no-repeat; background-image: linear-gradient(180deg, color-mix(in oklab, var(--sumimai-a) 88%, var(--ink-000)) 0px, color-mix(in oklab, var(--sumimai-m) 42%, var(--ink-000)) 190px, color-mix(in oklab, var(--sumimai-m) 12%, var(--ink-000)) 380px, var(--ink-000) 640px); }
+  /* The wash comes from pageWashFor like every other page, so the landing
+     carries the same grain the rest of the washed world does. */
+  .shell { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 12vh 9vw; background-color: var(--ink-000); background-repeat: repeat, no-repeat; }
   /* Signed in this is a working page, not a landing page: less air, no hero. */
   .shell.signed-in { padding: 6vh 9vw; }
   .eyebrow { margin: 0 0 24px; color: var(--ink-text-dim); font-size: var(--text-13); }

@@ -440,7 +440,7 @@
 <style>
   /* The same page as the project and its settings: ink base, the project's
      wash resolving into it at the same height. */
-  .room { min-height: calc(100vh - var(--topbar-h, 0px)); background-color: var(--ink-000); background-repeat: no-repeat; color: var(--ink-text); font-size: var(--text-13); padding-bottom: var(--pad-4); }
+  .room { min-height: calc(100vh - var(--topbar-h, 0px)); background-color: var(--ink-000); background-repeat: repeat, no-repeat; color: var(--ink-text); font-size: var(--text-13); padding-bottom: var(--pad-4); }
   .wash { padding: var(--pad-3) var(--pad-4) var(--pad-4); }
   .crumbs { display: flex; gap: 8px; color: rgba(250, 248, 244, 0.72); }
   .crumbs a { color: inherit; font-size: var(--text-13); text-decoration: none; }

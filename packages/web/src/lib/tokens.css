@@ -73,6 +73,13 @@
   --yoai-a: #101E30;    --yoai-m: #6B8E23;    --yoai-b: #FBF6EE;       /* 14 */
   --kachitetsu-a: #2F3640; --kachitetsu-m: #A24F46; --kachitetsu-b: #F3EAD7; /* 11 */
   --mokutan-a: #250E0E; --mokutan-m: #97645A; --mokutan-b: #C1D8AC;    /* 20 */
+  --kuro-a: #1C1C1C;    --kuro-m: #4A6B4F;    --kuro-b: #F3EAD7;       /* 10: black through moss to ivory */
+  --azuki-a: #672422;   --azuki-m: #EE5A24;   --azuki-b: #D3D3D3;      /* 13: hot ember sunset */
+  --sabiasagi-a: #303430; --sabiasagi-m: #5C8A7D; --sabiasagi-b: #ECE2D0; /* 8: mineral-green calm */
+  --ikkonzome-a: #484840; --ikkonzome-m: #90A8B8; --ikkonzome-b: #F08F90; /* 16: overcast into blush */
+  --shikkoku-a: #0C0C0C; --shikkoku-m: #283030; --shikkoku-b: #F2666C; /* 18: lacquer black to neon dusk */
+  --kesuzumi-a: #606058; --kesuzumi-m: #747472; --kesuzumi-b: #B56C60; /* 19: dusty warmth */
+  --nibisumi-a: #484840; --nibisumi-m: #934337; --nibisumi-b: #D3D3D3; /* 12: ink through persimmon to grey */
 
   /* Geometry. Small radii, hairline borders, shadows replaced by value steps. */
   --radius: 3px;
