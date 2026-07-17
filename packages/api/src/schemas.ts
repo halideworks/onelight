@@ -12,7 +12,7 @@ import { PALETTES } from "@onelight/core";
  */
 
 const projectRole = z.enum(["manager", "editor", "commenter", "viewer"]);
-const workspaceRole = z.enum(["admin", "member"]);
+const workspaceRole = z.enum(["admin", "member", "guest"]);
 const approvalStatus = z.enum([
   "none",
   "in_review",

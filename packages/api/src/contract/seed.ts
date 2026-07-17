@@ -63,7 +63,7 @@ export const createSessionCookie = async (
 
 export interface CreateUserOptions {
   workspaceId: string;
-  role?: "admin" | "member";
+  role?: "admin" | "member" | "guest";
   passwordHash: string | null;
   disabled?: boolean;
   email?: string;
@@ -84,7 +84,10 @@ export const createUser = async (
       workspaceId: options.workspaceId,
       email,
       name: `Contract ${email}`,
-      role: options.role ?? "member",
+      /* Guests are stored as members with the flag; the API derives the
+         effective role, exactly as production writes do. */
+      role: options.role === "guest" ? "member" : (options.role ?? "member"),
+      guest: options.role === "guest",
       passwordHash: options.passwordHash,
       disabledAt: options.disabled ? now : null,
       createdAt: now,
@@ -387,6 +390,8 @@ export interface SeedState {
   commenter: Actor;
   viewer: Actor;
   nograntee: Actor;
+  /** A guest workspace account holding no project grants at all. */
+  guest: Actor;
   /** Extra user used as a membership target in the permission matrix. */
   scratch: Actor;
   project: { id: string };
@@ -426,6 +431,11 @@ export const buildSeed = async (h: ContractHarness): Promise<SeedState> => {
   const mk = () => createUser(h, { workspaceId: workspace.id, passwordHash });
   const [manager, editor, commenter, viewer, nograntee, scratch] =
     await Promise.all([mk(), mk(), mk(), mk(), mk(), mk()]);
+  const guest = await createUser(h, {
+    workspaceId: workspace.id,
+    role: "guest",
+    passwordHash,
+  });
 
   const project = await createProject(h, admin, { name: unique("Base") });
   const restricted = await createProject(h, admin, {
@@ -480,6 +490,7 @@ export const buildSeed = async (h: ContractHarness): Promise<SeedState> => {
     commenter,
     viewer,
     nograntee,
+    guest,
     scratch,
     project,
     restricted,

@@ -40,6 +40,11 @@ export const users = sqliteTable(
     email: nocaseText("email").notNull(),
     name: text("name").notNull(),
     role: text("role", { enum: ["admin", "member"] }).notNull(),
+    /* Guests are stored as members with this flag (the users table's role
+       CHECK predates the tier and a rebuild would cascade through every
+       session and token); the API derives the effective "guest" role at
+       the auth boundary, so nothing above the row layer sees the flag. */
+    guest: integer("guest", { mode: "boolean" }).notNull().default(false),
     passwordHash: text("password_hash"),
     avatarKey: text("avatar_key"),
     /* TOTP: the secret sits unverified until a code proves the enrolment,
@@ -107,6 +112,7 @@ export const invites = sqliteTable(
       .references(() => workspaces.id),
     email: nocaseText("email").notNull(),
     role: text("role", { enum: ["admin", "member"] }).notNull(),
+    guest: integer("guest", { mode: "boolean" }).notNull().default(false),
     tokenHash: text("token_hash").notNull(),
     invitedBy: text("invited_by")
       .notNull()

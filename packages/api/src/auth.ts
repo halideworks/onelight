@@ -10,7 +10,11 @@ import {
 } from "@onelight/core";
 import { apiTokens, sessions, users } from "@onelight/db/schema";
 import { clientIp } from "./helpers.js";
-import type { AppEnv, Variables } from "./types.js";
+
+/* Fold the stored guest flag into the role, once, at the boundary. */
+const effectiveUser = (row: typeof users.$inferSelect): SessionUser =>
+  row.guest ? { ...row, role: "guest" } : row;
+import type { AppEnv, SessionUser, Variables } from "./types.js";
 
 export const SESSION_COOKIE = "ol_session";
 export const OIDC_COOKIE = "ol_oidc";
@@ -62,9 +66,7 @@ export const createSession = async (
 const authFromBearer = async (
   env: AppEnv,
   token: string,
-): Promise<
-  { user: typeof users.$inferSelect; authType: "token" } | undefined
-> => {
+): Promise<{ user: SessionUser; authType: "token" } | undefined> => {
   if (!token.startsWith("olt_")) return undefined;
   const hash = await sha256Hex(token);
   const rows = await env.db
@@ -85,15 +87,14 @@ const authFromBearer = async (
       .where(eq(apiTokens.id, row.token.id))
       .run();
   }
-  return { user: row.user, authType: "token" };
+  return { user: effectiveUser(row.user), authType: "token" };
 };
 
 const authFromSession = async (
   env: AppEnv,
   token: string,
 ): Promise<
-  | { user: typeof users.$inferSelect; authType: "session"; refreshed: boolean }
-  | undefined
+  { user: SessionUser; authType: "session"; refreshed: boolean } | undefined
 > => {
   const now = env.clock.now();
   const hash = await sha256Hex(token);
@@ -120,7 +121,7 @@ const authFromSession = async (
       .run();
     refreshed = true;
   }
-  return { user: row.user, authType: "session", refreshed };
+  return { user: effectiveUser(row.user), authType: "session", refreshed };
 };
 
 export const authMiddleware =

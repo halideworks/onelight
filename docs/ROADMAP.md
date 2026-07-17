@@ -421,6 +421,26 @@ full pro tool. Standing decisions from this direction:
   System page shows the mail posture (ready, disabled, or present-but-
   broken with the parse error) and sends a test email to the pressing
   admin through POST /admin/system/test-email, contract-tested both legs.
+- **The member model grows a guest tier (2026-07-17).** Workspace roles
+  are now admin / member / guest. A guest is the account you hand
+  outward: freelancers, vendors, client-side producers. Guests see
+  NOTHING they are not explicitly granted, restricted or not, cannot
+  create projects, cannot browse the team roster, and get only the You
+  group in settings; a grant gives exactly the granted ladder role, so a
+  guest granted manager runs that one project and nothing else. Invites
+  carry the tier plus project grants, so onboarding a freelancer is one
+  invite. Storage note: the users role column carries a CHECK from 0000
+  and rebuilding users would cascade through sessions and tokens on live
+  instances, so guests are stored as members plus a flag (migration
+  0015, both legs) and the auth boundary derives the effective role once;
+  no route consults the flag. The permission matrix runs every cell for
+  the seventh role on both database legs. Deliberately not copied from
+  frame.io: custom roles, per-seat billing mechanics. Still open from
+  the same discussion: download/share gating has no internal surface to
+  gate yet, because originals are not downloadable inside the app at all
+  today (only through share links, per share allow_download); an internal
+  original-download control for editors, and then its per-project
+  gating, is backlog.
 - **Annotation text grew down and stopped eating words.** The size floor
   dropped to 0.008 of the frame diagonal (a caption-sized aside is a
   legitimate note), and clicking the frame with words in an open text box

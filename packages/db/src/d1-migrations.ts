@@ -44,6 +44,15 @@ const projectsHaveCover = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes("cover_asset_id"));
 };
 
+const usersHaveGuest = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes('"guest"') || row?.sql?.includes("guest"));
+};
+
 const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -266,6 +275,14 @@ export const d1Migrations: D1Migration[] = [
     applied: (binding) => tableExists(binding, "app_settings"),
     statements: [
       "CREATE TABLE app_settings (\n  key TEXT PRIMARY KEY,\n  value_json TEXT NOT NULL,\n  updated_at INTEGER NOT NULL,\n  updated_by TEXT REFERENCES users(id)\n)",
+    ],
+  },
+  {
+    name: "0015_guest_accounts.sql",
+    applied: usersHaveGuest,
+    statements: [
+      "ALTER TABLE users ADD COLUMN guest INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE invites ADD COLUMN guest INTEGER NOT NULL DEFAULT 0",
     ],
   },
 ];

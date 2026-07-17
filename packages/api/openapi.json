@@ -243,7 +243,8 @@
                           "type": "string",
                           "enum": [
                             "admin",
-                            "member"
+                            "member",
+                            "guest"
                           ]
                         },
                         "avatar_url": {
@@ -386,7 +387,8 @@
                               "type": "string",
                               "enum": [
                                 "admin",
-                                "member"
+                                "member",
+                                "guest"
                               ]
                             },
                             "avatar_url": {
@@ -547,7 +549,8 @@
                           "type": "string",
                           "enum": [
                             "admin",
-                            "member"
+                            "member",
+                            "guest"
                           ]
                         },
                         "avatar_url": {
@@ -856,7 +859,8 @@
                           "type": "string",
                           "enum": [
                             "admin",
-                            "member"
+                            "member",
+                            "guest"
                           ]
                         },
                         "avatar_url": {
@@ -2455,7 +2459,8 @@
                             "type": "string",
                             "enum": [
                               "admin",
-                              "member"
+                              "member",
+                              "guest"
                             ]
                           },
                           "avatar_url": {
@@ -2576,7 +2581,8 @@
                       "type": "string",
                       "enum": [
                         "admin",
-                        "member"
+                        "member",
+                        "guest"
                       ]
                     },
                     "avatar_url": {
@@ -2732,7 +2738,8 @@
                       "type": "string",
                       "enum": [
                         "admin",
-                        "member"
+                        "member",
+                        "guest"
                       ]
                     },
                     "avatar_url": {
@@ -2911,7 +2918,8 @@
                     "type": "string",
                     "enum": [
                       "admin",
-                      "member"
+                      "member",
+                      "guest"
                     ]
                   },
                   "disabled": {
@@ -2944,7 +2952,8 @@
                       "type": "string",
                       "enum": [
                         "admin",
-                        "member"
+                        "member",
+                        "guest"
                       ]
                     },
                     "avatar_url": {
@@ -3102,7 +3111,8 @@
                     "type": "string",
                     "enum": [
                       "admin",
-                      "member"
+                      "member",
+                      "guest"
                     ],
                     "default": "member"
                   },
@@ -3162,7 +3172,8 @@
                           "type": "string",
                           "enum": [
                             "admin",
-                            "member"
+                            "member",
+                            "guest"
                           ]
                         },
                         "project_grants": {
@@ -3310,7 +3321,8 @@
                             "type": "string",
                             "enum": [
                               "admin",
-                              "member"
+                              "member",
+                              "guest"
                             ]
                           },
                           "project_grants": {
@@ -3623,7 +3635,8 @@
                           "type": "string",
                           "enum": [
                             "admin",
-                            "member"
+                            "member",
+                            "guest"
                           ]
                         },
                         "avatar_url": {
@@ -4184,7 +4197,14 @@
                       "sumimai",
                       "yoai",
                       "kachitetsu",
-                      "mokutan"
+                      "mokutan",
+                      "kuro",
+                      "azuki",
+                      "sabiasagi",
+                      "ikkonzome",
+                      "shikkoku",
+                      "kesuzumi",
+                      "nibisumi"
                     ]
                   },
                   "restricted": {
@@ -4500,7 +4520,14 @@
                       "sumimai",
                       "yoai",
                       "kachitetsu",
-                      "mokutan"
+                      "mokutan",
+                      "kuro",
+                      "azuki",
+                      "sabiasagi",
+                      "ikkonzome",
+                      "shikkoku",
+                      "kesuzumi",
+                      "nibisumi"
                     ]
                   },
                   "restricted": {
@@ -5151,7 +5178,8 @@
                                 "type": "string",
                                 "enum": [
                                   "admin",
-                                  "member"
+                                  "member",
+                                  "guest"
                                 ]
                               },
                               "avatar_url": {
@@ -5327,7 +5355,8 @@
                           "type": "string",
                           "enum": [
                             "admin",
-                            "member"
+                            "member",
+                            "guest"
                           ]
                         },
                         "avatar_url": {
@@ -9418,7 +9447,14 @@
                               "sumimai",
                               "yoai",
                               "kachitetsu",
-                              "mokutan"
+                              "mokutan",
+                              "kuro",
+                              "azuki",
+                              "sabiasagi",
+                              "ikkonzome",
+                              "shikkoku",
+                              "kesuzumi",
+                              "nibisumi"
                             ]
                           },
                           "colors": {
@@ -10173,7 +10209,14 @@
                               "sumimai",
                               "yoai",
                               "kachitetsu",
-                              "mokutan"
+                              "mokutan",
+                              "kuro",
+                              "azuki",
+                              "sabiasagi",
+                              "ikkonzome",
+                              "shikkoku",
+                              "kesuzumi",
+                              "nibisumi"
                             ]
                           },
                           "colors": {

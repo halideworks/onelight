@@ -4,7 +4,7 @@ export type SessionUser = {
   id: string;
   email: string;
   name: string;
-  role: "admin" | "member";
+  role: "admin" | "member" | "guest";
   avatar_url?: string | null;
   totp_enabled?: boolean;
 };

@@ -15,6 +15,7 @@
   });
 
   const isAdmin = $derived(auth.user?.role === 'admin');
+  const isGuest = $derived(auth.user?.role === 'guest');
 
   type Item = { href: string; label: string };
   const YOU: Item[] = [
@@ -39,7 +40,9 @@
   const groups = $derived(
     [
       { title: 'You', items: YOU },
-      { title: 'Workspace', items: isAdmin ? [...WORKSPACE, ...WORKSPACE_ADMIN] : WORKSPACE },
+      /* Guests get no workspace surfaces: their account is scoped to what
+         they were granted, and the team roster is not theirs to browse. */
+      ...(isGuest ? [] : [{ title: 'Workspace', items: isAdmin ? [...WORKSPACE, ...WORKSPACE_ADMIN] : WORKSPACE }]),
       ...(isAdmin ? [{ title: 'System', items: SYSTEM }] : [])
     ]
   );

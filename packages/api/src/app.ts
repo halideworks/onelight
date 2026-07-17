@@ -27,6 +27,7 @@ import {
   errors,
   generateBackupCodes,
   generateTotpSecret,
+  implicitProjectRole,
   isSmtpConfigError,
   mailSettingsToInput,
   otpauthUrl,
@@ -40,7 +41,11 @@ import {
   sha256,
   sha256Hex,
 } from "@onelight/core";
-import type { MultipartBlobStore, StoredMailSettings } from "@onelight/core";
+import type {
+  MultipartBlobStore,
+  StoredMailSettings,
+  WorkspaceRole,
+} from "@onelight/core";
 import {
   apiTokens,
   assetVersions,
@@ -105,11 +110,17 @@ import {
 import type { SearchStream } from "./helpers.js";
 import { bodies, errorEnvelope, routeDocs } from "./schemas.js";
 import type { RouteDoc } from "./schemas.js";
-import type { AppEnv, Variables } from "./types.js";
+import type { AppEnv, SessionUser, Variables } from "./types.js";
 import {
   assertWebhookUrlAllowed,
   scheduleWebhookDeliveries,
 } from "./webhooks.js";
+
+/* A user as the routes handle one: either the session-derived shape (guest
+   folded into role) or a raw row read from the table for wire projection.
+   Property-wise identical apart from role's width. */
+type UserRow = typeof users.$inferSelect;
+type ActorUser = SessionUser | UserRow;
 
 const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const root = new Hono<{ Variables: Variables }>();
@@ -193,11 +204,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     await next();
   });
 
-  const userWire = (user: typeof users.$inferSelect) => ({
+  const userWire = (user: ActorUser) => ({
     id: user.id,
     email: user.email,
     name: user.name,
-    role: user.role,
+    role: user.guest ? "guest" : user.role,
     /* Same-origin path, cookie-authenticated like every app read; updatedAt
        busts the cache when the picture changes. Null means the generated
        avatar. */
@@ -287,13 +298,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const projectWire = async (
     project: typeof projects.$inferSelect,
     userId: string,
-    workspaceRole: "admin" | "member",
+    workspaceRole: WorkspaceRole,
   ) => {
     const grant = await grantFor(project.id, userId);
-    const myRole =
-      workspaceRole === "admin"
-        ? "manager"
-        : (grant ?? (project.restricted ? undefined : "viewer"));
+    const myRole = implicitProjectRole(
+      workspaceRole,
+      Boolean(project.restricted),
+      grant ?? undefined,
+    );
     return {
       id: project.id,
       name: project.name,
@@ -318,7 +330,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   const requireProject = async (
     projectId: string,
-    user: typeof users.$inferSelect,
+    user: ActorUser,
     minimum?: "manager" | "editor" | "commenter" | "viewer",
     options?: { allowArchived?: boolean },
   ) => {
@@ -331,13 +343,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const project = rows[0];
     if (!project || project.workspaceId !== user.workspaceId)
       throw errors.notFound("Project was not found.");
-    const role =
-      user.role === "admin"
-        ? "manager"
-        : ((await grantFor(project.id, user.id)) ??
-          (project.restricted ? undefined : "viewer"));
-    // Restricted projects are invisible to non-members: no role means 404,
-    // not 403, so existence does not leak.
+    const role = implicitProjectRole(
+      user.role,
+      Boolean(project.restricted),
+      (await grantFor(project.id, user.id)) ?? undefined,
+    );
+    // Projects invisible to the caller (restricted without a grant, or any
+    // project a guest holds no grant on) 404 rather than 403, so existence
+    // does not leak.
     if (!role) throw errors.notFound("Project was not found.");
     if (
       project.status === "archived" &&
@@ -558,7 +571,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     )[0];
     if (!project) return [];
     const userRows = await env.db
-      .select({ id: users.id, role: users.role })
+      .select({ id: users.id, role: users.role, guest: users.guest })
       .from(users)
       .where(
         and(
@@ -568,11 +581,16 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         ),
       )
       .all();
-    if (!project.restricted)
-      return userRows.map((row: { id: string }) => row.id);
+    /* Admins see everything; members see unrestricted projects; guests
+       and restricted projects both require an explicit grant. Same rule
+       as implicitProjectRole, expressed over a batch. */
     const visible = new Set(
       userRows
-        .filter((row: { role: string }) => row.role === "admin")
+        .filter(
+          (row: { role: string; guest: boolean }) =>
+            row.role === "admin" ||
+            (!project.restricted && row.role === "member" && !row.guest),
+        )
         .map((row: { id: string }) => row.id),
     );
     const memberRows = await env.db
@@ -1019,9 +1037,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     email: viewer.email,
   });
 
-  const currentWorkspace = async (c: {
-    get: (key: "user") => typeof users.$inferSelect;
-  }) => workspaceFor(c.get("user").workspaceId);
+  const currentWorkspace = async (c: { get: (key: "user") => ActorUser }) =>
+    workspaceFor(c.get("user").workspaceId);
 
   api.get("/healthz", (c) => c.json({ status: "ok", version: env.version }));
 
@@ -2074,7 +2091,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     )[0];
     if (!target) throw errors.notFound();
     if (
-      (body.role === "member" || body.disabled === true) &&
+      ((body.role !== undefined && body.role !== "admin") ||
+        body.disabled === true) &&
       target.role === "admin"
     ) {
       const admins = await env.db
@@ -2096,7 +2114,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     await env.db
       .update(users)
       .set({
-        ...(body.role ? { role: body.role } : {}),
+        ...(body.role
+          ? {
+              role: body.role === "guest" ? ("member" as const) : body.role,
+              guest: body.role === "guest",
+            }
+          : {}),
         ...(body.disabled === undefined
           ? {}
           : { disabledAt: body.disabled ? env.clock.now() : null }),
@@ -2235,7 +2258,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         id: inviteId,
         workspaceId: actor.workspaceId,
         email,
-        role: body.role,
+        /* Guests are stored as members plus the flag; the wire speaks the
+           three-role vocabulary (see the users schema note). */
+        role: body.role === "guest" ? "member" : body.role,
+        guest: body.role === "guest",
         tokenHash: await sha256Hex(rawToken),
         invitedBy: actor.id,
         projectGrantsJson: JSON.stringify(projectGrants),
@@ -2292,7 +2318,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       items: page.map((invite: typeof invites.$inferSelect) => ({
         id: invite.id,
         email: invite.email,
-        role: invite.role,
+        role: invite.guest ? "guest" : invite.role,
         project_grants: JSON.parse(invite.projectGrantsJson),
         invited_by: invite.invitedBy,
         created_at: invite.createdAt,
@@ -2383,6 +2409,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         email: invite.email,
         name: body.name.trim(),
         role: invite.role,
+        guest: invite.guest,
         passwordHash: await env.hasher.hash(body.password),
         disabledAt: null,
         createdAt: now,
@@ -2547,6 +2574,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.post("/projects", requireAuth, async (c) => {
     const user = userFromContext(c);
+    /* Guests work inside what they were granted; they do not open rooms. */
+    if (user.role === "guest") throw errors.forbidden();
     const body = await jsonBody(c, bodies.projectCreate);
     const existing = await env.db
       .select({ id: projects.id })
@@ -2899,7 +2928,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.json({
       items: rows.map(
         (row: {
-          user: typeof users.$inferSelect;
+          user: ActorUser;
           member: typeof projectMembers.$inferSelect;
         }) => ({ user: userWire(row.user), role: row.member.role }),
       ),
@@ -3282,7 +3311,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   const versionForActor = async (
     id: string,
-    actor: typeof users.$inferSelect,
+    actor: ActorUser,
     minimum: "viewer" | "commenter" | "editor" | "manager" = "viewer",
   ) => {
     const version = (
@@ -3551,7 +3580,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   const commentForActor = async (
     id: string,
-    actor: typeof users.$inferSelect,
+    actor: ActorUser,
     minimum: "viewer" | "commenter" = "viewer",
   ) => {
     const comment = (
@@ -3572,7 +3601,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   // manager implicitly inside requireProject.
   const requireCommentAuthorOrModerator = async (
     comment: typeof comments.$inferSelect,
-    actor: typeof users.$inferSelect,
+    actor: ActorUser,
   ) => {
     if (comment.authorUserId === actor.id) return;
     const version = (
@@ -4291,11 +4320,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
        and keep scanning so a filtered-out row does not consume a page slot. */
     const visibleProject = async (
       project: typeof projects.$inferSelect,
-    ): Promise<boolean> => {
-      if (actor.role === "admin") return true;
-      if (!project.restricted) return true;
-      return Boolean(await grantFor(project.id, actor.id));
-    };
+    ): Promise<boolean> =>
+      implicitProjectRole(
+        actor.role,
+        Boolean(project.restricted),
+        (await grantFor(project.id, actor.id)) ?? undefined,
+      ) !== undefined;
 
     const matchingProjects = async (
       after: string | undefined,
@@ -4498,7 +4528,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               .orderBy(desc(users.id))
               .limit(take)
               .all()
-          ).map((row: typeof users.$inferSelect) => ({
+          ).map((row: ActorUser) => ({
             id: row.id,
             wire: {
               type: "person",
@@ -6832,7 +6862,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   const findUpload = async (
     id: string,
-    actor: typeof users.$inferSelect,
+    actor: ActorUser,
     role: "editor" | "viewer" = "editor",
   ) => {
     const upload = (
@@ -7281,7 +7311,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   const assetForActor = async (
     id: string,
-    actor: typeof users.$inferSelect,
+    actor: ActorUser,
     minimum: "viewer" | "commenter" | "editor" | "manager" = "viewer",
   ) => {
     const asset = (

@@ -8,6 +8,7 @@ import type {
 } from "@onelight/core";
 import type { AppDb } from "@onelight/db";
 import type { User } from "@onelight/db";
+import type { WorkspaceRole } from "@onelight/core";
 
 export interface AppEnv {
   db: AppDb;
@@ -61,8 +62,14 @@ export interface AppEnv {
   ) => Promise<((frame: number) => number | null) | null>;
 }
 
+/* The authenticated user as the routes see it: the row, with the guest
+   flag already folded into the role. Storage keeps role in {admin,member}
+   plus a guest flag (see the users schema); the auth boundary derives the
+   three-tier role once so no route ever consults the flag. */
+export type SessionUser = Omit<User, "role"> & { role: WorkspaceRole };
+
 export type Variables = {
-  user: User;
+  user: SessionUser;
   authType: "session" | "token";
   requestId: string;
 };

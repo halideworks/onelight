@@ -18,6 +18,7 @@ export const migrationFiles = [
   "0012_caption_tracks.sql",
   "0013_user_totp.sql",
   "0014_app_settings.sql",
+  "0015_guest_accounts.sql",
 ];
 
 const migrationPath = (file: string): string =>

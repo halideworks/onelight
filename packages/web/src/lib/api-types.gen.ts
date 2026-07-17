@@ -191,7 +191,7 @@ export interface paths {
                                 email: string;
                                 name: string;
                                 /** @enum {string} */
-                                role: "admin" | "member";
+                                role: "admin" | "member" | "guest";
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
@@ -283,7 +283,7 @@ export interface paths {
                                 email: string;
                                 name: string;
                                 /** @enum {string} */
-                                role: "admin" | "member";
+                                role: "admin" | "member" | "guest";
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
@@ -377,7 +377,7 @@ export interface paths {
                                 email: string;
                                 name: string;
                                 /** @enum {string} */
-                                role: "admin" | "member";
+                                role: "admin" | "member" | "guest";
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
@@ -681,7 +681,7 @@ export interface paths {
                                 email: string;
                                 name: string;
                                 /** @enum {string} */
-                                role: "admin" | "member";
+                                role: "admin" | "member" | "guest";
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
@@ -1833,7 +1833,7 @@ export interface paths {
                                 email: string;
                                 name: string;
                                 /** @enum {string} */
-                                role: "admin" | "member";
+                                role: "admin" | "member" | "guest";
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
@@ -1916,7 +1916,7 @@ export interface paths {
                             email: string;
                             name: string;
                             /** @enum {string} */
-                            role: "admin" | "member";
+                            role: "admin" | "member" | "guest";
                             avatar_url: string | null;
                             disabled_at: number | null;
                             created_at: number;
@@ -2063,7 +2063,7 @@ export interface paths {
                             email: string;
                             name: string;
                             /** @enum {string} */
-                            role: "admin" | "member";
+                            role: "admin" | "member" | "guest";
                             avatar_url: string | null;
                             disabled_at: number | null;
                             created_at: number;
@@ -2192,7 +2192,7 @@ export interface paths {
                 content: {
                     "application/json": {
                         /** @enum {string} */
-                        role?: "admin" | "member";
+                        role?: "admin" | "member" | "guest";
                         disabled?: boolean;
                     };
                 };
@@ -2209,7 +2209,7 @@ export interface paths {
                             email: string;
                             name: string;
                             /** @enum {string} */
-                            role: "admin" | "member";
+                            role: "admin" | "member" | "guest";
                             avatar_url: string | null;
                             disabled_at: number | null;
                             created_at: number;
@@ -2289,7 +2289,7 @@ export interface paths {
                                 id: string;
                                 email: string;
                                 /** @enum {string} */
-                                role: "admin" | "member";
+                                role: "admin" | "member" | "guest";
                                 project_grants: {
                                     project_id: string;
                                     /** @enum {string} */
@@ -2358,7 +2358,7 @@ export interface paths {
                          * @default member
                          * @enum {string}
                          */
-                        role?: "admin" | "member";
+                        role?: "admin" | "member" | "guest";
                         /** @default [] */
                         project_grants?: {
                             project_id: string;
@@ -2380,7 +2380,7 @@ export interface paths {
                                 id: string;
                                 email: string;
                                 /** @enum {string} */
-                                role: "admin" | "member";
+                                role: "admin" | "member" | "guest";
                                 project_grants: {
                                     project_id: string;
                                     /** @enum {string} */
@@ -2627,7 +2627,7 @@ export interface paths {
                                 email: string;
                                 name: string;
                                 /** @enum {string} */
-                                role: "admin" | "member";
+                                role: "admin" | "member" | "guest";
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
@@ -3000,7 +3000,7 @@ export interface paths {
                     "application/json": {
                         name: string;
                         /** @enum {string} */
-                        palette?: "kuwanomi" | "sakinezu" | "shinai" | "yorukou" | "tetsukon" | "ebicha" | "sumimai" | "yoai" | "kachitetsu" | "mokutan";
+                        palette?: "kuwanomi" | "sakinezu" | "shinai" | "yorukou" | "tetsukon" | "ebicha" | "sumimai" | "yoai" | "kachitetsu" | "mokutan" | "kuro" | "azuki" | "sabiasagi" | "ikkonzome" | "shikkoku" | "kesuzumi" | "nibisumi";
                         /** @default false */
                         restricted?: boolean;
                     };
@@ -3231,7 +3231,7 @@ export interface paths {
                     "application/json": {
                         name?: string;
                         /** @enum {string} */
-                        palette?: "kuwanomi" | "sakinezu" | "shinai" | "yorukou" | "tetsukon" | "ebicha" | "sumimai" | "yoai" | "kachitetsu" | "mokutan";
+                        palette?: "kuwanomi" | "sakinezu" | "shinai" | "yorukou" | "tetsukon" | "ebicha" | "sumimai" | "yoai" | "kachitetsu" | "mokutan" | "kuro" | "azuki" | "sabiasagi" | "ikkonzome" | "shikkoku" | "kesuzumi" | "nibisumi";
                         restricted?: boolean;
                         /** @enum {string} */
                         status?: "active" | "archived";
@@ -3661,7 +3661,7 @@ export interface paths {
                                     email: string;
                                     name: string;
                                     /** @enum {string} */
-                                    role: "admin" | "member";
+                                    role: "admin" | "member" | "guest";
                                     avatar_url: string | null;
                                     disabled_at: number | null;
                                     created_at: number;
@@ -3758,7 +3758,7 @@ export interface paths {
                                 email: string;
                                 name: string;
                                 /** @enum {string} */
-                                role: "admin" | "member";
+                                role: "admin" | "member" | "guest";
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
@@ -6211,7 +6211,7 @@ export interface paths {
                         } | null;
                         brand?: {
                             /** @enum {string} */
-                            palette?: "kuwanomi" | "sakinezu" | "shinai" | "yorukou" | "tetsukon" | "ebicha" | "sumimai" | "yoai" | "kachitetsu" | "mokutan";
+                            palette?: "kuwanomi" | "sakinezu" | "shinai" | "yorukou" | "tetsukon" | "ebicha" | "sumimai" | "yoai" | "kachitetsu" | "mokutan" | "kuro" | "azuki" | "sabiasagi" | "ikkonzome" | "shikkoku" | "kesuzumi" | "nibisumi";
                             colors?: [
                                 string,
                                 string
@@ -6487,7 +6487,7 @@ export interface paths {
                         } | null;
                         brand?: {
                             /** @enum {string} */
-                            palette?: "kuwanomi" | "sakinezu" | "shinai" | "yorukou" | "tetsukon" | "ebicha" | "sumimai" | "yoai" | "kachitetsu" | "mokutan";
+                            palette?: "kuwanomi" | "sakinezu" | "shinai" | "yorukou" | "tetsukon" | "ebicha" | "sumimai" | "yoai" | "kachitetsu" | "mokutan" | "kuro" | "azuki" | "sabiasagi" | "ikkonzome" | "shikkoku" | "kesuzumi" | "nibisumi";
                             colors?: [
                                 string,
                                 string

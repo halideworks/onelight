@@ -98,6 +98,7 @@
     <section class="projects" aria-label="Projects">
       <!-- Creating a project leads: it is the one thing a new workspace must
            do, and it used to be stranded under the list. -->
+      {#if auth.user?.role !== 'guest'}
       <form class="newproject" onsubmit={create}>
         <input
           bind:value={newProjectName}
@@ -110,6 +111,7 @@
           {creating ? 'Creating…' : 'Create project'}
         </button>
       </form>
+      {/if}
       {#if createError}<p class="error" role="alert">{createError}</p>{/if}
 
       <div class="listhead">
