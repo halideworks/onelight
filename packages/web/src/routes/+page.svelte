@@ -161,7 +161,6 @@
         Onelight
       </span>
       <div class="pitch">
-        <p class="eyebrow">One-light dailies</p>
         <h1>Review work with the frame still in view.</h1>
         <p class="lede">A self-hosted review room for post-production teams.</p>
         <div class="doors">
