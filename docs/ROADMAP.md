@@ -41,6 +41,18 @@ All automated gates are green on this machine, including the qa suites executed 
   worker-less installs; exports are DB-to-file work and now always run (the
   PDF already degrades to no stills).
 
+## The comparison viewer (2026-07-16)
+
+`/projects/:id/assets/:assetId/compare` puts two versions of an asset against
+each other: side by side or a draggable wipe, with one transport driving both.
+Version A owns the clock (rate, drop-frame, timeline length); frame stepping
+is the accuracy contract (mid-frame seeks on both, pause re-lands the exact
+frame), while play keeps sync by correction, pulling B back whenever it drifts
+past half a frame. Space plays, arrows step, shift-arrows step ten. The review
+page topbar offers Compare whenever an asset has two versions. Verified in
+Firefox on the rig: pixel decode on both panes, lockstep after stepping and
+after pause, clip-path wipe follows the pointer.
+
 ## The system page (2026-07-16)
 
 `GET /admin/system` and Settings > System put the operational picture on one

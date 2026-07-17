@@ -1058,6 +1058,14 @@
           </div>
         {/if}
       </div>
+      {#if versions.length >= 2}
+        <a
+          class="compare-link"
+          href={`/projects/${projectId}/assets/${assetId}/compare${selectedVersionId ? `?a=${selectedVersionId}` : ''}`}
+        >
+          Compare
+        </a>
+      {/if}
       <label class="approval">Approval
         <select value={asset.status} onchange={(event) => updateApproval((event.currentTarget as HTMLSelectElement).value)}>
           <option value="none">No decision</option>
@@ -1450,6 +1458,8 @@
   .vbadge { color: var(--n-600); font-size: var(--text-13); font-weight: 600; }
 
   /* Versions menu: says which version you are on, and opens the rest. */
+  .compare-link { display: inline-flex; align-items: center; background: var(--n-150); color: var(--n-800); padding: 8px 12px; border-radius: var(--radius); font-size: var(--text-13); font-weight: 500; text-decoration: none; }
+  .compare-link:hover { background: var(--n-300); color: var(--n-900); }
   .vmenu { position: relative; }
   .vtrigger { display: inline-flex; align-items: center; gap: 8px; }
   .vtrigger-no { font-weight: 600; color: var(--n-900); }
