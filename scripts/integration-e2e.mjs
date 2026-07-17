@@ -42,7 +42,7 @@ import { fileURLToPath } from "node:url";
 
 /* Node 18+ global fetch, referenced through globalThis so the script needs
    no runtime-global assumptions from the linter. */
-const { fetch } = globalThis;
+const { fetch, URL } = globalThis;
 
 const DRY_RUN = process.argv.includes("--dry-run");
 const BASE_URL = (
@@ -126,7 +126,13 @@ const makeClient = (jar) => {
       headers["content-type"] = "application/json";
       body = JSON.stringify(options.json);
     }
-    const response = await fetch(url, { method, headers, body });
+    /* Media and download URLs on the wire are origin-relative by design;
+       resolve them against the deployment. Absolute URLs pass through. */
+    const response = await fetch(new URL(url, BASE_URL), {
+      method,
+      headers,
+      body,
+    });
     jar.store(response);
     const expected = options.expect ?? [200];
     if (!expected.includes(response.status)) {

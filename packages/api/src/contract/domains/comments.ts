@@ -13,6 +13,7 @@ import {
   json,
   parseSse,
   req,
+  wireUrl,
 } from "../harness.js";
 import type { ContractHarness } from "../harness.js";
 import {
@@ -507,7 +508,7 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       );
       expect(urlResponse.status).toBe(200);
       const { url } = await json<{ url: string }>(urlResponse);
-      const parsed = new URL(url);
+      const parsed = wireUrl(url);
       const fetched = await req(h, parsed.pathname + parsed.search, {
         cookie: seed.viewer.cookie,
       });

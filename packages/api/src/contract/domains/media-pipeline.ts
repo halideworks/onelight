@@ -9,6 +9,7 @@ import {
   json,
   parseSse,
   req,
+  wireUrl,
 } from "../harness.js";
 import type { ContractHarness } from "../harness.js";
 import {
@@ -972,7 +973,7 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
         );
         const url = listing.items.find((item) => item.id === rendition.id)?.url;
         expect(url).toBeTruthy();
-        const parsed = new URL(url ?? "");
+        const parsed = wireUrl(url);
         const withToken = await req(h, parsed.pathname + parsed.search, {
           cookie: seed.viewer.cookie,
         });

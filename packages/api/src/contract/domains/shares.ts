@@ -9,6 +9,7 @@ import {
   json,
   req,
   travel,
+  wireUrl,
 } from "../harness.js";
 import type { ContractHarness } from "../harness.js";
 import type { SeedState } from "../seed.js";
@@ -468,7 +469,7 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
             { cookie: other.cookie },
           ),
         );
-        const parsed = new URL(issued.url);
+        const parsed = wireUrl(issued.url);
         const fetched = await req(h, parsed.pathname + parsed.search);
         expect(fetched.status).toBe(200);
         expect(await fetched.text()).toBe("fake-pdf-bytes");
@@ -1020,7 +1021,7 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
         );
         expect(issued.status).toBe(200);
         const { url } = await json<{ url: string }>(issued);
-        const parsed = new URL(url);
+        const parsed = wireUrl(url);
         const withToken = await req(h, parsed.pathname + parsed.search);
         expect(withToken.status).toBe(200);
         expect(await withToken.text()).toBe("share-proxy-bytes");
@@ -1080,7 +1081,7 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
           const item = await listed(path);
           const posterUrl = item.poster_url;
           expect(typeof posterUrl).toBe("string");
-          const parsed = new URL(posterUrl as string);
+          const parsed = wireUrl(posterUrl as string);
           const fetched = await req(h, parsed.pathname + parsed.search);
           expect(fetched.status).toBe(200);
           expect(await fetched.text()).toBe("poster-png-bytes");
@@ -1110,7 +1111,7 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
     };
 
     const fetchUrl = async (h: ContractHarness, url: string) => {
-      const parsed = new URL(url);
+      const parsed = wireUrl(url);
       return req(h, parsed.pathname + parsed.search);
     };
 
@@ -1350,7 +1351,7 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
       );
       expect(issued.status).toBe(200);
       const { url } = await json<{ url: string }>(issued);
-      const parsed = new URL(url);
+      const parsed = wireUrl(url);
       const fetched = await req(h, parsed.pathname + parsed.search);
       expect(fetched.status).toBe(200);
       expect(await fetched.text()).toBe("downloadable-proxy");
@@ -1395,7 +1396,7 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
         );
         expect(issued.status).toBe(200);
         const { url } = await json<{ url: string }>(issued);
-        const parsed = new URL(url);
+        const parsed = wireUrl(url);
         const fetched = await req(h, parsed.pathname + parsed.search);
         expect(fetched.status).toBe(200);
         expect(await fetched.text()).toBe("original-camera-bytes");
@@ -1441,7 +1442,7 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
         const issued = await req(h, downloadPath, { cookie: viewer.cookie });
         expect(issued.status).toBe(200);
         const { url } = await json<{ url: string }>(issued);
-        const parsed = new URL(url);
+        const parsed = wireUrl(url);
         const fetched = await req(h, parsed.pathname + parsed.search);
         expect(await fetched.text()).toBe("burned-download");
         expect(fetched.headers.get("content-disposition")).toContain(
@@ -1581,7 +1582,7 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
       });
       expect(download.status).toBe(200);
       const { url } = await json<{ url: string }>(download);
-      const parsed = new URL(url);
+      const parsed = wireUrl(url);
       const fetched = await req(h, parsed.pathname + parsed.search, {
         cookie: seed.admin.cookie,
       });

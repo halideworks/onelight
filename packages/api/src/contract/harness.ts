@@ -140,6 +140,12 @@ export const json = async <T = Record<string, unknown>>(
 export const cookieFrom = (response: Response): string =>
   response.headers.get("set-cookie")?.split(";")[0] ?? "";
 
+/* Media and attachment URLs on the wire are origin-relative by design (the
+   page that received them fetches them from its own origin), so parsing one
+   needs a base. The base is arbitrary: tests only ever use pathname+search. */
+export const wireUrl = (url: string | null | undefined): URL =>
+  new URL(url ?? "", "http://wire.invalid");
+
 export const errorCode = async (response: Response): Promise<string> => {
   const body = await json<{ error?: { code?: string } }>(response);
   return body.error?.code ?? "";

@@ -443,7 +443,8 @@ describe("audited defect fixes", () => {
     );
     expect(urlResponse.status).toBe(200);
     const { url } = (await urlResponse.json()) as { url: string };
-    const parsed = new URL(url);
+    /* Wire media URLs are origin-relative by design; base only for parsing. */
+    const parsed = new URL(url, "http://wire.invalid");
     const withToken = await ctx.app.request(parsed.pathname + parsed.search, {
       headers: { cookie },
     });
