@@ -41,6 +41,18 @@ All automated gates are green on this machine, including the qa suites executed 
   worker-less installs; exports are DB-to-file work and now always run (the
   PDF already degrades to no stills).
 
+## Metadata intelligence (2026-07-16)
+
+The review page grew an Info drawer that renders the version's full probe
+record the way a post professional reads it: Picture (codec and profile,
+frame size, aspect, pixel format, scan), Color (primaries, transfer, matrix,
+range, with a "Not Rec.709" flag when the pipeline is anything else), Motion
+(exact rational frame rate, duration in timecode and frames, start timecode),
+Sound (per-track codec, layout, sample rate), and File (container, size,
+bitrate, encoder, created). All of it is automatic from the stored ffprobe
+record; nothing new is collected. Hooks fill in what the file cannot say --
+captions already, more to come.
+
 ## Player and share parity (2026-07-16)
 
 - **Hover scrub on the share landing**, the way the app's own browser has it:

@@ -22,6 +22,7 @@
   import Lightbox from '$lib/Lightbox.svelte';
   import { idFrom } from '$lib/ids.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
+  import { formatBytes } from '$lib/upload.js';
   import { annotationsFrom, markersFrom, type ReviewComment } from '$lib/comments.js';
   import { hashtagsIn, segmentCommentBody } from './comment-text.js';
 
@@ -124,6 +125,121 @@
   let prevVersion = $state<Version | null>(null);
   let prevOpenCount = $state(0);
   let carrying = $state(false);
+  /* The Info drawer: everything the probe knows about the version on screen,
+     grouped the way a post professional reads it -- picture, color, motion,
+     sound, file. The full ffprobe record is stored per version; this renders
+     it instead of hiding it. */
+  type InfoDetail = {
+    original_filename: string | null;
+    size: number;
+    source_timecode_start: string | null;
+    media_info: {
+      format?: {
+        format_long_name?: string;
+        bit_rate?: string;
+        tags?: Record<string, string>;
+      };
+      streams?: Array<Record<string, unknown>>;
+    };
+  };
+  let infoOpen = $state(false);
+  let infoDetail = $state<InfoDetail | null>(null);
+  let infoFor: string | null = null;
+  const toggleInfo = (): void => {
+    infoOpen = !infoOpen;
+    if (!infoOpen || !selectedVersionId || infoFor === selectedVersionId) return;
+    infoFor = selectedVersionId;
+    infoDetail = null;
+    void (async () => {
+      try {
+        infoDetail = await api<InfoDetail>(`/api/v1/versions/${selectedVersionId}`);
+      } catch {
+        infoFor = null;
+      }
+    })();
+  };
+
+  type InfoGroup = { title: string; rows: Array<[string, string]>; alert?: boolean };
+  const infoGroups = $derived.by((): InfoGroup[] => {
+    if (!infoDetail) return [];
+    const streams = infoDetail.media_info.streams ?? [];
+    const str = (value: unknown): string | null =>
+      typeof value === 'string' && value ? value : typeof value === 'number' ? String(value) : null;
+    const video = streams.find((stream) => stream.codec_type === 'video');
+    const audio = streams.filter((stream) => stream.codec_type === 'audio');
+    const groups: InfoGroup[] = [];
+    if (video) {
+      const codec = [str(video.codec_name)?.toUpperCase(), str(video.profile)].filter(Boolean).join(' ');
+      const size = video.width && video.height ? `${String(video.width)} x ${String(video.height)}` : null;
+      groups.push({
+        title: 'Picture',
+        rows: (
+          [
+            ['Codec', codec || null],
+            ['Frame size', size],
+            ['Aspect', str(video.display_aspect_ratio)],
+            ['Pixel format', str(video.pix_fmt)],
+            ['Scan', str(video.field_order)]
+          ] as Array<[string, string | null]>
+        ).filter((row): row is [string, string] => row[1] !== null)
+      });
+      const primaries = str(video.color_primaries);
+      const transfer = str(video.color_transfer);
+      const nonRec709 = Boolean((primaries && primaries !== 'bt709') || (transfer && transfer !== 'bt709'));
+      groups.push({
+        title: 'Color',
+        alert: nonRec709,
+        rows: (
+          [
+            ['Primaries', primaries],
+            ['Transfer', transfer],
+            ['Matrix', str(video.color_space)],
+            ['Range', str(video.color_range)]
+          ] as Array<[string, string | null]>
+        ).filter((row): row is [string, string] => row[1] !== null)
+      });
+    }
+    const motionRows: Array<[string, string]> = [];
+    if (rate) {
+      const exact = rate.den === 1 ? `${rate.num} fps` : `${rate.num}/${rate.den} (${(rate.num / rate.den).toFixed(3)}) fps`;
+      motionRows.push(['Frame rate', `${exact}${dropFrame ? ', drop frame' : ''}`]);
+    }
+    if (durationFrames) {
+      motionRows.push(['Duration', `${timecodeAt(Math.max(0, durationFrames - 1))} (${String(durationFrames)} frames)`]);
+    }
+    if (infoDetail.source_timecode_start) motionRows.push(['Start timecode', infoDetail.source_timecode_start]);
+    if (motionRows.length) groups.push({ title: 'Motion', rows: motionRows });
+    if (audio.length) {
+      groups.push({
+        title: 'Sound',
+        rows: audio.map((stream, index) => [
+          audio.length > 1 ? `Track ${String(index + 1)}` : 'Track',
+          [
+            str(stream.codec_name)?.toUpperCase(),
+            str(stream.channel_layout) ?? (stream.channels ? `${String(stream.channels)}ch` : null),
+            str(stream.sample_rate) ? `${Number(stream.sample_rate) / 1000} kHz` : null
+          ]
+            .filter(Boolean)
+            .join(', ')
+        ])
+      });
+    }
+    const format = infoDetail.media_info.format;
+    const fileRows: Array<[string, string | null]> = [
+      ['Filename', infoDetail.original_filename],
+      ['Container', format?.format_long_name ?? null],
+      ['Size', infoDetail.size ? formatBytes(infoDetail.size) : null],
+      ['Bitrate', format?.bit_rate ? `${(Number(format.bit_rate) / 1_000_000).toFixed(1)} Mb/s` : null],
+      ['Encoder', format?.tags?.encoder ?? null],
+      ['Created', format?.tags?.creation_time ? format.tags.creation_time.slice(0, 10) : null]
+    ];
+    groups.push({
+      title: 'File',
+      rows: fileRows.filter((row): row is [string, string] => row[1] !== null)
+    });
+    return groups;
+  });
+
   /* The NLE round trip: notes leave as marker files and marker files come
      back as notes, both scoped to the version on screen. */
   let exchangeOpen = $state(false);
@@ -450,6 +566,9 @@
     renditionOptions = [];
     filmstrip = null;
     captionsUrl = null;
+    infoOpen = false;
+    infoFor = null;
+    infoDetail = null;
     waveformUrl = null;
     comments = [];
     commentError = '';
@@ -1065,6 +1184,30 @@
           </div>
         {/if}
       </div>
+      <div class="infowrap">
+        <button type="button" class="info-trigger" aria-expanded={infoOpen} onclick={toggleInfo}>Info</button>
+        {#if infoOpen}
+          <div class="info-panel" role="dialog" aria-label="Version details">
+            {#if infoGroups.length === 0}
+              <p class="info-empty">Nothing probed yet.</p>
+            {/if}
+            {#each infoGroups as group (group.title)}
+              <section class="info-group" class:alert={group.alert}>
+                <h3>
+                  {group.title}
+                  {#if group.alert}<span class="info-flag">Not Rec.709</span>{/if}
+                </h3>
+                <dl>
+                  {#each group.rows as [term, value] (term)}
+                    <dt>{term}</dt>
+                    <dd class="tc">{value}</dd>
+                  {/each}
+                </dl>
+              </section>
+            {/each}
+          </div>
+        {/if}
+      </div>
       {#if versions.length >= 2}
         <a
           class="compare-link"
@@ -1468,6 +1611,17 @@
   /* Versions menu: says which version you are on, and opens the rest. */
   .compare-link { display: inline-flex; align-items: center; background: var(--n-150); color: var(--n-800); padding: 8px 12px; border-radius: var(--radius); font-size: var(--text-13); font-weight: 500; text-decoration: none; }
   .compare-link:hover { background: var(--n-300); color: var(--n-900); }
+  .infowrap { position: relative; }
+  .info-trigger { background: var(--n-150); color: var(--n-800); padding: 8px 12px; border-radius: var(--radius); font-size: var(--text-13); font-weight: 500; }
+  .info-trigger:hover, .info-trigger[aria-expanded='true'] { background: var(--n-300); color: var(--n-900); }
+  .info-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: 320px; max-height: 70vh; overflow-y: auto; background: var(--n-100); border: 1px solid var(--n-300); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .info-group h3 { margin: 0 0 6px; font-size: var(--text-12); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--n-600); display: flex; align-items: center; gap: 8px; }
+  .info-group.alert h3 { color: var(--n-800); }
+  .info-flag { font-size: var(--text-12); letter-spacing: normal; text-transform: none; background: var(--n-300); color: var(--n-900); padding: 1px 7px; border-radius: 2px; font-weight: 500; }
+  .info-group dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; margin: 0; font-size: var(--text-13); }
+  .info-group dt { color: var(--n-600); }
+  .info-group dd { margin: 0; color: var(--n-900); overflow-wrap: anywhere; }
+  .info-empty { margin: 0; color: var(--n-600); font-size: var(--text-13); }
   .vmenu { position: relative; }
   .vtrigger { display: inline-flex; align-items: center; gap: 8px; }
   .vtrigger-no { font-weight: 600; color: var(--n-900); }
