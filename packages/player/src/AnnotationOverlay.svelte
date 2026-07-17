@@ -97,11 +97,19 @@
     context.stroke();
   };
 
+  /* One effect, but the canvas is only ever resized when the size really
+     changed: assigning canvas.width resets and reallocates the backing store
+     even when the value is identical, and this effect used to run on every
+     presented frame (the strokes prop changes identity as the playhead
+     moves). A full-size canvas reallocation per frame was a real part of the
+     seek-bar stutter. */
   $effect(() => {
     if (!canvas) return;
     const ratio = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
-    canvas.width = Math.max(1, Math.round(width * ratio));
-    canvas.height = Math.max(1, Math.round(height * ratio));
+    const deviceWidth = Math.max(1, Math.round(width * ratio));
+    const deviceHeight = Math.max(1, Math.round(height * ratio));
+    if (canvas.width !== deviceWidth) canvas.width = deviceWidth;
+    if (canvas.height !== deviceHeight) canvas.height = deviceHeight;
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
     const context = canvas.getContext('2d');

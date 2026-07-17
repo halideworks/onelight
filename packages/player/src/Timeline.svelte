@@ -292,7 +292,15 @@
         {/if}
       {/each}
     </div>
-    <div class="playhead" style:left={`${percentFor(frame)}%`}></div>
+    <!-- The playhead moves by transform, not by left: a transform stays on
+         the compositor, while a left change invalidates layout and repaints
+         every lane under the line -- with the waveform open that meant
+         re-rasterizing a filtered full-width image on every presented frame,
+         which is exactly the stutter it caused. -->
+    <div
+      class="playhead"
+      style:transform={`translateX(${laneWidth > 0 ? ((percentFor(frame) / 100) * laneWidth).toFixed(2) : 0}px)`}
+    ></div>
   </div>
   {#if hovered}
     <div class="tip" style:left={`${hoveredPercent}%`} role="status">
@@ -337,6 +345,8 @@
     height: 36px;
     overflow: hidden;
     background: var(--n-100, #161616);
+    /* Static content: scope any invalidation to the lane itself. */
+    contain: layout paint style;
   }
   .tile {
     position: absolute;
@@ -348,13 +358,16 @@
     height: 26px;
     overflow: hidden;
     background: var(--n-100, #161616);
+    contain: layout paint style;
   }
   .wave img {
     display: block;
     width: 100%;
     height: 100%;
     object-fit: fill;
-    /* The sidecar PNG is tinted; grayscale forces it back to R=G=B. */
+    /* The sidecar PNG is tinted; grayscale forces it back to R=G=B. The
+       filtered image rasterizes once because nothing invalidates the lane:
+       the playhead above it is transform-only. */
     filter: grayscale(1);
     opacity: 0.7;
     pointer-events: none;
@@ -364,11 +377,14 @@
     position: absolute;
     top: 0;
     bottom: 0;
+    left: 0;
     width: 1px;
     margin-left: -0.5px;
     background: var(--n-900, #e9e9e9);
     z-index: 2;
     pointer-events: none;
+    /* Its own compositor layer: moving it repaints nothing else. */
+    will-change: transform;
   }
   .playhead::before {
     content: '';
@@ -383,6 +399,7 @@
     height: 16px;
     background: var(--n-100, #161616);
     border-radius: 0 0 2px 2px;
+    contain: layout style;
   }
   .lane button {
     position: absolute;

@@ -380,6 +380,20 @@
 
   let scrubEl = $state<HTMLDivElement | null>(null);
   let scrubbing = $state(false);
+  /* Pixel width of the scrub, so the handle can ride a transform instead of
+     a layout-invalidating left. */
+  let scrubWidth = $state(0);
+  $effect(() => {
+    if (!scrubEl) return;
+    const element = scrubEl;
+    const measure = (): void => {
+      scrubWidth = element.clientWidth;
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  });
   /* The bar and handle track the POINTER while dragging, not the video:
      seeks land asynchronously and unevenly, and a handle that waits for them
      stutters behind the finger. The preview holds after release until the
@@ -650,22 +664,49 @@
   /* The canvas draws committed strokes and pending shapes; pending TEXT is
      DOM instead, so it can be grabbed, resized and re-opened until the note
      is posted. Once posted it comes back as a committed stroke and the
-     canvas takes over. */
-  const canvasStrokes = $derived([
-    ...annotations
-      .filter((annotation) => annotation.frame === frame)
-      .flatMap((annotation) => annotation.strokes),
-    ...(drawingFrame === frame
-      ? pendingStrokes.filter((stroke) => stroke.tool !== 'text')
-      : [])
-  ]);
-  const pendingTexts = $derived(
-    drawingFrame === frame
-      ? pendingStrokes
-          .map((stroke, index) => ({ stroke, index }))
-          .filter((entry) => entry.stroke.tool === 'text')
-      : []
-  );
+     canvas takes over.
+
+     These recompute on every presented frame (they depend on `frame`), and
+     almost every frame has no strokes. Returning the previous array when
+     nothing changed keeps the identity stable, so the overlay's draw effect
+     and the each-block do not run 24 times a second over empty lists. */
+  let lastCanvasStrokes: AnnotationStroke[] = [];
+  const canvasStrokes = $derived.by(() => {
+    const next = [
+      ...annotations
+        .filter((annotation) => annotation.frame === frame)
+        .flatMap((annotation) => annotation.strokes),
+      ...(drawingFrame === frame
+        ? pendingStrokes.filter((stroke) => stroke.tool !== 'text')
+        : [])
+    ];
+    if (
+      next.length === lastCanvasStrokes.length &&
+      next.every((stroke, index) => stroke === lastCanvasStrokes[index])
+    )
+      return lastCanvasStrokes;
+    lastCanvasStrokes = next;
+    return next;
+  });
+  let lastPendingTexts: Array<{ stroke: AnnotationStroke; index: number }> = [];
+  const pendingTexts = $derived.by(() => {
+    const next =
+      drawingFrame === frame
+        ? pendingStrokes
+            .map((stroke, index) => ({ stroke, index }))
+            .filter((entry) => entry.stroke.tool === 'text')
+        : [];
+    if (
+      next.length === lastPendingTexts.length &&
+      next.every(
+        (entry, at) =>
+          entry.stroke === lastPendingTexts[at]?.stroke && entry.index === lastPendingTexts[at]?.index
+      )
+    )
+      return lastPendingTexts;
+    lastPendingTexts = next;
+    return next;
+  });
 
   /* ---- pending text editing: select, drag, resize, reopen ---- */
 
@@ -1427,9 +1468,15 @@
           onpointercancel={onScrubUp}
           onkeydown={onScrubKeydown}
         >
+          <!-- Position rides transforms: scaleX for the played run and a
+               translated carrier for the handle, so per-frame motion stays on
+               the compositor. The hover grow keeps its own transform on the
+               handle inside the carrier. -->
           <div class="scrub-track">
-            <div class="scrub-played" style={`width: ${scrubPct * 100}%;`}></div>
-            <div class="scrub-handle" style={`left: ${scrubPct * 100}%;`}></div>
+            <div class="scrub-played" style={`transform: scaleX(${scrubPct});`}></div>
+            <div class="scrub-carrier" style={`transform: translateX(${(scrubPct * scrubWidth).toFixed(2)}px);`}>
+              <div class="scrub-handle"></div>
+            </div>
           </div>
         </div>
       {:else}
@@ -1498,10 +1545,11 @@
   .scrub { padding: 12px 0 8px; cursor: pointer; touch-action: none; outline: none; }
   .scrub-track { position: relative; height: 5px; border-radius: 3px; background: var(--n-150, #1c1c1c); transition: height 140ms ease; }
   .scrub:hover .scrub-track, .scrub.scrubbing .scrub-track, .scrub:focus-visible .scrub-track { height: 7px; }
-  .scrub-played { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 3px; background: var(--n-900, #e9e9e9); }
+  .scrub-played { position: absolute; top: 0; bottom: 0; left: 0; width: 100%; border-radius: 3px; background: var(--n-900, #e9e9e9); transform-origin: left center; will-change: transform; }
+  .scrub-carrier { position: absolute; top: 0; bottom: 0; left: 0; width: 0; will-change: transform; }
   /* The handle is the promise that this can be grabbed: a bright dot with a
      dark ring so it reads on any wash, grown a little under the pointer. */
-  .scrub-handle { position: absolute; top: 50%; width: 15px; height: 15px; border-radius: 50%; background: var(--n-900, #e9e9e9); border: 2px solid rgba(10, 12, 16, 0.55); box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45); transform: translate(-50%, -50%); transition: transform 140ms ease; }
+  .scrub-handle { position: absolute; top: 50%; left: 0; width: 15px; height: 15px; border-radius: 50%; background: var(--n-900, #e9e9e9); border: 2px solid rgba(10, 12, 16, 0.55); box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45); transform: translate(-50%, -50%); transition: transform 140ms ease; }
   .scrub:hover .scrub-handle, .scrub.scrubbing .scrub-handle, .scrub:focus-visible .scrub-handle { transform: translate(-50%, -50%) scale(1.2); }
   @media (prefers-reduced-motion: reduce) {
     .scrub-track, .scrub-handle { transition: none; }
