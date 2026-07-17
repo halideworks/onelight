@@ -7,6 +7,7 @@
   import { pageWashFor } from '$lib/washes.js';
   import { grainLayer } from '$lib/grain.js';
   import HeroWash from '$lib/HeroWash.svelte';
+  import LandingScope from '$lib/LandingScope.svelte';
   import Player from '@onelight/player/Player.svelte';
 
   type Project = {
@@ -108,6 +109,81 @@
     }, 350);
     return () => clearInterval(timer);
   });
+  /* One note per drawing tool, each in its author's ink. */
+  const DEMO_NOTES = [
+    {
+      frame: 45,
+      ink: '#8fca6a',
+      tc: '00:00:01:15',
+      text: 'Sign catches a specular. Matte it down.',
+      strokes: [
+        {
+          tool: 'arrow' as const,
+          color: '#8fca6a',
+          width: 0.004,
+          points: [
+            [0.3, 0.12],
+            [0.52, 0.24]
+          ] as Array<[number, number]>
+        }
+      ]
+    },
+    {
+      frame: 90,
+      ink: '#6aa5d8',
+      tc: '00:00:03:00',
+      text: 'Cape lining drifts magenta. Pull it toward the wall red.',
+      strokes: [
+        {
+          tool: 'ellipse' as const,
+          color: '#6aa5d8',
+          width: 0.004,
+          points: [
+            [0.42, 0.4],
+            [0.72, 0.88]
+          ] as Array<[number, number]>
+        }
+      ]
+    },
+    {
+      frame: 260,
+      ink: '#d477a2',
+      tc: '00:00:08:20',
+      text: 'Hold this transmission card eight more frames.',
+      strokes: [
+        {
+          tool: 'text' as const,
+          color: '#d477a2',
+          width: 0.05,
+          text: 'HOLD +8',
+          points: [[0.08, 0.16]] as Array<[number, number]>
+        }
+      ]
+    },
+    {
+      frame: 320,
+      ink: '#d8a069',
+      tc: '00:00:10:20',
+      text: 'Shadows crush at the derrick. Lift the floor a touch.',
+      strokes: [
+        {
+          tool: 'pen' as const,
+          color: '#d8a069',
+          width: 0.004,
+          points: [
+            [0.33, 0.6],
+            [0.31, 0.7],
+            [0.34, 0.8],
+            [0.42, 0.84],
+            [0.48, 0.78],
+            [0.47, 0.66],
+            [0.4, 0.58],
+            [0.34, 0.61]
+          ] as Array<[number, number]>
+        }
+      ]
+    }
+  ];
   let demoFrameNow = $state(0);
   const demoFrame = (frame: number): void => {
     demoFrameNow = frame;
@@ -216,42 +292,42 @@
               rate={{ num: 30000, den: 1001 }}
               durationFrames={360}
               chrome="simple"
-              annotations={[
-                {
-                  frame: DEMO_FRAME,
-                  strokes: [
-                    {
-                      tool: 'ellipse',
-                      color: '#6aa5d8',
-                      width: 0.004,
-                      points: [
-                        [0.42, 0.4],
-                        [0.72, 0.88]
-                      ]
-                    }
-                  ]
-                }
-              ]}
-              markers={[
-                {
-                  id: 'demo-note',
-                  frameIn: DEMO_FRAME,
-                  author: 'Onelight',
-                  text: 'Cape lining drifts magenta. Pull it toward the wall red.'
-                }
-              ]}
+              annotations={DEMO_NOTES.map((note) => ({
+                frame: note.frame,
+                strokes: note.strokes
+              }))}
+              markers={DEMO_NOTES.map((note) => ({
+                id: `demo-${String(note.frame)}`,
+                frameIn: note.frame,
+                author: 'Onelight',
+                text: note.text
+              }))}
               onframechange={demoFrame}
             />
             <div class="demoscope" aria-hidden="true">
-              <img src="/demo/waveform.png" alt="" />
-              <span class="scopehead" style={`left: ${((demoFrameNow / 360) * 100).toFixed(2)}%;`}></span>
+              <LandingScope source={() => demoBox?.querySelector('video')} />
+            </div>
+            <div class="demoticks">
+              {#each DEMO_NOTES as note (note.frame)}
+                <button
+                  type="button"
+                  class="tick"
+                  style={`left: calc(12px + (100% - 24px) * ${String(note.frame / 360)}); background: ${note.ink};`}
+                  aria-label={`Note at ${note.tc}`}
+                  onclick={() => demoPlayer?.seekToFrame(note.frame)}
+                ></button>
+              {/each}
             </div>
           </div>
-          <button type="button" class="demonote" onclick={demoSeekBack}>
-            <span class="ink" aria-hidden="true"></span>
-            <span class="tc">00:00:03:00</span>
-            <span class="notetext">Cape lining drifts magenta. Pull it toward the wall red.</span>
-          </button>
+          <div class="demonotes">
+            {#each DEMO_NOTES as note (note.frame)}
+              <button type="button" class="demonote" onclick={() => demoPlayer?.seekToFrame(note.frame)}>
+                <span class="ink" aria-hidden="true" style={`background: ${note.ink};`}></span>
+                <span class="tc">{note.tc}</span>
+                <span class="notetext">{note.text}</span>
+              </button>
+            {/each}
+          </div>
           <p class="reel">Destination Earth (1956), public domain.</p>
         </div>
       </div>
@@ -285,11 +361,21 @@
   .demoplayer :global(.player) { position: absolute; inset: 0; padding: 0 !important; }
   .demoplayer :global(.stage) { height: 100% !important; padding: 0 !important; }
   .demoplayer :global(.frame-box) { width: 100% !important; }
-  .demoplayer :global(.transport) { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; background: rgba(13, 17, 23, 0.6); border-radius: 0; padding-bottom: 30px; }
+  /* The control band reads as a light veil over the picture, not a slab:
+     a thin wash of ink with the frame blurred through it. Where
+     backdrop-filter is unsupported the ink deepens to keep legibility. */
+  .demoplayer :global(.transport) { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; background: rgba(13, 17, 23, 0.55); border-radius: 0; padding-bottom: 30px; }
+  @supports (backdrop-filter: blur(1px)) {
+    .demoplayer :global(.transport) { background: rgba(13, 17, 23, 0.28); backdrop-filter: blur(16px); }
+  }
   .demoplayer :global(.scrub) { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; padding: 0 12px 10px; background: transparent; }
-  .demoscope { position: absolute; top: 12px; right: 12px; z-index: 2; width: clamp(110px, 26%, 180px); padding: 5px 7px; border-radius: var(--radius); background: rgba(13, 17, 23, 0.5); }
-  .demoscope img { display: block; width: 100%; height: 26px; object-fit: fill; opacity: 0.72; }
-  .demoscope .scopehead { position: absolute; top: 4px; bottom: 4px; width: 1px; background: rgba(250, 248, 244, 0.85); margin-left: 7px; }
+  .demoscope { position: absolute; top: 12px; right: 12px; z-index: 2; width: clamp(150px, 30%, 220px); padding: 6px 8px; border-radius: var(--radius); background: rgba(13, 17, 23, 0.5); }
+  @supports (backdrop-filter: blur(1px)) {
+    .demoscope { background: rgba(13, 17, 23, 0.26); backdrop-filter: blur(14px); }
+  }
+  .demoticks { position: absolute; left: 0; right: 0; bottom: 6px; height: 16px; z-index: 4; pointer-events: none; }
+  .demoticks .tick { position: absolute; top: 0; width: 3px; height: 100%; padding: 0; border: 0; border-radius: 1px; cursor: pointer; pointer-events: auto; opacity: 0.9; }
+  .demoticks .tick:hover { opacity: 1; }
   /* The instrument sheds its grey for the landing exactly as the
      presentation room does: the player's neutral scale re-maps so its
      slabs vanish into the wash, the picture floats on the gradient with
@@ -311,9 +397,10 @@
     --n-900: #faf8f4;
   }
   .demoplayer :global(video) { border-radius: var(--radius-lg); }
-  .demonote { display: flex; align-items: baseline; gap: 10px; margin-top: 14px; padding: 0; border: 0; background: none; text-align: left; font-size: var(--text-13); color: rgba(255, 255, 255, 0.86); cursor: pointer; }
+  .demonotes { display: grid; gap: 7px; margin-top: 14px; }
+  .demonote { display: flex; align-items: baseline; gap: 10px; padding: 0; border: 0; background: none; text-align: left; font-size: var(--text-13); color: rgba(255, 255, 255, 0.86); cursor: pointer; }
   .demonote:hover .notetext { color: #fff; }
-  .demonote .ink { flex: none; width: 9px; height: 9px; border-radius: 50%; background: #6aa5d8; align-self: center; }
+  .demonote .ink { flex: none; width: 9px; height: 9px; border-radius: 50%; align-self: center; }
   .demonote .tc { font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.6); }
   .reel { margin: 10px 0 0; font-size: var(--text-12); color: rgba(255, 255, 255, 0.45); }
   .lockup { display: inline-flex; align-items: center; gap: 9px; font-family: var(--font-display); font-size: var(--text-16); font-weight: 700; color: var(--ink-text); }
