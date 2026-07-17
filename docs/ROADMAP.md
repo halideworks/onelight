@@ -388,7 +388,7 @@ An eighth pass: pictures inline, timecode everywhere, words on the frame.
 
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
-1. First green run of the integration and media-qc CI jobs on Linux: this exercises compose end to end, the HDR libplacebo tonemap on lavapipe (the new -init_hw_device vulkan flag), the zscale 601-to-709 conversion on partially-tagged sources, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Most of what used to be manual is now automated here; it just needs to run on a Linux runner with Docker.
+1. First green run of the integration and media-qc CI jobs on Linux: this exercises compose end to end, the HDR libplacebo tonemap on lavapipe (the new -init_hw_device vulkan flag), the zscale 601-to-709 conversion on partially-tagged sources, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Update 2026-07-17: CI had never actually executed (a pnpm/action-setup version pin conflicted with packageManager and killed every run at setup). With that fixed, the Integration job went green on its first real run. media-qc surfaced two findings: the qa HDR smoke run omitted the worker's VULKAN_HWDEVICE_ARGS so libplacebo refused lavapipe (fixed, the spec now mirrors the worker invocation), and Playwright WebKit on Linux reads the 75 percent white bar 3/255 low (uniform on all channels; under investigation, tolerance not widened).
 2. Real NLE import round-trips of the marker exporters (Resolve EDL, Avid text, xmeml, FCPXML) against actual applications, recorded per the golden-file protocol in the design doc. Fixtures are byte-exact and fuzz-hardened; the NLEs are the judges.
 3. Full-app browser pass on the review room and share flows (keyboard map, focus order, drawing, watermark overlay, modal a11y) with screenshots checked against section 24 and the mockups.
 4. The curated real-camera corpus of design doc section 21 (ProRes/DNx/XAVC, VFR phone clip, 8ch MXF, broken files) as CI fixtures where licensing allows; synthetic PQ/HLG fixtures already run.
@@ -403,14 +403,12 @@ An eighth pass: pictures inline, timecode everywhere, words on the frame.
 - SQLite FTS5 search on Node with LIKE fallback on D1 (the spec supersession keeps LIKE everywhere until D1 FTS5 support is verified).
 - Webhook signed timestamp for replay bounding; DNS-rebinding-safe webhook delivery.
 - A true tiled watermark grid (v1 approximates with three diagonal placements); watermarked sprite sidecars (the scrubber filmstrip on a watermarked share currently shows clean low-res frames).
-- Per-share branding: `brand_json` is written by share create/patch and read by the internal projections, but no public projection exposes it and the share page draws the default wash for everyone. Design doc section 11 wants palette or two custom hexes plus a logo. This is what makes a presentation the client's rather than ours.
-- Share viewer approval: `PATCH /s/:slug/approval` is implemented, viewer-authenticated, and notifies the project, but nothing in the share UI calls it, so a client cannot approve or request changes from the room they were sent. The presentation kind is where that decision belongs.
-- Removing an asset from a share: `POST /shares/:id/assets` adds, nothing removes. The share page's contents panel is where the control belongs once the endpoint exists.
-- Share brand logo: the brand now carries colours and the player choice; the logo half of design doc section 11 still needs an upload path.
-- Webhooks UI: full CRUD exists on the API (`/webhooks`) with no page; workspace settings is where it belongs.
-- Admin trash: `POST /assets/:id/trash` and `/restore` exist, and the purge sweep runs, but nothing lists what is in the trash. Needs a list endpoint, then a settings page with restore.
+- Wire the committed browser e2e suite (`e2e/`) into CI; it currently runs only by hand against a live instance.
+- Per-asset share view analytics: the viewer roster exists, but per-asset view events are not recorded server-side.
+- Viewer-side attachment deletion on share comments (viewers can post attachments but have no endpoint to remove one).
+- Phone polish in the share room beyond the wrap fix: transport density and proscenium padding at small widths.
+- WebAuthn keys and an admin-enforced 2FA policy (noted in the operational-security pass).
 - True Media Composer marker XML once a captured real MC export exists (avid_xml currently emits the MC text format; see the phase-3 supersession note).
-- A public unfurl-image route so share OG tags can carry og:image (all media URLs are signed today, so no image is emitted).
 
 ## Forward phases (design doc section 20)
 

@@ -97,6 +97,12 @@ describe.skipIf(fixturesMissing !== undefined)(
               ([patchRects]) => window.qa.readPatches(patchRects),
               [rects] as const,
             );
+            /* Collect every out-of-tolerance channel before failing, so a
+               deviation reads as a full vector across the patch set (a
+               uniform level shift, a matrix confusion, and a gamma bend
+               all look different across patches but identical on the
+               first failing channel alone). */
+            const failures: string[] = [];
             for (const patch of manifest.bars.patches) {
               const reading = readings.find(
                 (entry) => entry.name === patch.name,
@@ -107,12 +113,16 @@ describe.skipIf(fixturesMissing !== undefined)(
                 const got = reading.rgb[channel] ?? -1;
                 const want = patch.srgb[channel] ?? -1;
                 const tolerance = patch.tolerance[channel] ?? 0;
-                expect(
-                  Math.abs(got - want),
-                  `${engine.name} ${patch.name} channel ${channel}: got ${reading.rgb.join(",")}, reference ${patch.srgb.join(",")} (nominal ${patch.nominal.join(",")}, tolerance ${tolerance})`,
-                ).toBeLessThanOrEqual(tolerance);
+                if (Math.abs(got - want) > tolerance)
+                  failures.push(
+                    `${patch.name} channel ${channel}: got ${reading.rgb.join(",")}, reference ${patch.srgb.join(",")} (nominal ${patch.nominal.join(",")}, tolerance ${tolerance})`,
+                  );
               }
             }
+            expect(
+              failures,
+              `${engine.name} out-of-tolerance patches:\n${failures.join("\n")}`,
+            ).toEqual([]);
           } finally {
             await browser.close();
           }

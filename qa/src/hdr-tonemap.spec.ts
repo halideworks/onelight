@@ -30,6 +30,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   HDR_TONEMAP_FILTER,
+  VULKAN_HWDEVICE_ARGS,
   probeFile,
   runProcess,
 } from "../../packages/worker/src/media.js";
@@ -54,10 +55,16 @@ const detectLibplacebo = (): string | undefined => {
     return "ffmpeg -filters failed; cannot detect libplacebo";
   if (!/\blibplacebo\b/.test(filters.stdout ?? ""))
     return "ffmpeg lacks the libplacebo filter";
+  /* The worker never lets vf_libplacebo create its own Vulkan context: it
+     always prepends VULKAN_HWDEVICE_ARGS (see media.ts). Mirror that here,
+     both because it is the invocation being verified and because
+     libplacebo's own device selection refuses software implementations
+     like lavapipe, which is all a headless CI runner has. */
   const smoke = spawnSync(
     ffmpegBin(),
     [
       "-hide_banner",
+      ...VULKAN_HWDEVICE_ARGS,
       "-v",
       "error",
       "-f",
@@ -136,12 +143,14 @@ describe.skipIf(reason !== undefined)(
         expect(clip, `fixture ${id} synthesized`).toBeDefined();
         if (!clip) return;
         const outputPath = path.join(fixturesDir, `${id}-tonemapped.mp4`);
-        /* The literal product filter string, one GOP of frames, and no
-           explicit -colorspace/-color_trc flags: the bt709 tags asserted
-           below must come from libplacebo's output frames. */
+        /* The literal product filter string with the worker's own Vulkan
+           device args, one GOP of frames, and no explicit
+           -colorspace/-color_trc flags: the bt709 tags asserted below must
+           come from libplacebo's output frames. */
         await runProcess(ffmpegBin(), [
           "-hide_banner",
           "-y",
+          ...VULKAN_HWDEVICE_ARGS,
           "-i",
           path.join(fixturesDir, clip.file),
           "-vf",
