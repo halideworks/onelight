@@ -191,6 +191,46 @@
       user: null,
       userPlaceholder: 'you@fastmail.com',
       hint: 'Password is an app password from Fastmail settings.'
+    },
+    {
+      name: 'Brevo',
+      host: 'smtp-relay.brevo.com',
+      port: 587,
+      user: null,
+      userPlaceholder: 'Your Brevo login email',
+      hint: 'Password is an SMTP key from the Brevo dashboard, not your account password. 300 sends a day free.'
+    },
+    {
+      name: 'SMTP2GO',
+      host: 'mail.smtp2go.com',
+      port: 587,
+      user: null,
+      userPlaceholder: 'SMTP username',
+      hint: 'Credentials are an SMTP user created in the SMTP2GO dashboard. A thousand sends a month free.'
+    },
+    {
+      name: 'Proton',
+      host: 'smtp.protonmail.ch',
+      port: 587,
+      user: null,
+      userPlaceholder: 'you@your-domain',
+      hint: 'Password is an SMTP token (Settings, IMAP/SMTP, Generate token). Needs a paid plan with a custom domain; your mailbox password will not work.'
+    },
+    {
+      name: 'Migadu',
+      host: 'smtp.migadu.com',
+      port: 465,
+      user: null,
+      userPlaceholder: 'you@your-domain',
+      hint: 'Username is the full address; password is that mailbox password or an app password.'
+    },
+    {
+      name: 'Custom',
+      host: '',
+      port: 587,
+      user: null,
+      userPlaceholder: '',
+      hint: 'Port 587 with STARTTLS is the usual default; 465 means implicit TLS.'
     }
   ];
   let presetHint = $state('');
