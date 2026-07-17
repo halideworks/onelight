@@ -750,6 +750,82 @@ export const shareViewers = sqliteTable(
   }),
 );
 
+/** Links that move files in and out of a project without a seat. A package
+    sends existing assets; a request receives files, landing them as assets
+    in a chosen folder. */
+export const transfers = sqliteTable(
+  "transfers",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ["package", "request"] }).notNull(),
+    slug: text("slug").notNull().unique(),
+    title: text("title").notNull(),
+    message: text("message").notNull().default(""),
+    passphraseHash: text("passphrase_hash"),
+    expiresAt: integer("expires_at"),
+    /** Requests only: total bytes the link may receive; null is unlimited. */
+    byteCap: integer("byte_cap"),
+    /** Requests only: where received files land; null is the root. */
+    folderId: text("folder_id").references(() => folders.id, {
+      onDelete: "set null",
+    }),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id),
+    revokedAt: integer("revoked_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => ({
+    projectIndex: index("transfers_project_idx").on(table.projectId, table.id),
+  }),
+);
+
+export const transferItems = sqliteTable(
+  "transfer_items",
+  {
+    transferId: text("transfer_id")
+      .notNull()
+      .references(() => transfers.id, { onDelete: "cascade" }),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => assets.id, { onDelete: "cascade" }),
+    sortOrder: integer("sort_order").notNull(),
+  },
+  (table) => ({
+    primary: primaryKey({ columns: [table.transferId, table.assetId] }),
+  }),
+);
+
+/** One row per upload a request link receives: who sent it and, once the
+    upload completes and lands, which asset it became. */
+export const transferReceipts = sqliteTable(
+  "transfer_receipts",
+  {
+    id: text("id").primaryKey(),
+    transferId: text("transfer_id")
+      .notNull()
+      .references(() => transfers.id, { onDelete: "cascade" }),
+    uploadSessionId: text("upload_session_id")
+      .notNull()
+      .references(() => uploadSessions.id, { onDelete: "cascade" })
+      .unique(),
+    senderName: text("sender_name").notNull(),
+    assetId: text("asset_id").references(() => assets.id, {
+      onDelete: "set null",
+    }),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => ({
+    transferIndex: index("transfer_receipts_transfer_idx").on(
+      table.transferId,
+      table.id,
+    ),
+  }),
+);
+
 export const webhooks = sqliteTable("webhooks", {
   id: text("id").primaryKey(),
   workspaceId: text("workspace_id")

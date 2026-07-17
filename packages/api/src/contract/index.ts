@@ -14,6 +14,7 @@ import { registerPasswordResetDomain } from "./domains/password-reset.js";
 import { registerProjectsDomain } from "./domains/projects.js";
 import { registerSharesDomain } from "./domains/shares.js";
 import { registerSystemDomain } from "./domains/system.js";
+import { registerTransfersDomain } from "./domains/transfers.js";
 import { registerVersionsDomain } from "./domains/versions.js";
 import { registerWorkspaceUsersDomain } from "./domains/workspace-users.js";
 
@@ -98,5 +99,6 @@ export const registerContractSuite = (
     registerCommentsDomain(ctx);
     registerSharesDomain(ctx);
     registerSystemDomain(ctx);
+    registerTransfersDomain(ctx);
   });
 };

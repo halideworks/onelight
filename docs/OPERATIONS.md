@@ -72,3 +72,25 @@ a track.
   maintenance timer.
 - Blob GC reports orphans daily as a dry run; set `ONELIGHT_GC_DELETE=true`
   to delete orphans older than 24 hours.
+
+## Getting files off the disk
+
+Originals live in blob storage under content-addressed paths that are not
+meant to be browsed. To move a project's files onto a NAS, DAS, or archive
+volume, use the bundled offload command inside the server container, with
+the destination bind-mounted:
+
+```
+docker compose -p onelight exec onelight \
+  node apps/server/dist/cli.js offload --project "Spot 30s" --dest /mnt/archive
+```
+
+It rebuilds the project's folder tree with original filenames, copies every
+live version, verifies each copy against the stored CRC32C, and writes an
+onelight-manifest.json beside the files. Re-running skips files already
+present and verified, so an interrupted offload resumes. Add
+`--transfer <slug>` to offload only what one request link received.
+
+On the Workers deployment the equivalent is rclone against the R2 bucket;
+the database maps blob keys to filenames, but bulk archive from R2 is a
+bucket-level concern and rclone owns it well.

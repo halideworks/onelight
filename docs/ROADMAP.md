@@ -447,6 +447,32 @@ full pro tool. Standing decisions from this direction:
   now applies them; it used to spawn a fresh empty draft before the blur
   handler could commit, destroying the typed text. Enter still commits,
   Escape still discards.
+- **Transfers: files move in and out without a seat (2026-07-17).** Two
+  link kinds under /t/:slug, stored in migration 0016 (both legs). A
+  package sends chosen assets: the visitor gives a name, gets the file
+  manifest, per-file signed original downloads, and a Download everything
+  streamed zip (store method, zip64, data descriptors, exact
+  Content-Length precomputed; the writer lives in core over web streams
+  so both runtimes serve it, round-trip tested including against
+  Windows' own extractor). A request receives files: they ride the same
+  multipart engine, part persistence, CRC32C verification, and
+  quarantine members use (the handlers were extracted and shared, not
+  copied), then land as real assets in a chosen folder, so inbound media
+  is transcoding before the sender closes the tab. Receipts record who
+  sent what; the creator and project managers get transfer.received
+  notifications, the creator gets transfer.downloaded. Byte caps count
+  in-flight bytes, passphrase/expiry/revocation mirror shares, and the
+  public wire carries no project, creator, or folder identity. The
+  browser engine grew per-part retry with backoff and a localStorage
+  session ledger, so a page reload resumes an interrupted upload at the
+  last completed part, for member uploads and transfer uploads alike.
+  Packages require manager (they hand out originals), requests editor.
+  For sysadmins, `cli.js offload` copies a project's originals (or one
+  request link's yield) out of blob storage onto a mounted NAS/DAS path,
+  rebuilding the folder tree, verifying every copy against the stored
+  CRC32C, and writing a manifest; documented in OPERATIONS.md. Backlog:
+  a transfers e2e flow in the integration job, and notification digest
+  copy for the two new kinds.
 
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 

@@ -40,7 +40,11 @@ import {
   verifyTotp,
   sha256,
   sha256Hex,
+  zipEntryName,
+  zipLength,
+  zipStream,
 } from "@onelight/core";
+import type { ZipEntry } from "@onelight/core";
 import type {
   MultipartBlobStore,
   StoredMailSettings,
@@ -69,6 +73,9 @@ import {
   shareAssets,
   shareViewers,
   shares,
+  transferItems,
+  transferReceipts,
+  transfers,
   uploadParts,
   projectCoverUploads,
   uploadSessions,
@@ -6879,6 +6886,942 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return serveBlob(c, blobKey, disposition);
   });
 
+  /* ------------------------------ Transfers ------------------------------
+     Links that move files in and out of a project without a seat. A package
+     sends existing assets to someone; a request receives files from someone,
+     landing them as assets through the same multipart engine, checksum
+     verification, and probe pipeline members use. */
+
+  /* A package hands out originals, so it takes the same authority a share
+     with original downloads takes; a request only adds files, like an
+     editor. */
+  const transferRoleFor = (kind: "package" | "request") =>
+    kind === "package" ? ("manager" as const) : ("editor" as const);
+
+  type TransferCounts = {
+    itemCount: number;
+    receivedCount: number;
+    receivedBytes: number;
+  };
+
+  const transferCountsFor = async (
+    transferIds: string[],
+  ): Promise<Map<string, TransferCounts>> => {
+    const counts = new Map<string, TransferCounts>();
+    if (!transferIds.length) return counts;
+    for (const id of transferIds)
+      counts.set(id, { itemCount: 0, receivedCount: 0, receivedBytes: 0 });
+    const itemRows = await env.db
+      .select({
+        transferId: transferItems.transferId,
+        total: sql<number>`count(*)`,
+      })
+      .from(transferItems)
+      .where(inArray(transferItems.transferId, transferIds))
+      .groupBy(transferItems.transferId)
+      .all();
+    for (const row of itemRows) {
+      const entry = counts.get(row.transferId);
+      if (entry) entry.itemCount = Number(row.total);
+    }
+    const receiptRows = await env.db
+      .select({
+        transferId: transferReceipts.transferId,
+        size: uploadSessions.size,
+        status: uploadSessions.status,
+      })
+      .from(transferReceipts)
+      .innerJoin(
+        uploadSessions,
+        eq(transferReceipts.uploadSessionId, uploadSessions.id),
+      )
+      .where(inArray(transferReceipts.transferId, transferIds))
+      .all();
+    for (const row of receiptRows) {
+      const entry = counts.get(row.transferId);
+      if (!entry || row.status === "aborted" || row.status === "quarantined")
+        continue;
+      // In-flight bytes count toward the cap; the count is finished files.
+      entry.receivedBytes += row.size;
+      if (row.status === "completed") entry.receivedCount += 1;
+    }
+    return counts;
+  };
+
+  const transferWire = (
+    row: typeof transfers.$inferSelect,
+    counts?: TransferCounts,
+  ) => ({
+    id: row.id,
+    project_id: row.projectId,
+    kind: row.kind,
+    slug: row.slug,
+    title: row.title,
+    message: row.message,
+    has_passphrase: row.passphraseHash !== null,
+    expires_at: row.expiresAt,
+    byte_cap: row.byteCap,
+    folder_id: row.folderId,
+    created_by: row.createdBy,
+    revoked_at: row.revokedAt,
+    created_at: row.createdAt,
+    item_count: counts?.itemCount ?? 0,
+    received_count: counts?.receivedCount ?? 0,
+    received_bytes: counts?.receivedBytes ?? 0,
+  });
+
+  const transferById = async (id: string) => {
+    const row = (
+      await env.db
+        .select()
+        .from(transfers)
+        .where(eq(transfers.id, id))
+        .limit(1)
+        .all()
+    )[0];
+    if (!row) throw errors.notFound("Transfer was not found.");
+    return row;
+  };
+
+  /** The destination folder must be a live assets folder of the project. */
+  const requireDestinationFolder = async (
+    projectId: string,
+    folderId: string,
+  ): Promise<void> => {
+    const folder = (
+      await env.db
+        .select()
+        .from(folders)
+        .where(eq(folders.id, folderId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!folder || folder.projectId !== projectId || folder.kind !== "assets")
+      throw errors.validation(
+        "The destination folder must belong to the project.",
+      );
+  };
+
+  api.post("/transfers", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const body = await jsonBody(c, bodies.transferCreate);
+    await requireProject(body.project_id, actor, transferRoleFor(body.kind));
+    if (body.kind === "package" && !body.asset_ids.length)
+      throw errors.validation("A package needs at least one file.");
+    if (body.kind === "request" && body.asset_ids.length)
+      throw errors.validation("A request link does not carry files.");
+    if (body.asset_ids.length) {
+      const allowedAssets = await env.db
+        .select({ id: assets.id })
+        .from(assets)
+        .where(
+          and(eq(assets.projectId, body.project_id), isNull(assets.deletedAt)),
+        )
+        .all();
+      const allowed = new Set(
+        allowedAssets.map((asset: { id: string }) => asset.id),
+      );
+      if (body.asset_ids.some((id) => !allowed.has(id)))
+        throw errors.validation(
+          "Every packaged file must belong to the project.",
+        );
+    }
+    if (body.folder_id)
+      await requireDestinationFolder(body.project_id, body.folder_id);
+    const id = env.ids.ulid();
+    const readable = body.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48)
+      .replace(/-+$/g, "");
+    const slug = readable ? `${readable}-${base62(14)}` : base62(22);
+    const now = env.clock.now();
+    await env.db
+      .insert(transfers)
+      .values({
+        id,
+        projectId: body.project_id,
+        kind: body.kind,
+        slug,
+        title: body.title.trim(),
+        message: body.message,
+        passphraseHash: body.passphrase
+          ? await env.hasher.hash(body.passphrase)
+          : null,
+        expiresAt: body.expires_at ?? null,
+        byteCap: body.kind === "request" ? (body.byte_cap ?? null) : null,
+        folderId: body.kind === "request" ? (body.folder_id ?? null) : null,
+        createdBy: actor.id,
+        revokedAt: null,
+        createdAt: now,
+      })
+      .run();
+    for (const [index, assetId] of body.asset_ids.entries())
+      await env.db
+        .insert(transferItems)
+        .values({ transferId: id, assetId, sortOrder: index })
+        .run();
+    await appendProjectEvent(body.project_id, "transfer.created", {
+      transfer_id: id,
+      kind: body.kind,
+    });
+    const row = await transferById(id);
+    const counts = (await transferCountsFor([id])).get(id);
+    return c.json(
+      {
+        transfer: transferWire(row, counts),
+        url: `${env.config.PUBLIC_URL.replace(/\/$/, "")}/t/${slug}`,
+      },
+      201,
+    );
+  });
+
+  api.get("/transfers", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const projectId = c.req.query("project_id");
+    if (projectId) await requireProject(projectId, actor, "viewer");
+    const rows = await env.db
+      .select()
+      .from(transfers)
+      .innerJoin(projects, eq(transfers.projectId, projects.id))
+      .where(
+        and(
+          eq(projects.workspaceId, actor.workspaceId),
+          projectId ? eq(transfers.projectId, projectId) : undefined,
+        ),
+      )
+      .orderBy(desc(transfers.id))
+      .all();
+    const list = rows.map(
+      (row: { transfers: typeof transfers.$inferSelect }) => row.transfers,
+    );
+    const counts = await transferCountsFor(
+      list.map((row: typeof transfers.$inferSelect) => row.id),
+    );
+    return c.json({
+      items: list.map((row: typeof transfers.$inferSelect) =>
+        transferWire(row, counts.get(row.id)),
+      ),
+    });
+  });
+
+  api.get("/transfers/:id", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const transfer = await transferById(c.req.param("id"));
+    await requireProject(transfer.projectId, actor, "viewer");
+    const itemRows = await env.db
+      .select({
+        link: transferItems,
+        asset: assets,
+        version: assetVersions,
+      })
+      .from(transferItems)
+      .innerJoin(assets, eq(transferItems.assetId, assets.id))
+      .leftJoin(assetVersions, eq(assets.currentVersionId, assetVersions.id))
+      .where(
+        and(
+          eq(transferItems.transferId, transfer.id),
+          isNull(assets.deletedAt),
+        ),
+      )
+      .orderBy(asc(transferItems.sortOrder))
+      .all();
+    const receiptRows = await env.db
+      .select({ receipt: transferReceipts, upload: uploadSessions })
+      .from(transferReceipts)
+      .innerJoin(
+        uploadSessions,
+        eq(transferReceipts.uploadSessionId, uploadSessions.id),
+      )
+      .where(eq(transferReceipts.transferId, transfer.id))
+      .orderBy(asc(transferReceipts.id))
+      .all();
+    const counts = (await transferCountsFor([transfer.id])).get(transfer.id);
+    return c.json({
+      ...transferWire(transfer, counts),
+      items: itemRows.map(
+        (row: {
+          link: typeof transferItems.$inferSelect;
+          asset: typeof assets.$inferSelect;
+          version: typeof assetVersions.$inferSelect | null;
+        }) => ({
+          asset_id: row.asset.id,
+          name: row.asset.name,
+          kind: row.asset.kind,
+          size: row.version?.size ?? null,
+          sort_order: row.link.sortOrder,
+        }),
+      ),
+      receipts: receiptRows.map(
+        (row: {
+          receipt: typeof transferReceipts.$inferSelect;
+          upload: typeof uploadSessions.$inferSelect;
+        }) => ({
+          id: row.receipt.id,
+          sender_name: row.receipt.senderName,
+          filename: row.upload.clientFilename,
+          size: row.upload.size,
+          status: row.upload.status,
+          asset_id: row.receipt.assetId,
+          created_at: row.receipt.createdAt,
+        }),
+      ),
+    });
+  });
+
+  api.patch("/transfers/:id", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const transfer = await transferById(c.req.param("id"));
+    await requireProject(
+      transfer.projectId,
+      actor,
+      transferRoleFor(transfer.kind),
+    );
+    const body = await jsonBody(c, bodies.transferPatch);
+    if (body.folder_id)
+      await requireDestinationFolder(transfer.projectId, body.folder_id);
+    await env.db
+      .update(transfers)
+      .set({
+        ...(body.title !== undefined ? { title: body.title.trim() } : {}),
+        ...(body.message !== undefined ? { message: body.message } : {}),
+        ...(body.passphrase !== undefined
+          ? {
+              passphraseHash: body.passphrase
+                ? await env.hasher.hash(body.passphrase)
+                : null,
+            }
+          : {}),
+        ...(body.expires_at !== undefined
+          ? { expiresAt: body.expires_at }
+          : {}),
+        ...(body.byte_cap !== undefined && transfer.kind === "request"
+          ? { byteCap: body.byte_cap }
+          : {}),
+        ...(body.folder_id !== undefined && transfer.kind === "request"
+          ? { folderId: body.folder_id }
+          : {}),
+        ...(body.revoked !== undefined
+          ? { revokedAt: body.revoked ? env.clock.now() : null }
+          : {}),
+      })
+      .where(eq(transfers.id, transfer.id))
+      .run();
+    const updated = await transferById(transfer.id);
+    const counts = (await transferCountsFor([transfer.id])).get(transfer.id);
+    return c.json(transferWire(updated, counts));
+  });
+
+  api.delete("/transfers/:id", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const transfer = await transferById(c.req.param("id"));
+    await requireProject(
+      transfer.projectId,
+      actor,
+      transferRoleFor(transfer.kind),
+    );
+    await env.db.delete(transfers).where(eq(transfers.id, transfer.id)).run();
+    return c.body(null, 204);
+  });
+
+  api.post("/transfers/:id/items", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const transfer = await transferById(c.req.param("id"));
+    if (transfer.kind !== "package")
+      throw errors.validation("Only a package carries files.");
+    await requireProject(transfer.projectId, actor, "manager");
+    const body = await jsonBody(c, bodies.transferItemsAdd);
+    const allowedAssets = await env.db
+      .select({ id: assets.id })
+      .from(assets)
+      .where(
+        and(eq(assets.projectId, transfer.projectId), isNull(assets.deletedAt)),
+      )
+      .all();
+    const allowed = new Set(
+      allowedAssets.map((asset: { id: string }) => asset.id),
+    );
+    if (body.asset_ids.some((id) => !allowed.has(id)))
+      throw errors.validation(
+        "Every packaged file must belong to the project.",
+      );
+    const existing = await env.db
+      .select({
+        assetId: transferItems.assetId,
+        sortOrder: transferItems.sortOrder,
+      })
+      .from(transferItems)
+      .where(eq(transferItems.transferId, transfer.id))
+      .all();
+    const present = new Set(
+      existing.map((row: { assetId: string }) => row.assetId),
+    );
+    let next =
+      existing.reduce(
+        (max: number, row: { sortOrder: number }) =>
+          Math.max(max, row.sortOrder),
+        -1,
+      ) + 1;
+    let added = 0;
+    for (const assetId of body.asset_ids) {
+      if (present.has(assetId)) continue;
+      await env.db
+        .insert(transferItems)
+        .values({ transferId: transfer.id, assetId, sortOrder: next })
+        .run();
+      present.add(assetId);
+      next += 1;
+      added += 1;
+    }
+    const counts = (await transferCountsFor([transfer.id])).get(transfer.id);
+    return c.json({ transfer: transferWire(transfer, counts), added });
+  });
+
+  api.delete("/transfers/:id/items/:assetId", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const transfer = await transferById(c.req.param("id"));
+    await requireProject(transfer.projectId, actor, "manager");
+    await env.db
+      .delete(transferItems)
+      .where(
+        and(
+          eq(transferItems.transferId, transfer.id),
+          eq(transferItems.assetId, c.req.param("assetId")),
+        ),
+      )
+      .run();
+    return c.body(null, 204);
+  });
+
+  /* ------------------------- Transfers, public ------------------------- */
+
+  const liveTransferBySlug = async (slug: string) => {
+    const row = (
+      await env.db
+        .select()
+        .from(transfers)
+        .where(eq(transfers.slug, slug))
+        .limit(1)
+        .all()
+    )[0];
+    if (
+      !row ||
+      row.revokedAt ||
+      (row.expiresAt !== null && row.expiresAt <= env.clock.now())
+    )
+      throw errors.notFound("Transfer is unavailable.");
+    return row;
+  };
+
+  const transferCookie = (transferId: string): string =>
+    `ol_transfer_${transferId}`;
+
+  const issueTransferGrant = async (
+    c: Context<{ Variables: Variables }>,
+    transfer: typeof transfers.$inferSelect,
+    name: string,
+  ): Promise<void> => {
+    const signed = await new SignJWT({ transfer_id: transfer.id, name })
+      .setProtectedHeader({ alg: "HS256" })
+      .setIssuedAt()
+      .setExpirationTime("24h")
+      .sign(new TextEncoder().encode(env.config.SECRET_KEY));
+    setCookie(c, transferCookie(transfer.id), signed, {
+      httpOnly: true,
+      sameSite: "Lax",
+      secure: env.config.cookieSecure,
+      maxAge: 86_400,
+      path: "/",
+    });
+  };
+
+  const transferGrantFor = async (
+    c: Context<{ Variables: Variables }>,
+    transfer: typeof transfers.$inferSelect,
+  ): Promise<{ name: string } | undefined> => {
+    const signed = getCookie(c, transferCookie(transfer.id));
+    if (!signed) return undefined;
+    try {
+      const verified = await jwtVerify(
+        signed,
+        new TextEncoder().encode(env.config.SECRET_KEY),
+      );
+      if (
+        verified.payload.transfer_id !== transfer.id ||
+        typeof verified.payload.name !== "string"
+      )
+        return undefined;
+      return { name: verified.payload.name };
+    } catch {
+      return undefined;
+    }
+  };
+
+  const requireTransferGrant = async (
+    c: Context<{ Variables: Variables }>,
+    transfer: typeof transfers.$inferSelect,
+  ): Promise<{ name: string }> => {
+    const grant = await transferGrantFor(c, transfer);
+    if (!grant) throw errors.unauthorized();
+    return grant;
+  };
+
+  const receivedBytesFor = async (transferId: string): Promise<number> =>
+    (await transferCountsFor([transferId])).get(transferId)?.receivedBytes ?? 0;
+
+  interface PackageFile {
+    asset_id: string;
+    name: string;
+    kind: "video" | "audio" | "image" | "pdf" | "file";
+    size: number | null;
+    checksum_crc32c: string | null;
+    version: typeof assetVersions.$inferSelect | null;
+  }
+
+  const packageFilesFor = async (
+    transfer: typeof transfers.$inferSelect,
+  ): Promise<PackageFile[]> => {
+    const rows = await env.db
+      .select({ link: transferItems, asset: assets, version: assetVersions })
+      .from(transferItems)
+      .innerJoin(assets, eq(transferItems.assetId, assets.id))
+      .leftJoin(assetVersions, eq(assets.currentVersionId, assetVersions.id))
+      .where(
+        and(
+          eq(transferItems.transferId, transfer.id),
+          isNull(assets.deletedAt),
+        ),
+      )
+      .orderBy(asc(transferItems.sortOrder))
+      .all();
+    return rows.map(
+      (row: {
+        link: typeof transferItems.$inferSelect;
+        asset: typeof assets.$inferSelect;
+        version: typeof assetVersions.$inferSelect | null;
+      }) => ({
+        asset_id: row.asset.id,
+        name: row.asset.name,
+        kind: row.asset.kind,
+        size: row.version?.size ?? null,
+        checksum_crc32c: row.version?.checksumCrc32c || null,
+        version: row.version,
+      }),
+    );
+  };
+
+  const publicTransferWire = (
+    transfer: typeof transfers.$inferSelect,
+    receivedBytes: number,
+  ) => ({
+    slug: transfer.slug,
+    kind: transfer.kind,
+    title: transfer.title,
+    message: transfer.message,
+    requires_passphrase: transfer.passphraseHash !== null,
+    expires_at: transfer.expiresAt,
+    byte_cap: transfer.byteCap,
+    received_bytes: receivedBytes,
+  });
+
+  const publicTransferShell = async (
+    c: Context<{ Variables: Variables }>,
+    transfer: typeof transfers.$inferSelect,
+    grantOverride?: { name: string },
+  ) => {
+    const grant = grantOverride ?? (await transferGrantFor(c, transfer));
+    const authorized = grant !== undefined;
+    const files =
+      authorized && transfer.kind === "package"
+        ? (await packageFilesFor(transfer)).map((file) => ({
+            asset_id: file.asset_id,
+            name: file.name,
+            kind: file.kind,
+            size: file.size,
+            checksum_crc32c: file.checksum_crc32c,
+          }))
+        : [];
+    const receivedBytes =
+      transfer.kind === "request" ? await receivedBytesFor(transfer.id) : 0;
+    return {
+      transfer: publicTransferWire(transfer, receivedBytes),
+      authorized,
+      files,
+    };
+  };
+
+  api.get("/t/:slug", async (c) =>
+    c.json(
+      await publicTransferShell(
+        c,
+        await liveTransferBySlug(c.req.param("slug")),
+      ),
+    ),
+  );
+
+  api.post("/t/:slug/access", async (c) => {
+    const transfer = await liveTransferBySlug(c.req.param("slug"));
+    const ip = clientIp(c, env);
+    await hitRateLimit(
+      `transfer_access:${transfer.id}:${ip}`,
+      20,
+      5 * 60 * 1000,
+    );
+    const body = await jsonBody(c, bodies.transferAccess);
+    if (
+      transfer.passphraseHash &&
+      (!body.passphrase ||
+        !(await env.hasher.verify(body.passphrase, transfer.passphraseHash)))
+    )
+      throw errors.invalidCredentials();
+    const name = body.name.trim();
+    await issueTransferGrant(c, transfer, name);
+    return c.json(await publicTransferShell(c, transfer, { name }));
+  });
+
+  const notifyTransferDownloaded = async (
+    transfer: typeof transfers.$inferSelect,
+    name: string,
+    file: string | null,
+  ): Promise<void> => {
+    await createNotifications({
+      projectId: transfer.projectId,
+      actorUserId: null,
+      recipients: [transfer.createdBy],
+      kind: "transfer.downloaded",
+      payload: {
+        transfer_id: transfer.id,
+        transfer_title: transfer.title,
+        project_id: transfer.projectId,
+        name,
+        file,
+      },
+    });
+    await appendProjectEvent(transfer.projectId, "transfer.downloaded", {
+      transfer_id: transfer.id,
+      name,
+      file,
+    });
+  };
+
+  api.post("/t/:slug/files/:assetId/download", async (c) => {
+    const transfer = await liveTransferBySlug(c.req.param("slug"));
+    if (transfer.kind !== "package") throw errors.notFound();
+    const grant = await requireTransferGrant(c, transfer);
+    const file = (await packageFilesFor(transfer)).find(
+      (candidate) => candidate.asset_id === c.req.param("assetId"),
+    );
+    if (!file || !file.version) throw errors.notFound();
+    const token = await new SignJWT({
+      transfer_id: transfer.id,
+      blob_key: file.version.originalBlobKey,
+      disposition: attachmentDisposition(file.version.originalFilename),
+    })
+      .setProtectedHeader({ alg: "HS256" })
+      .setIssuedAt()
+      .setExpirationTime("15m")
+      .sign(new TextEncoder().encode(env.config.SECRET_KEY));
+    await notifyTransferDownloaded(transfer, grant.name, file.name);
+    return c.json({
+      url: `/api/v1/t/${transfer.slug}/file?token=${encodeURIComponent(token)}`,
+      expires_at: env.clock.now() + 15 * 60 * 1000,
+    });
+  });
+
+  api.get("/t/:slug/file", async (c) => {
+    const transfer = await liveTransferBySlug(c.req.param("slug"));
+    const token = c.req.query("token");
+    if (!token || !env.blobStore) throw errors.unauthorized();
+    let blobKey: string;
+    let disposition: string | undefined;
+    try {
+      const verified = await jwtVerify(
+        token,
+        new TextEncoder().encode(env.config.SECRET_KEY),
+      );
+      if (
+        verified.payload.transfer_id !== transfer.id ||
+        typeof verified.payload.blob_key !== "string"
+      )
+        throw new Error("Token claims do not match this transfer.");
+      blobKey = verified.payload.blob_key;
+      if (typeof verified.payload.disposition === "string")
+        disposition = sanitizeDisposition(verified.payload.disposition);
+    } catch {
+      throw errors.unauthorized();
+    }
+    return serveBlob(c, blobKey, disposition);
+  });
+
+  api.get("/t/:slug/zip", async (c) => {
+    const transfer = await liveTransferBySlug(c.req.param("slug"));
+    if (transfer.kind !== "package") throw errors.notFound();
+    const grant = await requireTransferGrant(c, transfer);
+    const store = requireBlobStore();
+    const files = await packageFilesFor(transfer);
+    const used = new Set<string>();
+    const entries: ZipEntry[] = [];
+    for (const file of files) {
+      const version = file.version;
+      if (!version) continue;
+      let name = zipEntryName(version.originalFilename);
+      if (used.has(name)) {
+        const dot = name.lastIndexOf(".");
+        const stem = dot > 0 ? name.slice(0, dot) : name;
+        const extension = dot > 0 ? name.slice(dot) : "";
+        let suffix = 2;
+        while (used.has(`${stem} (${suffix})${extension}`)) suffix += 1;
+        name = `${stem} (${suffix})${extension}`;
+      }
+      used.add(name);
+      entries.push({
+        name,
+        size: version.size,
+        modifiedAt: version.createdAt,
+        open: () => store.getStream(version.originalBlobKey),
+      });
+    }
+    if (!entries.length) throw errors.notFound("The package has no files.");
+    await notifyTransferDownloaded(transfer, grant.name, null);
+    const zipName = `${
+      transfer.title
+        .replace(/[^\w.-]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 80) || "package"
+    }.zip`;
+    return new Response(zipStream(entries), {
+      headers: {
+        "content-type": "application/zip",
+        "content-length": String(zipLength(entries)),
+        "content-disposition": attachmentDisposition(zipName),
+      },
+    });
+  });
+
+  const transferUploadWire = (upload: typeof uploadSessions.$inferSelect) => ({
+    id: upload.id,
+    filename: upload.clientFilename,
+    relative_path: upload.relativePath,
+    size: upload.size,
+    checksum_crc32c: upload.checksumCrc32c,
+    status: upload.status,
+    created_at: upload.createdAt,
+    completed_at: upload.completedAt,
+  });
+
+  /** The upload must be one this transfer's link created. */
+  const findTransferUpload = async (
+    transfer: typeof transfers.$inferSelect,
+    uploadId: string,
+  ): Promise<{
+    upload: typeof uploadSessions.$inferSelect;
+    receipt: typeof transferReceipts.$inferSelect;
+  }> => {
+    const receipt = (
+      await env.db
+        .select()
+        .from(transferReceipts)
+        .where(
+          and(
+            eq(transferReceipts.transferId, transfer.id),
+            eq(transferReceipts.uploadSessionId, uploadId),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (!receipt) throw errors.notFound("Upload was not found.");
+    const upload = (
+      await env.db
+        .select()
+        .from(uploadSessions)
+        .where(eq(uploadSessions.id, uploadId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!upload) throw errors.notFound("Upload was not found.");
+    return { upload, receipt };
+  };
+
+  api.post("/t/:slug/uploads", async (c) => {
+    const transfer = await liveTransferBySlug(c.req.param("slug"));
+    if (transfer.kind !== "request") throw errors.notFound();
+    const grant = await requireTransferGrant(c, transfer);
+    const ip = clientIp(c, env);
+    await hitRateLimit(
+      `transfer_upload:${transfer.id}:${ip}`,
+      240,
+      60 * 60 * 1000,
+    );
+    const body = await jsonBody(c, bodies.transferUploadCreate);
+    if ((body.relative_path ?? "").split(/[\\/]/).includes(".."))
+      throw errors.validation("Relative path cannot contain parent segments.");
+    const filename = body.filename.replace(/[\\/]/g, "_");
+    if (transfer.byteCap !== null) {
+      const used = await receivedBytesFor(transfer.id);
+      if (used + body.size > transfer.byteCap) throw errors.payloadTooLarge();
+    }
+    const project = (
+      await env.db
+        .select({ workspaceId: projects.workspaceId })
+        .from(projects)
+        .where(eq(projects.id, transfer.projectId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!project) throw errors.notFound("Transfer is unavailable.");
+    const uploadId = env.ids.ulid();
+    const blobKey = `${project.workspaceId}/${transfer.projectId}/uploads/${uploadId}/${filename}`;
+    const now = env.clock.now();
+    await env.db
+      .insert(uploadSessions)
+      .values({
+        id: uploadId,
+        workspaceId: project.workspaceId,
+        projectId: transfer.projectId,
+        createdBy: transfer.createdBy,
+        clientFilename: filename,
+        relativePath: body.relative_path ?? "",
+        size: body.size,
+        checksumCrc32c: body.checksum_crc32c ?? null,
+        blobKey,
+        uploadId: null,
+        partSize: null,
+        status: "pending",
+        createdAt: now,
+        completedAt: null,
+      })
+      .run();
+    await env.db
+      .insert(transferReceipts)
+      .values({
+        id: env.ids.ulid(),
+        transferId: transfer.id,
+        uploadSessionId: uploadId,
+        senderName: grant.name,
+        assetId: null,
+        createdAt: now,
+      })
+      .run();
+    const upload = (
+      await env.db
+        .select()
+        .from(uploadSessions)
+        .where(eq(uploadSessions.id, uploadId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!upload) throw errors.internal();
+    return c.json({ upload: transferUploadWire(upload) }, 201);
+  });
+
+  api.post("/t/:slug/uploads/:id/multipart", async (c) => {
+    const transfer = await liveTransferBySlug(c.req.param("slug"));
+    await requireTransferGrant(c, transfer);
+    const { upload } = await findTransferUpload(transfer, c.req.param("id"));
+    const started = await startMultipart(upload);
+    return c.json({
+      upload: transferUploadWire(started.upload),
+      ...(started.uploadId
+        ? { upload_id: started.uploadId, part_size: started.partSize }
+        : {}),
+    });
+  });
+
+  api.get("/t/:slug/uploads/:id/parts", async (c) => {
+    const transfer = await liveTransferBySlug(c.req.param("slug"));
+    await requireTransferGrant(c, transfer);
+    const { upload } = await findTransferUpload(transfer, c.req.param("id"));
+    return c.json(await listPartsResponse(upload));
+  });
+
+  api.put("/t/:slug/uploads/:id/parts/:partNo", async (c) => {
+    const transfer = await liveTransferBySlug(c.req.param("slug"));
+    await requireTransferGrant(c, transfer);
+    const { upload } = await findTransferUpload(transfer, c.req.param("id"));
+    c.header("etag", await storePart(c, upload));
+    return c.body(null, 204);
+  });
+
+  api.post("/t/:slug/uploads/:id/complete", async (c) => {
+    const transfer = await liveTransferBySlug(c.req.param("slug"));
+    const grant = await requireTransferGrant(c, transfer);
+    const found = await findTransferUpload(transfer, c.req.param("id"));
+    if (found.upload.status === "completed")
+      return c.json(
+        {
+          upload: transferUploadWire(found.upload),
+          asset_id: found.receipt.assetId,
+        },
+        202,
+      );
+    const body = await jsonBody(c, bodies.uploadComplete);
+    const completed = await finishUpload(found.upload, body);
+    /* The received file lands as an asset immediately: media probes and
+       transcodes exactly as a member upload would, so the request's yield
+       is review-ready, not a pile of blobs. */
+    const existingVersion = await env.db
+      .select({ id: assetVersions.id })
+      .from(assetVersions)
+      .where(eq(assetVersions.uploadSessionId, completed.id))
+      .limit(1)
+      .all();
+    let assetId = found.receipt.assetId;
+    if (!existingVersion.length) {
+      /* The destination folder may have been deleted since the link was
+         minted; received files then land at the project root. */
+      let folderId = transfer.folderId;
+      if (folderId) {
+        const folder = (
+          await env.db
+            .select({ id: folders.id })
+            .from(folders)
+            .where(eq(folders.id, folderId))
+            .limit(1)
+            .all()
+        )[0];
+        if (!folder) folderId = null;
+      }
+      const landed = await landUploadAsAsset(completed, {
+        folderId,
+        uploadedBy: transfer.createdBy,
+      });
+      assetId = landed.assetId;
+      await env.db
+        .update(transferReceipts)
+        .set({ assetId })
+        .where(eq(transferReceipts.id, found.receipt.id))
+        .run();
+      await createNotifications({
+        projectId: transfer.projectId,
+        actorUserId: null,
+        recipients: [
+          transfer.createdBy,
+          ...(await projectManagerIds(transfer.projectId)),
+        ],
+        kind: "transfer.received",
+        payload: {
+          transfer_id: transfer.id,
+          transfer_title: transfer.title,
+          project_id: transfer.projectId,
+          sender_name: grant.name,
+          filename: completed.clientFilename,
+          asset_id: assetId,
+        },
+      });
+      await appendProjectEvent(transfer.projectId, "transfer.received", {
+        transfer_id: transfer.id,
+        sender_name: grant.name,
+        asset_id: assetId,
+      });
+    }
+    return c.json(
+      { upload: transferUploadWire(completed), asset_id: assetId },
+      202,
+    );
+  });
+
   api.post("/uploads", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const body = await jsonBody(c, bodies.uploadCreate);
@@ -6981,20 +7924,22 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return upload;
   };
 
-  api.post("/uploads/:id/multipart", requireAuth, async (c) => {
-    const actor = userFromContext(c);
-    const upload = await findUpload(c.req.param("id"), actor);
+  /* The multipart engine, shared between the member endpoints and the
+     transfer request endpoints so the two flows cannot drift: same init,
+     same part persistence, same verification and quarantine on complete. */
+  const startMultipart = async (
+    upload: typeof uploadSessions.$inferSelect,
+  ): Promise<{
+    upload: typeof uploadSessions.$inferSelect;
+    uploadId?: string;
+    partSize?: number;
+  }> => {
     const store = requireBlobStore();
-    if (upload.status === "completed")
-      return c.json({ upload: uploadWire(upload) });
+    if (upload.status === "completed") return { upload };
     if (upload.status === "quarantined" || upload.status === "aborted")
       throw errors.conflict("This upload cannot be resumed.");
     if (upload.status === "uploading" && upload.uploadId && upload.partSize)
-      return c.json({
-        upload: uploadWire(upload),
-        upload_id: upload.uploadId,
-        part_size: upload.partSize,
-      });
+      return { upload, uploadId: upload.uploadId, partSize: upload.partSize };
     const created = await store.createMultipart(upload.blobKey, {
       size: upload.size,
     });
@@ -7016,30 +7961,53 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!updated) throw errors.notFound();
-    return c.json({
-      upload: uploadWire(updated),
-      upload_id: created.uploadId,
-      part_size: created.partSize,
-    });
+    return {
+      upload: updated,
+      uploadId: created.uploadId,
+      partSize: created.partSize,
+    };
+  };
+
+  const multipartResponse = (started: {
+    upload: typeof uploadSessions.$inferSelect;
+    uploadId?: string;
+    partSize?: number;
+  }) => ({
+    upload: uploadWire(started.upload),
+    ...(started.uploadId
+      ? { upload_id: started.uploadId, part_size: started.partSize }
+      : {}),
   });
 
-  api.get("/uploads/:id/parts", requireAuth, async (c) => {
+  api.post("/uploads/:id/multipart", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const upload = await findUpload(c.req.param("id"), actor);
+    return c.json(multipartResponse(await startMultipart(upload)));
+  });
+
+  const listPartsResponse = async (
+    upload: typeof uploadSessions.$inferSelect,
+  ) => {
     const rows = await env.db
       .select()
       .from(uploadParts)
       .where(eq(uploadParts.uploadId, upload.id))
       .orderBy(asc(uploadParts.partNo))
       .all();
-    return c.json({
+    return {
       items: rows.map((part: typeof uploadParts.$inferSelect) => ({
         part_no: part.partNo,
         etag: part.etag,
         size: part.size,
         completed_at: part.completedAt,
       })),
-    });
+    };
+  };
+
+  api.get("/uploads/:id/parts", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const upload = await findUpload(c.req.param("id"), actor);
+    return c.json(await listPartsResponse(upload));
   });
 
   api.get("/uploads/:id/parts/:partNo/url", requireAuth, async (c) => {
@@ -7051,9 +8019,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.json({ url: `/api/v1/uploads/${upload.id}/parts/${partNo}` });
   });
 
-  api.put("/uploads/:id/parts/:partNo", requireAuth, async (c) => {
-    const actor = userFromContext(c);
-    const upload = await findUpload(c.req.param("id"), actor);
+  const storePart = async (
+    c: Context<{ Variables: Variables }>,
+    upload: typeof uploadSessions.$inferSelect,
+  ): Promise<string> => {
     const store = requireBlobStore();
     if (!upload.uploadId || !c.req.raw.body)
       throw errors.validation("Multipart upload is not initialized.");
@@ -7091,23 +8060,31 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         },
       })
       .run();
-    c.header("etag", result.etag);
+    return result.etag;
+  };
+
+  api.put("/uploads/:id/parts/:partNo", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const upload = await findUpload(c.req.param("id"), actor);
+    c.header("etag", await storePart(c, upload));
     return c.body(null, 204);
   });
 
-  api.post("/uploads/:id/complete", requireAuth, async (c) => {
-    const actor = userFromContext(c);
-    const upload = await findUpload(c.req.param("id"), actor);
+  const finishUpload = async (
+    upload: typeof uploadSessions.$inferSelect,
+    body: {
+      parts: Array<{ part_no: number; etag: string }>;
+      checksum_crc32c?: string | undefined;
+    },
+  ): Promise<typeof uploadSessions.$inferSelect> => {
     // Re-completing a completed upload is idempotent: return the original
     // result instead of re-driving the blob store (spec phase-1 section 3).
     // An Idempotency-Key header is accepted and needs no bookkeeping here;
     // this natural idempotency is the documented scoped interpretation.
-    if (upload.status === "completed")
-      return c.json({ upload: uploadWire(upload) }, 202);
+    if (upload.status === "completed") return upload;
     if (upload.status === "quarantined" || upload.status === "aborted")
       throw errors.conflict("This upload cannot be completed.");
     const store = requireBlobStore();
-    const body = await jsonBody(c, bodies.uploadComplete);
     if (!upload.uploadId)
       throw errors.validation("Multipart upload is not initialized.");
     const persistedParts = await env.db
@@ -7188,7 +8165,20 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!updated) throw errors.notFound();
-    return c.json({ upload: uploadWire(updated) }, 202);
+    return updated;
+  };
+
+  api.post("/uploads/:id/complete", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const upload = await findUpload(c.req.param("id"), actor);
+    // A re-complete answers before reading the body, as it always has.
+    if (upload.status === "completed")
+      return c.json({ upload: uploadWire(upload) }, 202);
+    const body = await jsonBody(c, bodies.uploadComplete);
+    return c.json(
+      { upload: uploadWire(await finishUpload(upload, body)) },
+      202,
+    );
   });
 
   api.delete("/uploads/:id", requireAuth, async (c) => {
@@ -7241,31 +8231,34 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.body(null, 204);
   });
 
-  api.post("/projects/:id/assets", requireAuth, async (c) => {
-    const actor = userFromContext(c);
-    await requireProject(c.req.param("id"), actor, "editor");
-    const body = await jsonBody(c, bodies.assetCreate);
-    const upload = await findUpload(body.upload_id, actor);
-    if (upload.projectId !== c.req.param("id") || upload.status !== "completed")
-      throw errors.validation("Upload must be completed for this project.");
-    const existingVersion = await env.db
-      .select({ id: assetVersions.id })
-      .from(assetVersions)
-      .where(eq(assetVersions.uploadSessionId, upload.id))
-      .limit(1)
-      .all();
-    if (existingVersion.length)
-      throw errors.conflict("This upload is already attached to an asset.");
+  /* A completed upload becomes an asset with a first version and a queued
+     probe. Shared by the member attach endpoint and the transfer request
+     flow, whose received files land through the exact same door. */
+  const landUploadAsAsset = async (
+    upload: typeof uploadSessions.$inferSelect,
+    options: {
+      name?: string | undefined;
+      folderId: string | null;
+      uploadedBy: string;
+    },
+  ): Promise<{
+    assetId: string;
+    versionId: string;
+    jobId: string;
+    name: string;
+    createdAt: number;
+  }> => {
     const now = env.clock.now();
     const assetId = env.ids.ulid();
     const versionId = env.ids.ulid();
+    const name = options.name?.trim() || upload.clientFilename;
     await env.db
       .insert(assets)
       .values({
         id: assetId,
         projectId: upload.projectId,
-        folderId: body.folder_id ?? null,
-        name: body.name?.trim() || upload.clientFilename,
+        folderId: options.folderId,
+        name,
         kind: assetKind(upload.clientFilename),
         currentVersionId: versionId,
         status: "none",
@@ -7285,7 +8278,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         originalFilename: upload.clientFilename,
         size: upload.size,
         checksumCrc32c: upload.checksumCrc32c ?? "",
-        uploadedBy: actor.id,
+        uploadedBy: options.uploadedBy,
         mediaInfoJson: "{}",
         sourceTimecodeStart: null,
         sourceStartFrame: null,
@@ -7311,7 +8304,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         id: jobId,
         kind: "probe",
         payloadJson: JSON.stringify({
-          workspace_id: actor.workspaceId,
+          workspace_id: upload.workspaceId,
           project_id: upload.projectId,
           asset_id: assetId,
           version_id: versionId,
@@ -7338,17 +8331,40 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       version_id: versionId,
       job_id: jobId,
     });
+    return { assetId, versionId, jobId, name, createdAt: now };
+  };
+
+  api.post("/projects/:id/assets", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    await requireProject(c.req.param("id"), actor, "editor");
+    const body = await jsonBody(c, bodies.assetCreate);
+    const upload = await findUpload(body.upload_id, actor);
+    if (upload.projectId !== c.req.param("id") || upload.status !== "completed")
+      throw errors.validation("Upload must be completed for this project.");
+    const existingVersion = await env.db
+      .select({ id: assetVersions.id })
+      .from(assetVersions)
+      .where(eq(assetVersions.uploadSessionId, upload.id))
+      .limit(1)
+      .all();
+    if (existingVersion.length)
+      throw errors.conflict("This upload is already attached to an asset.");
+    const landed = await landUploadAsAsset(upload, {
+      name: body.name,
+      folderId: body.folder_id ?? null,
+      uploadedBy: actor.id,
+    });
     return c.json(
       {
-        id: assetId,
-        name: body.name?.trim() || upload.clientFilename,
+        id: landed.assetId,
+        name: landed.name,
         kind: assetKind(upload.clientFilename),
         status: "none",
-        current_version_id: versionId,
-        version_id: versionId,
-        job_id: jobId,
-        created_at: now,
-        updated_at: now,
+        current_version_id: landed.versionId,
+        version_id: landed.versionId,
+        job_id: landed.jobId,
+        created_at: landed.createdAt,
+        updated_at: landed.createdAt,
       },
       201,
     );

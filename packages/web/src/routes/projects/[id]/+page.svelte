@@ -1486,6 +1486,14 @@
       <!-- "Settings" alone, in a row of link-coloured text, read as chrome and
            was missed. It says what it settles, and carries a gear so it can be
            found by shape before it is read. -->
+      <!-- Transfers moves files in and out of the project; it sits beside
+           settings because both are rooms of this project, not of a file. -->
+      <a class="settingslink" href={`/projects/${projectId}/transfers`}>
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path d="M5 2.5L2 5.5h2V10h2V5.5h2L5 2.5zM11 13.5l3-3h-2V6h-2v4.5H8l3 3z" fill="currentColor" />
+        </svg>
+        Transfers
+      </a>
       <a class="settingslink" href={`/projects/${projectId}/settings`}>
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
           <path d="M8 10.2a2.2 2.2 0 110-4.4 2.2 2.2 0 010 4.4zm5.6-1.3l1.2-.9-1.2-2.1-1.4.5a4.7 4.7 0 00-1.2-.7L10.8 4H8.4l-.2 1.7a4.7 4.7 0 00-1.2.7l-1.4-.5-1.2 2.1 1.2.9a4.6 4.6 0 000 1.4l-1.2.9 1.2 2.1 1.4-.5c.36.3.77.53 1.2.7l.2 1.5h2.4l.2-1.5c.43-.17.84-.4 1.2-.7l1.4.5 1.2-2.1-1.2-.9a4.6 4.6 0 000-1.4z" fill="currentColor" />

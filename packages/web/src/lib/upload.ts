@@ -123,15 +123,19 @@ export class UploadQuarantinedError extends Error {
 const PART_CONCURRENCY = 4;
 const RATE_WINDOW_MS = 5000;
 
+/* A transient part failure retries with backoff before the file is allowed
+   to fail; a network blip should cost seconds, not the upload. */
+const PART_RETRY_DELAYS_MS = [500, 1500, 4000];
+
 const putPart = (
-  sessionId: string,
+  partPath: string,
   partNo: number,
   body: Blob,
   onBytes: (loaded: number) => void,
 ): Promise<{ part_no: number; etag: string }> =>
   new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("PUT", `/api/v1/uploads/${sessionId}/parts/${partNo}`);
+    xhr.open("PUT", partPath);
     xhr.setRequestHeader("content-type", "application/octet-stream");
     xhr.upload.onprogress = (event) => onBytes(event.loaded);
     xhr.onload = () => {
@@ -150,34 +154,140 @@ const putPart = (
     xhr.send(body);
   });
 
+const wait = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+const putPartWithRetry = async (
+  partPath: string,
+  partNo: number,
+  body: Blob,
+  onBytes: (loaded: number) => void,
+): Promise<{ part_no: number; etag: string }> => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await putPart(partPath, partNo, body, onBytes);
+    } catch (caught) {
+      const delay = PART_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) throw caught;
+      onBytes(0);
+      await wait(delay + Math.random() * 250);
+    }
+  }
+};
+
+/* Sessions persist across page reloads: the ledger remembers the session id
+   for a file's identity, so reopening the page and dropping the same file
+   resumes from the last completed part instead of starting over. */
+const ledgerKey = (scope: string, file: File): string =>
+  `onelight.upload.${scope}.${file.name}.${file.size}.${file.lastModified}`;
+
+const ledgerRead = (key: string): string | null => {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+
+const ledgerWrite = (key: string, sessionId: string): void => {
+  try {
+    localStorage.setItem(key, sessionId);
+  } catch {
+    /* Private windows without storage still upload, without resume. */
+  }
+};
+
+const ledgerClear = (key: string): void => {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* Nothing to clear. */
+  }
+};
+
+export interface UploadTarget {
+  /** Member upload into a project. */
+  projectId?: string;
+  /** Anonymous upload through a transfer request link. */
+  transferSlug?: string;
+}
+
+const endpointsFor = (target: UploadTarget) => {
+  if (target.transferSlug) {
+    const base = `/api/v1/t/${target.transferSlug}/uploads`;
+    return {
+      scope: `t.${target.transferSlug}`,
+      create: (file: File, relativePath: string) =>
+        apiPost<{ upload: { id: string } }>(base, {
+          filename: file.name,
+          relative_path: relativePath,
+          size: file.size,
+        }),
+      session: (sessionId: string) => `${base}/${sessionId}`,
+    };
+  }
+  if (!target.projectId) throw new Error("An upload needs a destination.");
+  const projectId = target.projectId;
+  return {
+    scope: `p.${projectId}`,
+    create: (file: File, relativePath: string) =>
+      apiPost<{ upload: { id: string } }>("/api/v1/uploads", {
+        project_id: projectId,
+        filename: file.name,
+        relative_path: relativePath,
+        size: file.size,
+      }),
+    session: (sessionId: string) => `/api/v1/uploads/${sessionId}`,
+  };
+};
+
 export const uploadFile = async (options: {
-  projectId: string;
+  projectId?: string;
+  transferSlug?: string;
   file: File;
   relativePath: string;
   sessionId?: string | null;
   onSession?: (sessionId: string) => void;
   onProgress?: (progress: UploadProgress) => void;
 }): Promise<string> => {
-  const { projectId, file, relativePath, onSession, onProgress } = options;
-  let sessionId = options.sessionId ?? null;
+  const { file, relativePath, onSession, onProgress } = options;
+  const endpoints = endpointsFor(options);
+  const storageKey = ledgerKey(endpoints.scope, file);
+  let sessionId = options.sessionId ?? ledgerRead(storageKey);
+  let resumed = sessionId !== null && !options.sessionId;
   if (!sessionId) {
-    const created = await apiPost<{ upload: { id: string } }>(
-      "/api/v1/uploads",
-      {
-        project_id: projectId,
-        filename: file.name,
-        relative_path: relativePath,
-        size: file.size,
-      },
-    );
+    const created = await endpoints.create(file, relativePath);
     sessionId = created.upload.id;
+    ledgerWrite(storageKey, sessionId);
     onSession?.(sessionId);
   }
-  const multipart = await apiPost<{
-    upload: { status: string };
-    part_size?: number;
-  }>(`/api/v1/uploads/${sessionId}/multipart`);
+  let multipart: { upload: { status: string }; part_size?: number };
+  try {
+    multipart = await apiPost<{
+      upload: { status: string };
+      part_size?: number;
+    }>(`${endpoints.session(sessionId)}/multipart`);
+  } catch (caught) {
+    /* A remembered session may be gone (reaped) or unusable (quarantined).
+       Forget it and start clean, once; a fresh session that fails is real. */
+    if (!resumed) {
+      if (messageFrom(caught, "").toLowerCase().includes("resumed"))
+        ledgerClear(storageKey);
+      throw caught;
+    }
+    ledgerClear(storageKey);
+    resumed = false;
+    const created = await endpoints.create(file, relativePath);
+    sessionId = created.upload.id;
+    ledgerWrite(storageKey, sessionId);
+    onSession?.(sessionId);
+    multipart = await apiPost<{
+      upload: { status: string };
+      part_size?: number;
+    }>(`${endpoints.session(sessionId)}/multipart`);
+  }
   if (multipart.upload.status === "completed") {
+    ledgerClear(storageKey);
     onProgress?.({ bytes: file.size, total: file.size, rate: 0 });
     return sessionId;
   }
@@ -190,7 +300,7 @@ export const uploadFile = async (options: {
 
   const existing = (
     await api<{ items: Array<{ part_no: number; etag: string }> }>(
-      `/api/v1/uploads/${sessionId}/parts`,
+      `${endpoints.session(sessionId)}/parts`,
     )
   ).items;
   const done = new Map<number, string>();
@@ -237,10 +347,15 @@ export const uploadFile = async (options: {
       const start = (partNo - 1) * partSize;
       const body = file.slice(start, Math.min(file.size, start + partSize));
       try {
-        const part = await putPart(sessionId, partNo, body, (loaded) => {
-          partBytes.set(partNo, Math.min(loaded, bytesOf(partNo)));
-          report();
-        });
+        const part = await putPartWithRetry(
+          `${endpoints.session(sessionId)}/parts/${partNo}`,
+          partNo,
+          body,
+          (loaded) => {
+            partBytes.set(partNo, Math.min(loaded, bytesOf(partNo)));
+            report();
+          },
+        );
         done.set(part.part_no, part.etag);
         partBytes.set(partNo, bytesOf(partNo));
         report();
@@ -262,12 +377,15 @@ export const uploadFile = async (options: {
     .sort((a, b) => a[0] - b[0])
     .map(([part_no, etag]) => ({ part_no, etag }));
   try {
-    await apiPost(`/api/v1/uploads/${sessionId}/complete`, { parts });
+    await apiPost(`${endpoints.session(sessionId)}/complete`, { parts });
   } catch (caught) {
-    if (messageFrom(caught, "").toLowerCase().includes("checksum"))
+    if (messageFrom(caught, "").toLowerCase().includes("checksum")) {
+      ledgerClear(storageKey);
       throw new UploadQuarantinedError();
+    }
     throw caught;
   }
+  ledgerClear(storageKey);
   onProgress?.({ bytes: file.size, total: file.size, rate: 0 });
   return sessionId;
 };

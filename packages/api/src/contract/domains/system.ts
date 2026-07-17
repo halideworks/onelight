@@ -936,6 +936,8 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       "post /api/v1/assets/{id}/restore",
       "post /api/v1/users/me/totp",
       "post /api/v1/admin/system/test-email",
+      "post /api/v1/t/{slug}/files/{assetId}/download",
+      "post /api/v1/t/{slug}/uploads/{id}/multipart",
     ]);
 
     it("documents every registered /api/v1 route with schemas", async () => {

@@ -12,3 +12,4 @@ export * from "./timecode.js";
 export * from "./markers.js";
 export * from "./totp.js";
 export * from "./mail-config.js";
+export * from "./zip.js";

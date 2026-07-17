@@ -259,6 +259,42 @@ export const bodies = {
     asset_id: z.string(),
     status: approvalStatus,
   }),
+  transferCreate: z.object({
+    project_id: z.string(),
+    kind: z.enum(["package", "request"]),
+    title: z.string().min(1).max(200),
+    message: z.string().max(2000).default(""),
+    passphrase: z.string().min(1).optional(),
+    expires_at: z.number().int().positive().nullable().optional(),
+    byte_cap: z.number().int().positive().nullable().optional(),
+    folder_id: z.string().nullable().optional(),
+    asset_ids: z.array(z.string()).max(1000).default([]),
+  }),
+  transferPatch: z.object({
+    title: z.string().min(1).max(200).optional(),
+    message: z.string().max(2000).optional(),
+    passphrase: z.string().min(1).nullable().optional(),
+    expires_at: z.number().int().positive().nullable().optional(),
+    byte_cap: z.number().int().positive().nullable().optional(),
+    folder_id: z.string().nullable().optional(),
+    revoked: z.boolean().optional(),
+  }),
+  transferItemsAdd: z.object({
+    asset_ids: z.array(z.string()).min(1).max(1000),
+  }),
+  transferAccess: z.object({
+    name: z.string().min(1).max(200),
+    passphrase: z.string().optional(),
+  }),
+  transferUploadCreate: z.object({
+    filename: z.string().min(1).max(500),
+    relative_path: z.string().max(2000).default(""),
+    size: z.number().int().positive(),
+    checksum_crc32c: z
+      .string()
+      .regex(/^[A-Za-z0-9+/=_-]+$/)
+      .optional(),
+  }),
   uploadCreate: z.object({
     project_id: z.string(),
     filename: z.string().min(1).max(500),
@@ -538,6 +574,97 @@ const shareViewerItem = z.object({
   first_seen_at: timestamp,
   last_seen_at: timestamp,
   user_agent: z.string().nullable(),
+});
+
+const transferKind = z.enum(["package", "request"]);
+
+const transfer = z.object({
+  id: z.string(),
+  project_id: z.string(),
+  kind: transferKind,
+  slug: z.string(),
+  title: z.string(),
+  message: z.string(),
+  has_passphrase: z.boolean(),
+  expires_at: timestamp.nullable(),
+  byte_cap: z.number().int().nullable(),
+  folder_id: z.string().nullable(),
+  created_by: z.string(),
+  revoked_at: timestamp.nullable(),
+  created_at: timestamp,
+  item_count: z.number().int(),
+  received_count: z.number().int(),
+  received_bytes: z.number().int(),
+});
+
+const transferItem = z.object({
+  asset_id: z.string(),
+  name: z.string(),
+  kind: z.enum(["video", "audio", "image", "pdf", "file"]),
+  size: z.number().int().nullable(),
+  sort_order: z.number().int(),
+});
+
+const transferReceiptItem = z.object({
+  id: z.string(),
+  sender_name: z.string(),
+  filename: z.string(),
+  size: z.number().int(),
+  status: z.enum([
+    "pending",
+    "uploading",
+    "completed",
+    "quarantined",
+    "aborted",
+  ]),
+  asset_id: z.string().nullable(),
+  created_at: timestamp,
+});
+
+/* The public projection never carries the project, the folder, the creator,
+   or the passphrase hash: a transfer link knows only what it moves. */
+const publicTransfer = z.object({
+  slug: z.string(),
+  kind: transferKind,
+  title: z.string(),
+  message: z.string(),
+  requires_passphrase: z.boolean(),
+  expires_at: timestamp.nullable(),
+  byte_cap: z.number().int().nullable(),
+  received_bytes: z.number().int(),
+});
+
+const publicTransferFile = z.object({
+  asset_id: z.string(),
+  name: z.string(),
+  kind: z.enum(["video", "audio", "image", "pdf", "file"]),
+  size: z.number().int().nullable(),
+  checksum_crc32c: z.string().nullable(),
+});
+
+const publicTransferShell = z.object({
+  transfer: publicTransfer,
+  authorized: z.boolean(),
+  files: z.array(publicTransferFile),
+});
+
+/* A request link's upload session, without the project id the member wire
+   carries: the sender knows the link, not the room behind it. */
+const transferUpload = z.object({
+  id: z.string(),
+  filename: z.string(),
+  relative_path: z.string(),
+  size: z.number().int(),
+  checksum_crc32c: z.string().nullable(),
+  status: z.enum([
+    "pending",
+    "uploading",
+    "completed",
+    "quarantined",
+    "aborted",
+  ]),
+  created_at: timestamp,
+  completed_at: timestamp.nullable(),
 });
 
 const webhookItem = z.object({
@@ -1197,6 +1324,103 @@ export const routeDocs: Record<string, RouteDoc> = {
     summary:
       "Share viewer roster (share owner or project manager). The viewer_key is never on the wire.",
     responses: { "200": ok(list(shareViewerItem)) },
+  },
+  "POST /transfers": {
+    summary:
+      "Create a transfer link: a package sends existing assets, a request receives files into a folder.",
+    request: bodies.transferCreate,
+    responses: { "201": created(z.object({ transfer, url: z.string() })) },
+  },
+  "GET /transfers": {
+    query: { project_id: { description: "Filter to one project." } },
+    responses: { "200": ok(list(transfer)) },
+  },
+  "GET /transfers/:id": {
+    responses: {
+      "200": ok(
+        transfer.extend({
+          items: z.array(transferItem),
+          receipts: z.array(transferReceiptItem),
+        }),
+      ),
+    },
+  },
+  "PATCH /transfers/:id": {
+    request: bodies.transferPatch,
+    responses: { "200": ok(transfer) },
+  },
+  "DELETE /transfers/:id": { responses: { "204": noContent } },
+  "POST /transfers/:id/items": {
+    request: bodies.transferItemsAdd,
+    responses: { "200": ok(z.object({ transfer, added: z.number().int() })) },
+  },
+  "DELETE /transfers/:id/items/:assetId": { responses: { "204": noContent } },
+  "GET /t/:slug": { responses: { "200": ok(publicTransferShell) } },
+  "POST /t/:slug/access": {
+    request: bodies.transferAccess,
+    responses: { "200": ok(publicTransferShell) },
+  },
+  "POST /t/:slug/files/:assetId/download": {
+    summary: "Signed download for one package file, original bytes.",
+    responses: { "200": ok(signedUrl) },
+  },
+  "GET /t/:slug/file": {
+    query: { token: { description: "Signed file token.", required: true } },
+    responses: { "200": binary("application/octet-stream") },
+  },
+  "GET /t/:slug/zip": {
+    summary:
+      "The whole package as one streamed zip (store method, exact length known upfront).",
+    responses: { "200": binary("application/zip") },
+  },
+  "POST /t/:slug/uploads": {
+    request: bodies.transferUploadCreate,
+    responses: {
+      "201": created(z.object({ upload: transferUpload })),
+    },
+  },
+  "POST /t/:slug/uploads/:id/multipart": {
+    responses: {
+      "200": ok(
+        z.object({
+          upload: transferUpload,
+          upload_id: z.string().optional(),
+          part_size: z.number().int().optional(),
+        }),
+      ),
+    },
+  },
+  "GET /t/:slug/uploads/:id/parts": {
+    responses: {
+      "200": ok(
+        list(
+          z.object({
+            part_no: z.number().int(),
+            etag: z.string(),
+            size: z.number().int(),
+            completed_at: timestamp.nullable(),
+          }),
+        ),
+      ),
+    },
+  },
+  "PUT /t/:slug/uploads/:id/parts/:partNo": {
+    requestContentType: "application/octet-stream",
+    responses: { "204": noContent },
+  },
+  "POST /t/:slug/uploads/:id/complete": {
+    summary:
+      "Verify and land a received upload: the file becomes an asset in the request's folder.",
+    request: bodies.uploadComplete,
+    responses: {
+      "202": {
+        schema: z.object({
+          upload: transferUpload,
+          asset_id: z.string().nullable(),
+        }),
+        description: "Upload verified and landed",
+      },
+    },
   },
   "POST /webhooks": {
     request: bodies.webhookCreate,
