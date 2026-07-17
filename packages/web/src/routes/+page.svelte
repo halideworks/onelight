@@ -5,6 +5,7 @@
   import ProjectCover from '$lib/ProjectCover.svelte';
   import { pretty } from '$lib/ids.js';
   import { pageWashFor } from '$lib/washes.js';
+  import { grainLayer } from '$lib/grain.js';
 
   type Project = {
     id: string;
@@ -82,19 +83,27 @@
       creating = false;
     }
   };
+
+  /* The signed-out landing carries the full wash, dark into the light
+     terminal at the very bottom edge, with the cover grammar's placed
+     light; content stays on the dark two thirds. */
+  const heroWash = [
+    grainLayer,
+    'radial-gradient(90% 62% at 70% 12%, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0) 60%)',
+    'linear-gradient(180deg in oklab, #0d1117 0%, var(--sumimai-a) 18%, var(--sumimai-m) 66%, var(--sumimai-b) 112%)'
+  ].join(', ');
 </script>
 
 <svelte:head><title>Onelight</title></svelte:head>
 
-<main class="shell" class:signed-in={auth.signedIn} style={`background-image: ${pageWashFor(null)}`}>
-  <p class="eyebrow">One-light dailies</p>
-  <!-- Signed out this is a hero and earns its size. Signed in it is a page
-       heading over a list you came here to use, so it stops shouting. -->
-  <h1>{auth.signedIn ? 'Choose a project.' : 'Review work with the frame still in view.'}</h1>
-  {#if !auth.signedIn}
-    <p class="lede">A self-hosted review room for post-production teams.</p>
-  {/if}
+<main
+  class="shell"
+  class:signed-in={auth.signedIn}
+  style={`background-image: ${auth.signedIn ? pageWashFor(null) : heroWash}`}
+>
   {#if auth.signedIn}
+    <p class="eyebrow">One-light dailies</p>
+    <h1>Choose a project.</h1>
     <section class="projects" aria-label="Projects">
       <!-- Creating a project leads: it is the one thing a new workspace must
            do, and it used to be stranded under the list. -->
@@ -140,29 +149,57 @@
       </div>
     </section>
   {:else if auth.ready}
-    <nav aria-label="Primary">
-      <a href="/login">Sign in</a>
-      {#if setupRequired}<a href="/setup">First run setup</a>{/if}
-    </nav>
+    <div class="hero">
+      <span class="lockup">
+        <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
+          <rect x="0.5" y="0.5" width="31" height="31" rx="8.5" fill="#10151d" />
+          <rect x="5" y="8" width="5" height="16" rx="1.2" fill="#2c3f56" />
+          <rect x="11" y="8" width="5" height="16" rx="1.2" fill="#934337" />
+          <rect x="17" y="8" width="5" height="16" rx="1.2" fill="#cf8a56" />
+          <rect x="23" y="8" width="4" height="16" rx="1.2" fill="#F7E1A0" />
+        </svg>
+        Onelight
+      </span>
+      <div class="pitch">
+        <p class="eyebrow">One-light dailies</p>
+        <h1>Review work with the frame still in view.</h1>
+        <p class="lede">A self-hosted review room for post-production teams.</p>
+        <div class="doors">
+          <a class="signin" href="/login">Sign in</a>
+          {#if setupRequired}<a class="setup" href="/setup">First run setup</a>{/if}
+        </div>
+      </div>
+      <p class="facts">Self-hosted. AGPL-3.0.</p>
+    </div>
   {/if}
 </main>
 
 <style>
-  /* The landing wash, resolving into ink like every other page rather than
-     ending the screen in pale tan with white text on it. */
-  /* The wash comes from pageWashFor like every other page, so the landing
-     carries the same grain the rest of the washed world does. */
-  .shell { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 12vh 9vw; background-color: var(--ink-000); background-repeat: repeat, no-repeat; }
+  /* Signed out, the landing is the one page allowed the FULL wash: it ends
+     on the light terminal like a horizon, and the content keeps to the dark
+     two thirds so nothing ever sits on cream. Signed in, it takes the same
+     page wash as every working page. */
+  .shell { min-height: calc(100vh - var(--topbar-h, 0px)); padding: 12vh 9vw; background-color: var(--ink-000); background-repeat: repeat, no-repeat, no-repeat; }
   /* Signed in this is a working page, not a landing page: less air, no hero. */
-  .shell.signed-in { padding: 6vh 9vw; }
+  .shell.signed-in { padding: 6vh 9vw; background-repeat: repeat, no-repeat; }
+
+  .hero { position: relative; display: grid; grid-template-rows: auto 1fr auto; min-height: calc(100vh - 24vh); }
+  .lockup { display: inline-flex; align-items: center; gap: 9px; font-family: var(--font-display); font-size: var(--text-16); font-weight: 700; color: var(--ink-text); }
+  .lockup svg { flex: none; }
+  .pitch { align-self: center; max-width: 720px; padding: 8vh 0; }
+  .pitch .lede { color: rgba(255, 255, 255, 0.74); }
+  .doors { display: flex; align-items: center; gap: 22px; margin-top: 44px; }
+  .signin { display: inline-block; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 11px 26px; font-size: var(--text-14); font-weight: 600; }
+  .signin:hover { background: var(--accent-bright); }
+  .setup { color: var(--ink-text-dim); border-bottom: 1px solid rgba(255, 255, 255, 0.35); padding-bottom: 3px; }
+  .setup:hover { color: var(--ink-text); }
+  .facts { margin: 0; color: rgba(255, 255, 255, 0.55); font-size: var(--text-13); }
   .eyebrow { margin: 0 0 24px; color: var(--ink-text-dim); font-size: var(--text-13); }
   h1 { max-width: 760px; margin: 0; font-family: var(--font-display); font-size: clamp(42px, 8vw, 92px); line-height: 0.98; }
   /* The heading over a list you came here to use does not need to be 92px. */
   .signed-in h1 { font-size: clamp(24px, 3vw, 34px); line-height: 1.1; margin: 0 0 24px; }
   .lede { max-width: 460px; margin: 32px 0 48px; font-size: 19px; color: var(--ink-text-dim); }
-  nav { display: flex; gap: 24px; }
   a { color: inherit; text-decoration: none; }
-  nav a { border-bottom: 1px solid rgba(255, 255, 255, 0.7); padding-bottom: 5px; }
   a:focus-visible { outline: 2px solid var(--accent-bright); outline-offset: 4px; }
 
   /* The list uses the window: the grid flows into as many columns as fit,

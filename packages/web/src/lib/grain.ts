@@ -13,7 +13,7 @@ const GRAIN_SVG = [
   '<feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch" seed="5"/>',
   '<feColorMatrix type="saturate" values="0"/>',
   "</filter>",
-  '<rect width="256" height="256" filter="url(#g)" opacity="0.04"/>',
+  '<rect width="256" height="256" filter="url(#g)" opacity="0.055"/>',
   "</svg>",
 ].join("");
 
