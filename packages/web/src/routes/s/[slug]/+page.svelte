@@ -24,6 +24,7 @@
   import { formatTimecode, timecodeFromFrames } from '@onelight/core';
   import { annotationsFrom, markersFrom, type CommentAttachment, type ReviewComment } from '$lib/comments.js';
   import { markerInkFor } from '@onelight/player';
+  import { holdRepeat } from '$lib/hold-repeat.js';
   import { hashtagsIn, segmentCommentBody } from '../../projects/[id]/assets/[assetId]/comment-text.js';
 
   type Brand = {
@@ -1177,13 +1178,13 @@
                 {:else if noteRange}
                   <span class="rangechip">
                     <span class="rangeword">from</span>
-                    <button type="button" onclick={() => nudgeNoteRange('in', -1)} aria-label="Start one frame earlier">◂</button>
+                    <button type="button" use:holdRepeat={() => nudgeNoteRange('in', -1)} aria-label="Start one frame earlier">◂</button>
                     <span class="tc anchor">{anchorLabel(noteRange.in)}</span>
-                    <button type="button" onclick={() => nudgeNoteRange('in', 1)} aria-label="Start one frame later">▸</button>
+                    <button type="button" use:holdRepeat={() => nudgeNoteRange('in', 1)} aria-label="Start one frame later">▸</button>
                     <span class="rangeword">to</span>
-                    <button type="button" onclick={() => nudgeNoteRange('out', -1)} aria-label="End one frame earlier">◂</button>
+                    <button type="button" use:holdRepeat={() => nudgeNoteRange('out', -1)} aria-label="End one frame earlier">◂</button>
                     <span class="tc anchor">{anchorLabel(noteRange.out)}</span>
-                    <button type="button" onclick={() => nudgeNoteRange('out', 1)} aria-label="End one frame later">▸</button>
+                    <button type="button" use:holdRepeat={() => nudgeNoteRange('out', 1)} aria-label="End one frame later">▸</button>
                     <button type="button" class="linky" onclick={() => { noteRange = null; }}>Just this moment</button>
                   </span>
                 {:else if playerActive}

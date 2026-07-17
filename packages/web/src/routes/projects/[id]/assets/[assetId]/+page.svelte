@@ -14,6 +14,7 @@
   import { page } from '$app/state';
   import { copyText } from '$lib/clipboard.js';
   import { dismissable } from '$lib/dismiss.js';
+  import { holdRepeat } from '$lib/hold-repeat.js';
   import { replaceState } from '$app/navigation';
   import { api, apiDelete, apiPatch, apiPost, messageFrom } from '$lib/api.js';
   import { projectEvents } from '$lib/sse.svelte.js';
@@ -1504,13 +1505,13 @@
                        and the timeline draws the span the moment it opens. -->
                   <span class="stepper range" title="The note covers this range">
                     <span class="rangeword">from</span>
-                    <button type="button" onclick={() => nudgeRange('in', -1)} aria-label="Start one frame earlier">◂</button>
+                    <button type="button" use:holdRepeat={() => nudgeRange('in', -1)} aria-label="Start one frame earlier">◂</button>
                     <span class="tc anchor-tc">{timecodeAt(playerRange.in as number)}</span>
-                    <button type="button" onclick={() => nudgeRange('in', 1)} aria-label="Start one frame later">▸</button>
+                    <button type="button" use:holdRepeat={() => nudgeRange('in', 1)} aria-label="Start one frame later">▸</button>
                     <span class="rangeword">to</span>
-                    <button type="button" onclick={() => nudgeRange('out', -1)} aria-label="End one frame earlier">◂</button>
+                    <button type="button" use:holdRepeat={() => nudgeRange('out', -1)} aria-label="End one frame earlier">◂</button>
                     <span class="tc anchor-tc">{timecodeAt(playerRange.out as number)}</span>
-                    <button type="button" onclick={() => nudgeRange('out', 1)} aria-label="End one frame later">▸</button>
+                    <button type="button" use:holdRepeat={() => nudgeRange('out', 1)} aria-label="End one frame later">▸</button>
                   </span>
                   <span class="anchor-hint">{(playerRange.out as number) - (playerRange.in as number) + 1} frames</span>
                   <button type="button" class="linky" onclick={() => player?.clearRange()}>Single frame</button>
@@ -1519,9 +1520,9 @@
                   <button type="button" class="linky" onclick={discardDrawing}>Discard</button>
                 {:else}
                   <span class="stepper">
-                    <button type="button" onclick={() => nudgeAnchor(-1)} aria-label="One frame earlier">◂</button>
+                    <button type="button" use:holdRepeat={() => nudgeAnchor(-1)} aria-label="One frame earlier">◂</button>
                     <span class="tc anchor-tc" aria-live="off">{timecodeAt(anchorFrame)}</span>
-                    <button type="button" onclick={() => nudgeAnchor(1)} aria-label="One frame later">▸</button>
+                    <button type="button" use:holdRepeat={() => nudgeAnchor(1)} aria-label="One frame later">▸</button>
                   </span>
                   <button type="button" class="linky" onclick={openRange} title="The note covers a stretch of time instead of one frame (or mark it with I and O)">Cover a range</button>
                   {#if anchorIsPlayhead}
