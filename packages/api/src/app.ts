@@ -1566,6 +1566,52 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
      carry has_pass, and a URL is masked of its credential. ---- */
 
   const MAIL_SETTINGS_KEY = "mail";
+  const MAIL_POLICY_KEY = "mail_policy";
+
+  /* What the instance sends when email works. Password resets are not a
+     policy: a reset that silently cannot arrive is a lockout. */
+  type MailPolicy = { invites: boolean; digests: boolean };
+  const readMailPolicy = async (): Promise<MailPolicy> => {
+    const rows = await env.db
+      .select()
+      .from(appSettings)
+      .where(eq(appSettings.key, MAIL_POLICY_KEY))
+      .all();
+    const row = rows[0];
+    if (!row) return { invites: true, digests: true };
+    try {
+      const parsed = JSON.parse(row.valueJson) as Partial<MailPolicy>;
+      return {
+        invites: parsed.invites !== false,
+        digests: parsed.digests !== false,
+      };
+    } catch {
+      return { invites: true, digests: true };
+    }
+  };
+  const writeMailPolicy = async (
+    policy: MailPolicy,
+    actorId: string,
+  ): Promise<void> => {
+    const now = env.clock.now();
+    await env.db
+      .insert(appSettings)
+      .values({
+        key: MAIL_POLICY_KEY,
+        valueJson: JSON.stringify(policy),
+        updatedAt: now,
+        updatedBy: actorId,
+      })
+      .onConflictDoUpdate({
+        target: appSettings.key,
+        set: {
+          valueJson: JSON.stringify(policy),
+          updatedAt: now,
+          updatedBy: actorId,
+        },
+      })
+      .run();
+  };
 
   const readStoredMail = async (): Promise<StoredMailSettings | null> => {
     const rows = await env.db
@@ -1613,6 +1659,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.json({
       stored: stored ? mailSettingsWire(stored) : null,
       active: await mailStatus(),
+      policy: await readMailPolicy(),
     });
   };
 
@@ -1629,6 +1676,34 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
        must not be able to redirect the instance's outgoing mail. */
     if (c.get("authType") !== "session") throw errors.forbidden();
     const body = await jsonBody(c, bodies.mailSettingsPut);
+    if (body.policy) {
+      const prior = await readMailPolicy();
+      await writeMailPolicy(
+        {
+          invites: body.policy.invites ?? prior.invites,
+          digests: body.policy.digests ?? prior.digests,
+        },
+        actor.id,
+      );
+      /* A policy-only PUT leaves the transport untouched. */
+      if (
+        body.smtp_url === undefined &&
+        body.host === undefined &&
+        body.mail_from === undefined &&
+        body.port === undefined &&
+        body.user === undefined &&
+        body.pass === undefined &&
+        body.secure === undefined
+      ) {
+        await audit(
+          actor.workspaceId,
+          actor.id,
+          "settings.mail.update",
+          "settings:mail",
+        );
+        return mailSettingsResponse(c);
+      }
+    }
     const prior = await readStoredMail();
     const next: StoredMailSettings = {
       smtp_url: body.smtp_url ?? null,
@@ -2276,6 +2351,32 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       "invite.create",
       `invite:${inviteId}`,
     );
+    const acceptUrl = `${env.config.PUBLIC_URL.replace(/\/$/, "")}/invite/${rawToken}`;
+    /* The invitation goes to the invitee when the transport works and the
+       policy allows; the link stays in the response either way, because
+       the admin may be the delivery channel. */
+    let emailed = false;
+    if (mailControl && (await mailStatus()).state === "ready") {
+      const policy = await readMailPolicy();
+      if (policy.invites) {
+        const workspace = await workspaceFor(actor.workspaceId);
+        try {
+          await mailControl.send({
+            to: email,
+            subject: `${actor.name} invited you to ${workspace?.name ?? "Onelight"}`,
+            text: [
+              `${actor.name} invited you to review work in ${workspace?.name ?? "their workspace"} on Onelight.`,
+              "",
+              "Create your account here (the link works for seven days):",
+              acceptUrl,
+            ].join("\n"),
+          });
+          emailed = true;
+        } catch {
+          /* Undeliverable is not a failed invite: the link still works. */
+        }
+      }
+    }
     return c.json(
       {
         invite: {
@@ -2287,7 +2388,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           created_at: now,
           expires_at: now + days(7),
         },
-        accept_url: `${env.config.PUBLIC_URL.replace(/\/$/, "")}/invite/${rawToken}`,
+        accept_url: acceptUrl,
+        emailed,
       },
       201,
     );

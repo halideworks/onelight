@@ -11,6 +11,7 @@
   let email = $state('');
   let inviteRole = $state<'member' | 'guest' | 'admin'>('member');
   let inviteUrl = $state('');
+  let inviteEmailed = $state(false);
   let error = $state('');
 
   const load = async (): Promise<void> => {
@@ -29,8 +30,9 @@
   const invite = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
     try {
-      const body = await apiPost<{ accept_url?: string }>('/api/v1/invites', { email, role: inviteRole, project_grants: [] });
+      const body = await apiPost<{ accept_url?: string; emailed?: boolean }>('/api/v1/invites', { email, role: inviteRole, project_grants: [] });
       inviteUrl = body.accept_url ?? '';
+      inviteEmailed = body.emailed ?? false;
       email = '';
       error = '';
       await load();
@@ -65,6 +67,7 @@
 <main class="page">
   <h1>Members</h1>
   <form class="invite" onsubmit={invite}><label>Email <input type="email" bind:value={email} required /></label><select aria-label="Invite role" bind:value={inviteRole}><option value="member">Member</option><option value="guest">Guest</option><option value="admin">Admin</option></select><button type="submit">Invite</button></form>
+  {#if inviteEmailed}<p class="hint" role="status">Invitation emailed.</p>{/if}
   {#if inviteUrl}<section class="revealed" aria-live="polite"><strong>Invite link</strong><input readonly value={inviteUrl} aria-label="Invite link" /><button type="button" onclick={() => void copyText(inviteUrl)}>Copy link</button></section>{/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   <section aria-label="Workspace members" class="list"><h2>Workspace members</h2>{#each users as user (user.id)}<article><div class="who"><Avatar name={user.name} id={user.id} url={user.avatar_url ?? null} size={30} /><div><strong>{user.name}</strong><span>{user.email}</span></div></div><select aria-label={`Role for ${user.name}`} value={user.role} onchange={(event) => changeRole(user, (event.currentTarget as HTMLSelectElement).value as User['role'])}><option value="member">Member</option><option value="guest">Guest</option><option value="admin">Admin</option></select></article>{/each}</section>

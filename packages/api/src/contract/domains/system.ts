@@ -17,6 +17,7 @@ import {
   createUser,
   seedAssetVersion,
   seedRendition,
+  unique,
   uniqueIp,
 } from "../seed.js";
 import type { SuiteContext } from "../context.js";
@@ -606,6 +607,67 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
         }),
       );
       expect(after.stored).toBeNull();
+    });
+
+    it("mails invitations by policy, and the policy is a setting", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      type MailView = {
+        policy: { invites: boolean; digests: boolean };
+      };
+      const initial = await json<MailView>(
+        await req(h, "/api/v1/admin/settings/mail", {
+          cookie: seed.admin.cookie,
+        }),
+      );
+      expect(initial.policy).toEqual({ invites: true, digests: true });
+
+      const email = unique("invitee").toLowerCase() + "@example.com";
+      const before = h.mailer ? h.mailer.messages.length : 0;
+      const invited = await json<{ accept_url: string; emailed: boolean }>(
+        await req(h, "/api/v1/invites", {
+          cookie: seed.admin.cookie,
+          json: { email, role: "member", project_grants: [] },
+        }),
+      );
+      if (h.mailer) {
+        // The invitee got the accept link.
+        expect(invited.emailed).toBe(true);
+        const delivered = h.mailer.messages[h.mailer.messages.length - 1];
+        expect(h.mailer.messages.length).toBe(before + 1);
+        expect(delivered?.to).toBe(email);
+        expect(delivered?.text).toContain("/invite/");
+      } else {
+        expect(invited.emailed).toBe(false);
+      }
+
+      // Policy off: the invite still works, nothing is sent.
+      const put = await json<MailView>(
+        await req(h, "/api/v1/admin/settings/mail", {
+          method: "PUT",
+          cookie: seed.admin.cookie,
+          json: { policy: { invites: false } },
+        }),
+      );
+      expect(put.policy.invites).toBe(false);
+      expect(put.policy.digests).toBe(true);
+      const email2 = unique("invitee2").toLowerCase() + "@example.com";
+      const count = h.mailer ? h.mailer.messages.length : 0;
+      const second = await json<{ emailed: boolean }>(
+        await req(h, "/api/v1/invites", {
+          cookie: seed.admin.cookie,
+          json: { email: email2, role: "member", project_grants: [] },
+        }),
+      );
+      expect(second.emailed).toBe(false);
+      if (h.mailer) expect(h.mailer.messages.length).toBe(count);
+
+      // Restore for other tests.
+      await req(h, "/api/v1/admin/settings/mail", {
+        method: "PUT",
+        cookie: seed.admin.cookie,
+        json: { policy: { invites: true } },
+      });
     });
   });
 

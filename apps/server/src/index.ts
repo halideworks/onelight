@@ -344,8 +344,25 @@ const start = async (): Promise<void> => {
       publicUrl: config.PUBLIC_URL,
       blobStore,
     }),
-    async () =>
-      (await mail.status()).state === "ready" ? { send: mail.send } : null,
+    async () => {
+      if ((await mail.status()).state !== "ready") return null;
+      /* The digest switch lives beside the mail settings; off means the
+         sweep marks rows handled without sending, same as no transport. */
+      const rows = await db
+        .select()
+        .from(appSettings)
+        .where(eq(appSettings.key, "mail_policy"))
+        .all();
+      try {
+        const parsed = rows[0]
+          ? (JSON.parse(rows[0].valueJson) as { digests?: boolean })
+          : {};
+        if (parsed.digests === false) return null;
+      } catch {
+        /* Unreadable policy defaults to sending. */
+      }
+      return { send: mail.send };
+    },
   );
   const webhookTimer = setInterval(() => {
     void deliverDueWebhookDeliveries(db, Date.now());

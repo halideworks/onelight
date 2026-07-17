@@ -19,6 +19,7 @@
   type View = {
     stored: Stored | null;
     active: { state: 'ready' | 'disabled' | 'error'; detail: string | null; source: 'settings' | 'env' | 'none' };
+    policy: { invites: boolean; digests: boolean };
   };
 
   let view = $state<View | null>(null);
@@ -117,6 +118,18 @@
       testResult = messageFrom(caught, 'The test email could not be sent.');
     } finally {
       testBusy = false;
+    }
+  };
+
+  let policyBusy = $state(false);
+  const setPolicy = async (patch: { invites?: boolean; digests?: boolean }): Promise<void> => {
+    policyBusy = true;
+    try {
+      applyView(await apiPut<View>('/api/v1/admin/settings/mail', { policy: patch }));
+    } catch (caught) {
+      error = messageFrom(caught, 'The setting could not be saved.');
+    } finally {
+      policyBusy = false;
     }
   };
 
@@ -321,6 +334,38 @@
         {/if}
       </div>
     </form>
+    <section class="panel sends" aria-label="What sends">
+      <h2>What sends</h2>
+      <ul>
+        <li>
+          <span>Password resets and the test email</span>
+          <span class="always">always, when email works</span>
+        </li>
+        <li>
+          <label>
+            <input
+              type="checkbox"
+              checked={view.policy.invites}
+              disabled={policyBusy}
+              onchange={(event) => void setPolicy({ invites: (event.currentTarget as HTMLInputElement).checked })}
+            />
+            Invitations, sent to the invitee when an admin invites them
+          </label>
+        </li>
+        <li>
+          <label>
+            <input
+              type="checkbox"
+              checked={view.policy.digests}
+              disabled={policyBusy}
+              onchange={(event) => void setPolicy({ digests: (event.currentTarget as HTMLInputElement).checked })}
+            />
+            Notification digests, on each person's own schedule
+          </label>
+          <a class="quietlink" href="/settings/notifications">Your schedule</a>
+        </li>
+      </ul>
+    </section>
   {:else if error}
     <p class="warn" role="alert">{error}</p>
   {:else}
@@ -356,6 +401,15 @@
   .quiet { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 7px 12px; font-size: var(--text-12); }
   .quiet:hover { background: var(--ink-300); }
   .quiet:disabled { opacity: 0.5; }
+
+  .sends { margin-top: 16px; }
+  .sends h2 { margin: 0 0 10px; font-size: var(--text-14); font-weight: 600; }
+  .sends ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+  .sends li { display: flex; align-items: center; gap: 10px; color: var(--ink-text); }
+  .sends label { display: flex; align-items: center; gap: 8px; color: var(--ink-text); cursor: pointer; }
+  .sends .always { color: var(--ink-text-dim); font-size: var(--text-12); }
+  .quietlink { color: var(--ink-text-dim); font-size: var(--text-12); }
+  .quietlink:hover { color: var(--ink-text); }
 
   .warn { color: var(--warn); margin: 0; }
   .notice { color: var(--ink-text-dim); margin: 0; }

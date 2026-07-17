@@ -89,6 +89,15 @@ export const bodies = {
       pass: z.string().max(500).nullable().optional(),
       secure: z.boolean().nullable().optional(),
       mail_from: z.string().trim().max(320).nullable().optional(),
+      /* What the instance sends when email works. Password resets have no
+         switch: a reset that cannot arrive is a lockout. */
+      policy: z
+        .object({
+          invites: z.boolean().optional(),
+          digests: z.boolean().optional(),
+        })
+        .strict()
+        .optional(),
     })
     .strict(),
   usersMePatch: z.object({
@@ -831,6 +840,10 @@ const mailSettingsView = z.object({
     state: z.enum(["ready", "disabled", "error"]),
     detail: z.string().nullable(),
     source: z.enum(["settings", "env", "none"]),
+  }),
+  policy: z.object({
+    invites: z.boolean(),
+    digests: z.boolean(),
   }),
 });
 const redirect: ResponseDoc = { description: "Redirect" };

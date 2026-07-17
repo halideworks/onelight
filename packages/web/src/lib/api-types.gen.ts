@@ -1193,6 +1193,10 @@ export interface paths {
                                 /** @enum {string} */
                                 source: "settings" | "env" | "none";
                             };
+                            policy: {
+                                invites: boolean;
+                                digests: boolean;
+                            };
                         };
                     };
                 };
@@ -1252,6 +1256,10 @@ export interface paths {
                         pass?: string | null;
                         secure?: boolean | null;
                         mail_from?: string | null;
+                        policy?: {
+                            invites?: boolean;
+                            digests?: boolean;
+                        };
                     };
                 };
             };
@@ -1278,6 +1286,10 @@ export interface paths {
                                 detail: string | null;
                                 /** @enum {string} */
                                 source: "settings" | "env" | "none";
+                            };
+                            policy: {
+                                invites: boolean;
+                                digests: boolean;
                             };
                         };
                     };

@@ -1641,11 +1641,28 @@
                         "source"
                       ],
                       "additionalProperties": false
+                    },
+                    "policy": {
+                      "type": "object",
+                      "properties": {
+                        "invites": {
+                          "type": "boolean"
+                        },
+                        "digests": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "invites",
+                        "digests"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
                     "stored",
-                    "active"
+                    "active",
+                    "policy"
                   ],
                   "additionalProperties": false
                 }
@@ -1775,6 +1792,18 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "policy": {
+                    "type": "object",
+                    "properties": {
+                      "invites": {
+                        "type": "boolean"
+                      },
+                      "digests": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false
@@ -1883,11 +1912,28 @@
                         "source"
                       ],
                       "additionalProperties": false
+                    },
+                    "policy": {
+                      "type": "object",
+                      "properties": {
+                        "invites": {
+                          "type": "boolean"
+                        },
+                        "digests": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "invites",
+                        "digests"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
                     "stored",
-                    "active"
+                    "active",
+                    "policy"
                   ],
                   "additionalProperties": false
                 }
