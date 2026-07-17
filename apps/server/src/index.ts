@@ -179,6 +179,16 @@ const start = async (): Promise<void> => {
     }
     return shellHtml;
   };
+  /* Baseline response hardening. Frames are same-origin (nothing here is
+     built to be embedded elsewhere today), sniffing is off, and referrers
+     stay inside the origin so share slugs never leak through outbound
+     links. */
+  app.use("*", async (c, next) => {
+    await next();
+    c.header("x-content-type-options", "nosniff");
+    c.header("referrer-policy", "same-origin");
+    c.header("x-frame-options", "SAMEORIGIN");
+  });
   app.use("*", async (c, next) => {
     if (
       isShareLandingPath(c.req.path) &&

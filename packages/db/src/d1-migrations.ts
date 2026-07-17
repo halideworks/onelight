@@ -53,6 +53,15 @@ const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes("avatar_key"));
 };
 
+const usersHaveTotpSecret = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("totp_secret"));
+};
+
 const projectsHaveCoverBlob = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -241,6 +250,15 @@ export const d1Migrations: D1Migration[] = [
     statements: [
       "CREATE TABLE caption_tracks (\n  id TEXT PRIMARY KEY,\n  version_id TEXT NOT NULL REFERENCES asset_versions(id) ON DELETE CASCADE,\n  language TEXT NOT NULL,\n  label TEXT NOT NULL,\n  blob_key TEXT NOT NULL,\n  created_by TEXT NOT NULL REFERENCES users(id),\n  created_at INTEGER NOT NULL\n)",
       "CREATE UNIQUE INDEX caption_tracks_version_lang_uq ON caption_tracks(version_id, language)",
+    ],
+  },
+  {
+    name: "0013_user_totp.sql",
+    applied: usersHaveTotpSecret,
+    statements: [
+      "ALTER TABLE users ADD COLUMN totp_secret TEXT",
+      "ALTER TABLE users ADD COLUMN totp_verified_at INTEGER",
+      "ALTER TABLE users ADD COLUMN totp_backup_codes_json TEXT NOT NULL DEFAULT '[]'",
     ],
   },
 ];

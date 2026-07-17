@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { days, loadConfig, sha256Hex } from "@onelight/core";
+import { days, loadConfig, sha256Hex, totpCode } from "@onelight/core";
 import { rateLimits, sessions } from "@onelight/db/schema";
 import { createApp } from "../../app.js";
 import {
@@ -457,6 +457,135 @@ export const registerAuthDomain = (ctx: SuiteContext): void => {
       const h = ctx.h();
       const response = await req(h, "/api/v1/auth/oidc/start");
       expect(response.status).toBe(404);
+    });
+  });
+
+  describe("two-factor", () => {
+    it("enrolls, gates login, and burns backup codes on use", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const user = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      const begun = await req(h, "/api/v1/users/me/totp", {
+        method: "POST",
+        cookie: user.cookie,
+      });
+      expect(begun.status).toBe(201);
+      const enrolment = await json<{ secret: string; otpauth_url: string }>(
+        begun,
+      );
+      expect(enrolment.otpauth_url).toContain("otpauth://totp/");
+      // Unverified enrolment changes nothing about login.
+      const plain = await req(h, "/api/v1/auth/login", {
+        json: { email: user.email, password: PASSWORD },
+        headers: { "x-forwarded-for": uniqueIp() },
+      });
+      expect(plain.status).toBe(200);
+      expect((await json(plain)).user).toBeDefined();
+      // A wrong code does not activate; the right one hands over backups.
+      const wrong = await req(h, "/api/v1/users/me/totp/verify", {
+        cookie: user.cookie,
+        json: { code: "000000" },
+      });
+      expect(wrong.status).toBe(400);
+      const verified = await req(h, "/api/v1/users/me/totp/verify", {
+        cookie: user.cookie,
+        json: { code: await totpCode(enrolment.secret, h.clock.now()) },
+      });
+      expect(verified.status).toBe(200);
+      const { backup_codes } = await json<{ backup_codes: string[] }>(verified);
+      expect(backup_codes).toHaveLength(8);
+      const me = await json(
+        await req(h, "/api/v1/users/me", { cookie: user.cookie }),
+      );
+      expect(me.totp_enabled).toBe(true);
+      // Password alone now earns a challenge, not a session.
+      const challenged = await req(h, "/api/v1/auth/login", {
+        json: { email: user.email, password: PASSWORD },
+        headers: { "x-forwarded-for": uniqueIp() },
+      });
+      expect(challenged.status).toBe(200);
+      const challenge = await json<{
+        mfa_required?: boolean;
+        mfa_token?: string;
+        user?: unknown;
+      }>(challenged);
+      expect(challenge.mfa_required).toBe(true);
+      expect(challenge.user).toBeUndefined();
+      const badSecond = await req(h, "/api/v1/auth/login/totp", {
+        json: { mfa_token: challenge.mfa_token, code: "123456" },
+        headers: { "x-forwarded-for": uniqueIp() },
+      });
+      expect(badSecond.status).toBe(401);
+      const second = await req(h, "/api/v1/auth/login/totp", {
+        json: {
+          mfa_token: challenge.mfa_token,
+          code: await totpCode(enrolment.secret, h.clock.now()),
+        },
+        headers: { "x-forwarded-for": uniqueIp() },
+      });
+      expect(second.status).toBe(200);
+      expect((await json(second)).user).toBeDefined();
+      // A backup code substitutes for the authenticator, exactly once.
+      const reChallenge = await json<{ mfa_token: string }>(
+        await req(h, "/api/v1/auth/login", {
+          json: { email: user.email, password: PASSWORD },
+          headers: { "x-forwarded-for": uniqueIp() },
+        }),
+      );
+      const backup = backup_codes[0] ?? "";
+      const viaBackup = await req(h, "/api/v1/auth/login/totp", {
+        json: { mfa_token: reChallenge.mfa_token, code: backup },
+        headers: { "x-forwarded-for": uniqueIp() },
+      });
+      expect(viaBackup.status).toBe(200);
+      const reuse = await json<{ mfa_token: string }>(
+        await req(h, "/api/v1/auth/login", {
+          json: { email: user.email, password: PASSWORD },
+          headers: { "x-forwarded-for": uniqueIp() },
+        }),
+      );
+      const burned = await req(h, "/api/v1/auth/login/totp", {
+        json: { mfa_token: reuse.mfa_token, code: backup },
+        headers: { "x-forwarded-for": uniqueIp() },
+      });
+      expect(burned.status).toBe(401);
+      // Turning it off needs a code; after that, login is plain again.
+      const denied = await req(h, "/api/v1/users/me/totp", {
+        method: "DELETE",
+        cookie: user.cookie,
+        json: { code: "999999" },
+      });
+      expect(denied.status).toBe(400);
+      const disabled = await req(h, "/api/v1/users/me/totp", {
+        method: "DELETE",
+        cookie: user.cookie,
+        json: { code: await totpCode(enrolment.secret, h.clock.now()) },
+      });
+      expect(disabled.status).toBe(204);
+      const after = await req(h, "/api/v1/auth/login", {
+        json: { email: user.email, password: PASSWORD },
+        headers: { "x-forwarded-for": uniqueIp() },
+      });
+      expect((await json(after)).user).toBeDefined();
+    });
+
+    it("refuses enrolment over an API token", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const issued = await req(h, "/api/v1/tokens", {
+        cookie: seed.admin.cookie,
+        json: { name: "totp-probe" },
+      });
+      expect(issued.status).toBe(201);
+      const { token } = await json<{ token: string }>(issued);
+      const overToken = await req(h, "/api/v1/users/me/totp", {
+        method: "POST",
+        bearer: token,
+      });
+      expect(overToken.status).toBe(403);
     });
   });
 

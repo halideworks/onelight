@@ -44,6 +44,25 @@ The player grows a captions toggle wherever a track exists, in the review
 room and on shares alike. `DELETE /versions/:id/captions/:language` removes
 a track.
 
+## Security posture
+
+- **Two-factor sign-in** is per-user TOTP (RFC 6238): turn it on under
+  Settings > Profile, prove a code, save the eight single-use backup codes.
+  With it on, the password earns a five-minute challenge instead of a
+  session; enrolment and disabling are session-auth only, so an API token
+  can never rotate an account's second factor. Secrets sit inactive until a
+  code proves the authenticator has them; backup codes are stored hashed
+  and burn on use.
+- **Rate limits** cover login (per email and per IP), the TOTP step, share
+  access attempts, and password resets. Failures land in the audit log
+  (`user.login_failed`, `user.login_totp_failed`).
+- **Response headers**: `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: same-origin` (share slugs never leak through outbound
+  links), `X-Frame-Options: SAMEORIGIN`.
+- **TLS** is the reverse proxy's job; put one in front for anything beyond
+  a LAN test install. Session cookies are HttpOnly and SameSite=Lax;
+  mutations require a same-origin Origin header.
+
 ## Housekeeping that runs itself
 
 - Upload-session reaping, trash purge, and rate-limit pruning run on the

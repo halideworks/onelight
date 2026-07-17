@@ -42,6 +42,11 @@ export const users = sqliteTable(
     role: text("role", { enum: ["admin", "member"] }).notNull(),
     passwordHash: text("password_hash"),
     avatarKey: text("avatar_key"),
+    /* TOTP: the secret sits unverified until a code proves the enrolment,
+       and backup codes are stored only as SHA-256 hashes. */
+    totpSecret: text("totp_secret"),
+    totpVerifiedAt: integer("totp_verified_at"),
+    totpBackupCodesJson: text("totp_backup_codes_json").notNull().default("[]"),
     disabledAt: integer("disabled_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),

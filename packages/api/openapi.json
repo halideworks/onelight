@@ -264,6 +264,9 @@
                         },
                         "created_at": {
                           "type": "integer"
+                        },
+                        "totp_enabled": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -273,7 +276,8 @@
                         "role",
                         "avatar_url",
                         "disabled_at",
-                        "created_at"
+                        "created_at",
+                        "totp_enabled"
                       ],
                       "additionalProperties": false
                     }
@@ -331,6 +335,7 @@
     },
     "/api/v1/auth/login": {
       "post": {
+        "summary": "Password login. With two-factor on, the password earns a five-minute mfa_token instead of a session; finish at /auth/login/totp.",
         "requestBody": {
           "required": true,
           "content": {
@@ -349,6 +354,169 @@
                 "required": [
                   "email",
                   "password"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "user": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "email": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "role": {
+                              "type": "string",
+                              "enum": [
+                                "admin",
+                                "member"
+                              ]
+                            },
+                            "avatar_url": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "disabled_at": {
+                              "anyOf": [
+                                {
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "created_at": {
+                              "type": "integer"
+                            },
+                            "totp_enabled": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "email",
+                            "name",
+                            "role",
+                            "avatar_url",
+                            "disabled_at",
+                            "created_at",
+                            "totp_enabled"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "user"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "mfa_required": {
+                          "type": "boolean",
+                          "const": true
+                        },
+                        "mfa_token": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "mfa_required",
+                        "mfa_token"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login/totp": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mfa_token": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": [
+                  "mfa_token",
+                  "code"
                 ],
                 "additionalProperties": false
               }
@@ -400,6 +568,9 @@
                         },
                         "created_at": {
                           "type": "integer"
+                        },
+                        "totp_enabled": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -409,7 +580,8 @@
                         "role",
                         "avatar_url",
                         "disabled_at",
-                        "created_at"
+                        "created_at",
+                        "totp_enabled"
                       ],
                       "additionalProperties": false
                     }
@@ -705,6 +877,9 @@
                         },
                         "created_at": {
                           "type": "integer"
+                        },
+                        "totp_enabled": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -714,7 +889,8 @@
                         "role",
                         "avatar_url",
                         "disabled_at",
-                        "created_at"
+                        "created_at",
+                        "totp_enabled"
                       ],
                       "additionalProperties": false
                     },
@@ -1252,6 +1428,233 @@
         }
       }
     },
+    "/api/v1/users/me/totp": {
+      "post": {
+        "summary": "Begin TOTP enrolment (session auth only). Inactive until a code is verified.",
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "secret": {
+                      "type": "string"
+                    },
+                    "otpauth_url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "secret",
+                    "otpauth_url"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": [
+                  "code"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No content"
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/me/totp/verify": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": [
+                  "code"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "backup_codes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "backup_codes"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/users/me/avatar": {
       "put": {
         "requestBody": {
@@ -1520,6 +1923,9 @@
                           },
                           "created_at": {
                             "type": "integer"
+                          },
+                          "totp_enabled": {
+                            "type": "boolean"
                           }
                         },
                         "required": [
@@ -1529,7 +1935,8 @@
                           "role",
                           "avatar_url",
                           "disabled_at",
-                          "created_at"
+                          "created_at",
+                          "totp_enabled"
                         ],
                         "additionalProperties": false
                       }
@@ -1637,6 +2044,9 @@
                     },
                     "created_at": {
                       "type": "integer"
+                    },
+                    "totp_enabled": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -1646,7 +2056,8 @@
                     "role",
                     "avatar_url",
                     "disabled_at",
-                    "created_at"
+                    "created_at",
+                    "totp_enabled"
                   ],
                   "additionalProperties": false
                 }
@@ -1772,6 +2183,9 @@
                     },
                     "created_at": {
                       "type": "integer"
+                    },
+                    "totp_enabled": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -1781,7 +2195,8 @@
                     "role",
                     "avatar_url",
                     "disabled_at",
-                    "created_at"
+                    "created_at",
+                    "totp_enabled"
                   ],
                   "additionalProperties": false
                 }
@@ -1908,6 +2323,9 @@
                     },
                     "created_at": {
                       "type": "integer"
+                    },
+                    "totp_enabled": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -1917,7 +2335,8 @@
                     "role",
                     "avatar_url",
                     "disabled_at",
-                    "created_at"
+                    "created_at",
+                    "totp_enabled"
                   ],
                   "additionalProperties": false
                 }
@@ -2583,6 +3002,9 @@
                         },
                         "created_at": {
                           "type": "integer"
+                        },
+                        "totp_enabled": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -2592,7 +3014,8 @@
                         "role",
                         "avatar_url",
                         "disabled_at",
-                        "created_at"
+                        "created_at",
+                        "totp_enabled"
                       ],
                       "additionalProperties": false
                     }
@@ -4107,6 +4530,9 @@
                               },
                               "created_at": {
                                 "type": "integer"
+                              },
+                              "totp_enabled": {
+                                "type": "boolean"
                               }
                             },
                             "required": [
@@ -4116,7 +4542,8 @@
                               "role",
                               "avatar_url",
                               "disabled_at",
-                              "created_at"
+                              "created_at",
+                              "totp_enabled"
                             ],
                             "additionalProperties": false
                           },
@@ -4279,6 +4706,9 @@
                         },
                         "created_at": {
                           "type": "integer"
+                        },
+                        "totp_enabled": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -4288,7 +4718,8 @@
                         "role",
                         "avatar_url",
                         "disabled_at",
-                        "created_at"
+                        "created_at",
+                        "totp_enabled"
                       ],
                       "additionalProperties": false
                     },

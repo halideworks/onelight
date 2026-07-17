@@ -195,6 +195,7 @@ export interface paths {
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
+                                totp_enabled: boolean;
                             };
                         };
                     };
@@ -252,6 +253,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Password login. With two-factor on, the password earns a five-minute mfa_token instead of a session; finish at /auth/login/totp. */
         post: {
             parameters: {
                 query?: never;
@@ -285,6 +287,101 @@ export interface paths {
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
+                                totp_enabled: boolean;
+                            };
+                        } | {
+                            /** @constant */
+                            mfa_required: true;
+                            mfa_token: string;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/login/totp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        mfa_token: string;
+                        code: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            user: {
+                                id: string;
+                                email: string;
+                                name: string;
+                                /** @enum {string} */
+                                role: "admin" | "member";
+                                avatar_url: string | null;
+                                disabled_at: number | null;
+                                created_at: number;
+                                totp_enabled: boolean;
                             };
                         };
                     };
@@ -588,6 +685,7 @@ export interface paths {
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
+                                totp_enabled: boolean;
                             };
                             /** @enum {string} */
                             auth: "session" | "token";
@@ -972,6 +1070,219 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/users/me/totp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Begin TOTP enrolment (session auth only). Inactive until a code is verified. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            secret: string;
+                            otpauth_url: string;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        code: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description No content */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/me/totp/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        code: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            backup_codes: string[];
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users/me/avatar": {
         parameters: {
             query?: never;
@@ -1215,6 +1526,7 @@ export interface paths {
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
+                                totp_enabled: boolean;
                             }[];
                             next_cursor: string | null;
                         };
@@ -1297,6 +1609,7 @@ export interface paths {
                             avatar_url: string | null;
                             disabled_at: number | null;
                             created_at: number;
+                            totp_enabled: boolean;
                         };
                     };
                 };
@@ -1377,6 +1690,7 @@ export interface paths {
                             avatar_url: string | null;
                             disabled_at: number | null;
                             created_at: number;
+                            totp_enabled: boolean;
                         };
                     };
                 };
@@ -1522,6 +1836,7 @@ export interface paths {
                             avatar_url: string | null;
                             disabled_at: number | null;
                             created_at: number;
+                            totp_enabled: boolean;
                         };
                     };
                 };
@@ -1939,6 +2254,7 @@ export interface paths {
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
+                                totp_enabled: boolean;
                             };
                         };
                     };
@@ -2972,6 +3288,7 @@ export interface paths {
                                     avatar_url: string | null;
                                     disabled_at: number | null;
                                     created_at: number;
+                                    totp_enabled: boolean;
                                 };
                                 /** @enum {string} */
                                 role: "manager" | "editor" | "commenter" | "viewer";
@@ -3068,6 +3385,7 @@ export interface paths {
                                 avatar_url: string | null;
                                 disabled_at: number | null;
                                 created_at: number;
+                                totp_enabled: boolean;
                             };
                             /** @enum {string} */
                             role: "manager" | "editor" | "commenter" | "viewer";

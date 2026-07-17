@@ -25,10 +25,15 @@ import {
   crc32cStream,
   days,
   errors,
+  generateBackupCodes,
+  generateTotpSecret,
+  otpauthUrl,
   parseMarkersCsv,
   parseResolveEdl,
   projectRoleAtLeast,
   randomBytes,
+  utf8,
+  verifyTotp,
   sha256,
   sha256Hex,
 } from "@onelight/core";
@@ -169,6 +174,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       : null,
     disabled_at: user.disabledAt,
     created_at: user.createdAt,
+    totp_enabled: Boolean(user.totpVerifiedAt),
   });
 
   const workspaceFor = async (workspaceId: string) => {
@@ -1104,6 +1110,81 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         );
       throw errors.invalidCredentials();
     }
+    /* With TOTP verified, the password alone gets a five-minute, single
+       purpose challenge token, never a session. The token proves the first
+       factor to the /auth/login/totp step and nothing else. */
+    if (user.totpVerifiedAt && user.totpSecret) {
+      const mfaToken = await new SignJWT({ purpose: "mfa" })
+        .setProtectedHeader({ alg: "HS256" })
+        .setSubject(user.id)
+        .setExpirationTime("5m")
+        .setIssuedAt()
+        .sign(utf8(env.config.SECRET_KEY));
+      return c.json({ mfa_required: true, mfa_token: mfaToken });
+    }
+    await createSession(env, user.id, c);
+    c.set("user", user);
+    c.set("authType", "session");
+    await audit(user.workspaceId, user.id, "user.login", `user:${user.id}`);
+    return c.json({ user: userWire(user) });
+  });
+
+  /* The second factor. Backup codes are accepted in place of a TOTP code
+     and burn on use. */
+  api.post("/auth/login/totp", async (c) => {
+    const body = await jsonBody(c, bodies.loginTotp);
+    const ip = clientIp(c, env);
+    await hitRateLimit(`login_totp:ip:${ip}`, 10, 5 * 60 * 1000);
+    let subject: string;
+    try {
+      const { payload } = await jwtVerify(
+        body.mfa_token,
+        utf8(env.config.SECRET_KEY),
+      );
+      if (payload.purpose !== "mfa" || typeof payload.sub !== "string")
+        throw errors.invalidCredentials();
+      subject = payload.sub;
+    } catch {
+      throw errors.invalidCredentials();
+    }
+    await hitRateLimit(`login_totp:user:${subject}`, 10, 5 * 60 * 1000);
+    const user = (
+      await env.db
+        .select()
+        .from(users)
+        .where(eq(users.id, subject))
+        .limit(1)
+        .all()
+    )[0];
+    if (!user || user.disabledAt || !user.totpSecret || !user.totpVerifiedAt)
+      throw errors.invalidCredentials();
+    const code = body.code.trim();
+    let passed = await verifyTotp(user.totpSecret, code, env.clock.now());
+    if (!passed && /^[A-Za-z2-7]{10}$/.test(code)) {
+      const hashed = await sha256Hex(code.toUpperCase());
+      const stored = JSON.parse(user.totpBackupCodesJson) as string[];
+      if (stored.includes(hashed)) {
+        passed = true;
+        await env.db
+          .update(users)
+          .set({
+            totpBackupCodesJson: JSON.stringify(
+              stored.filter((entry) => entry !== hashed),
+            ),
+          })
+          .where(eq(users.id, user.id))
+          .run();
+      }
+    }
+    if (!passed) {
+      await audit(
+        user.workspaceId,
+        user.id,
+        "user.login_totp_failed",
+        `user:${user.id}`,
+      );
+      throw errors.invalidCredentials();
+    }
     await createSession(env, user.id, c);
     c.set("user", user);
     c.set("authType", "session");
@@ -1432,6 +1513,87 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     "image/webp": "webp",
   };
   const AVATAR_MAX_BYTES = 512 * 1024;
+
+  /* TOTP enrolment. Beginning (or re-beginning) stores an unverified secret
+     that changes nothing about login until a code proves the authenticator
+     has it; verification activates the factor and hands over the backup
+     codes exactly once. Session auth only: an API token must not be able to
+     rotate the account's second factor. */
+  api.post("/users/me/totp", requireAuth, async (c) => {
+    const user = userFromContext(c);
+    if (c.get("authType") !== "session") throw errors.forbidden();
+    if (user.totpVerifiedAt)
+      throw errors.validation(
+        "Two-factor is already on. Turn it off before re-enrolling.",
+      );
+    const secret = generateTotpSecret();
+    await env.db
+      .update(users)
+      .set({ totpSecret: secret, totpVerifiedAt: null })
+      .where(eq(users.id, user.id))
+      .run();
+    return c.json({ secret, otpauth_url: otpauthUrl(secret, user.email) }, 201);
+  });
+
+  api.post("/users/me/totp/verify", requireAuth, async (c) => {
+    const user = userFromContext(c);
+    if (c.get("authType") !== "session") throw errors.forbidden();
+    const body = await jsonBody(c, bodies.totpCode);
+    if (!user.totpSecret || user.totpVerifiedAt)
+      throw errors.validation("There is no enrolment waiting for a code.");
+    if (!(await verifyTotp(user.totpSecret, body.code, env.clock.now())))
+      throw errors.validation("That code does not match. Try the next one.");
+    const backupCodes = generateBackupCodes();
+    const hashed = await Promise.all(
+      backupCodes.map((code) => sha256Hex(code)),
+    );
+    await env.db
+      .update(users)
+      .set({
+        totpVerifiedAt: env.clock.now(),
+        totpBackupCodesJson: JSON.stringify(hashed),
+      })
+      .where(eq(users.id, user.id))
+      .run();
+    await audit(
+      user.workspaceId,
+      user.id,
+      "user.totp_enabled",
+      `user:${user.id}`,
+    );
+    return c.json({ backup_codes: backupCodes });
+  });
+
+  api.delete("/users/me/totp", requireAuth, async (c) => {
+    const user = userFromContext(c);
+    if (c.get("authType") !== "session") throw errors.forbidden();
+    const body = await jsonBody(c, bodies.totpCode);
+    if (!user.totpSecret || !user.totpVerifiedAt)
+      throw errors.validation("Two-factor is not on.");
+    let passed = await verifyTotp(user.totpSecret, body.code, env.clock.now());
+    if (!passed && /^[A-Za-z2-7]{10}$/.test(body.code.trim())) {
+      const stored = JSON.parse(user.totpBackupCodesJson) as string[];
+      passed = stored.includes(await sha256Hex(body.code.trim().toUpperCase()));
+    }
+    if (!passed)
+      throw errors.validation("Turning two-factor off needs a valid code.");
+    await env.db
+      .update(users)
+      .set({
+        totpSecret: null,
+        totpVerifiedAt: null,
+        totpBackupCodesJson: "[]",
+      })
+      .where(eq(users.id, user.id))
+      .run();
+    await audit(
+      user.workspaceId,
+      user.id,
+      "user.totp_disabled",
+      `user:${user.id}`,
+    );
+    return c.body(null, 204);
+  });
 
   api.put("/users/me/avatar", requireAuth, async (c) => {
     const user = userFromContext(c);

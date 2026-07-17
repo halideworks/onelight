@@ -54,16 +54,53 @@
     }
   };
 
+  /* Two-factor: the password earns a short-lived challenge token; the code
+     form finishes the sign-in against /auth/login/totp. */
+  let mfaToken = $state<string | null>(null);
+  let mfaCode = $state('');
+
   const submit = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
     busy = true;
     error = '';
     try {
-      await apiPost('/api/v1/auth/login', { email, password }, { redirectOn401: false });
+      const result = await apiPost<{ mfa_required?: boolean; mfa_token?: string }>(
+        '/api/v1/auth/login',
+        { email, password },
+        { redirectOn401: false }
+      );
+      if (result.mfa_required && result.mfa_token) {
+        mfaToken = result.mfa_token;
+        mfaCode = '';
+        return;
+      }
       await auth.hydrate();
       await goto('/');
     } catch (caught) {
       error = messageFrom(caught, 'Sign in failed.');
+    } finally {
+      busy = false;
+    }
+  };
+
+  const submitCode = async (event: SubmitEvent): Promise<void> => {
+    event.preventDefault();
+    if (!mfaToken || busy) return;
+    busy = true;
+    error = '';
+    try {
+      await apiPost(
+        '/api/v1/auth/login/totp',
+        { mfa_token: mfaToken, code: mfaCode.trim() },
+        { redirectOn401: false }
+      );
+      await auth.hydrate();
+      await goto('/');
+    } catch {
+      /* The server answers a wrong code with the same 401 the password step
+         uses; its words fit passwords, not codes, so this step keeps its
+         own. Codes also rotate, and the challenge token expires. */
+      error = 'That code did not work. Codes rotate every 30 seconds; a backup code works here too.';
     } finally {
       busy = false;
     }
@@ -77,12 +114,33 @@
     <h1>Onelight</h1>
     <p class="sub">{workspaceName ? `Sign in to ${workspaceName}` : 'Sign in to your review workspace'}</p>
     {#if resetNote}<p class="note" role="status">Password updated. Sign in with the new one.</p>{/if}
+    {#if mfaToken}
+      <form class="mfa" onsubmit={submitCode}>
+        <label>Code from your authenticator
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            bind:value={mfaCode}
+            name="totp"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            maxlength="12"
+            autofocus
+            required
+          />
+        </label>
+        <p class="hint">A backup code works here too.</p>
+        {#if error}<p class="error" role="alert">{error}</p>{/if}
+        <button type="submit" disabled={busy}>{busy ? 'Checking' : 'Continue'}</button>
+        <button type="button" class="textbtn" onclick={() => { mfaToken = null; error = ''; }}>Back</button>
+      </form>
+    {:else}
     <form onsubmit={submit}>
       <label>Email <input bind:value={email} name="email" type="email" autocomplete="email" required /></label>
       <label>Password <input bind:value={password} name="password" type="password" autocomplete="current-password" required /></label>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
       <button type="submit" disabled={busy}>{busy ? 'Signing in' : 'Sign in'}</button>
     </form>
+    {/if}
     {#if !forgotOpen}
       <button type="button" class="textbtn" onclick={openForgot}>Forgot password</button>
     {:else if resetSent}
@@ -131,6 +189,7 @@
   .textbtn:hover { color: var(--ink-text); }
   .forgot { margin-top: 20px; display: grid; gap: 12px; }
   .reset-note { margin: 20px 0 0; color: var(--ink-text-dim); font-size: var(--text-13); }
+  .mfa .hint { margin: 0; color: var(--ink-text-dim); font-size: var(--text-13); }
   button.quiet { background: var(--ink-200); color: var(--ink-text); font-weight: 500; }
   button.quiet:hover { background: var(--ink-300); }
   .foot { display: inline-block; margin-top: 24px; color: var(--ink-text-dim); font-size: var(--text-13); }

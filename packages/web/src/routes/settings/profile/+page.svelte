@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { apiPatch, messageFrom } from '$lib/api.js';
+  import { apiDelete, apiPatch, apiPost, messageFrom } from '$lib/api.js';
   import { auth } from '$lib/auth.svelte.js';
   import Avatar from '$lib/Avatar.svelte';
 
@@ -86,6 +86,72 @@
       error = caught instanceof Error ? caught.message : 'The picture could not be removed.';
     }
   };
+
+  /* ---- two-factor ---- */
+
+  let enrolment = $state<{ secret: string; otpauth_url: string } | null>(null);
+  let totpInput = $state('');
+  let backupCodes = $state<string[] | null>(null);
+  let totpBusy = $state(false);
+  let totpError = $state('');
+  let disabling = $state(false);
+
+  const beginTotp = async (): Promise<void> => {
+    totpBusy = true;
+    totpError = '';
+    backupCodes = null;
+    try {
+      enrolment = await apiPost<{ secret: string; otpauth_url: string }>('/api/v1/users/me/totp', {});
+      totpInput = '';
+    } catch (caught) {
+      totpError = messageFrom(caught, 'Enrolment could not start.');
+    } finally {
+      totpBusy = false;
+    }
+  };
+
+  const verifyTotpCode = async (event: SubmitEvent): Promise<void> => {
+    event.preventDefault();
+    if (totpBusy) return;
+    totpBusy = true;
+    totpError = '';
+    try {
+      const result = await apiPost<{ backup_codes: string[] }>('/api/v1/users/me/totp/verify', {
+        code: totpInput.trim()
+      });
+      backupCodes = result.backup_codes;
+      enrolment = null;
+      totpInput = '';
+      await auth.hydrate();
+      note('Two-factor is on');
+    } catch (caught) {
+      totpError = messageFrom(caught, 'That code did not match.');
+    } finally {
+      totpBusy = false;
+    }
+  };
+
+  const disableTotp = async (event: SubmitEvent): Promise<void> => {
+    event.preventDefault();
+    if (totpBusy) return;
+    totpBusy = true;
+    totpError = '';
+    try {
+      await apiDelete('/api/v1/users/me/totp', {
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: totpInput.trim() })
+      });
+      disabling = false;
+      totpInput = '';
+      backupCodes = null;
+      await auth.hydrate();
+      note('Two-factor is off');
+    } catch (caught) {
+      totpError = messageFrom(caught, 'Turning two-factor off needs a valid code.');
+    } finally {
+      totpBusy = false;
+    }
+  };
 </script>
 
 <svelte:head><title>Profile | Onelight</title></svelte:head>
@@ -147,6 +213,66 @@
         <p class="hint">Your name signs every note you leave. Sessions and passwords live under <a href="/settings/sessions">Sessions</a>.</p>
       </div>
     </div>
+
+    <div class="card totp">
+      <div class="idcol">
+        <h2>Two-factor sign-in</h2>
+        {#if totpError}<p class="error" role="alert">{totpError}</p>{/if}
+        {#if backupCodes}
+          <p class="hint">
+            Two-factor is on. These backup codes are shown once; keep them somewhere safe.
+            Each one signs you in exactly one time if the authenticator is lost.
+          </p>
+          <ul class="codes">
+            {#each backupCodes as code (code)}<li class="tc">{code}</li>{/each}
+          </ul>
+          <button type="button" class="quiet" onclick={() => { backupCodes = null; }}>Done, I saved them</button>
+        {:else if enrolment}
+          <p class="hint">
+            Add the key to your authenticator app, then prove it with a code.
+            <a href={enrolment.otpauth_url}>Open in an authenticator</a> on this device, or enter the key by hand.
+          </p>
+          <p class="secret tc">{enrolment.secret}</p>
+          <form class="totpform" onsubmit={verifyTotpCode}>
+            <input
+              bind:value={totpInput}
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              maxlength="12"
+              aria-label="Six digit code"
+              placeholder="123456"
+              required
+            />
+            <button type="submit" class="uploadbtn" disabled={totpBusy}>{totpBusy ? 'Checking' : 'Turn on'}</button>
+            <button type="button" class="quiet" onclick={() => { enrolment = null; totpError = ''; }}>Cancel</button>
+          </form>
+        {:else if auth.user.totp_enabled}
+          {#if disabling}
+            <p class="hint">Turning two-factor off needs a code from the authenticator, or a backup code.</p>
+            <form class="totpform" onsubmit={disableTotp}>
+              <input
+                bind:value={totpInput}
+                inputmode="numeric"
+                autocomplete="one-time-code"
+                maxlength="12"
+                aria-label="Code"
+                required
+              />
+              <button type="submit" class="quiet" disabled={totpBusy}>{totpBusy ? 'Checking' : 'Turn off'}</button>
+              <button type="button" class="quiet" onclick={() => { disabling = false; totpError = ''; }}>Keep it on</button>
+            </form>
+          {:else}
+            <p class="hint">On. Signing in asks for a code from your authenticator after the password.</p>
+            <button type="button" class="quiet" onclick={() => { disabling = true; totpInput = ''; }}>Turn off</button>
+          {/if}
+        {:else}
+          <p class="hint">Off. With it on, signing in takes your password and a six digit code from an authenticator app.</p>
+          <button type="button" class="uploadbtn" onclick={() => void beginTotp()} disabled={totpBusy}>
+            {totpBusy ? 'Starting' : 'Turn on two-factor'}
+          </button>
+        {/if}
+      </div>
+    </div>
   {/if}
 </main>
 
@@ -179,6 +305,18 @@
 
   button.quiet { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 14px; font-size: var(--text-13); font-weight: 500; }
   button.quiet:hover { background: var(--ink-300); }
+
+  .card.totp { margin-top: 16px; grid-template-columns: 1fr; }
+  .card.totp h2 { margin: 0; font-size: var(--text-16); font-weight: 600; }
+  .tc { font-variant-numeric: tabular-nums; }
+  .secret { margin: 0; padding: 8px 12px; border-radius: var(--radius); background: var(--ink-200); font-size: var(--text-14); letter-spacing: 0.12em; overflow-wrap: anywhere; }
+  .totpform { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .totpform input { width: 130px; border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 11px; font-size: var(--text-14); letter-spacing: 0.1em; }
+  .uploadbtn { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 8px 14px; font-size: var(--text-13); font-weight: 600; }
+  .uploadbtn:hover { background: var(--accent-bright); }
+  .uploadbtn:disabled { opacity: 0.5; }
+  .codes { list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; margin: 0; padding: 0; max-width: 540px; }
+  .codes li { background: var(--ink-200); border-radius: var(--radius); padding: 6px 10px; letter-spacing: 0.1em; }
   .error { margin: 0 0 12px; color: var(--warn); }
   a:focus-visible, button:focus-visible, input:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
 </style>

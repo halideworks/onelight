@@ -6,6 +6,7 @@ export type SessionUser = {
   name: string;
   role: "admin" | "member";
   avatar_url?: string | null;
+  totp_enabled?: boolean;
 };
 
 type SessionPayload = { user: SessionUser; auth: string };

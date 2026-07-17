@@ -64,6 +64,11 @@ export const bodies = {
     password: z.string(),
   }),
   login: z.object({ email: z.string().email(), password: z.string() }),
+  loginTotp: z.object({
+    mfa_token: z.string().min(1),
+    code: z.string().min(1).max(64),
+  }),
+  totpCode: z.object({ code: z.string().min(1).max(64) }),
   resetRequest: z.object({ email: z.string().email() }),
   resetComplete: z.object({
     token: z.string().min(1),
@@ -281,6 +286,7 @@ const user = z.object({
   avatar_url: z.string().nullable(),
   disabled_at: timestamp.nullable(),
   created_at: timestamp,
+  totp_enabled: z.boolean(),
 });
 
 const workspace = z.object({
@@ -820,8 +826,41 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: { "201": created(z.object({ user })) },
   },
   "POST /auth/login": {
+    summary:
+      "Password login. With two-factor on, the password earns a five-minute mfa_token instead of a session; finish at /auth/login/totp.",
     request: bodies.login,
+    responses: {
+      "200": ok(
+        z.union([
+          z.object({ user }),
+          z.object({
+            mfa_required: z.literal(true),
+            mfa_token: z.string(),
+          }),
+        ]),
+      ),
+    },
+  },
+  "POST /auth/login/totp": {
+    request: bodies.loginTotp,
     responses: { "200": ok(z.object({ user })) },
+  },
+  "POST /users/me/totp": {
+    summary:
+      "Begin TOTP enrolment (session auth only). Inactive until a code is verified.",
+    responses: {
+      "201": created(z.object({ secret: z.string(), otpauth_url: z.string() })),
+    },
+  },
+  "POST /users/me/totp/verify": {
+    request: bodies.totpCode,
+    responses: {
+      "200": ok(z.object({ backup_codes: z.array(z.string()) })),
+    },
+  },
+  "DELETE /users/me/totp": {
+    request: bodies.totpCode,
+    responses: { "204": noContent },
   },
   "POST /auth/logout": { responses: { "204": noContent } },
   "POST /auth/reset-request": {

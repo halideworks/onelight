@@ -41,6 +41,24 @@ All automated gates are green on this machine, including the qa suites executed 
   worker-less installs; exports are DB-to-file work and now always run (the
   PDF already degrades to no stills).
 
+## Operational security (2026-07-16)
+
+- **TOTP two-factor** end to end: RFC 6238 in core over WebCrypto (tested
+  against the RFC vectors, so both legs run it), migration 0013 on users,
+  enrolment/verify/disable endpoints (session-auth only -- an API token
+  must not rotate a second factor), a five-minute single-purpose mfa_token
+  between the password and the code at login, eight hashed burn-on-use
+  backup codes, the profile page enrolment flow, and the login page's code
+  step. Contract-tested on both legs and browser-verified on the rig:
+  enrol, gate, wrong-code refusal, code sign-in, backup-code sign-in,
+  disable.
+- **Response hardening**: nosniff, same-origin referrers (share slugs stay
+  out of outbound links), SAMEORIGIN framing, on every response.
+- Already in place from earlier hardening: login/reset/share rate limits,
+  audit trail, HttpOnly SameSite=Lax sessions, same-origin mutation checks.
+  docs/OPERATIONS.md now carries the posture in one place. Still open,
+  post-v1: WebAuthn keys, admin-enforced 2FA policy.
+
 ## Re-anchoring (2026-07-16)
 
 Carried-forward notes now follow the picture across a recut instead of the
