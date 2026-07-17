@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { api, createProject, messageFrom } from '$lib/api.js';
+  import { api, createProject, getBootstrap, messageFrom } from '$lib/api.js';
   import { auth } from '$lib/auth.svelte.js';
   import ProjectCover from '$lib/ProjectCover.svelte';
   import { pretty } from '$lib/ids.js';
@@ -41,6 +41,17 @@
   let newProjectName = $state('');
   let creating = $state(false);
   let createError = $state('');
+
+  /* The setup door exists only while the workspace has no users: once set
+     up, a signed-out landing offers Sign in and nothing else. */
+  let setupRequired = $state(false);
+  $effect(() => {
+    if (auth.ready && !auth.signedIn)
+      void getBootstrap().then(
+        (bootstrap) => (setupRequired = bootstrap.setup_required),
+        () => {},
+      );
+  });
 
   $effect(() => {
     if (!auth.ready || !auth.signedIn || projectsLoaded) return;
@@ -126,7 +137,10 @@
       </div>
     </section>
   {:else if auth.ready}
-    <nav aria-label="Primary"><a href="/login">Sign in</a><a href="/setup">First run setup</a></nav>
+    <nav aria-label="Primary">
+      <a href="/login">Sign in</a>
+      {#if setupRequired}<a href="/setup">First run setup</a>{/if}
+    </nav>
   {/if}
 </main>
 
