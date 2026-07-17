@@ -1328,6 +1328,34 @@ export const routeDocs: Record<string, RouteDoc> = {
     query: { ...paging, status: { description: "Filter by job status." } },
     responses: { "200": ok(page(job)) },
   },
+  "GET /admin/system": {
+    summary:
+      "Operational status (admin): version, uptime, database size and backup snapshots where the host can know them, blob capacity, and queue depths by status.",
+    responses: {
+      "200": ok(
+        z.object({
+          version: z.string(),
+          started_at: z.number().nullable(),
+          db_size_bytes: z.number().nullable(),
+          backups: z
+            .object({
+              count: z.number(),
+              newest_at: z.number().nullable(),
+            })
+            .nullable(),
+          disk: z
+            .object({
+              total_bytes: z.number(),
+              free_bytes: z.number(),
+            })
+            .nullable(),
+          media_jobs: z.record(z.number()),
+          export_jobs: z.record(z.number()),
+          webhook_deliveries: z.record(z.number()),
+        }),
+      ),
+    },
+  },
   "PUT /users/me/avatar": {
     requestContentType: "image/png",
     responses: { "200": ok(z.object({ avatar_url: z.string() })) },

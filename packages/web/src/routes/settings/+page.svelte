@@ -41,6 +41,7 @@
     <section aria-label="System">
       <h2>System</h2>
       <nav>
+        <a href="/settings/system"><strong>System</strong><span>Version, backups, disk, and queue depths</span></a>
         <a href="/settings/jobs"><strong>Job queue</strong><span>Transcodes, probes, and background work</span></a>
         <a href="/settings/webhooks"><strong>Webhooks</strong><span>Signed event deliveries to other systems</span></a>
       </nav>

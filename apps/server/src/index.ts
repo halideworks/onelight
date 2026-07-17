@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { readFile, statfs } from "node:fs/promises";
+import { readFile, stat, statfs } from "node:fs/promises";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -111,6 +111,42 @@ const start = async (): Promise<void> => {
       return null;
     }
   };
+  const backupConfig = backupConfigFromEnv(process.env);
+  /* Host facts for the admin system page: the database file's size and the
+     snapshot state of BACKUP_DIR. Both are best-effort reads; the page
+     renders nulls rather than the server failing over a stat. */
+  const systemInfo = async (): Promise<{
+    db_size_bytes: number | null;
+    backups: { count: number; newest_at: number | null } | null;
+  }> => {
+    let dbSizeBytes: number | null = null;
+    try {
+      dbSizeBytes = (await stat(config.DATABASE_PATH)).size;
+    } catch {
+      dbSizeBytes = null;
+    }
+    let backups: { count: number; newest_at: number | null } | null = null;
+    if (backupConfig) {
+      try {
+        const names = fs
+          .readdirSync(backupConfig.dir)
+          .filter((name) => /^onelight-\d{8}-\d{6}\.db$/.test(name))
+          .sort();
+        const newest = names[names.length - 1];
+        backups = {
+          count: names.length,
+          newest_at: newest
+            ? Math.round(
+                fs.statSync(path.join(backupConfig.dir, newest)).mtimeMs,
+              )
+            : null,
+        };
+      } catch {
+        backups = { count: 0, newest_at: null };
+      }
+    }
+    return { db_size_bytes: dbSizeBytes, backups };
+  };
   const api = createApp({
     db,
     hasher: new NodePasswordHasher(),
@@ -120,6 +156,8 @@ const start = async (): Promise<void> => {
     version: process.env.ONELIGHT_VERSION ?? "0.1.0-dev",
     blobStore,
     diskInfo,
+    systemInfo,
+    startedAt: Date.now(),
     // AppEnv.mailer is optional and exactOptionalPropertyTypes is on, so
     // the field is present only when a mailer is configured.
     ...(mailer ? { mailer } : {}),
@@ -185,7 +223,6 @@ const start = async (): Promise<void> => {
       : {}),
     blobRoot,
   });
-  const backupConfig = backupConfigFromEnv(process.env);
   const stopBackups = backupConfig ? startBackups(sqlite, backupConfig) : null;
   if (!backupConfig)
     console.warn(

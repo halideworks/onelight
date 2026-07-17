@@ -409,6 +409,57 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
     });
   });
 
+  describe("system status", () => {
+    it("reports version and queue depths, admin only", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const member = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      const forbidden = await req(h, "/api/v1/admin/system", {
+        cookie: member.cookie,
+      });
+      expect(forbidden.status).toBe(403);
+      // An export job so at least one queue has a countable row.
+      const queued = await req(
+        h,
+        `/api/v1/projects/${seed.project.id}/export`,
+        { cookie: seed.admin.cookie, json: { format: "csv" } },
+      );
+      expect(queued.status).toBe(202);
+      const response = await req(h, "/api/v1/admin/system", {
+        cookie: seed.admin.cookie,
+      });
+      expect(response.status).toBe(200);
+      const body = await json<{
+        version: string;
+        db_size_bytes: number | null;
+        backups: unknown;
+        disk: unknown;
+        media_jobs: Record<string, number>;
+        export_jobs: Record<string, number>;
+        webhook_deliveries: Record<string, number>;
+      }>(response);
+      expect(body.version.length).toBeGreaterThan(0);
+      // The contract harness runs without a host behind it: no database
+      // file, no BACKUP_DIR, no filesystem capacity.
+      expect(body.db_size_bytes).toBeNull();
+      expect(body.backups).toBeNull();
+      expect(body.disk).toBeNull();
+      expect(body.export_jobs.queued).toBeGreaterThanOrEqual(1);
+      expect(assertSnakeCaseKeys(body)).toEqual([]);
+      // Queues are workspace-scoped: the other workspace's admin does not
+      // see this workspace's export job.
+      const foreign = await json<{ export_jobs: Record<string, number> }>(
+        await req(h, "/api/v1/admin/system", {
+          cookie: seed.other.admin.cookie,
+        }),
+      );
+      expect(foreign.export_jobs.queued ?? 0).toBe(0);
+    });
+  });
+
   describe("trash", () => {
     it("lists trashed assets for admins and feeds restore", async () => {
       const h = ctx.h();

@@ -41,6 +41,17 @@ All automated gates are green on this machine, including the qa suites executed 
   worker-less installs; exports are DB-to-file work and now always run (the
   PDF already degrades to no stills).
 
+## The system page (2026-07-16)
+
+`GET /admin/system` and Settings > System put the operational picture on one
+page: version and uptime, database size, backup snapshot state (with a stale
+warning past a day and a call-out when backups are off), media volume
+capacity, and per-status depths for media jobs, exports, and webhook
+deliveries, workspace-scoped and refreshed every 15 seconds. Host-only facts
+come through `env.systemInfo` and are null on Workers. docs/OPERATIONS.md
+carries the monitoring guidance (healthz, logs, what runs without the media
+worker). Browser-verified on the rig against real snapshots and queues.
+
 ## The share room (2026-07-16)
 
 The share room (`/s/:slug`) is what a client sees, and it was the least finished

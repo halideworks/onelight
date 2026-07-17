@@ -59,6 +59,7 @@ import {
   projectCoverUploads,
   uploadSessions,
   users,
+  webhookDeliveries,
   webhooks,
   workspaces,
   notifications,
@@ -1320,6 +1321,56 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       // Null on object storage, where capacity is not a meaningful number.
       disk: env.diskInfo ? await env.diskInfo() : null,
       projects: perProject,
+    });
+  });
+
+  /* One admin page's worth of operational truth: version and uptime, the
+     database and its snapshots, blob capacity, and every queue's depth. The
+     host-only facts (db size, backups) come through env.systemInfo and are
+     null where the host cannot know them (Workers). */
+  api.get("/admin/system", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    if (actor.role !== "admin") throw errors.forbidden();
+    const countBy = <T extends string>(
+      rows: Array<{ status: T; count: number }>,
+    ): Record<string, number> =>
+      Object.fromEntries(rows.map((row) => [row.status, row.count]));
+    const jobRows = await env.db
+      .select({ status: jobs.status, count: sql<number>`count(*)` })
+      .from(jobs)
+      .where(
+        sql`json_extract(${jobs.payloadJson}, '$.workspace_id') = ${actor.workspaceId}`,
+      )
+      .groupBy(jobs.status)
+      .all();
+    const exportRows = await env.db
+      .select({ status: exportJobs.status, count: sql<number>`count(*)` })
+      .from(exportJobs)
+      .where(eq(exportJobs.workspaceId, actor.workspaceId))
+      .groupBy(exportJobs.status)
+      .all();
+    const deliveryRows = await env.db
+      .select({
+        status: webhookDeliveries.status,
+        count: sql<number>`count(*)`,
+      })
+      .from(webhookDeliveries)
+      .innerJoin(webhooks, eq(webhookDeliveries.webhookId, webhooks.id))
+      .where(eq(webhooks.workspaceId, actor.workspaceId))
+      .groupBy(webhookDeliveries.status)
+      .all();
+    const host = env.systemInfo
+      ? await env.systemInfo()
+      : { db_size_bytes: null, backups: null };
+    return c.json({
+      version: env.version,
+      started_at: env.startedAt ?? null,
+      db_size_bytes: host.db_size_bytes,
+      backups: host.backups,
+      disk: env.diskInfo ? await env.diskInfo() : null,
+      media_jobs: countBy(jobRows),
+      export_jobs: countBy(exportRows),
+      webhook_deliveries: countBy(deliveryRows),
     });
   });
 

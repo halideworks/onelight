@@ -1100,6 +1100,158 @@
         }
       }
     },
+    "/api/v1/admin/system": {
+      "get": {
+        "summary": "Operational status (admin): version, uptime, database size and backup snapshots where the host can know them, blob capacity, and queue depths by status.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "type": "string"
+                    },
+                    "started_at": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "db_size_bytes": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "backups": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "count": {
+                              "type": "number"
+                            },
+                            "newest_at": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "count",
+                            "newest_at"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "disk": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "total_bytes": {
+                              "type": "number"
+                            },
+                            "free_bytes": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "total_bytes",
+                            "free_bytes"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "media_jobs": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "number"
+                      }
+                    },
+                    "export_jobs": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "number"
+                      }
+                    },
+                    "webhook_deliveries": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "number"
+                      }
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "started_at",
+                    "db_size_bytes",
+                    "backups",
+                    "disk",
+                    "media_jobs",
+                    "export_jobs",
+                    "webhook_deliveries"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/users/me/avatar": {
       "put": {
         "requestBody": {
