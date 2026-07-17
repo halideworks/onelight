@@ -361,6 +361,28 @@
     frameOverride = Math.max(0, anchorFrame + delta);
   };
 
+  /* Range authoring lives in the composer: opening a range seeds the out
+     point two seconds past the anchor (or the playhead when it is already
+     ahead), and the ends nudge by single frames. The marks and the range
+     are one thing, so the timeline draws the span the moment it opens. */
+  const openRange = (): void => {
+    const rate =
+      selectedVersion?.frame_rate_num && selectedVersion.frame_rate_den
+        ? selectedVersion.frame_rate_num / selectedVersion.frame_rate_den
+        : 24;
+    const last = Math.max(1, (selectedVersion?.duration_frames ?? 1) - 1);
+    const start = Math.min(anchorFrame, last - 1);
+    const ahead = currentFrame > start + 1 ? currentFrame : start + Math.round(rate * 2);
+    player?.setRange(start, Math.min(last, Math.max(start + 1, ahead)));
+  };
+  const nudgeRange = (end: 'in' | 'out', delta: number): void => {
+    if (playerRange.in === null || playerRange.out === null) return;
+    const nextIn = end === 'in' ? playerRange.in + delta : playerRange.in;
+    const nextOut = end === 'out' ? playerRange.out + delta : playerRange.out;
+    if (nextIn < 0 || nextOut <= nextIn) return;
+    player?.setRange(nextIn, nextOut);
+  };
+
   const renameAsset = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
     const name = renameText.trim();
@@ -1072,7 +1094,12 @@
   };
 
   const seekToComment = (comment: Comment): void => {
-    if (comment.frame_in !== null) player?.seekToFrame(comment.frame_in);
+    if (comment.frame_in === null) return;
+    /* A ranged note re-arms its marks, so the span shows on the timeline
+       and P loops it; a plain note leaves the marks alone. */
+    if (comment.frame_out !== null && comment.frame_out > comment.frame_in)
+      player?.setRange(comment.frame_in, comment.frame_out);
+    player?.seekToFrame(comment.frame_in);
   };
 
   /* A timeline marker click seeks in the player and highlights the note. */
@@ -1402,7 +1429,7 @@
                       onclick={() => seekToComment(comment)}
                       aria-label={`Go to frame ${comment.frame_in}`}
                     >
-                      {timecodeAt(comment.frame_in)}{comment.frame_out !== null && comment.frame_out > comment.frame_in ? ` – ${timecodeAt(comment.frame_out)}` : ''}
+                      {timecodeAt(comment.frame_in)}{comment.frame_out !== null && comment.frame_out > comment.frame_in ? ` / ${timecodeAt(comment.frame_out)}` : ''}
                     </button>
                   {/if}
                   {#if comment.annotation}<span class="drawn">Drawing</span>{/if}
@@ -1471,14 +1498,19 @@
             {:else}
               <div class="anchor-row">
                 {#if rangeActive}
-                  <!-- The player's loop in/out IS the range: no second set of
-                       controls, and the timeline already draws the span. -->
-                  <span class="stepper range" title="From the player's in and out points">
+                  <!-- The player's loop in/out IS the range: one set of marks,
+                       and the timeline draws the span the moment it opens. -->
+                  <span class="stepper range" title="The note covers this range">
+                    <button type="button" onclick={() => nudgeRange('in', -1)} aria-label="In point one frame earlier">◂</button>
                     <span class="tc anchor-tc">{timecodeAt(playerRange.in as number)}</span>
-                    <span class="rangedash" aria-hidden="true">–</span>
+                    <button type="button" onclick={() => nudgeRange('in', 1)} aria-label="In point one frame later">▸</button>
+                    <span class="rangedash" aria-hidden="true">/</span>
+                    <button type="button" onclick={() => nudgeRange('out', -1)} aria-label="Out point one frame earlier">◂</button>
                     <span class="tc anchor-tc">{timecodeAt(playerRange.out as number)}</span>
+                    <button type="button" onclick={() => nudgeRange('out', 1)} aria-label="Out point one frame later">▸</button>
                   </span>
                   <span class="anchor-hint">{(playerRange.out as number) - (playerRange.in as number) + 1} frames</span>
+                  <button type="button" class="linky" onclick={() => player?.clearRange()}>Single frame</button>
                 {:else if pendingDrawing}
                   <span class="drawing-chip">Drawing at <span class="tc">{timecodeAt(pendingDrawing.frame)}</span></span>
                   <button type="button" class="linky" onclick={discardDrawing}>Discard</button>
@@ -1488,6 +1520,7 @@
                     <span class="tc anchor-tc" aria-live="off">{timecodeAt(anchorFrame)}</span>
                     <button type="button" onclick={() => nudgeAnchor(1)} aria-label="One frame later">▸</button>
                   </span>
+                  <button type="button" class="linky" onclick={openRange} title="Cover a range of frames instead (or mark it with I and O)">Add out point</button>
                   {#if anchorIsPlayhead}
                     <span class="anchor-hint">follows the playhead</span>
                   {:else}

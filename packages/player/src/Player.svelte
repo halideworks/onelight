@@ -1065,6 +1065,19 @@
     jumpTo(targetFrame);
   }
 
+  /* Hosts set the marked range directly (a ranged note re-arming its span);
+     the same ordering rule as the I/O keys applies. */
+  export function setRange(inAt: number, outAt: number): void {
+    if (outAt <= inAt) return;
+    inFrame = boundedFrame(inAt);
+    outFrame = boundedFrame(outAt);
+  }
+
+  export function clearRange(): void {
+    inFrame = null;
+    outFrame = null;
+  }
+
   const handleMarkerSelect = (markerId: string, markerFrame: number): void => {
     jumpTo(markerFrame);
     onmarkerselect?.(markerId, markerFrame);

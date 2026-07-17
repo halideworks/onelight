@@ -1081,7 +1081,7 @@
               <Avatar name={comment.author_name ?? 'Viewer'} size={22} />
               <strong>{comment.author_name ?? 'Viewer'}</strong>
               {#if comment.frame_in !== null}
-                <button type="button" class="chip tc" onclick={() => seekToComment(comment)} aria-label={`Go to ${anchorLabel(comment.frame_in)}`}>{anchorLabel(comment.frame_in)}</button>
+                <button type="button" class="chip tc" onclick={() => seekToComment(comment)} aria-label={`Go to ${anchorLabel(comment.frame_in)}`}>{anchorLabel(comment.frame_in)}{comment.frame_out != null && comment.frame_out > comment.frame_in ? ` / ${anchorLabel(comment.frame_out)}` : ''}</button>
               {/if}
               {#if comment.annotation}<span class="drawn">Drawing</span>{/if}
             </span>
