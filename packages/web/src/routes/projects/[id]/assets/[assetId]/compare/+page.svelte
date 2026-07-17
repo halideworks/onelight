@@ -336,7 +336,7 @@
   .seek { flex: 1; accent-color: var(--n-700); }
   .hint { color: var(--n-500); white-space: nowrap; }
 
-  .error { padding: 24px 20px; color: #c96a5a; }
+  .error { padding: 24px 20px; color: var(--warn); }
   .empty { padding: 24px 20px; color: var(--n-600); }
   @media (max-width: 900px) {
     .stage.side { grid-template-columns: 1fr; }

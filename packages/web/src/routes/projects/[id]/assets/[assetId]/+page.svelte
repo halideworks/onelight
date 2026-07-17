@@ -1140,7 +1140,7 @@
           aria-expanded={versionMenuOpen}
           onclick={() => { versionMenuOpen = !versionMenuOpen; }}
         >
-          <span class="tc vtrigger-no">v{selectedVersion?.version_no ?? '—'}</span>
+          <span class="tc vtrigger-no">v{selectedVersion?.version_no ?? '--'}</span>
           {#if asset && selectedVersion && selectedVersion.id === asset.current_version_id}
             <span class="vtrigger-current">Current</span>
           {/if}

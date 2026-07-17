@@ -155,10 +155,23 @@
   const SAMPLE_W = 256;
   const SAMPLE_H = 144;
   let sampleCanvas: HTMLCanvasElement | null = null;
+  /* What the last trace was drawn from: skip the canvas readback entirely
+     while the picture sits still on the same frame in the same mode. */
+  let scopeDrawnAt = -1;
+  let scopeDrawnMode: 'waveform' | 'parade' | null = null;
 
   const renderScope = (): void => {
     const target = scopeCanvas;
     if (!target || !video || video.videoWidth === 0) return;
+    /* Mid-seek the element still presents the old frame; drawing now would
+       memoize stale pixels under the new time. Wait for the seek to land. */
+    if (video.seeking) return;
+    if (
+      video.paused &&
+      video.currentTime === scopeDrawnAt &&
+      scopeMode === scopeDrawnMode
+    )
+      return;
     if (!sampleCanvas) {
       sampleCanvas = document.createElement('canvas');
       sampleCanvas.width = SAMPLE_W;
@@ -174,6 +187,8 @@
     } catch {
       return;
     }
+    scopeDrawnAt = video.currentTime;
+    scopeDrawnMode = scopeMode;
     const out = ctx.createImageData(SCOPE_W, SCOPE_H);
     const px = out.data;
     const plot = (x: number, value: number, r: number, g: number, b: number): void => {
@@ -228,6 +243,10 @@
   $effect(() => {
     if (!scopesOn) return;
     void scopeMode;
+    /* The panel's canvas is fresh on every open: forget the last trace so
+       the still-frame skip cannot leave it blank. */
+    scopeDrawnAt = -1;
+    scopeDrawnMode = null;
     let raf = 0;
     const loop = (): void => {
       renderScope();
@@ -1219,20 +1238,20 @@
              frame steps either side of the playhead. Icons, not sentences: these
              are pressed hundreds of times an hour. -->
         <div class="cluster">
-          <button type="button" class="icon" onclick={playReverse} aria-label="Play reverse (J)" title="Reverse — J">
+          <button type="button" class="icon" onclick={playReverse} aria-label="Play reverse (J)" title="Reverse (J)">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10L2 8zM14 3v10L8 8z" /></svg>
           </button>
-          <button type="button" class="icon step" onclick={() => step(-1)} disabled={seekLocked} aria-label="Previous frame" title="Previous frame — ← or ,">
+          <button type="button" class="icon step" onclick={() => step(-1)} disabled={seekLocked} aria-label="Previous frame" title="Previous frame (left arrow or ,)">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11 3v10L4 8z" /><rect x="2" y="3" width="1.6" height="10" /></svg>
           </button>
-          <button type="button" class="icon play" onclick={() => (playing ? pausePlayback() : playForward())} aria-label={playing ? 'Pause (K)' : 'Play (L)'} title={playing ? 'Pause — space or K' : 'Play — space or L'}>
+          <button type="button" class="icon play" onclick={() => (playing ? pausePlayback() : playForward())} aria-label={playing ? 'Pause (K)' : 'Play (L)'} title={playing ? 'Pause (space or K)' : 'Play (space or L)'}>
             {#if playing}
               <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3" width="3.4" height="10" /><rect x="9.1" y="3" width="3.4" height="10" /></svg>
             {:else}
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3l9 5-9 5z" /></svg>
             {/if}
           </button>
-          <button type="button" class="icon step" onclick={() => step(1)} disabled={seekLocked} aria-label="Next frame" title="Next frame — → or .">
+          <button type="button" class="icon step" onclick={() => step(1)} disabled={seekLocked} aria-label="Next frame" title="Next frame (right arrow or .)">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3v10l7-5z" /><rect x="12.4" y="3" width="1.6" height="10" /></svg>
           </button>
         </div>
@@ -1243,19 +1262,19 @@
              it. A client presenting mode has no use for either. -->
         {#if chrome === 'full'}
         <div class="marks">
-          <button type="button" onclick={() => { inFrame = frame; }} aria-label="Set loop in" title="Mark in — I">Set in</button>
-          <button type="button" onclick={() => { outFrame = frame; }} aria-label="Set loop out" title="Mark out — O">Set out</button>
-          <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }} title="Loop the marked range — P">Loop</button>
+          <button type="button" onclick={() => { inFrame = frame; }} aria-label="Set loop in" title="Mark in (I)">Set in</button>
+          <button type="button" onclick={() => { outFrame = frame; }} aria-label="Set loop out" title="Mark out (O)">Set out</button>
+          <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }} title="Loop the marked range (P)">Loop</button>
           {#if inFrame !== null || outFrame !== null}
-            <button type="button" class="icon clearmarks" onclick={() => { inFrame = null; outFrame = null; }} aria-label="Clear marks" title="Clear marks — X">
+            <button type="button" class="icon clearmarks" onclick={() => { inFrame = null; outFrame = null; }} aria-label="Clear marks" title="Clear marks (X)">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" fill="none" /></svg>
             </button>
           {/if}
         </div>
         <span class="marks-readout tc">
-          <span class:unset={inFrame === null}>{inFrame === null ? 'in —' : tcAt(inFrame)}</span>
+          <span class:unset={inFrame === null}>{inFrame === null ? 'in --' : tcAt(inFrame)}</span>
           <span class="marks-sep" aria-hidden="true">/</span>
-          <span class:unset={outFrame === null}>{outFrame === null ? 'out —' : tcAt(outFrame)}</span>
+          <span class:unset={outFrame === null}>{outFrame === null ? 'out --' : tcAt(outFrame)}</span>
         </span>
         {/if}
       </div>
@@ -1273,7 +1292,7 @@
             <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="3.5" width="13" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2" fill="none" /><path d="M7 7.2a1.6 1.6 0 1 0 0 1.6M12 7.2a1.6 1.6 0 1 0 0 1.6" stroke="currentColor" stroke-width="1.2" fill="none" /></svg>
           </button>
         {/if}
-        <button type="button" class="icon" aria-pressed={muted} onclick={() => { muted = !muted; }} aria-label={muted ? 'Unmute' : 'Mute'} title="Mute — M">
+        <button type="button" class="icon" aria-pressed={muted} onclick={() => { muted = !muted; }} aria-label={muted ? 'Unmute' : 'Mute'} title="Mute (M)">
           {#if muted || volume === 0}
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3L4 6H2v4h2l3 3z" /><path d="M10.5 6.5l3 3M13.5 6.5l-3 3" stroke="currentColor" stroke-width="1.3" fill="none" /></svg>
           {:else}
@@ -1290,7 +1309,7 @@
           oninput={() => { if (volume > 0) muted = false; }}
           aria-label="Volume"
         />
-        <button type="button" class="icon" onclick={toggleFullscreen} aria-pressed={fullscreen} aria-label={fullscreen ? 'Exit full screen' : 'Full screen'} title="Full screen — F">
+        <button type="button" class="icon" onclick={toggleFullscreen} aria-pressed={fullscreen} aria-label={fullscreen ? 'Exit full screen' : 'Full screen'} title="Full screen (F)">
           {#if fullscreen}
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2v4H2M10 14v-4h4" stroke="currentColor" stroke-width="1.4" fill="none" /></svg>
           {:else}

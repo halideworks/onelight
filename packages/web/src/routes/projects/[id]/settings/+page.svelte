@@ -487,7 +487,7 @@
           <select bind:value={addUserId} aria-label="Person to add">
             <option value="" disabled>Add someone…</option>
             {#each addable as user (user.id)}
-              <option value={user.id}>{user.name} — {user.email}</option>
+              <option value={user.id}>{user.name} ({user.email})</option>
             {/each}
           </select>
           <select bind:value={addRole} aria-label="Role for the new member">

@@ -52,7 +52,10 @@ a track.
   session; enrolment and disabling are session-auth only, so an API token
   can never rotate an account's second factor. Secrets sit inactive until a
   code proves the authenticator has them; backup codes are stored hashed
-  and burn on use.
+  and burn on use. TOTP gates the password path only: an SSO sign-in
+  (OIDC) trusts the identity provider, which is where that account's MFA
+  policy belongs. Password reset never issues a session, so recovering a
+  password does not skip the second factor.
 - **Rate limits** cover login (per email and per IP), the TOTP step, share
   access attempts, and password resets. Failures land in the audit log
   (`user.login_failed`, `user.login_totp_failed`).
