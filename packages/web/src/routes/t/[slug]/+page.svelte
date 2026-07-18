@@ -2,6 +2,7 @@
   import { page } from '$app/state';
   import { PALETTES } from '@onelight/core';
   import { api, apiPost, messageFrom } from '$lib/api.js';
+  import { downloadSequentially, triggerDownload } from '$lib/downloads.js';
   import {
     filesFromDataTransfer,
     filesFromInput,
@@ -96,16 +97,45 @@
         `/api/v1/t/${slug}/files/${file.asset_id}/download`,
         {}
       );
-      const link = document.createElement('a');
-      link.href = signed.url;
-      link.rel = 'noopener';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      triggerDownload(signed.url);
     } catch (caught) {
       error = messageFrom(caught, 'The download could not start.');
     } finally {
       downloadBusy = null;
+    }
+  };
+
+  /* Every file, one at a time, through the browser's own download manager:
+     an interruption costs one file, not the batch. */
+  let bulkNote = $state('');
+  let bulkRunning = $state(false);
+  const downloadAllFiles = async (): Promise<void> => {
+    const files = shell?.files ?? [];
+    if (bulkRunning || files.length === 0) return;
+    bulkRunning = true;
+    bulkNote = '';
+    try {
+      const result = await downloadSequentially(
+        files.map((file) => ({
+          label: file.name,
+          url: async () =>
+            (
+              await apiPost<{ url: string }>(
+                `/api/v1/t/${slug}/files/${file.asset_id}/download`,
+                {}
+              )
+            ).url
+        })),
+        (progress) => {
+          bulkNote = `Starting ${Math.min(progress.done + 1, progress.total)} of ${progress.total}`;
+        }
+      );
+      bulkNote =
+        result.skipped.length > 0
+          ? `${result.started} started. Could not start: ${result.skipped.join(', ')}`
+          : `${result.started} downloads started.`;
+    } finally {
+      bulkRunning = false;
     }
   };
 
@@ -265,6 +295,17 @@
               Download everything
               <small>{shell.files.length} {shell.files.length === 1 ? 'file' : 'files'} / {formatBytes(packageBytes)} / .zip</small>
             </a>
+            {#if shell.files.length > 1}
+              <button
+                type="button"
+                class="onebyone"
+                disabled={bulkRunning}
+                onclick={() => void downloadAllFiles()}
+              >
+                {bulkRunning ? bulkNote || 'Starting downloads' : 'Download one at a time'}
+              </button>
+            {/if}
+            {#if !bulkRunning && bulkNote}<span class="bulknote">{bulkNote}</span>{/if}
           </div>
           <ul class="files" aria-label="Files">
             {#each shell.files as file (file.asset_id)}
@@ -370,7 +411,11 @@
   .room header { margin: 8vh 0 26px; }
   .message { margin: 8px 0 0; max-width: 56ch; color: rgba(240, 236, 226, 0.82); white-space: pre-line; }
 
-  .actions { margin: 0 0 14px; }
+  .actions { margin: 0 0 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .onebyone { border: 0; border-radius: var(--radius); background: rgba(231, 223, 200, 0.16); color: var(--ink-text); padding: 11px 16px; font-size: var(--text-13); font-weight: 500; cursor: pointer; font-family: inherit; }
+  .onebyone:hover { background: rgba(231, 223, 200, 0.26); }
+  .onebyone:disabled { opacity: 0.7; cursor: default; }
+  .bulknote { color: rgba(240, 236, 226, 0.72); font-size: var(--text-13); }
   .primary {
     display: inline-grid;
     gap: 2px;

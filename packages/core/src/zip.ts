@@ -49,6 +49,22 @@ export interface ZipEntry {
   modifiedAt?: number;
   /** Opened lazily when the entry's turn comes. */
   open: () => Promise<ReadableStream>;
+  /** Stable identity for CRC caching across requests (e.g. the blob key).
+      Blobs are immutable per key, so a cached CRC never goes stale. */
+  cacheKey?: string;
+  /** Opens the entry from a byte offset. With a cached CRC this lets a
+      resume skip straight to the interrupted byte instead of re-reading
+      the whole entry to recompute its checksum. */
+  openRange?: (from: number) => Promise<ReadableStream>;
+}
+
+export interface ZipResumeOptions {
+  /** Known CRCs by cacheKey. Entries wholly before the resume point with a
+      cached CRC are skipped without a read; without one they are read and
+      discarded, because every CRC reappears in the central directory. */
+  crcs?: Map<string, number>;
+  /** Called for each CRC computed fresh, so the caller can cache it. */
+  onCrc?: (cacheKey: string, crc: number) => void;
 }
 
 /** Zip-safe entry name: forward slashes, no traversal, no leading slash. */
@@ -238,13 +254,38 @@ const centralHeader = (layout: EntryLayout, crc: number): Uint8Array => {
   return writer.take();
 };
 
-async function* generate(entries: ZipEntry[]): AsyncGenerator<Uint8Array> {
+const asBytes = (value: unknown): Uint8Array =>
+  value instanceof Uint8Array
+    ? value
+    : new Uint8Array(value as ArrayBufferLike);
+
+/* The archive from byte `start` onward. The layout is deterministic, so any
+   byte position maps to a known region. Data before the resume point is
+   skipped outright when the entry's CRC is cached (immutable blobs make the
+   cache safe); otherwise it is read and discarded, because every CRC
+   reappears in the central directory at the end of the archive. */
+async function* generate(
+  entries: ZipEntry[],
+  start = 0,
+  resume: ZipResumeOptions = {},
+): AsyncGenerator<Uint8Array> {
   const layouts = layoutOf(entries);
   const crcs: number[] = [];
-  for (const [index, entry] of entries.entries()) {
-    const layout = layouts[index];
-    if (!layout) throw new Error("Zip layout is out of step.");
-    yield localHeader(layout);
+  /* Yields the part of a fixed buffer that lies at or past `start`. */
+  const window = (at: number, bytes: Uint8Array): Uint8Array | null => {
+    if (at + bytes.length <= start) return null;
+    if (at >= start) return bytes;
+    return bytes.subarray(start - at);
+  };
+  /* Reads a whole entry, yielding only what lies at or past emitFrom and
+     computing the CRC over everything; yield* in the caller relays chunks
+     as they arrive and evaluates to the returned CRC, so nothing buffers. */
+  async function* readEmit(
+    entry: ZipEntry,
+    layout: EntryLayout,
+    emitFrom: number,
+    dataStart: number,
+  ): AsyncGenerator<Uint8Array, number> {
     let crc = 0xffffffff;
     let seen = 0;
     const reader = (await entry.open()).getReader();
@@ -252,24 +293,79 @@ async function* generate(entries: ZipEntry[]): AsyncGenerator<Uint8Array> {
       while (true) {
         const next = await reader.read();
         if (next.done) break;
-        const bytes =
-          next.value instanceof Uint8Array
-            ? next.value
-            : new Uint8Array(next.value as ArrayBufferLike);
+        const bytes = asBytes(next.value);
+        const at = dataStart + seen;
         seen += bytes.length;
         if (seen > layout.size)
           throw new Error(`Entry ${entry.name} is longer than declared.`);
         crc = crc32Update(crc, bytes);
-        yield bytes;
+        if (at + bytes.length > emitFrom)
+          yield at >= emitFrom ? bytes : bytes.subarray(emitFrom - at);
       }
     } finally {
       reader.releaseLock();
     }
     if (seen !== layout.size)
       throw new Error(`Entry ${entry.name} is shorter than declared.`);
-    const finalCrc = (crc ^ 0xffffffff) >>> 0;
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+  for (const [index, entry] of entries.entries()) {
+    const layout = layouts[index];
+    if (!layout) throw new Error("Zip layout is out of step.");
+    const header = localHeader(layout);
+    const headerSlice = window(layout.offset, header);
+    if (headerSlice) yield headerSlice;
+    const dataStart = layout.offset + header.length;
+    const dataEnd = dataStart + layout.size;
+    const cached = entry.cacheKey
+      ? resume.crcs?.get(entry.cacheKey)
+      : undefined;
+    let finalCrc: number;
+    if (dataEnd <= start && cached !== undefined) {
+      /* Entirely before the resume point, checksum known: skip the read. */
+      finalCrc = cached;
+    } else if (
+      dataStart < start &&
+      dataEnd > start &&
+      cached !== undefined &&
+      entry.openRange
+    ) {
+      /* The interrupted entry, checksum known: jump to the byte. */
+      const from = start - dataStart;
+      let seen = from;
+      const reader = (await entry.openRange(from)).getReader();
+      try {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          const bytes = asBytes(next.value);
+          seen += bytes.length;
+          if (seen > layout.size)
+            throw new Error(`Entry ${entry.name} is longer than declared.`);
+          yield bytes;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      if (seen !== layout.size)
+        throw new Error(`Entry ${entry.name} is shorter than declared.`);
+      finalCrc = cached;
+    } else {
+      /* Read the whole entry: emitting what lies past the resume point,
+         discarding the rest, computing the CRC either way. */
+      finalCrc = yield* readEmit(
+        entry,
+        layout,
+        Math.max(start, dataStart),
+        dataStart,
+      );
+      if (entry.cacheKey && cached === undefined)
+        resume.onCrc?.(entry.cacheKey, finalCrc);
+    }
     crcs.push(finalCrc);
-    yield descriptor(layout, finalCrc);
+    const desc = descriptor(layout, finalCrc);
+    const descSlice = window(dataEnd, desc);
+    if (descSlice) yield descSlice;
   }
   const last = layouts[layouts.length - 1];
   const centralOffset = last
@@ -281,16 +377,20 @@ async function* generate(entries: ZipEntry[]): AsyncGenerator<Uint8Array> {
       (last.zip64 ? 24 : 16)
     : 0;
   let centralSize = 0;
+  let centralCursor = centralOffset;
   for (const [index, layout] of layouts.entries()) {
     const header = centralHeader(layout, crcs[index] ?? 0);
     centralSize += header.length;
-    yield header;
+    const slice = window(centralCursor, header);
+    if (slice) yield slice;
+    centralCursor += header.length;
   }
   const needsZip64End =
     layouts.length > LIMIT_16 ||
     centralSize >= LIMIT_32 ||
     centralOffset >= LIMIT_32 ||
     layouts.some((layout) => layout.zip64 || layout.offset >= LIMIT_32);
+  let tailCursor = centralOffset + centralSize;
   if (needsZip64End) {
     const zip64End = new ByteWriter(56)
       .u32(ZIP64_EOCD_SIG)
@@ -304,15 +404,20 @@ async function* generate(entries: ZipEntry[]): AsyncGenerator<Uint8Array> {
       .u64(centralSize)
       .u64(centralOffset)
       .take();
-    yield zip64End;
-    yield new ByteWriter(20)
+    const endSlice = window(tailCursor, zip64End);
+    if (endSlice) yield endSlice;
+    tailCursor += zip64End.length;
+    const locator = new ByteWriter(20)
       .u32(ZIP64_LOCATOR_SIG)
       .u32(0)
       .u64(centralOffset + centralSize)
       .u32(1)
       .take();
+    const locatorSlice = window(tailCursor, locator);
+    if (locatorSlice) yield locatorSlice;
+    tailCursor += locator.length;
   }
-  yield new ByteWriter(22)
+  const eocd = new ByteWriter(22)
     .u32(EOCD_SIG)
     .u16(0)
     .u16(0)
@@ -321,12 +426,14 @@ async function* generate(entries: ZipEntry[]): AsyncGenerator<Uint8Array> {
     .u32(Math.min(centralSize, LIMIT_32))
     .u32(Math.min(centralOffset, LIMIT_32))
     .take();
+  const eocdSlice = window(tailCursor, eocd);
+  if (eocdSlice) yield eocdSlice;
 }
 
-/** The archive as a web stream; entries stream through one at a time. */
-export const zipStream = (entries: ZipEntry[]): ReadableStream<Uint8Array> => {
-  const iterator = generate(entries);
-  return new ReadableStream<Uint8Array>({
+const streamOfGenerator = (
+  iterator: AsyncGenerator<Uint8Array>,
+): ReadableStream<Uint8Array> =>
+  new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
         const next = await iterator.next();
@@ -340,4 +447,15 @@ export const zipStream = (entries: ZipEntry[]): ReadableStream<Uint8Array> => {
       await iterator.return(undefined);
     },
   });
-};
+
+/** The archive as a web stream; entries stream through one at a time. */
+export const zipStream = (entries: ZipEntry[]): ReadableStream<Uint8Array> =>
+  streamOfGenerator(generate(entries));
+
+/** The archive from byte `start` onward, for HTTP range resumes. */
+export const zipStreamFrom = (
+  entries: ZipEntry[],
+  start: number,
+  resume: ZipResumeOptions = {},
+): ReadableStream<Uint8Array> =>
+  streamOfGenerator(generate(entries, start, resume));

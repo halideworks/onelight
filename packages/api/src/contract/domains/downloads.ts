@@ -150,7 +150,13 @@ export const registerDownloadsDomain = (ctx: SuiteContext): void => {
           { cookie: seed.editor.cookie },
         );
         expect(original.status).toBe(200);
-        const signed = await json<{ url: string }>(original);
+        const signed = await json<{ url: string; expires_at: number }>(
+          original,
+        );
+        /* Download URLs live long enough to resume a big pull hours later. */
+        expect(signed.expires_at - h.clock.now()).toBeGreaterThan(
+          11 * 60 * 60 * 1000,
+        );
         const served = await req(h, signed.url, { cookie: seed.editor.cookie });
         expect(served.status).toBe(200);
         expect(served.headers.get("content-disposition")).toContain(

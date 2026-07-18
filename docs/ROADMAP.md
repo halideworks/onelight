@@ -498,6 +498,29 @@ full pro tool. Standing decisions from this direction:
   a partial archive that reads as complete). All of it rides the core
   zip writer with exact Content-Length. Still open: per-project
   download gating on top of these roles.
+- **Downloads survive interruption (2026-07-17).** Three failure modes
+  closed. Signed download URLs (version, share, transfer, attachment,
+  export) now live twelve hours instead of fifteen minutes, keyed off
+  the attachment disposition so no call site can get it wrong: a resume
+  hours into a huge pull still authorizes. serveBlob emits a strong
+  ETag (blobs are immutable per key) and honors If-Range, because
+  browsers restart instead of resuming without a validator. And zips
+  resume: the deterministic store-method layout maps any byte position
+  to a known region, so all three zip endpoints serve real 206s through
+  one shared serveZip (ETag from the entry manifest, If-Range, exact
+  Content-Range). The subtlety is the central directory: it repeats
+  every entry's CRC at the end of the archive, so a naive resume
+  re-reads every entry. A process-local CRC cache (immutable blob keys,
+  warmed by the first pass) lets a resume skip completed entries
+  outright and jump into the interrupted one via a ranged blob read;
+  cold-cache resumes fall back to read-and-discard, slow but correct.
+  Byte-exact resume equivalence is tested at every region boundary in
+  core, and over HTTP in the contract suite. Alongside the zips, every
+  bulk surface (share room, transfer package, project selection) gained
+  "one at a time": sequential saves through the browser's own download
+  manager, where an interruption costs one file, not the batch, and
+  which also gives watermarked shares a bulk path since their zip
+  refuses by design.
 
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 

@@ -18,6 +18,7 @@
   import Avatar from '$lib/Avatar.svelte';
   import Lightbox from '$lib/Lightbox.svelte';
   import ProjectCover from '$lib/ProjectCover.svelte';
+  import { downloadSequentially } from '$lib/downloads.js';
   import { pageWashFor, pageWashFromStops } from '$lib/washes.js';
   import { api, apiDelete, apiPatch, apiPost, ApiError, messageFrom } from '$lib/api.js';
   import { askConfirm } from '$lib/confirm.svelte.js';
@@ -674,6 +675,39 @@
     return () => clearInterval(timer);
   });
 
+  /* Everything, one file at a time: each save rides the browser's own
+     download manager, so an interruption costs one file, not the batch.
+     This also serves watermarked shares, whose zip refuses by design. */
+  let bulkNote = $state('');
+  let bulkRunning = $state(false);
+  const downloadAllFiles = async (): Promise<void> => {
+    if (bulkRunning || assets.length === 0) return;
+    bulkRunning = true;
+    bulkNote = '';
+    try {
+      const result = await downloadSequentially(
+        assets.map((asset) => ({
+          label: asset.name,
+          url: async () => {
+            const payload = await api<{ url?: string; status?: string }>(
+              `/api/v1/s/${slug}/assets/${asset.id}/download`
+            );
+            return payload.url ?? null;
+          }
+        })),
+        (progress) => {
+          bulkNote = `Starting ${Math.min(progress.done + 1, progress.total)} of ${progress.total}`;
+        }
+      );
+      bulkNote =
+        result.skipped.length > 0
+          ? `${result.started} started. Not ready yet: ${result.skipped.join(', ')}`
+          : `${result.started} downloads started.`;
+    } finally {
+      bulkRunning = false;
+    }
+  };
+
   /* Download affordance, gated on the share's allow_download. A 202 means
      the watermarked file is still rendering. */
   const download = async (): Promise<void> => {
@@ -911,12 +945,25 @@
     <header>
       {#if share.logo_url}<img class="sharelogo" src={share.logo_url} alt="" />{/if}
       <h1>{share.title}</h1>
-      {#if share.allow_download !== 'none' && !share.watermark_spec && assets.length > 1}
-        <!-- The whole share in one archive, under the same policy as the
-             per-file buttons. Watermarked shares download one at a time. -->
-        <a class="zipall" href={`/api/v1/s/${slug}/zip`} download>
-          Download all ({assets.length} files)
-        </a>
+      {#if share.allow_download !== 'none' && assets.length > 1}
+        <span class="downloadrow">
+          {#if !share.watermark_spec}
+            <!-- The whole share in one archive, under the same policy as
+                 the per-file buttons. -->
+            <a class="zipall" href={`/api/v1/s/${slug}/zip`} download>
+              Download all ({assets.length} files, one zip)
+            </a>
+          {/if}
+          <button
+            type="button"
+            class="zipall"
+            disabled={bulkRunning}
+            onclick={() => void downloadAllFiles()}
+          >
+            {bulkRunning ? bulkNote || 'Starting downloads' : 'Download one at a time'}
+          </button>
+          {#if !bulkRunning && bulkNote}<span class="bulknote">{bulkNote}</span>{/if}
+        </span>
       {/if}
     </header>
     <section class={`assets ${share.layout}`} aria-label="Shared assets">
@@ -1522,8 +1569,11 @@
   .anchor { color: var(--n-600); }
   .composer-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
   .sharelogo { display: block; max-height: 56px; max-width: 240px; margin: 0 0 20px; object-fit: contain; }
-  .zipall { display: inline-block; margin-top: 10px; padding: 9px 14px; border-radius: var(--radius); background: rgba(231, 223, 200, 0.16); color: inherit; font-size: var(--text-13); font-weight: 500; text-decoration: none; }
+  .downloadrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+  .zipall { display: inline-block; padding: 9px 14px; border: 0; border-radius: var(--radius); background: rgba(231, 223, 200, 0.16); color: inherit; font-size: var(--text-13); font-weight: 500; text-decoration: none; cursor: pointer; font-family: inherit; }
   .zipall:hover { background: rgba(231, 223, 200, 0.26); }
+  .zipall:disabled { opacity: 0.7; cursor: default; }
+  .bulknote { color: rgba(240, 236, 226, 0.72); font-size: var(--text-13); }
   /* The decision buttons: quiet verbs until taken, then they wear it. */
   .approval { display: inline-flex; gap: 6px; }
   .approval .approve[aria-pressed='true'] { background: #3f7d5c; color: #eafff3; }

@@ -42,7 +42,7 @@ import {
   sha256Hex,
   zipEntryName,
   zipLength,
-  zipStream,
+  zipStreamFrom,
 } from "@onelight/core";
 import type { ZipEntry } from "@onelight/core";
 import type {
@@ -3984,7 +3984,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         attachment.blobKey,
         attachmentDisposition(attachment.filename),
       ),
-      expires_at: env.clock.now() + 15 * 60 * 1000,
+      expires_at: env.clock.now() + DOWNLOAD_TOKEN_TTL_MS,
     });
   });
 
@@ -4908,6 +4908,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     }
   };
 
+  /* Download URLs live twelve hours so an interrupted multi-hundred-GB pull
+     can resume long after it started; playback URLs stay short. A token
+     carrying an attachment disposition IS a download, so the TTL follows
+     the disposition and no call site can get it wrong. */
+  const DOWNLOAD_TOKEN_TTL = "12h";
+  const DOWNLOAD_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+
   const issueMediaToken = async (
     share: typeof shares.$inferSelect,
     assetId: string,
@@ -4924,7 +4931,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
-      .setExpirationTime("15m")
+      .setExpirationTime(disposition ? DOWNLOAD_TOKEN_TTL : "15m")
       .sign(new TextEncoder().encode(env.config.SECRET_KEY));
 
   const publicMediaUrl = async (
@@ -5018,7 +5025,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
-      .setExpirationTime("15m")
+      .setExpirationTime(disposition ? DOWNLOAD_TOKEN_TTL : "15m")
       .sign(new TextEncoder().encode(env.config.SECRET_KEY));
 
   const privateMediaUrl = async (
@@ -5122,6 +5129,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     c.header("accept-ranges", "bytes");
     c.header("content-type", await blobContentType(key));
     if (disposition) c.header("content-disposition", disposition);
+    /* Blobs are immutable per key, so the key is a permanent strong
+       validator. Without an ETag, browsers restart an interrupted download
+       from zero instead of asking for the remaining bytes. */
+    const etag = `"b${(await sha256Hex(key)).slice(0, 24)}"`;
+    c.header("etag", etag);
     let size: number | undefined;
     if (typeof store.head === "function") {
       try {
@@ -5131,7 +5143,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       }
     }
     const rangeHeader = c.req.header("range");
-    if (rangeHeader !== undefined && size !== undefined) {
+    const ifRange = c.req.header("if-range");
+    if (
+      rangeHeader !== undefined &&
+      size !== undefined &&
+      (ifRange === undefined || ifRange === etag)
+    ) {
       const range = parseRangeHeader(rangeHeader, size);
       if (range === "unsatisfiable") {
         c.header("content-range", `bytes */${size}`);
@@ -5148,6 +5165,103 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     }
     if (size !== undefined) c.header("content-length", String(size));
     return c.body(await store.getStream(key), 200);
+  };
+
+  /* CRCs computed while a zip streams, remembered for resumes: with them a
+     Range request skips straight to the interrupted byte instead of
+     re-reading every entry to rebuild the central directory's checksums.
+     Keyed by blob key, which is immutable, and bluntly reset when large. */
+  const zipCrcCache = new Map<string, number>();
+  const rememberZipCrc = (key: string, crc: number): void => {
+    if (zipCrcCache.size >= 100_000) zipCrcCache.clear();
+    zipCrcCache.set(key, crc);
+  };
+
+  const truncateTo = (
+    stream: ReadableStream<Uint8Array>,
+    limit: number,
+  ): ReadableStream<Uint8Array> => {
+    const reader = stream.getReader();
+    let remaining = limit;
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (remaining <= 0) {
+          controller.close();
+          await reader.cancel();
+          return;
+        }
+        const next = await reader.read();
+        if (next.done) {
+          controller.close();
+          return;
+        }
+        if (next.value.length <= remaining) {
+          remaining -= next.value.length;
+          controller.enqueue(next.value);
+        } else {
+          controller.enqueue(next.value.subarray(0, remaining));
+          remaining = 0;
+          await reader.cancel();
+          controller.close();
+        }
+      },
+      async cancel() {
+        await reader.cancel();
+      },
+    });
+  };
+
+  /* The deterministic layout gives the archive an exact length and a stable
+     identity before a byte is written, so a hundreds-of-GB zip serves with
+     a real Content-Length, an ETag, and honest 206 resumes. */
+  const serveZip = async (
+    c: Context<{ Variables: Variables }>,
+    entries: ZipEntry[],
+    zipName: string,
+  ): Promise<Response> => {
+    const total = zipLength(entries);
+    const identity = entries
+      .map((entry) => `${entry.cacheKey ?? entry.name}:${entry.size}`)
+      .join("|");
+    const etag = `"z${(await sha256Hex(identity)).slice(0, 24)}"`;
+    const base: Record<string, string> = {
+      "content-type": "application/zip",
+      "content-disposition": attachmentDisposition(zipName),
+      "accept-ranges": "bytes",
+      etag,
+    };
+    const rangeHeader = c.req.header("range");
+    const ifRange = c.req.header("if-range");
+    if (rangeHeader && (ifRange === undefined || ifRange === etag)) {
+      const range = parseRangeHeader(rangeHeader, total);
+      if (range === "unsatisfiable")
+        return new Response(null, {
+          status: 416,
+          headers: { ...base, "content-range": `bytes */${total}` },
+        });
+      if (range) {
+        const length = range.end - range.start + 1;
+        let stream = zipStreamFrom(entries, range.start, {
+          crcs: zipCrcCache,
+          onCrc: rememberZipCrc,
+        });
+        if (range.end < total - 1) stream = truncateTo(stream, length);
+        return new Response(stream, {
+          status: 206,
+          headers: {
+            ...base,
+            "content-range": `bytes ${range.start}-${range.end}/${total}`,
+            "content-length": String(length),
+          },
+        });
+      }
+    }
+    /* The full build also runs through the resume path so it warms the CRC
+       cache; from byte zero the two are the same stream. */
+    return new Response(
+      zipStreamFrom(entries, 0, { crcs: zipCrcCache, onCrc: rememberZipCrc }),
+      { headers: { ...base, "content-length": String(total) } },
+    );
   };
 
   api.post("/shares", requireAuth, async (c) => {
@@ -5888,7 +6002,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         job.resultBlobKey,
         attachmentDisposition(filename),
       ),
-      expires_at: env.clock.now() + 15 * 60 * 1000,
+      expires_at: env.clock.now() + DOWNLOAD_TOKEN_TTL_MS,
     });
   });
 
@@ -6698,7 +6812,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           attachment.blobKey,
           attachmentDisposition(attachment.filename),
         ),
-        expires_at: env.clock.now() + 15 * 60 * 1000,
+        expires_at: env.clock.now() + DOWNLOAD_TOKEN_TTL_MS,
       });
     },
   );
@@ -6913,7 +7027,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (!version) throw errors.notFound();
     const baseName =
       version.originalFilename.replace(/\.[^.]+$/, "") || "download";
-    const expiresAt = env.clock.now() + 15 * 60 * 1000;
+    const expiresAt = env.clock.now() + DOWNLOAD_TOKEN_TTL_MS;
     if (shareIsWatermarked(share)) {
       const watermarked = await watermarkedRenditionFor(share, version.id);
       if (!watermarked) return c.json({ status: "processing" }, 202);
@@ -7629,12 +7743,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
-      .setExpirationTime("15m")
+      .setExpirationTime(DOWNLOAD_TOKEN_TTL)
       .sign(new TextEncoder().encode(env.config.SECRET_KEY));
     await notifyTransferDownloaded(transfer, grant.name, file.name);
     return c.json({
       url: `/api/v1/t/${transfer.slug}/file?token=${encodeURIComponent(token)}`,
-      expires_at: env.clock.now() + 15 * 60 * 1000,
+      expires_at: env.clock.now() + DOWNLOAD_TOKEN_TTL_MS,
     });
   });
 
@@ -7688,24 +7802,23 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         name,
         size: version.size,
         modifiedAt: version.createdAt,
+        cacheKey: version.originalBlobKey,
         open: () => store.getStream(version.originalBlobKey),
+        openRange: (from) =>
+          store.getStream(version.originalBlobKey, { start: from }),
       });
     }
     if (!entries.length) throw errors.notFound("The package has no files.");
-    await notifyTransferDownloaded(transfer, grant.name, null);
+    /* A Range request is the same download resuming, not a second one. */
+    if (!c.req.header("range"))
+      await notifyTransferDownloaded(transfer, grant.name, null);
     const zipName = `${
       transfer.title
         .replace(/[^\w.-]+/g, "_")
         .replace(/^_+|_+$/g, "")
         .slice(0, 80) || "package"
     }.zip`;
-    return new Response(zipStream(entries), {
-      headers: {
-        "content-type": "application/zip",
-        "content-length": String(zipLength(entries)),
-        "content-disposition": attachmentDisposition(zipName),
-      },
-    });
+    return serveZip(c, entries, zipName);
   });
 
   const transferUploadWire = (upload: typeof uploadSessions.$inferSelect) => ({
@@ -8206,7 +8319,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         name,
         size: source.size,
         modifiedAt: version.createdAt,
+        cacheKey: source.blobKey,
         open: () => store.getStream(source.blobKey),
+        openRange: (from) => store.getStream(source.blobKey, { start: from }),
       });
     }
     if (!entries.length) throw errors.notFound("Nothing to download.");
@@ -8216,13 +8331,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .replace(/^_+|_+$/g, "")
         .slice(0, 80) || "share"
     }.zip`;
-    return new Response(zipStream(entries), {
-      headers: {
-        "content-type": "application/zip",
-        "content-length": String(zipLength(entries)),
-        "content-disposition": attachmentDisposition(zipName),
-      },
-    });
+    return serveZip(c, entries, zipName);
   });
 
   api.get("/uploads/:id/parts/:partNo/url", requireAuth, async (c) => {
@@ -9019,7 +9128,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       kind === "original" ? "editor" : "viewer",
     );
     if (!env.blobStore) throw errors.notFound("Media is not available.");
-    const expiresAt = env.clock.now() + 15 * 60 * 1000;
+    const expiresAt = env.clock.now() + DOWNLOAD_TOKEN_TTL_MS;
     if (kind === "original")
       return c.json({
         url: await privateMediaUrl(
@@ -9143,7 +9252,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         name,
         size: version.size,
         modifiedAt: version.createdAt,
+        cacheKey: version.originalBlobKey,
         open: () => store.getStream(version.originalBlobKey),
+        openRange: (from) =>
+          store.getStream(version.originalBlobKey, { start: from }),
       });
     }
     const scopeName = folderId
@@ -9162,13 +9274,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .replace(/^_+|_+$/g, "")
         .slice(0, 80) || "files"
     }.zip`;
-    return new Response(zipStream(entries), {
-      headers: {
-        "content-type": "application/zip",
-        "content-length": String(zipLength(entries)),
-        "content-disposition": attachmentDisposition(zipName),
-      },
-    });
+    return serveZip(c, entries, zipName);
   });
 
   api.put("/versions/:id/captions", requireAuth, async (c) => {

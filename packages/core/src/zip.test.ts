@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { zipEntryName, zipLength, zipStream } from "./zip.js";
+import { zipEntryName, zipLength, zipStream, zipStreamFrom } from "./zip.js";
 import type { ZipEntry } from "./zip.js";
 
 const streamOf = (bytes: Uint8Array, chunkSize = 7): ReadableStream => {
@@ -142,6 +142,96 @@ describe("zip", () => {
     await expect(collect(zipStream(entries))).rejects.toThrow(
       /shorter than declared/,
     );
+  });
+
+  it("resumes from any byte, matching the full stream exactly", async () => {
+    const first = new Uint8Array(700).map((_, index) => (index * 13) % 256);
+    const second = new Uint8Array(450).map((_, index) => (index * 7) % 256);
+    const third = new TextEncoder().encode("short tail entry");
+    const build = (): ZipEntry[] => [
+      {
+        name: "a/first.bin",
+        size: first.length,
+        cacheKey: "blob:first",
+        open: () => Promise.resolve(streamOf(first, 64)),
+        openRange: (from) => Promise.resolve(streamOf(first.slice(from), 64)),
+      },
+      {
+        name: "second.bin",
+        size: second.length,
+        cacheKey: "blob:second",
+        open: () => Promise.resolve(streamOf(second, 33)),
+        openRange: (from) => Promise.resolve(streamOf(second.slice(from), 33)),
+      },
+      {
+        name: "third.txt",
+        size: third.length,
+        cacheKey: "blob:third",
+        open: () => Promise.resolve(streamOf(third, 5)),
+      },
+    ];
+    const full = await collect(zipStream(build()));
+    const total = zipLength(build());
+    expect(full.length).toBe(total);
+    /* Every region boundary plus interior bytes: header starts, data
+       middles, descriptors, the central directory, and the last byte. */
+    const starts = [
+      0,
+      1,
+      29,
+      30,
+      31,
+      200,
+      700 + 30 + 11,
+      full.length - 500,
+      full.length - 22,
+      full.length - 1,
+    ];
+    for (const start of starts) {
+      const resumed = await collect(zipStreamFrom(build(), start));
+      expect(
+        Buffer.compare(resumed, full.subarray(start)),
+        `resume at ${start}`,
+      ).toBe(0);
+    }
+    /* With a warm CRC cache, entries before the resume point are never
+       opened, and the interrupted entry opens through its range reader. */
+    const crcs = new Map<string, number>();
+    await collect(
+      zipStreamFrom(build(), 0, {
+        onCrc: (key, crc) => crcs.set(key, crc),
+      }),
+    );
+    expect(crcs.size).toBe(3);
+    let opened = 0;
+    let ranged = 0;
+    const cachedEntries: ZipEntry[] = build().map((entry) => ({
+      ...entry,
+      open: () => {
+        opened += 1;
+        return entry.open();
+      },
+      ...(entry.openRange
+        ? {
+            openRange: (from: number) => {
+              ranged += 1;
+              const range = entry.openRange;
+              if (!range) throw new Error("unreachable");
+              return range(from);
+            },
+          }
+        : {}),
+    }));
+    /* Resume in the middle of the second entry's data. */
+    const secondDataMiddle = 30 + 11 + first.length + 16 + 30 + 10 + 200;
+    const resumed = await collect(
+      zipStreamFrom(cachedEntries, secondDataMiddle, { crcs }),
+    );
+    expect(Buffer.compare(resumed, full.subarray(secondDataMiddle))).toBe(0);
+    /* The first entry was skipped outright; the second jumped by range;
+       only the third (after the resume point) streamed from the top. */
+    expect(ranged).toBe(1);
+    expect(opened).toBe(1);
   });
 
   it("zipEntryName strips traversal and normalizes separators", () => {

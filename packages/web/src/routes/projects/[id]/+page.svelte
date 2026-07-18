@@ -6,6 +6,7 @@
   import { api, apiDelete, apiPatch, apiPost, createAssetVersion, messageFrom } from '$lib/api.js';
   import { copyText } from '$lib/clipboard.js';
   import { canonicalizePath } from '$lib/canonical.js';
+  import { downloadSequentially, triggerDownload } from '$lib/downloads.js';
   import { idFrom, pretty } from '$lib/ids.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import AssetSelect from '$lib/AssetSelect.svelte';
@@ -1177,19 +1178,52 @@
       listError = 'This file has no downloadable version yet.';
       return;
     }
+    const url = await signedDownloadUrl(versionId);
+    if (url) triggerDownload(url);
+    else listError = 'The download could not start.';
+  };
+
+  /* The best file the caller's role allows: the original for editors, the
+     proxy for everyone else. */
+  const signedDownloadUrl = async (versionId: string): Promise<string | null> => {
     try {
-      const signed = await api<{ url: string }>(`/api/v1/versions/${versionId}/download`);
-      window.location.assign(signed.url);
+      return (await api<{ url: string }>(`/api/v1/versions/${versionId}/download`)).url;
     } catch {
       try {
-        const signed = await api<{ url: string }>(
-          `/api/v1/versions/${versionId}/download?kind=proxy`
-        );
-        window.location.assign(signed.url);
-      } catch (caught) {
-        listError = messageFrom(caught, 'The download could not start.');
+        return (
+          await api<{ url: string }>(`/api/v1/versions/${versionId}/download?kind=proxy`)
+        ).url;
+      } catch {
+        return null;
       }
     }
+  };
+
+  /* The selection, one file at a time: each save rides the browser's own
+     download manager, so an interruption costs one file, not the batch. */
+  const downloadSelectionFiles = async (): Promise<void> => {
+    const chosen = selected
+      .map((id) => assets.find((entry) => entry.id === id))
+      .filter((asset): asset is Asset => Boolean(asset));
+    if (batch.running || chosen.length === 0) return;
+    batch = { running: true, label: 'Starting download', done: 0, total: chosen.length, errors: [] };
+    const result = await downloadSequentially(
+      chosen.map((asset) => ({
+        label: asset.name,
+        url: async () =>
+          asset.current_version_id ? signedDownloadUrl(asset.current_version_id) : null
+      })),
+      (progress) => {
+        batch = { ...batch, done: progress.done };
+      }
+    );
+    batch = {
+      running: false,
+      label: '',
+      done: result.done,
+      total: result.total,
+      errors: result.skipped.map((name) => ({ name, message: 'The download could not start.' }))
+    };
   };
 
   const downloadSelection = (): void => {
@@ -1890,6 +1924,7 @@
               <span class="tc">{selected.length} selected</span>
               <button type="button" class="quiet" onclick={() => void openMove()}>Move to folder</button>
               <button type="button" class="quiet" onclick={downloadSelection}>Download zip</button>
+              <button type="button" class="quiet" onclick={() => void downloadSelectionFiles()}>Download files</button>
               <span class="approval">
                 <select bind:value={shareChoice} aria-label="Share to add to">
                   <option value="">New share…</option>
