@@ -78,7 +78,7 @@
         <div class="info">
           <strong>{describeAgent(session.user_agent)}</strong>
           <span class="meta">
-            {session.ip ?? 'unknown address'}
+            <span>{session.ip ?? 'unknown address'}</span>
             <span class="sep" aria-hidden="true"></span>
             <span title={whenAbsolute(session.last_seen_at)}>active {whenRelative(session.last_seen_at)}</span>
             <span class="sep" aria-hidden="true"></span>
@@ -108,4 +108,15 @@
   button:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
   .empty { color: var(--ink-text-dim); }
   .error { color: var(--warn); }
+
+  /* Phone: the dotted one-liner wraps with orphaned separators, and the raw
+     user-agent string is two lines of noise under every row. Stack the meta
+     as quiet rows; the "Firefox on X11" summary carries the essentials. */
+  @media (max-width: 720px) {
+    .meta { display: grid; gap: 3px; }
+    .sep, .agent { display: none; }
+  }
+  @media (pointer: coarse) {
+    button { min-height: var(--tap); }
+  }
 </style>
