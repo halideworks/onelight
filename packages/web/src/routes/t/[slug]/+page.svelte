@@ -292,8 +292,11 @@
         {:else}
           <div class="actions">
             <a class="primary" href={`/api/v1/t/${slug}/zip`} download>
-              Download everything
-              <small>{shell.files.length} {shell.files.length === 1 ? 'file' : 'files'} / {formatBytes(packageBytes)} / .zip</small>
+              <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v8M4.5 7L8 10.5 11.5 7M3 13.5h10" /></svg>
+              <span class="primary-lines">
+                <span>Download everything</span>
+                <small>{shell.files.length} {shell.files.length === 1 ? 'file' : 'files'} · {formatBytes(packageBytes)} · .zip</small>
+              </span>
             </a>
             {#if shell.files.length > 1}
               <button
@@ -417,16 +420,31 @@
   .onebyone:disabled { opacity: 0.7; cursor: default; }
   .bulknote { color: rgba(240, 236, 226, 0.72); font-size: var(--text-13); }
   .primary {
-    display: inline-grid;
-    gap: 2px;
-    border-radius: var(--radius);
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    border-radius: var(--radius-lg);
     background: #e7dfc8;
     color: #202832;
-    padding: 13px 18px;
-    font-weight: 500;
+    padding: 12px 20px 12px 16px;
+    font-weight: 600;
     text-decoration: none;
+    transition: filter 100ms ease;
   }
-  .primary small { font-weight: 400; font-size: var(--text-12); color: rgba(32, 40, 50, 0.72); }
+  .primary:hover { filter: brightness(1.05); }
+  .primary svg { flex: none; opacity: 0.75; }
+  .primary-lines { display: grid; gap: 1px; }
+  .primary small { font-weight: 400; font-size: var(--text-12); color: rgba(32, 40, 50, 0.72); font-variant-numeric: tabular-nums; }
+  /* Phone: the zip is the headline act and the one-by-one path its quiet
+     understudy — both full width, stacked, one composition. */
+  @media (max-width: 720px) {
+    .shell { padding: 24px var(--pad-2) 40px; }
+    .room header { margin: 4vh 0 20px; }
+    .actions { flex-direction: column; align-items: stretch; gap: 8px; }
+    .primary { justify-content: center; padding: 14px 20px; }
+    .onebyone { text-align: center; padding: 12px 16px; }
+    .bulknote { text-align: center; }
+  }
 
   .files { list-style: none; margin: 0; padding: 0; display: grid; }
   .files li {

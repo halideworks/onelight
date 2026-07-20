@@ -480,6 +480,15 @@
   .chip.warn { background: var(--ink-200); color: var(--warn); }
   .viewercount { color: var(--ink-text-dim); }
   .meta { margin: 0; color: var(--ink-text-dim); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  /* Phone: tighter gutters, and every card wears the same face — the title
+     owns its line, the chips and viewer count share the next. A short title
+     used to pull its chips up beside it and no two cards matched. */
+  @media (max-width: 720px) {
+    .wash { padding: var(--pad-2) var(--pad-2) var(--pad-3); }
+    .body { padding: var(--pad-2) var(--pad-2) var(--pad-3); }
+    .actions-row { margin-bottom: var(--pad-2); }
+    .head h2 { flex-basis: 100%; }
+  }
   .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--ink-300); }
   .linkrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .url { color: var(--ink-text-dim); font-size: var(--text-13); overflow-wrap: anywhere; }

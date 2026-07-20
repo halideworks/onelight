@@ -259,6 +259,10 @@
     /* The icon takes over the auto margin that pushes the right cluster. */
     .bell { margin-left: 0; }
     .topbar { gap: 20px; }
+    /* The wordmark already goes home and the avatar already opens settings:
+       on a phone the text links only crowd the bar. */
+    nav { display: none; }
+    .searchlink { margin-left: auto; }
   }
   /* Coarse pointers get full-height nav targets; the visual stays quiet. */
   @media (pointer: coarse) {

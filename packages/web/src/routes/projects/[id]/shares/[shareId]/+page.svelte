@@ -934,4 +934,28 @@
   .page-error { padding: 0 var(--pad-4); }
   button:focus-visible, a:focus-visible, input:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
   select:focus-visible { outline: none; background: var(--ink-300); }
+
+  /* Phone: the paired panels' 360px track minimum was the page's horizontal
+     overflow — panels stack; the viewer roster becomes two-line entries
+     (who, then when) instead of a four-column table sliced off-screen. */
+  @media (max-width: 720px) {
+    .wash { padding: var(--pad-2) var(--pad-2) var(--pad-2); }
+    .body { padding: 0 var(--pad-2); }
+    .page-error { padding: 0 var(--pad-2); }
+    .duo { grid-template-columns: 1fr; }
+    table, tbody { display: block; }
+    thead { display: none; }
+    tr {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 2px 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--ink-200);
+    }
+    td { display: block; padding: 0; }
+    td:nth-child(1) { grid-row: 1; grid-column: 1; font-weight: 500; }
+    td:nth-child(2) { grid-row: 2; grid-column: 1; color: var(--ink-text-dim); overflow-wrap: anywhere; }
+    td:nth-child(3) { display: none; }
+    td:nth-child(4) { grid-row: 1; grid-column: 2; color: var(--ink-text-dim); }
+  }
 </style>

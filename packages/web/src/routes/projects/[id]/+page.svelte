@@ -113,6 +113,14 @@
   let treeError = $state('');
   let dropTarget = $state<string | null>(null);
   let dragging = $state<string | null>(null);
+  /* On a phone the rail starts folded: the media is the point, and the tree
+     was spending the first screen on furniture. Desktop never folds — the
+     toggle only renders under the 720px breakpoint. SSR renders open; the
+     effect folds it before first paint on a phone viewport. */
+  let railOpen = $state(true);
+  $effect(() => {
+    if (window.matchMedia('(max-width: 720px)').matches) railOpen = false;
+  });
 
   const routeId = $derived(idFrom(page.params.id));
   /* Canonical ULID, set once the project loads. The route may carry the
@@ -1615,7 +1623,18 @@
     <p class="error page-error" role="alert">{error}</p>
   {:else}
     <div class="body">
-      <aside class="pane" aria-label="Folders and shares">
+      <aside class="pane" class:folded={!railOpen} aria-label="Folders and shares">
+        <button
+          type="button"
+          class="raildisclose"
+          aria-expanded={railOpen}
+          onclick={() => { railOpen = !railOpen; }}
+        >
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" class="caret" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3.5L10.5 8l-5 4.5" /></svg>
+          Folders &amp; shares
+          {#if shares.length}<span class="tc railcount">{shares.length + rootIds.length}</span>{/if}
+        </button>
+        <div class="railbody">
         <!-- Making a folder comes before filing things in one, so the control
              that makes them sits above the list rather than under it. -->
         <form class="newfolder" onsubmit={createFolder}>
@@ -1821,6 +1840,7 @@
         {#if treeError}<p class="error" role="alert">{treeError}</p>{/if}
         {#if shareError}<p class="sharenote" aria-live="polite">{shareError}</p>{/if}
         <p class="hint kbdhint">Arrows navigate, Enter opens, F2 renames, drag to move.</p>
+        </div>
       </aside>
 
       <section class="main">
@@ -2303,6 +2323,29 @@
      rows -- name plus Rename plus Delete -- push the pane past its 240px column
      and slide under the content beside it. */
   .pane { min-width: 0; }
+  /* The disclosure exists only on phones; desktop always shows the rail. */
+  .raildisclose { display: none; }
+  .railbody { display: contents; }
+  @media (max-width: 720px) {
+    .raildisclose {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      width: 100%;
+      padding: 10px 2px;
+      border: 0;
+      background: none;
+      color: var(--ink-text);
+      font-size: var(--text-14);
+      font-weight: 600;
+      text-align: left;
+    }
+    .raildisclose .caret { color: var(--ink-text-dim); transition: transform 140ms ease; }
+    .raildisclose[aria-expanded='true'] .caret { transform: rotate(90deg); }
+    .railcount { margin-left: auto; color: var(--ink-text-dim); font-weight: 500; }
+    .railbody { display: block; }
+    .pane.folded .railbody { display: none; }
+  }
   .row { overflow: hidden; }
   /* Phone: the wash header stacks — title on its own line, the two room
      links under it — and the pane/content padding steps down so the room

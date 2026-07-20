@@ -1106,8 +1106,8 @@
       {:else}
         <p class="empty">A review rendition is not ready.</p>
       {/if}
-      </div>
-      {/key}
+      <!-- Skipping lives on the picture itself: the chevrons centre on the
+           artwork's edges, never on the transport below it. -->
       {#if showtime && assets.length > 1 && selected}
         {@const at = assets.findIndex((candidate) => candidate.id === selected?.id)}
         {#if at > 0}
@@ -1121,6 +1121,8 @@
           </button>
         {/if}
       {/if}
+      </div>
+      {/key}
       {#if showtime && assets.length > 1}
         <!-- The whole share, current one marked: the client skips through the
              work from here, never back out to a menu. -->
@@ -1426,7 +1428,7 @@
   /* The keyed wrapper re-enters when the clip changes, so switching is a
      dissolve rather than a pop. It mirrors the column so the player still
      gets a definite height. */
-  .picture { flex: 1; min-height: 0; display: flex; flex-direction: column; animation: fadein 380ms ease both; }
+  .picture { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; animation: fadein 380ms ease both; }
   .picture > :global(.player) { flex: 1; min-height: 0; }
   .rail { display: flex; flex-direction: column; min-height: 0; background: var(--n-100); }
   @media (max-width: 900px) {
@@ -1448,9 +1450,32 @@
     .preview-bar :global(button) { white-space: nowrap; }
     .showtime .preview-bar { padding: 14px var(--pad-2) 8px; }
     .showtime .maincol { padding: 0 var(--pad-2); }
-    /* Touch: the skip chevrons ride the picture's lower corners instead of
-       floating mid-wall, and stay small enough not to cover the work. */
-    .skip { top: auto; bottom: 10px; transform: none; width: 40px; height: 40px; background: rgba(13, 17, 23, 0.65); }
+  }
+  /* The presentation transport on phones, either orientation: one centred
+     band — timecode, transport, sound, screen — instead of chips scattered
+     around the room. Frame counts and shuttle labels are the colourist's
+     dialect; the client's room speaks timecode only. */
+  @media (max-width: 900px) {
+    .showtime .maincol :global(.transport-row.main) {
+      display: flex;
+      flex-wrap: nowrap;
+      justify-content: center;
+      align-items: center;
+      gap: 4px;
+    }
+    .showtime .maincol :global(.deck) { display: flex; width: auto; align-items: center; gap: 6px; }
+    .showtime .maincol :global(.deck .readout) { min-width: 0; margin-right: 4px; }
+    .showtime .maincol :global(.deck .readout-sub),
+    .showtime .maincol :global(.deck .shuttle) { display: none; }
+    /* Reverse-play is the colorist's verb; the client's row keeps step,
+       play, step — and everything fits 390 with air to spare. */
+    .showtime .maincol :global(.cluster button:first-child) { display: none; }
+    .showtime .maincol :global(.cluster) { gap: 2px; }
+    .showtime .maincol :global(.side:not(.volume)) { display: none; }
+    .showtime .maincol :global(.side.volume) { margin-left: 0; order: 0; }
+    /* Touch: slightly smaller chevrons, deeper ink so they read over any
+       footage; they centre on the picture because they live inside it. */
+    .preview button.skip { width: 40px; height: 40px; background: rgba(13, 17, 23, 0.65); }
   }
 
   /* Presentation carousel: the whole share at the foot of the picture,
@@ -1512,8 +1537,10 @@
   /* Skipping lives on the picture's own gutters: a circular chevron either
      side, quiet until the pointer comes near. */
   .maincol { position: relative; }
-  .skip { position: absolute; top: 50%; z-index: 2; display: grid; place-items: center; width: 46px; height: 46px; padding: 0; border: 0; border-radius: 50%; background: rgba(13, 17, 23, 0.5); color: rgba(250, 248, 244, 0.75); transform: translateY(-50%); transition: background 140ms ease, color 140ms ease; }
-  .skip:hover { background: rgba(13, 17, 23, 0.8); color: #fff; }
+  /* .preview button carries higher specificity than a lone class and was
+     flattening these into small grey squares; the chevrons are circles. */
+  .preview button.skip { position: absolute; top: 50%; z-index: 2; display: grid; place-items: center; width: 46px; height: 46px; padding: 0; border: 0; border-radius: 50%; background: rgba(13, 17, 23, 0.55); color: rgba(250, 248, 244, 0.8); transform: translateY(-50%); transition: background 140ms ease, color 140ms ease; }
+  .preview button.skip:hover { background: rgba(13, 17, 23, 0.85); color: #fff; }
   .skip.prev { left: clamp(8px, 1.6vw, 28px); }
   .skip.next { right: clamp(8px, 1.6vw, 28px); }
 

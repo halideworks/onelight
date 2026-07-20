@@ -363,6 +363,17 @@
   @media (max-width: 720px) {
     .shell:not(.signed-in) { height: auto; min-height: 100vh; overflow: visible; padding: 5vh var(--pad-2) 48px; }
     .demo { width: 100%; }
+    /* The veil stays a veil: the player's phone deck is three bands tall and
+       was burying half the demo frame. On the landing the instrument is a
+       prop — timecode and transport on one slim line, scrub under it,
+       everything else stays off the picture. */
+    .demoplayer :global(.transport-row.main) { flex-wrap: nowrap; justify-content: center; column-gap: 12px; row-gap: 0; }
+    .demoplayer :global(.deck) { display: flex; width: auto; align-items: center; gap: 10px; }
+    .demoplayer :global(.deck .readout-sub),
+    .demoplayer :global(.deck .shuttle),
+    .demoplayer :global(.side) { display: none; }
+    .demoplayer :global(.deck button) { min-height: 32px; }
+    .demoplayer :global(.transport) { padding-bottom: 24px; }
   }
   .demoplayer { position: relative; aspect-ratio: 4 / 3; }
   /* The controls live ON the picture: translucent ink strips over the
