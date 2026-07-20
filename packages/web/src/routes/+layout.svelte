@@ -134,35 +134,38 @@
         oninput={searchAsYouType}
       />
     </form>
-    <!-- On phones the search field is hidden; this icon keeps /search one tap
-         away instead of unreachable. -->
-    <a class="searchlink" href="/search" aria-label="Search">
-      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5">
-        <circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" stroke-linecap="round" />
-      </svg>
-    </a>
-    <button
-      type="button"
-      class="bell"
-      onclick={() => (notificationsOpen = !notificationsOpen)}
-      aria-expanded={notificationsOpen}
-      aria-label={notifications.unread > 0
-        ? `Notifications, ${notifications.unread} unread`
-        : 'Notifications'}
-    >
-      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M8 2a4 4 0 0 0-4 4v2.5L2.8 11h10.4L12 8.5V6a4 4 0 0 0-4-4Z" />
-        <path d="M6.6 13a1.5 1.5 0 0 0 2.8 0" />
-      </svg>
-      {#if notifications.unread > 0}
-        <span class="badge tc">{notifications.unread > 99 ? '99+' : notifications.unread}</span>
-      {/if}
-    </button>
-    {#if auth.user}
-      <a class="me" href="/settings/profile" aria-label="Your profile">
-        <Avatar name={auth.user.name} id={auth.user.id} url={auth.user.avatar_url ?? null} size={26} />
+    <!-- The right cluster is one unit: equal boxes, one rhythm. On phones the
+         search field collapses into the first icon; on desktop that icon
+         hides and the field stands before the cluster instead. -->
+    <span class="iconrow">
+      <a class="searchlink" href="/search" aria-label="Search">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" stroke-linecap="round" />
+        </svg>
       </a>
-    {/if}
+      <button
+        type="button"
+        class="bell"
+        onclick={() => (notificationsOpen = !notificationsOpen)}
+        aria-expanded={notificationsOpen}
+        aria-label={notifications.unread > 0
+          ? `Notifications, ${notifications.unread} unread`
+          : 'Notifications'}
+      >
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 2a4 4 0 0 0-4 4v2.5L2.8 11h10.4L12 8.5V6a4 4 0 0 0-4-4Z" />
+          <path d="M6.6 13a1.5 1.5 0 0 0 2.8 0" />
+        </svg>
+        {#if notifications.unread > 0}
+          <span class="badge tc">{notifications.unread > 99 ? '99+' : notifications.unread}</span>
+        {/if}
+      </button>
+      {#if auth.user}
+        <a class="me" href="/settings/profile" aria-label="Your profile">
+          <Avatar name={auth.user.name} id={auth.user.id} url={auth.user.avatar_url ?? null} size={26} />
+        </a>
+      {/if}
+    </span>
   </header>
   <NotificationsPanel bind:open={notificationsOpen} />
 {/if}
@@ -244,11 +247,16 @@
   .navsearch input { flex: 1; min-width: 0; border: 0; background: none; color: var(--ink-text); padding: 7px 0; font-size: var(--text-13); }
   .navsearch input:focus-visible { outline: none; }
   .navsearch input::placeholder { color: var(--ink-text-dim); }
+  /* One cluster, one rhythm: every member is a 40px box with the glyph on
+     its centre, so the gaps between glyphs are actually equal instead of a
+     side effect of each icon's own padding and negative margins. */
+  .iconrow { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
   .searchlink {
     display: none;
     align-items: center;
-    padding: 8px;
-    margin: -8px 0 -8px auto;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
     border-radius: var(--radius);
     color: var(--ink-text-dim);
   }
@@ -266,17 +274,15 @@
   nav a[aria-current='page'] {
     color: var(--ink-text);
   }
-  /* An icon button, so it opts out of the app's filled-button convention.
-     margin-left auto: the search field caps its own width, so the leftover
-     space belongs behind it, not to the right of the avatar. The bell and
-     the avatar anchor the frame's right edge. */
+  /* An icon button, so it opts out of the app's filled-button convention. */
   .bell {
     position: relative;
     display: inline-flex;
     align-items: center;
-    padding: 8px;
-    margin: -8px;
-    margin-left: auto;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
     border: 0;
     border-radius: var(--radius);
     background: none;
@@ -286,37 +292,36 @@
   .bell[aria-expanded='true'] {
     color: var(--ink-text);
   }
-  /* Unread is a flag, not decoration. The accent is the app's ordinary
-     interactive colour and sat unnoticed on the bell; a warm badge reads as
-     "something is waiting" at a glance. */
+  /* Unread is a flag, not decoration: a real yellow, and the number sits on
+     the disc's centre (grid, line-height 1 — the old padding-and-line-height
+     recipe drifted the digits low). */
   .badge {
     position: absolute;
-    top: -3px;
-    right: -7px;
-    min-width: 16px;
-    padding: 1px 4px;
-    border-radius: 8px;
-    background: var(--note);
+    top: 3px;
+    right: 1px;
+    display: grid;
+    place-items: center;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 4px;
+    border-radius: 9px;
+    background: #edc95f;
     color: #14100a;
-    font-size: var(--text-11);
+    font-size: 10px;
     font-weight: 600;
-    text-align: center;
-    line-height: 1.3;
+    line-height: 1;
   }
-  .me { display: inline-flex; border-radius: 50%; }
-  .me:hover { box-shadow: 0 0 0 2px var(--ink-300); }
-  /* Phone. This block sits after the .bell rule on purpose: it strips the
-     bell's auto margin and hands it to the search icon, and the cascade only
-     lets it if it is the later declaration. The bar reads wordmark left,
-     then search / bell / avatar as one right-hand cluster. */
+  .me { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; }
+  .me :global(*) { border-radius: 50%; }
+  .me:hover :global(img), .me:hover :global(span) { box-shadow: 0 0 0 2px var(--ink-300); }
+  /* Phone: the field collapses into the cluster's search icon, and the text
+     links go — the wordmark already goes home and the avatar already opens
+     settings. */
   @media (max-width: 720px) {
     .topbar { gap: 20px; }
     .navsearch { display: none; }
-    /* The wordmark already goes home and the avatar already opens settings:
-       on a phone the text links only crowd the bar. */
     nav { display: none; }
-    .searchlink { display: inline-flex; margin-left: auto; }
-    .bell { margin-left: 0; }
+    .searchlink { display: inline-flex; }
   }
   a:focus-visible,
   button:focus-visible {

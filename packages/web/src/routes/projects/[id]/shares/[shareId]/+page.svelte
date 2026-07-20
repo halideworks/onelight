@@ -237,6 +237,18 @@
     }
   };
 
+  /* Touch has no HTML5 drag: the arrows do the same move one step at a
+     time, and they are the only reorder surface a phone gets. */
+  const moveAsset = (asset: Asset, delta: number): void => {
+    const at = assets.findIndex((entry) => entry.id === asset.id);
+    const to = at + delta;
+    if (at < 0 || to < 0 || to >= assets.length) return;
+    const ordered = [...assets];
+    ordered.splice(at, 1);
+    ordered.splice(to, 0, asset);
+    void persistOrder(ordered);
+  };
+
   const dropOn = (targetId: string | null): void => {
     const dragged = draggingAsset;
     draggingAsset = null;
@@ -711,9 +723,9 @@
           {#if assets.length === 0}
             <p class="empty">Nothing is in this share yet. Add assets from the project page: select them and right-click, or drag them onto the share in the rail.</p>
           {:else}
-            <p class="sub">Drag to set the order the share plays in.</p>
+            <p class="sub">Set the order the share plays in: drag the tiles, or use a tile's arrows.</p>
             <div class="contents">
-              {#each assets as asset (asset.id)}
+              {#each assets as asset, index (asset.id)}
                 {@const entry = media.entries[asset.id]}
                 <div
                   class="contentwrap"
@@ -723,7 +735,12 @@
                   draggable="true"
                   ondragstart={(event) => {
                     draggingAsset = asset.id;
-                    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+                    if (event.dataTransfer) {
+                      /* Firefox refuses to start a drag whose dataTransfer
+                         holds nothing. */
+                      event.dataTransfer.setData('text/plain', asset.id);
+                      event.dataTransfer.effectAllowed = 'move';
+                    }
                   }}
                   ondragend={() => { draggingAsset = null; dropBefore = null; }}
                   ondragover={(event) => {
@@ -734,14 +751,18 @@
                   ondragleave={() => { if (dropBefore === asset.id) dropBefore = null; }}
                   ondrop={(event) => { event.preventDefault(); dropOn(asset.id); }}
                 >
+                  <!-- draggable=false on the link and the poster: both are
+                       natively draggable, and whichever one the pointer lands
+                       on would hijack the tile's own drag with a link-drag. -->
                   <a
                     class="content"
                     href={`/projects/${projectPath}/assets/${pretty(asset.public_id, asset.name)}`}
                     title={asset.name}
+                    draggable="false"
                     use:observeMedia={asset}
                   >
                     {#if entry?.media?.posterUrl}
-                      <img src={entry.media.posterUrl} alt="" loading="lazy" />
+                      <img src={entry.media.posterUrl} alt="" loading="lazy" draggable="false" />
                     {:else}
                       <span class="contentblank" aria-hidden="true"></span>
                     {/if}
@@ -754,6 +775,22 @@
                     title="Remove from this share"
                     onclick={() => void removeAsset(asset)}
                   >×</button>
+                  <span class="movers">
+                    <button
+                      type="button"
+                      class="mover"
+                      aria-label={`Move ${asset.name} earlier`}
+                      disabled={index === 0}
+                      onclick={() => moveAsset(asset, -1)}
+                    ><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.5L5.5 8l4.5 4.5" /></svg></button>
+                    <button
+                      type="button"
+                      class="mover"
+                      aria-label={`Move ${asset.name} later`}
+                      disabled={index === assets.length - 1}
+                      onclick={() => moveAsset(asset, 1)}
+                    ><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5L10.5 8L6 12.5" /></svg></button>
+                  </span>
                 </div>
               {/each}
               {#if draggingAsset}
@@ -910,6 +947,16 @@
   .contentdrop { position: absolute; top: 4px; right: 4px; display: none; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: rgba(6, 9, 14, 0.85); color: #fff; font-size: 13px; line-height: 1; cursor: pointer; }
   .contentwrap:hover .contentdrop, .contentdrop:focus-visible { display: grid; }
   .contentdrop:hover { background: var(--warn); color: #12080a; }
+  /* Reordering without a drag: fine pointers never see these — the drag is
+     richer — but touch has no HTML5 drag at all, so the arrows are the only
+     way a phone curates the reel. */
+  .movers { display: none; position: absolute; top: 4px; left: 4px; gap: 4px; }
+  .mover { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; background: rgba(6, 9, 14, 0.85); color: #fff; cursor: pointer; }
+  .mover:disabled { opacity: 0.35; cursor: default; }
+  @media (pointer: coarse) {
+    .movers { display: inline-flex; }
+    .contentdrop { display: grid; }
+  }
   .dropend { display: grid; place-items: center; min-height: 84px; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text-dim); font-size: var(--text-12); }
   .dropend.armed { outline: 2px solid var(--accent-bright); outline-offset: -2px; }
   .logorow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

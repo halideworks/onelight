@@ -1422,13 +1422,15 @@
      for showing the work, so the work is what fills the screen. */
   .assets.reel { grid-template-columns: 1fr; gap: 56px; max-width: 1000px; }
 
-  .asset { display: grid; gap: 10px; padding: 0; border: 0; border-radius: 0; background: none; color: inherit; text-align: left; }
+  .asset { display: grid; gap: 10px; padding: 0; border: 0; border-radius: 0; background: none; color: inherit; text-align: left; min-width: 0; }
   .frame { display: block; position: relative; overflow: hidden; border-radius: var(--radius-lg); background: rgba(13, 17, 23, 0.54); aspect-ratio: 16 / 9; }
   .frame :global(.cover) { width: 100%; height: 100%; }
   .scrubsheet { position: absolute; inset: 0; background-repeat: no-repeat; }
   .scrubline { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(232, 228, 220, 0.65); }
-  .caption { display: grid; gap: 3px; }
-  .name { font-size: var(--text-14); font-weight: 500; }
+  .caption { display: grid; gap: 3px; min-width: 0; }
+  /* Filenames wrap inside their tile: an unbroken camera-roll name used to
+     run past the frame and off the phone's screen. */
+  .name { font-size: var(--text-14); font-weight: 500; overflow-wrap: anywhere; }
   .status { color: rgba(255, 255, 255, 0.64); font-size: var(--text-13); }
 
   /* A list row is still led by its picture, at a size where the frame reads
@@ -1490,6 +1492,15 @@
     /* Hold the picture's room while the next clip's media is in flight, so
        switching clips dissolves instead of collapsing and re-growing. */
     .showtime .picture { min-height: 34vh; }
+    /* Stacked, the notes belong to the picture, the way the review room has
+       it: player, then the conversation about the clip, and the carousel —
+       navigation, not content — at the foot. The column dissolves
+       (display: contents) so the rail can slot between its children; the
+       custom-property remap on .maincol still inherits through it. */
+    .showtime .maincol { display: contents; }
+    .showtime .stageflank { order: 1; padding: 0 var(--pad-2); }
+    .showtime .rail { order: 2; }
+    .showtime .carousel { order: 3; }
   }
   /* The action group melts into the bar on desktop; the icon-capable buttons
      carry their words beside the icon there. */
@@ -1757,13 +1768,23 @@
   @media (max-width: 760px) { .assets { grid-template-columns: 1fr; } }
   /* Phone notes: each note becomes a quiet card and the head is allowed to
      wrap — a name, an ink dot and a range chip on 360px read as a pile when
-     forced onto one line. Showtime's own card dress outranks this and holds. */
+     forced onto one line. */
   @media (max-width: 720px) {
     .comments article { margin: 0 0 8px; background: var(--n-100); }
     .comments article:hover { background: var(--n-100); }
     .notelist { padding: 0; margin: 0; }
     .c-head { flex-wrap: wrap; row-gap: 4px; }
     .comments textarea { min-height: 72px; }
+    /* The presentation's notes speak the review room's phone dialect: same
+       heading, same card rhythm, same composer weight — only the room's ink
+       palette stays. The display-type heading and the roomier desktop dress
+       are pointing devices for a wide screen, not a thumb. */
+    .showtime .comments { padding: var(--pad-2); }
+    .showtime .comments h3 { font-family: var(--font-ui); font-size: var(--text-13); font-weight: 600; letter-spacing: 0; }
+    .showtime .comments article { padding: 12px; margin: 0 0 8px; line-height: 1.45; }
+    .showtime .comments article p { line-height: 1.45; }
+    .showtime .comments form { padding: 10px; }
+    .showtime .comments textarea { min-height: 72px; }
   }
 
   /* ---- arrival ---- */
