@@ -1877,6 +1877,11 @@
   .composer-form .primary:disabled { opacity: 0.45; cursor: default; }
   /* Docked, so the list scrolls behind it and the box is always there. */
   .composer-dock { position: sticky; bottom: 0; padding-top: 8px; background: var(--n-100); }
+  /* The dock must read as a dock: without a lifted edge, whatever slides
+     beneath it looks like a layout collision rather than a surface. */
+  @media (max-width: 720px) {
+    .composer-dock { box-shadow: 0 -12px 24px rgba(6, 8, 10, 0.55); }
+  }
   /* A reply composes under its thread, indented to the same line as the replies
      it is joining. */
   .composer-form.inline { margin: 2px 0 0 14px; background: var(--n-200); }

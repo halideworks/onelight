@@ -1335,7 +1335,10 @@
     <div class="transport-row main">
       <div class="side">
         {#if onshare}
-          <button type="button" class="linky" onclick={() => onshare?.(frame)}>Copy link at this frame</button>
+          <button type="button" class="linky" onclick={() => onshare?.(frame)} title="Copy link at this frame">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M6.5 9.5l3-3M7.5 4.5l1.2-1.2a2.4 2.4 0 013.4 3.4L10.9 7.9M5.1 8.1L3.9 9.3a2.4 2.4 0 003.4 3.4l1.2-1.2" /></svg>
+            <span class="lbl">Copy link at this frame</span>
+          </button>
         {/if}
       </div>
 
@@ -1390,9 +1393,18 @@
              it. A client presenting mode has no use for either. -->
         {#if chrome === 'full'}
         <div class="marks">
-          <button type="button" onclick={() => setInMark(frame)} aria-label="Set loop in" title="Mark in (I)">Set in</button>
-          <button type="button" onclick={() => setOutMark(frame)} aria-label="Set loop out" title="Mark out (O)">Set out</button>
-          <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }} title="Loop the marked range (P)">Loop</button>
+          <button type="button" onclick={() => setInMark(frame)} aria-label="Set loop in" title="Mark in (I)">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M5 3H3v10h2v-1.5H4.5v-7H5zM7 8l4-3v6z" fill="currentColor" /></svg>
+            <span class="lbl">Set in</span>
+          </button>
+          <button type="button" onclick={() => setOutMark(frame)} aria-label="Set loop out" title="Mark out (O)">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M11 3h2v10h-2v-1.5h.5v-7H11zM9 8L5 5v6z" fill="currentColor" /></svg>
+            <span class="lbl">Set out</span>
+          </button>
+          <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }} title="Loop the marked range (P)">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5a3.5 3.5 0 013.5-3.5H12M12 3l-1.8-1.8M12 3l-1.8 1.8M13 9.5A3.5 3.5 0 019.5 13H4M4 13l1.8 1.8M4 13l1.8-1.8" /></svg>
+            <span class="lbl">Loop</span>
+          </button>
           {#if inFrame !== null || outFrame !== null}
             <button type="button" class="icon clearmarks" onclick={() => { inFrame = null; outFrame = null; }} aria-label="Clear marks" title="Clear marks (X)">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" fill="none" /></svg>
@@ -1729,6 +1741,8 @@
   .deck > .marks-readout { grid-row: 2; grid-column: 3; justify-self: start; }
   .cluster { display: flex; align-items: center; gap: 2px; }
   .marks { display: flex; align-items: center; gap: 2px; }
+  .marks button, .linky { display: inline-flex; align-items: center; gap: 6px; }
+  .marks svg, .linky svg { flex: none; opacity: 0.8; }
   .marks-readout { display: flex; align-items: center; gap: 6px; font-size: 11px; line-height: 1; color: var(--n-700, #9a9a9a); }
   .marks-readout .unset { color: var(--n-500, #565656); }
   .marks-sep { color: var(--n-400, #3d3d3d); }
@@ -1836,20 +1850,38 @@
       max-height: 58vh;
       margin: 0 auto;
     }
+    /* Fullscreen answers to the screen, not to the scroll layout: leaving
+       the aspect box in force blew the picture up past the viewport. */
+    .stage:fullscreen {
+      aspect-ratio: auto;
+      max-height: none;
+      width: 100vw;
+      height: 100vh;
+    }
     .transport-row.main { display: flex; flex-wrap: wrap; align-items: center; row-gap: 4px; column-gap: 10px; }
     .deck {
       order: 0;
       width: 100%;
-      /* The numbers take what they need; the flexible track sits at the end,
-         where nothing overlaps when a long timecode meets the shuttle. */
-      grid-template-columns: auto auto minmax(0, 1fr);
+      /* One instrument band: numbers, shuttle, marks — icons only. The
+         in/out readout is a quiet second line, right-aligned, and all the
+         words stay in the accessible names. */
+      grid-template-columns: auto minmax(0, 1fr) auto;
       grid-template-rows: auto auto auto;
-      column-gap: 14px;
+      column-gap: 10px;
     }
-    .deck > .readout { justify-self: start; min-width: 0; text-align: left; }
-    .deck > .readout-sub { justify-self: start; }
-    .deck > .marks { grid-row: 3; grid-column: 1 / 3; justify-self: start; margin-top: 6px; }
-    .deck > .marks-readout { grid-row: 3; grid-column: 3; justify-self: end; align-self: center; margin-top: 6px; }
+    .deck > .readout { grid-row: 1; grid-column: 1; justify-self: start; min-width: 0; text-align: left; }
+    .deck > .readout-sub { grid-row: 2; grid-column: 1; justify-self: start; }
+    .deck > .cluster { grid-row: 1 / span 2; grid-column: 2; justify-self: center; align-self: start; }
+    .deck > .shuttle { grid-row: 3; grid-column: 2; }
+    .deck > .marks { grid-row: 1 / span 2; grid-column: 3; justify-self: end; align-self: start; }
+    .deck > .marks-readout { grid-row: 3; grid-column: 1 / -1; justify-self: end; margin-top: 2px; }
+    /* Reverse-play is a keyboard verb (J); on a phone it is a fourth thumb
+       target the row cannot afford. */
+    .cluster > .icon:first-child { display: none; }
+    .marks .lbl, .linky .lbl { display: none; }
+    .marks button { width: 42px; justify-content: center; padding: 0; }
+    .marks svg, .linky svg { opacity: 1; }
+    .linky { width: 42px; justify-content: center; padding: 0; }
     .side { order: 1; }
     .side.right { order: 2; margin-left: auto; }
 
