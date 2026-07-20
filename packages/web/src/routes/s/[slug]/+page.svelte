@@ -85,6 +85,10 @@
   let previewWaveformUrl = $state<string | null>(null);
   let previewCaptionsUrl = $state<string | null>(null);
   let watermarkPending = $state(false);
+  /* True from opening an asset until its media answer lands: the "not ready"
+     empty state must not flash between clips while the next URL is in flight
+     — that flash is most of what made switching feel broken. */
+  let mediaLoading = $state(false);
   let downloadNote = $state('');
   let comments = $state<Comment[]>([]);
   let passphrase = $state('');
@@ -493,6 +497,7 @@
     previewWaveformUrl = null;
     previewCaptionsUrl = null;
     watermarkPending = false;
+    mediaLoading = true;
     downloadNote = '';
     comments = [];
     currentFrame = 0;
@@ -538,6 +543,7 @@
       /* Rate stays at the player default until known. */
     }
     await fetchMedia(asset, token);
+    if (token === mediaPollToken) mediaLoading = false;
     /* With comments off there is nothing to draw: no rail, and no markers or
        annotations on the timeline either. They all derive from this list. */
     if (share?.allow_comments) {
@@ -1027,40 +1033,52 @@
       tabindex="-1"
       bind:this={previewEl}
       onkeydown={onPreviewKeydown}
-      style={showtime ? `background-image: ${wash}; background-size: 100% 100vh; background-attachment: fixed;` : ''}
+      style={showtime ? `background-image: ${wash}; background-size: auto, 100% 100vh; background-repeat: repeat, no-repeat; background-attachment: fixed;` : ''}
     >
       <div class="preview-bar">
         <h2>{selected.name}</h2>
-        {#if playerActive && !showtime}
-          <span class="tc frame-readout">{anchorLabel(currentFrame)}</span>
-          <button type="button" class="copylink" onclick={() => void copyFrameLink()}>Copy link at this timecode</button>
-          {#if copyNotice}<span class="copy-note" role="status">{copyNotice}</span>{/if}
-        {/if}
-        {#if share.allow_approvals}
-        <span class="approval" role="group" aria-label="Your decision">
-          <button
-            type="button"
-            class="approve"
-            aria-pressed={selected.status === 'approved'}
-            onclick={() => void setApproval('approved')}
-          >{selected.status === 'approved' ? 'Approved' : 'Approve'}</button>
-          <button
-            type="button"
-            class="changes"
-            aria-pressed={selected.status === 'changes_requested'}
-            onclick={() => void setApproval('changes_requested')}
-          >{selected.status === 'changes_requested' ? 'Changes requested' : 'Request changes'}</button>
-        </span>
-        {/if}
-        {#if showtime && share.allow_comments}
-          <button type="button" class="railtoggle" aria-pressed={!railHidden} onclick={() => { railHidden = !railHidden; }}>
-            {railHidden ? 'Show notes' : 'Hide notes'}
-          </button>
-        {/if}
-        {#if share.allow_download !== 'none'}
-          <button type="button" class="download" onclick={() => void download()}>Download</button>
-        {/if}
-        <button type="button" class="close" onclick={closePreview}>Close preview</button>
+        <!-- Everything you can do to the clip, as one group: on desktop it
+             dissolves into the bar (display: contents); on a phone it becomes
+             its own band under the title and scrolls off the right edge with
+             a fade, so nothing ever wraps into a ragged pile. -->
+        <div class="acts">
+          {#if playerActive && !showtime}
+            <span class="tc frame-readout">{anchorLabel(currentFrame)}</span>
+            <button type="button" class="copylink" onclick={() => void copyFrameLink()} title="Copy link at this timecode">
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M6.5 9.5l3-3M7.5 4.5l1.2-1.2a2.4 2.4 0 013.4 3.4L10.9 7.9M5.1 8.1L3.9 9.3a2.4 2.4 0 003.4 3.4l1.2-1.2" /></svg>
+              <span class="lbl">Copy link at this timecode</span>
+            </button>
+            {#if copyNotice}<span class="copy-note" role="status">{copyNotice}</span>{/if}
+          {/if}
+          {#if share.allow_approvals}
+          <span class="approval" role="group" aria-label="Your decision">
+            <button
+              type="button"
+              class="approve"
+              aria-pressed={selected.status === 'approved'}
+              onclick={() => void setApproval('approved')}
+            >{selected.status === 'approved' ? 'Approved' : 'Approve'}</button>
+            <button
+              type="button"
+              class="changes"
+              aria-pressed={selected.status === 'changes_requested'}
+              onclick={() => void setApproval('changes_requested')}
+            >{selected.status === 'changes_requested' ? 'Changes requested' : 'Request changes'}</button>
+          </span>
+          {/if}
+          {#if showtime && share.allow_comments}
+            <button type="button" class="railtoggle" aria-pressed={!railHidden} onclick={() => { railHidden = !railHidden; }}>
+              {railHidden ? 'Show notes' : 'Hide notes'}
+            </button>
+          {/if}
+          {#if share.allow_download !== 'none'}
+            <button type="button" class="download" onclick={() => void download()}>Download</button>
+          {/if}
+        </div>
+        <button type="button" class="close" onclick={closePreview} title="Close preview">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" /></svg>
+          <span class="lbl">Close preview</span>
+        </button>
       </div>
       {#if downloadNote}<p class="empty" role="status">{downloadNote}</p>{/if}
       <!-- The picture and the notes, side by side, the way the review page
@@ -1127,7 +1145,7 @@
         <p class="open-media"><a href={previewUrl}>Open media</a></p>
       {:else if watermarkPending}
         <p class="empty" role="status">Preparing watermarked media.</p>
-      {:else}
+      {:else if !mediaLoading}
         <p class="empty">A review rendition is not ready.</p>
       {/if}
       </div>
@@ -1378,6 +1396,12 @@
   }
   .eyebrow { color: rgba(255, 255, 255, 0.68); font-size: var(--text-13); }
   h1 { max-width: 760px; margin: 0 0 48px; font-family: var(--font-display); font-size: clamp(44px, 8vw, 92px); line-height: 0.98; }
+  /* The landing header is one composition: the title carries the left edge
+     and the download verbs sit on its baseline at the right, instead of
+     floating under it looking dropped. On a phone they wrap below. */
+  .inner header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 32px; margin: 0 0 44px; }
+  .inner header .sharelogo { flex: 1 1 100%; }
+  .inner header h1 { flex: 1 1 auto; margin: 0; }
   .shell form { display: grid; gap: 16px; max-width: 420px; }
   .shell label { display: grid; gap: 8px; }
   .shell input { border: 0; border-radius: var(--radius); background: rgba(13, 17, 23, 0.62); color: inherit; padding: 11px 12px; }
@@ -1390,10 +1414,13 @@
      stays one thing and the columns and the frame do the talking. */
   .assets { display: grid; gap: 20px 16px; max-width: 1120px; }
   .assets.grid { grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); }
-  .assets.list { grid-template-columns: 1fr; gap: 10px; max-width: 880px; margin-inline: auto; }
+  /* List and reel cap their width for line length, but stay on the page's
+     left edge: centering them while the title and the download verbs held
+     the left margin made the rows read as shifted right. */
+  .assets.list { grid-template-columns: 1fr; gap: 10px; max-width: 880px; }
   /* Reel: one frame per row, as large as the page allows. This is the layout
      for showing the work, so the work is what fills the screen. */
-  .assets.reel { grid-template-columns: 1fr; gap: 56px; max-width: 1000px; margin-inline: auto; }
+  .assets.reel { grid-template-columns: 1fr; gap: 56px; max-width: 1000px; }
 
   .asset { display: grid; gap: 10px; padding: 0; border: 0; border-radius: 0; background: none; color: inherit; text-align: left; }
   .frame { display: block; position: relative; overflow: hidden; border-radius: var(--radius-lg); background: rgba(13, 17, 23, 0.54); aspect-ratio: 16 / 9; }
@@ -1456,14 +1483,44 @@
     .room { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; flex: none; height: auto; }
     .maincol { overflow: visible; }
     .maincol > :global(.player) { flex: none; }
+    /* A short presentation floats on its wash instead of clinging to the top
+       with a dead band underneath; margin auto gives the leftover space to
+       both sides. Scroll behaviour is untouched when content is taller. */
+    .showtime .room { margin-block: auto; }
+    /* Hold the picture's room while the next clip's media is in flight, so
+       switching clips dissolves instead of collapsing and re-growing. */
+    .showtime .picture { min-height: 34vh; }
   }
-  /* Phone: the bar is two bands — the name, then everything you can do to it
-     in one row that scrolls off the right edge with a fade. */
+  /* The action group melts into the bar on desktop; the icon-capable buttons
+     carry their words beside the icon there. */
+  .acts { display: contents; }
+  .copylink, .close { display: inline-flex; align-items: center; gap: 6px; }
+  /* Phone: the bar is two tight bands — the name with the close glyph on its
+     right, then everything you can do to the clip in one row that scrolls off
+     the right edge with a fade. Nothing wraps, nothing piles. */
   @media (max-width: 720px) {
-    .preview-bar { row-gap: 8px; }
-    .preview-bar h2 { flex: 1 1 100%; }
+    .preview-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 10px; }
+    /* Explicit stations: auto-placement put the close glyph on a row of its
+       own after the full-width action band. */
+    .preview-bar h2 { grid-row: 1; grid-column: 1; }
+    .preview-bar button.close { grid-row: 1; grid-column: 2; justify-self: end; width: 40px; height: 40px; padding: 0; justify-content: center; }
+    .acts { grid-row: 2; }
+    .close .lbl { display: none; }
+    .acts {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+      mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+    }
+    .acts > * { flex: none; }
+    .preview-bar button.copylink { width: 40px; height: 40px; padding: 0; justify-content: center; }
+    .copylink .lbl { display: none; }
     .approval { display: inline-flex; flex: none; }
-    .preview-bar :global(button) { white-space: nowrap; }
+    .preview-bar :global(button) { white-space: nowrap; min-height: 40px; }
     .showtime .preview-bar { padding: 14px var(--pad-2) 8px; }
     .showtime .maincol { padding: 0 var(--pad-2); }
   }
@@ -1514,9 +1571,11 @@
      rest of the reel within reach. The review preview above stays strictly
      neutral; none of this applies there. */
   .preview.showtime { background-color: var(--ink-000); color: var(--ink-text); }
-  .showtime .preview-bar { background: transparent; padding: 18px var(--pad-3) 8px; }
+  /* One tight cluster at the right, even gaps: the bar's verbs read as a set,
+     not as chips scattered along the top of the room. */
+  .showtime .preview-bar { background: transparent; padding: 18px var(--pad-3) 8px; gap: 10px 8px; }
   .showtime .preview-bar h2 { font-family: var(--font-display); font-size: clamp(20px, 2.2vw, 30px); font-weight: 700; letter-spacing: -0.02em; color: var(--ink-text); }
-  .showtime .preview-bar button { background: rgba(13, 17, 23, 0.55); color: var(--ink-text); }
+  .showtime .preview-bar button { background: rgba(13, 17, 23, 0.55); color: var(--ink-text); padding: 8px 14px; }
   .showtime .preview-bar button:hover { background: rgba(13, 17, 23, 0.8); color: #fff; }
   /* The picture gets a proscenium: inset from the walls, never wall to wall. */
   .showtime .maincol { padding: 0 clamp(16px, 5vw, 96px); }
@@ -1554,8 +1613,14 @@
      chevrons keep to the gutters beside it, never on it. (.preview button
      carries higher specificity than a lone class — hence the long selector —
      it once flattened these circles into small grey squares.) */
-  .stageflank { flex: 1; min-height: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: clamp(8px, 1.4vw, 20px); }
-  .stageflank > .picture { grid-column: 2; }
+  /* stretch, not center: centered, the picture column took its content
+     height and the player settled at whatever small stage the resize loop
+     found first — the video rendered half the size the room offered. The
+     picture fills the flank's height and the player's own stage centers the
+     footage inside it; only the chevrons stay on the centre line. */
+  .stageflank { flex: 1; min-height: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: stretch; gap: clamp(8px, 1.4vw, 20px); }
+  .stageflank > .picture { grid-column: 2; min-height: 0; }
+  .preview button.skip { align-self: center; }
   .preview button.skip { display: grid; place-items: center; width: 46px; height: 46px; padding: 0; border: 0; border-radius: 50%; background: rgba(13, 17, 23, 0.55); color: rgba(250, 248, 244, 0.8); transition: background 140ms ease, color 140ms ease, opacity 140ms ease; }
   .preview button.skip:hover:not(:disabled) { background: rgba(13, 17, 23, 0.85); color: #fff; }
   .preview button.skip:disabled { opacity: 0.25; cursor: default; }
@@ -1690,6 +1755,16 @@
   button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px solid var(--n-800); outline-offset: 2px; }
   .shell button:focus-visible, .shell input:focus-visible { outline: 2px solid var(--accent-bright); outline-offset: 3px; }
   @media (max-width: 760px) { .assets { grid-template-columns: 1fr; } }
+  /* Phone notes: each note becomes a quiet card and the head is allowed to
+     wrap — a name, an ink dot and a range chip on 360px read as a pile when
+     forced onto one line. Showtime's own card dress outranks this and holds. */
+  @media (max-width: 720px) {
+    .comments article { margin: 0 0 8px; background: var(--n-100); }
+    .comments article:hover { background: var(--n-100); }
+    .notelist { padding: 0; margin: 0; }
+    .c-head { flex-wrap: wrap; row-gap: 4px; }
+    .comments textarea { min-height: 72px; }
+  }
 
   /* ---- arrival ---- */
   /* Everything enters instead of appearing: one easing, short distances,
@@ -1711,7 +1786,10 @@
   .preview { animation: fadein 300ms ease both; }
   .preview .empty { animation: fadein 400ms ease 200ms both; }
   .showtime .preview-bar { animation: fadein 520ms ease both; }
-  .showtime .picture { animation: rise 620ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+  /* A dissolve, not a rise: this animation replays on every clip switch (the
+     keyed wrapper remounts), and footage sliding upward on each switch read
+     as a glitch rather than an entrance. */
+  .showtime .picture { animation: fadein 420ms ease both; }
   .showtime .carousel { animation: rise 620ms cubic-bezier(0.22, 1, 0.36, 1) 130ms both; }
   .showtime .rail { animation: rise 620ms cubic-bezier(0.22, 1, 0.36, 1) 80ms both; }
   @media (prefers-reduced-motion: reduce) {

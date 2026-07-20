@@ -149,6 +149,17 @@
   });
   let muted = $state(false);
   let volume = $state(1);
+  /* Touch: the inline slider is hidden (no room under a thumb), so the sound
+     button opens a small vertical slider instead of toggling mute. Queried at
+     click time, not at mount: a convertible can change personality mid-session. */
+  let volPop = $state(false);
+  const soundClick = (): void => {
+    if (typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches) volPop = !volPop;
+    else muted = !muted;
+  };
+  const dismissVolPop = (event: PointerEvent): void => {
+    if (volPop && !(event.target instanceof Element && event.target.closest('.soundwrap'))) volPop = false;
+  };
   /* The level survives the session: restored before the video binds, saved
      whenever it moves. Mute is part of the same memory. */
   const VOLUME_KEY = 'onelight.player.volume';
@@ -1180,7 +1191,7 @@
   });
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} onpointerdown={dismissVolPop} />
 <section class="player" aria-label="Review player">
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
@@ -1432,13 +1443,30 @@
             <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="3.5" width="13" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2" fill="none" /><path d="M7 7.2a1.6 1.6 0 1 0 0 1.6M12 7.2a1.6 1.6 0 1 0 0 1.6" stroke="currentColor" stroke-width="1.2" fill="none" /></svg>
           </button>
         {/if}
-        <button type="button" class="icon" aria-pressed={muted} onclick={() => { muted = !muted; }} aria-label={muted ? 'Unmute' : 'Mute'} title="Mute (M)">
-          {#if muted || volume === 0}
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3L4 6H2v4h2l3 3z" /><path d="M10.5 6.5l3 3M13.5 6.5l-3 3" stroke="currentColor" stroke-width="1.3" fill="none" /></svg>
-          {:else}
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3L4 6H2v4h2l3 3z" /><path d="M9.5 5.8a3 3 0 0 1 0 4.4M11.6 4a5.6 5.6 0 0 1 0 8" stroke="currentColor" stroke-width="1.3" fill="none" /></svg>
+        <span class="soundwrap">
+          <button type="button" class="icon" aria-pressed={muted} onclick={soundClick} aria-label={muted ? 'Unmute' : 'Mute'} title="Mute (M)">
+            {#if muted || volume === 0}
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3L4 6H2v4h2l3 3z" /><path d="M10.5 6.5l3 3M13.5 6.5l-3 3" stroke="currentColor" stroke-width="1.3" fill="none" /></svg>
+            {:else}
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3L4 6H2v4h2l3 3z" /><path d="M9.5 5.8a3 3 0 0 1 0 4.4M11.6 4a5.6 5.6 0 0 1 0 8" stroke="currentColor" stroke-width="1.3" fill="none" /></svg>
+            {/if}
+          </button>
+          {#if volPop}
+            <div class="volpop" role="group" aria-label="Volume">
+              <input
+                class="volv"
+                type="range"
+                orient="vertical"
+                min="0"
+                max="1"
+                step="any"
+                bind:value={volume}
+                oninput={() => { muted = volume === 0; }}
+                aria-label="Volume"
+              />
+            </div>
           {/if}
-        </button>
+        </span>
         <input
           class="vol"
           type="range"
@@ -1858,32 +1886,31 @@
       width: 100vw;
       height: 100vh;
     }
-    .transport-row.main { display: flex; flex-wrap: wrap; align-items: center; row-gap: 4px; column-gap: 10px; }
-    .deck {
-      order: 0;
-      width: 100%;
-      /* One instrument band: numbers, shuttle, marks — icons only. The
-         in/out readout is a quiet second line, right-aligned, and all the
-         words stay in the accessible names. */
-      grid-template-columns: auto minmax(0, 1fr) auto;
-      grid-template-rows: auto auto auto;
-      column-gap: 10px;
-    }
-    .deck > .readout { grid-row: 1; grid-column: 1; justify-self: start; min-width: 0; text-align: left; }
-    .deck > .readout-sub { grid-row: 2; grid-column: 1; justify-self: start; }
-    .deck > .cluster { grid-row: 1 / span 2; grid-column: 2; justify-self: center; align-self: start; }
-    .deck > .shuttle { grid-row: 3; grid-column: 2; }
-    .deck > .marks { grid-row: 1 / span 2; grid-column: 3; justify-self: end; align-self: start; }
-    .deck > .marks-readout { grid-row: 3; grid-column: 1 / -1; justify-self: end; margin-top: 2px; }
+    /* Two full bands, no half-empty rows. The deck dissolves into the row
+       (display: contents) so its pieces and the side clusters share one flex
+       layout: timecode, transport and marks fill the first line; the copy
+       link, the in/out readout and the sound/screen icons share the second.
+       The frame counter and shuttle label are the colourist's dialect and
+       stay off the phone. */
+    .transport-row.main { display: flex; flex-wrap: wrap; align-items: center; row-gap: 6px; column-gap: 8px; }
+    .deck { display: contents; }
+    .readout { order: 1; min-width: 0; text-align: left; }
+    .tc-main, .tc-main.copyable { font-size: 14px; }
+    .cluster { order: 2; flex: 1 1 auto; justify-content: center; }
+    .marks { order: 3; }
+    .readout-sub, .shuttle { display: none; }
+    .side { order: 4; }
+    .marks-readout { order: 5; }
+    .side.right { order: 6; margin-left: auto; }
     /* Reverse-play is a keyboard verb (J); on a phone it is a fourth thumb
-       target the row cannot afford. */
+       target the row cannot afford. Clearing marks is X's job: re-marking
+       replaces, so the fourth marks button is spent width too. */
     .cluster > .icon:first-child { display: none; }
+    .clearmarks { display: none; }
     .marks .lbl, .linky .lbl { display: none; }
     .marks button { width: 42px; justify-content: center; padding: 0; }
     .marks svg, .linky svg { opacity: 1; }
     .linky { width: 42px; justify-content: center; padding: 0; }
-    .side { order: 1; }
-    .side.right { order: 2; margin-left: auto; }
 
     /* The tool row scrolls sideways as one quiet band instead of stacking
        four rows of segmented controls between the picture and the timeline. */
@@ -1899,15 +1926,36 @@
     .transport-row.settings .grow { display: none; }
     .ctl-label { white-space: nowrap; }
   }
-  /* Touch: hardware buttons own loudness — a 3px slider under a thumb does
-     not — and every control grows to a real target. */
+  /* The touch volume: a vertical slider in a small shelf above the sound
+     button (the inline 3px slider is unusable under a thumb, but loudness
+     still needs a control — hardware keys do not reach a muted element on
+     every platform). */
+  .soundwrap { position: relative; display: inline-flex; }
+  .volpop {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 6;
+    display: grid;
+    place-items: center;
+    padding: 12px 10px;
+    border-radius: var(--radius, 3px);
+    background: var(--n-200, #232323);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  }
+  .volv { writing-mode: vertical-rl; direction: rtl; appearance: slider-vertical; width: 18px; height: 96px; cursor: pointer; accent-color: var(--n-800, #c4c4c4); }
+  /* Touch: hardware buttons own loudness on the lock screen, not in a page —
+     the slider moves to the popover — and every control grows to a real
+     target. */
   @media (pointer: coarse) {
     .vol { display: none; }
     .side.volume .vol { margin-right: 0; }
     .deck button { min-height: 40px; }
     .icon { min-width: 40px; min-height: 40px; justify-content: center; }
     /* 40px targets do not fit the desktop deck's fixed 34px band — left
-       fixed, the readout row clips into whatever sits below the player. */
+       fixed, the readout row clips into whatever sits below the player.
+       (Moot under 720px, where the deck dissolves into the row.) */
     .deck { grid-template-rows: auto auto; }
   }
 </style>

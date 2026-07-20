@@ -253,17 +253,6 @@
     color: var(--ink-text-dim);
   }
   .searchlink:hover { color: var(--ink-text); }
-  @media (max-width: 720px) {
-    .navsearch { display: none; }
-    .searchlink { display: inline-flex; }
-    /* The icon takes over the auto margin that pushes the right cluster. */
-    .bell { margin-left: 0; }
-    .topbar { gap: 20px; }
-    /* The wordmark already goes home and the avatar already opens settings:
-       on a phone the text links only crowd the bar. */
-    nav { display: none; }
-    .searchlink { margin-left: auto; }
-  }
   /* Coarse pointers get full-height nav targets; the visual stays quiet. */
   @media (pointer: coarse) {
     nav a { padding: 12px 4px; margin: -12px -4px; }
@@ -316,6 +305,19 @@
   }
   .me { display: inline-flex; border-radius: 50%; }
   .me:hover { box-shadow: 0 0 0 2px var(--ink-300); }
+  /* Phone. This block sits after the .bell rule on purpose: it strips the
+     bell's auto margin and hands it to the search icon, and the cascade only
+     lets it if it is the later declaration. The bar reads wordmark left,
+     then search / bell / avatar as one right-hand cluster. */
+  @media (max-width: 720px) {
+    .topbar { gap: 20px; }
+    .navsearch { display: none; }
+    /* The wordmark already goes home and the avatar already opens settings:
+       on a phone the text links only crowd the bar. */
+    nav { display: none; }
+    .searchlink { display: inline-flex; margin-left: auto; }
+    .bell { margin-left: 0; }
+  }
   a:focus-visible,
   button:focus-visible {
     outline: 1px solid var(--accent-bright);

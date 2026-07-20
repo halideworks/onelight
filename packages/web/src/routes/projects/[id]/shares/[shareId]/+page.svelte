@@ -858,7 +858,10 @@
      cells beside Appearance. Stretch inside the duo: panels in one row share
      an edge, and a shorter panel is a surface with room in it rather than a
      hole in the page. */
-  .panels { display: grid; gap: 10px; }
+  /* minmax(0, 1fr), not the implicit auto track: auto's min-content floor let
+     the widest panel row (a .pair of intrinsically-sized fields) set the whole
+     page's width on a phone, and the page rendered desktop-wide and panned. */
+  .panels { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .duo { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 10px; align-items: stretch; }
   /* Flat surfaces, one value step off the page: no gradient fills, no
      highlights, no drop shadows. */
@@ -950,7 +953,11 @@
     .wash { padding: var(--pad-2) var(--pad-2) var(--pad-2); }
     .body { padding: 0 var(--pad-2); }
     .page-error { padding: 0 var(--pad-2); }
-    .duo { grid-template-columns: 1fr; }
+    .duo { grid-template-columns: minmax(0, 1fr); }
+    /* Paired fields stack: two intrinsic-width fields side by side are what
+       overflowed the panel in the first place. */
+    .pair { grid-template-columns: minmax(0, 1fr); }
+    .field input, .field select { max-width: 100%; }
     table, tbody { display: block; }
     thead { display: none; }
     tr {
