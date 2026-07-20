@@ -16,6 +16,7 @@
   import { applyMark, isVerifyStale, seeksLocked } from './transport-state.js';
   import { ANNOTATION_INKS } from './annotations.js';
   import type { AnnotationPoint, AnnotationStroke, FrameAnnotation, PendingDrawing } from './annotations.js';
+  import { markerInkFor } from './timeline.js';
   import type { TimelineMarker } from './timeline.js';
   import type { SpriteCue } from './filmstrip.js';
   import type { PlayerRendition, SurroundMode, WatermarkOverlay } from './options.js';
@@ -73,7 +74,7 @@
     onmarkerselect?: ((markerId: string, frame: number) => void) | undefined;
     ondrawingchange?: ((drawing: PendingDrawing | null) => void) | undefined;
     /* Fires when draw mode or the active tool changes, whoever changed it. */
-    ondrawmodechange?: ((on: boolean, tool: 'pen' | 'arrow' | 'rect') => void) | undefined;
+    ondrawmodechange?: ((on: boolean, tool: 'pen' | 'arrow' | 'rect' | 'text') => void) | undefined;
     onplaystate?: ((playing: boolean) => void) | undefined;
     /* The page owns the URL; the player only knows which frame you are on. */
     onshare?: ((frame: number) => void) | undefined;

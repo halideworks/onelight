@@ -1,0 +1,13 @@
+{
+  // svelte-check only. The build config (tsconfig.json) deliberately includes
+  // TypeScript sources alone, because tsc -b cannot compile .svelte files.
+  // That left Player.svelte, Timeline.svelte and the rest type-checked by
+  // nothing: a missing value import in Player.svelte reached production.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler"
+  },
+  "include": ["src/**/*.ts", "src/**/*.svelte"]
+}

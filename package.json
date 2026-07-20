@@ -19,7 +19,7 @@
     "integration:e2e": "node scripts/integration-e2e.mjs",
     "qa": "pnpm --filter @onelight/qa test",
     "qa:fixtures": "pnpm --filter @onelight/qa fixtures",
-    "web:check": "pnpm --filter @onelight/web check",
+    "web:check": "pnpm --filter @onelight/web --filter @onelight/player check",
     "openapi:gen": "tsx packages/api/src/generate-openapi.ts",
     "openapi:check": "tsx packages/api/src/generate-openapi.ts --check",
     "db:generate": "drizzle-kit generate --config packages/db/drizzle.config.ts",
