@@ -1755,7 +1755,7 @@
      scrim carries the buttons, and the readout goes full white with a shadow
      so a timecode stays legible over blown highlights. */
   .fs-controls .tc-main { color: #ffffff; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
-  .fs-controls .tc-sub, .fs-controls .marks-readout { color: rgba(255, 255, 255, 0.72); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
+  .fs-controls .marks-readout { color: rgba(255, 255, 255, 0.72); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
   .fs-controls .marks-readout .unset { color: rgba(255, 255, 255, 0.45); }
   .fs-controls button { background: rgba(28, 28, 28, 0.82); color: #ffffff; }
   .fs-controls button:hover { background: rgba(62, 62, 62, 0.92); }
@@ -1803,7 +1803,6 @@
   .tc-main.copyable:hover { background: rgba(255, 255, 255, 0.08); }
   .tc-main.copyable:focus-visible { outline: 1px solid var(--accent-bright, #6ad6e0); outline-offset: 1px; }
   .tc-main.copied { color: var(--ok, #7fd1a8); }
-  .tc-sub { font-size: 13px; color: var(--n-600, #767676); }
   .ctl-label { font-size: 13px; color: var(--n-600, #767676); }
   .draw-hint { font-size: 13px; color: var(--n-600, #767676); }
   button { border: 0; border-radius: 3px; background: var(--n-200, #232323); color: var(--n-800, #c4c4c4); padding: 8px 12px; font-size: 13px; }
@@ -1814,5 +1813,4 @@
   .seg { display: flex; gap: 2px; background: var(--n-150, #1c1c1c); border-radius: 3px; padding: 2px; }
   .seg button { background: none; padding: 5px 10px; }
   .seg button[aria-pressed='true'] { background: var(--n-400, #3d3d3d); color: var(--n-900, #e9e9e9); }
-  .range { margin: 10px 0 0; text-align: center; color: var(--n-600, #767676); font-size: 13px; }
 </style>

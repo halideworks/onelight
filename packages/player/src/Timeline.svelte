@@ -219,9 +219,13 @@
 
 <div class="timeline">
   <!-- Keyboard operation comes from the player's global map (arrows step,
-       Home/End jump); the stack is a pointer scrubber across every lane. -->
+       Home/End jump); the stack is a pointer scrubber across every lane.
+       It carries no role of its own: the slider below is the control assistive
+       tech should find, and the marker buttons keep their own semantics. This
+       is only the hit area that lets a drag start anywhere in the stack. -->
   <div
     class="stack"
+    role="presentation"
     class:disabled
     bind:this={stack}
     onpointerdown={handlePointerDown}
