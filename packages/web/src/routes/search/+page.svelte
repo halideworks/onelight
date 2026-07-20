@@ -298,6 +298,18 @@
   input { width: min(560px, 100%); border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 12px 14px; font-size: var(--text-14); }
   input::placeholder { color: var(--ink-text-dim); }
   .scopes { display: flex; gap: 2px; margin: 18px 0 28px; }
+  /* Phone: six scopes overflow 390px; the row scrolls instead of clipping,
+     with a fade telling the thumb there is more. */
+  @media (max-width: 720px) {
+    .scopes {
+      overflow-x: auto;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+      margin: 14px 0 20px;
+      mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+    }
+    .scopes > :global(button) { flex: none; white-space: nowrap; }
+  }
   .scope { border: 0; border-radius: var(--radius); background: var(--ink-100); color: var(--ink-text-dim); padding: 7px 14px; font-size: var(--text-13); font-weight: 500; }
   .scope:hover { color: var(--ink-text); }
   .scope[aria-pressed='true'] { background: var(--ink-300); color: var(--ink-text); }

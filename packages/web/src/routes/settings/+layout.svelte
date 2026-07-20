@@ -49,12 +49,29 @@
 
   const current = (href: string): 'page' | undefined =>
     page.url.pathname === href ? 'page' : undefined;
+
+  /* On the phone rail (a sideways scroller) the active pill must be visible
+     without hunting: whenever the route changes, bring it into view. */
+  let navEl = $state<HTMLElement | null>(null);
+  $effect(() => {
+    void page.url.pathname;
+    const nav = navEl;
+    /* Two frames, not one: the first can still precede style application on
+       a cold load, and centering only works after the row is scrollable. */
+    const raf = requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const active = nav?.querySelector('[aria-current="page"]');
+        active?.scrollIntoView({ block: 'nearest', inline: 'center' });
+      })
+    );
+    return () => cancelAnimationFrame(raf);
+  });
 </script>
 
 <div class="settings">
   <aside aria-label="Settings sections">
     <p class="railtitle">Settings</p>
-    <nav>
+    <nav bind:this={navEl}>
       {#each groups as group (group.title)}
         <p class="grouptitle">{group.title}</p>
         {#each group.items as item (item.href)}
@@ -131,26 +148,58 @@
     outline: 1px solid var(--accent-bright);
     outline-offset: 2px;
   }
-  @media (max-width: 760px) {
+  /* Phone: the rail becomes one sideways-scrolling row of pills pinned under
+     the topbar. Group titles go — thirteen labels in reading order carry the
+     structure well enough on a strip you thumb through. */
+  @media (max-width: 720px) {
     .settings {
       grid-template-columns: 1fr;
+      /* Stacked, the two grid children become rows; without this the
+         min-height stretches them evenly and short pages get a huge gap
+         between rail and heading. */
+      grid-template-rows: auto 1fr;
       gap: 0;
+      padding: 0 var(--pad-2);
     }
     aside {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      /* Grid items default to min-width auto, which would size this to the
+         full row of pills and drag the page wide; the nav scrolls instead. */
+      min-width: 0;
+      margin: 0 calc(-1 * var(--pad-2));
+      padding: 0;
       border-right: 0;
       border-bottom: 1px solid var(--ink-100);
-      padding-bottom: 16px;
+      background: var(--ink-000);
+    }
+    .railtitle,
+    .grouptitle {
+      display: none;
     }
     nav {
       position: static;
       display: flex;
-      flex-wrap: wrap;
-      gap: 2px 10px;
-      align-items: baseline;
+      gap: 4px;
+      padding: 8px var(--pad-2);
+      overflow-x: auto;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
     }
-    .grouptitle {
-      width: 100%;
-      margin: 12px 0 2px;
+    nav a {
+      flex: none;
+      margin: 0;
+      padding: 8px 12px;
+      white-space: nowrap;
+    }
+    .content {
+      padding-bottom: var(--pad-3);
+    }
+    /* Every settings page opens with main.page's 44px desktop padding; under
+       a sticky rail that reads as dead space, so tighten it here once. */
+    .content > :global(main.page) {
+      padding-top: 20px;
     }
   }
 </style>

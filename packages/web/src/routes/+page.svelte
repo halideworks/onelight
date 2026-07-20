@@ -357,6 +357,13 @@
      transport underneath at the same width. */
   .demo { width: min(46vw, 96vh, 760px); }
   @media (max-width: 1080px) { .demo { width: min(92vw, 640px); justify-self: center; } }
+  /* Phone: the one-screen horizon becomes a scrolling page — clipping the
+     demo's notes at 100vh read as a broken page, not a design. The demo takes
+     the column's width so it centres instead of bleeding off the right edge. */
+  @media (max-width: 720px) {
+    .shell:not(.signed-in) { height: auto; min-height: 100vh; overflow: visible; padding: 5vh var(--pad-2) 48px; }
+    .demo { width: 100%; }
+  }
   .demoplayer { position: relative; aspect-ratio: 4 / 3; }
   /* The controls live ON the picture: translucent ink strips over the
      bottom edge, the scrub beneath them, the waveform scope in the top

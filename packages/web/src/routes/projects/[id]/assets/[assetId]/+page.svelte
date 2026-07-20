@@ -1212,6 +1212,9 @@
       {/if}
       {#if selectedVersion}<span class="vbadge tc">v{selectedVersion.version_no}</span>{/if}
       <span class="grow"></span>
+      <!-- On desktop this wrapper is display:contents and changes nothing; on
+           a phone it is the actions band that scrolls under the title row. -->
+      <div class="acts">
       <span class="upload-new">
         <label class="filebtn">
           New version
@@ -1333,6 +1336,7 @@
           <option value="changes_requested">Changes requested</option>
         </select>
       </label>
+      </div>
     {/if}
   </header>
   {#if uploadState.status !== 'idle'}
@@ -1804,6 +1808,31 @@
   @media (max-width: 900px) {
     .content, .content.notes-closed { grid-template-columns: minmax(0, 1fr); height: auto; }
     .railtoggle { display: none; }
+  }
+  /* Above the phone width the wrapper adds no box at all. */
+  .acts { display: contents; }
+  /* Phone: the header is two bands — where you are, then what you can do.
+     The actions scroll sideways as one row instead of stacking four. */
+  @media (max-width: 720px) {
+    .topbar { row-gap: 6px; }
+    h1 { flex: 1; min-width: 0; }
+    .renametrigger { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .grow { display: none; }
+    .acts {
+      display: flex;
+      flex-basis: 100%;
+      align-items: center;
+      gap: 10px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+      mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+    }
+    .acts > * { flex: none; }
+    .carry-opt { white-space: nowrap; }
+    /* Panels anchored inside a sideways scroller would be clipped by it;
+       pin them to the viewport instead. */
+    .info-panel, .vpanel { position: fixed; left: var(--pad-2); right: var(--pad-2); top: 96px; width: auto; }
   }
   .stage-empty { padding: 18vh 0; text-align: center; background: var(--n-000); margin: 0; }
   .empty { color: var(--n-600); }

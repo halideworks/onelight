@@ -134,6 +134,28 @@
   .target { color: var(--ink-text-dim); overflow-wrap: anywhere; }
   .detail { color: var(--ink-text-dim); overflow-wrap: anywhere; }
 
+  /* Phone: five columns cannot share 390px. Each entry becomes a small card —
+     action and time on the first line, then who, target, detail. */
+  @media (max-width: 720px) {
+    table, tbody { display: block; }
+    thead { display: none; }
+    tr {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 2px 12px;
+      padding: 10px 4px;
+      border-bottom: 1px solid var(--ink-100);
+    }
+    td { display: block; padding: 0; }
+    td:first-child { padding-left: 0; }
+    tbody tr:hover td { background: none; }
+    td:nth-child(3) { grid-row: 1; grid-column: 1; }
+    .when { grid-row: 1; grid-column: 2; }
+    .whocell { grid-row: 2; grid-column: 1 / -1; }
+    .target { grid-row: 3; grid-column: 1 / -1; }
+    .detail { grid-row: 4; grid-column: 1 / -1; }
+  }
+
   .more { margin-top: 14px; border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 16px; font-size: var(--text-13); font-weight: 500; }
   .more:hover { background: var(--ink-300); }
   .more:disabled { opacity: 0.5; }

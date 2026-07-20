@@ -1096,6 +1096,9 @@
           onmarkerselect={(id) => highlightComment(id)}
           ondrawingchange={(drawing) => { pendingDrawing = drawing; }}
         />
+      {:else if previewUrl && selected.kind === 'image'}
+        <!-- A still is the work itself here, not a link to it. -->
+        <img class="stillview" src={previewUrl} alt={selected.name} />
       {:else if previewUrl}
         <p class="open-media"><a href={previewUrl}>Open media</a></p>
       {:else if watermarkPending}
@@ -1408,6 +1411,7 @@
   /* The bar wraps rather than widening the room: on a phone the title and
      the verbs stack, and nothing ever pushes the page sideways. */
   .preview-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px var(--pad-2); padding: 10px var(--pad-2); background: var(--n-100); }
+  .stillview { display: block; width: 100%; max-height: 78vh; object-fit: contain; background: var(--n-000); }
 
   /* The picture and the rail divide what is left of the window, the way the
      review page divides it. Not ".stage": the player owns that name for its
@@ -1427,14 +1431,36 @@
   .rail { display: flex; flex-direction: column; min-height: 0; background: var(--n-100); }
   @media (max-width: 900px) {
     .preview { overflow: auto; }
-    .room { grid-template-columns: minmax(0, 1fr); }
+    /* Stacked, the room must grow with its content and let the preview
+       scroll: flex:1 kept it at viewport height, the two implicit rows
+       split that fixed height, and the rail painted over the player's
+       overflow (overflow is visible here). */
+    .room { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; flex: none; height: auto; }
     .maincol { overflow: visible; }
     .maincol > :global(.player) { flex: none; }
+  }
+  /* Phone: the bar is two bands — the name, then everything you can do to it
+     in one row that scrolls off the right edge with a fade. */
+  @media (max-width: 720px) {
+    .preview-bar { row-gap: 8px; }
+    .preview-bar h2 { flex: 1 1 100%; }
+    .approval { display: inline-flex; flex: none; }
+    .preview-bar :global(button) { white-space: nowrap; }
+    .showtime .preview-bar { padding: 14px var(--pad-2) 8px; }
+    .showtime .maincol { padding: 0 var(--pad-2); }
+    /* Touch: the skip chevrons ride the picture's lower corners instead of
+       floating mid-wall, and stay small enough not to cover the work. */
+    .skip { top: auto; bottom: 10px; transform: none; width: 40px; height: 40px; background: rgba(13, 17, 23, 0.65); }
   }
 
   /* Presentation carousel: the whole share at the foot of the picture,
      thumbnails only, because the point is to move, not to browse. */
-  .carousel { flex: none; display: flex; justify-content: center; gap: 12px; overflow-x: auto; padding: 14px var(--pad-2) 18px; }
+  /* Centered while it fits, scrollable when it does not: justify-content
+     center on an overflowing scroller makes the first tiles unreachable, so
+     the centering is done with auto margins on the end tiles instead. */
+  .carousel { flex: none; display: flex; gap: 12px; overflow-x: auto; padding: 14px var(--pad-2) 18px; -webkit-overflow-scrolling: touch; }
+  .reeltile:first-child { margin-left: auto; }
+  .reeltile:last-child { margin-right: auto; }
   .reeltile { flex: none; width: 148px; display: grid; gap: 6px; padding: 0; background: none; text-align: left; }
   .preview .reeltile:hover { background: none; }
   .reelframe { display: block; overflow: hidden; border-radius: var(--radius); background: var(--n-200); aspect-ratio: 16 / 9; opacity: 0.66; transition: opacity 140ms ease; }

@@ -91,10 +91,10 @@
           {#each rows as row (row.id)}
             <tr>
               <td class="name"><a href={`/projects/${pretty(row.id, row.name)}`}>{row.name}</a></td>
-              <td class="num tc">{row.asset_count}</td>
-              <td class="num tc">{row.version_count}</td>
-              <td class="num tc">{formatBytes(row.originals_bytes)}</td>
-              <td class="num tc">{formatBytes(row.renditions_bytes)}</td>
+              <td class="num tc" data-l="Assets">{row.asset_count}</td>
+              <td class="num tc" data-l="Versions">{row.version_count}</td>
+              <td class="num tc" data-l="Originals">{formatBytes(row.originals_bytes)}</td>
+              <td class="num tc" data-l="Renditions">{formatBytes(row.renditions_bytes)}</td>
               <td class="num tc total">{formatBytes(totalOf(row))}</td>
               <td class="barcell">
                 <span class="bar" aria-hidden="true">
@@ -149,6 +149,37 @@
   .disk { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
   .diskbar { display: block; width: 220px; height: 10px; border-radius: 2px; overflow: hidden; background: var(--ink-100); }
   .diskfill { display: block; height: 100%; background: var(--ink-400, #33415a); }
+
+  /* Phone: a seven-column table becomes a card per project — name and total
+     up top, the weight bar under them, then the four counts labeled inline
+     (the header row is gone, so each number carries its own label). */
+  @media (max-width: 720px) {
+    table, tbody { display: block; }
+    thead { display: none; }
+    tr {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 4px 16px;
+      padding: 12px 4px;
+      border-bottom: 1px solid var(--ink-100);
+    }
+    td, td:first-child { display: block; padding: 0; }
+    tbody tr:hover td { background: none; }
+    .name { grid-row: 1; grid-column: 1; font-size: var(--text-14); }
+    .total { grid-row: 1; grid-column: 2; }
+    .barcell { grid-row: 2; grid-column: 1 / -1; width: auto; min-width: 0; margin: 4px 0 6px; }
+    .num { text-align: left; }
+    .num::before {
+      content: attr(data-l) ' ';
+      color: var(--ink-text-dim);
+      font-variant-numeric: normal;
+    }
+    .total { text-align: right; }
+    .total::before { content: none; }
+
+    .disk { flex-wrap: wrap; }
+    .diskbar { width: 100%; }
+  }
 
   .empty { color: var(--ink-text-dim); }
   .error { color: var(--warn); }

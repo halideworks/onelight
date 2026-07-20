@@ -666,4 +666,21 @@
   .pickwrap:hover .pickdrop, .pickdrop:focus-visible { display: grid; }
   .pickdrop:hover { background: var(--warn); }
   .pickone:not(.active):hover { outline: 1px solid var(--ink-400, var(--ink-300)); outline-offset: -1px; }
+
+  /* Phone: panels stack single-column inside tighter gutters (the 400px track
+     minimum was the page's horizontal overflow), and a member row becomes two
+     lines — who they are, then what they can do. */
+  @media (max-width: 720px) {
+    .wash { padding: var(--pad-2) var(--pad-2) var(--pad-3); }
+    .panels { grid-template-columns: 1fr; margin: 0 var(--pad-2); }
+    .members li {
+      grid-template-columns: minmax(0, 1fr) auto;
+      row-gap: 6px;
+    }
+    .members li .who { grid-column: 1 / -1; }
+  }
+  /* Touch cannot hover a delete button into existence. */
+  @media (pointer: coarse) {
+    .pickdrop { display: grid; }
+  }
 </style>

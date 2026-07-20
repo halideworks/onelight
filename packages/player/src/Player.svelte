@@ -1813,4 +1813,69 @@
   .seg { display: flex; gap: 2px; background: var(--n-150, #1c1c1c); border-radius: 3px; padding: 2px; }
   .seg button { background: none; padding: 5px 10px; }
   .seg button[aria-pressed='true'] { background: var(--n-400, #3d3d3d); color: var(--n-900, #e9e9e9); }
+
+  /* Phone. The desktop deck is a ~460px three-column instrument; at 390 its
+     side columns collapsed to zero and the marks slid under the volume
+     slider. Reflow, do not shrink: numbers and transport share the top
+     bands, marks get their own, and the row's edges (copy link, volume)
+     become a final row of their own. */
+  @media (max-width: 720px) {
+    /* Content decides the height on a scrolling phone page: height:100% of an
+       indefinite parent painted the deck over whatever followed the player. */
+    .player { height: auto; padding: 12px; }
+    /* The desktop stage takes "the height the transport does not use", but on
+       a phone the page scrolls and that flex height collapses to min-height —
+       every clip became a 120px letterbox. Here the footage's own shape sizes
+       the stage: full width at its aspect, capped so vertical clips lead the
+       screen without swallowing it. */
+    .stage {
+      flex: none;
+      width: 100%;
+      min-height: 0;
+      aspect-ratio: var(--ar, 1.7778);
+      max-height: 58vh;
+      margin: 0 auto;
+    }
+    .transport-row.main { display: flex; flex-wrap: wrap; align-items: center; row-gap: 4px; column-gap: 10px; }
+    .deck {
+      order: 0;
+      width: 100%;
+      /* The numbers take what they need; the flexible track sits at the end,
+         where nothing overlaps when a long timecode meets the shuttle. */
+      grid-template-columns: auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto;
+      column-gap: 14px;
+    }
+    .deck > .readout { justify-self: start; min-width: 0; text-align: left; }
+    .deck > .readout-sub { justify-self: start; }
+    .deck > .marks { grid-row: 3; grid-column: 1 / 3; justify-self: start; margin-top: 6px; }
+    .deck > .marks-readout { grid-row: 3; grid-column: 3; justify-self: end; align-self: center; margin-top: 6px; }
+    .side { order: 1; }
+    .side.right { order: 2; margin-left: auto; }
+
+    /* The tool row scrolls sideways as one quiet band instead of stacking
+       four rows of segmented controls between the picture and the timeline. */
+    .transport-row.settings {
+      flex-wrap: nowrap;
+      justify-content: flex-start;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+      mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+    }
+    .transport-row.settings > * { flex: none; }
+    .transport-row.settings .grow { display: none; }
+    .ctl-label { white-space: nowrap; }
+  }
+  /* Touch: hardware buttons own loudness — a 3px slider under a thumb does
+     not — and every control grows to a real target. */
+  @media (pointer: coarse) {
+    .vol { display: none; }
+    .side.volume .vol { margin-right: 0; }
+    .deck button { min-height: 40px; }
+    .icon { min-width: 40px; min-height: 40px; justify-content: center; }
+    /* 40px targets do not fit the desktop deck's fixed 34px band — left
+       fixed, the readout row clips into whatever sits below the player. */
+    .deck { grid-template-rows: auto auto; }
+  }
 </style>

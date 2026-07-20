@@ -1820,7 +1820,7 @@
 
         {#if treeError}<p class="error" role="alert">{treeError}</p>{/if}
         {#if shareError}<p class="sharenote" aria-live="polite">{shareError}</p>{/if}
-        <p class="hint">Arrows navigate, Enter opens, F2 renames, drag to move.</p>
+        <p class="hint kbdhint">Arrows navigate, Enter opens, F2 renames, drag to move.</p>
       </aside>
 
       <section class="main">
@@ -1837,7 +1837,7 @@
             <label class="filebtn">Add files
               <input type="file" multiple onchange={chooseFiles} />
             </label>
-            <label class="filebtn">Add a folder
+            <label class="filebtn folderbtn">Add a folder
               <input type="file" webkitdirectory multiple onchange={chooseFiles} />
             </label>
             <button type="submit" class="uploadbtn" class:ready={hasPending && !uploading} disabled={!hasPending || uploading}>
@@ -1847,7 +1847,7 @@
               <button type="button" class="quiet" onclick={clearFinished}>Clear finished</button>
             {/if}
           </form>
-          <p class="hint">Drop files or folders anywhere in this panel. Folder structure is kept as each file's relative path.</p>
+          <p class="hint kbdhint">Drop files or folders anywhere in this panel. Folder structure is kept as each file's relative path.</p>
           {#if queue.length > 1}
             <p class="summary tc" aria-live="polite">
               {overall.done} of {overall.count} files, {formatBytes(overall.bytes)} of {formatBytes(overall.total)}{overall.rate > 0 ? `, ${formatRate(overall.rate)}` : ''}
@@ -2134,7 +2134,7 @@
           </button>
         {/if}
         {#if displayed.length > 0}
-          <p class="hint">Click opens, hold selects. Ctrl-click adds, Shift-click extends, right-click shares.</p>
+          <p class="hint kbdhint">Click opens, hold selects. Ctrl-click adds, Shift-click extends, right-click shares.</p>
         {/if}
       </section>
     </div>
@@ -2304,7 +2304,23 @@
      and slide under the content beside it. */
   .pane { min-width: 0; }
   .row { overflow: hidden; }
+  /* Phone: the wash header stacks — title on its own line, the two room
+     links under it — and the pane/content padding steps down so the room
+     doesn't spend 80px of a 390px screen on gutters. */
+  @media (max-width: 720px) {
+    .wash { padding: var(--pad-2) var(--pad-2) var(--pad-3); }
+    .washrow { flex-wrap: wrap; gap: 10px 12px; }
+    .washrow h1 { flex-basis: 100%; }
+    .grow { display: none; }
+    .body { padding: var(--pad-2) var(--pad-2) var(--pad-3); gap: var(--pad-3); }
+  }
   @media (max-width: 760px) { .body { grid-template-columns: 1fr; } }
+  /* Mouse-and-keyboard coaching reads as noise where there is neither, and
+     directory upload does not exist in mobile browsers. */
+  @media (pointer: coarse) {
+    .kbdhint { display: none; }
+    .folderbtn { display: none; }
+  }
 
   /* ---- the rail ---- */
   /* One rail, two trees, one grammar: an icon says what a row is, indentation
@@ -2456,6 +2472,11 @@
 
   /* ---- grid ---- */
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-top: var(--pad-2); }
+  /* Two-up thumbnails on phones: one 358px column made each card a monument
+     and the page a kilometer. 170px thumbs still read fine for picking a clip. */
+  @media (max-width: 720px) {
+    .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  }
   .card { cursor: pointer; }
   /* List rows carry the same poster the grid does, at row height. */
   .namecell { display: flex; align-items: center; gap: 10px; }

@@ -134,6 +134,13 @@
         oninput={searchAsYouType}
       />
     </form>
+    <!-- On phones the search field is hidden; this icon keeps /search one tap
+         away instead of unreachable. -->
+    <a class="searchlink" href="/search" aria-label="Search">
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" stroke-linecap="round" />
+      </svg>
+    </a>
     <button
       type="button"
       class="bell"
@@ -237,8 +244,25 @@
   .navsearch input { flex: 1; min-width: 0; border: 0; background: none; color: var(--ink-text); padding: 7px 0; font-size: var(--text-13); }
   .navsearch input:focus-visible { outline: none; }
   .navsearch input::placeholder { color: var(--ink-text-dim); }
+  .searchlink {
+    display: none;
+    align-items: center;
+    padding: 8px;
+    margin: -8px 0 -8px auto;
+    border-radius: var(--radius);
+    color: var(--ink-text-dim);
+  }
+  .searchlink:hover { color: var(--ink-text); }
   @media (max-width: 720px) {
     .navsearch { display: none; }
+    .searchlink { display: inline-flex; }
+    /* The icon takes over the auto margin that pushes the right cluster. */
+    .bell { margin-left: 0; }
+    .topbar { gap: 20px; }
+  }
+  /* Coarse pointers get full-height nav targets; the visual stays quiet. */
+  @media (pointer: coarse) {
+    nav a { padding: 12px 4px; margin: -12px -4px; }
   }
   nav a {
     color: var(--ink-text-dim);

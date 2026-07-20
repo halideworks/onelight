@@ -89,9 +89,36 @@
   --pad-2: 16px;
   --pad-3: 24px;
   --pad-4: 40px;
+
+  /* Touch. Minimum hit target on coarse pointers; visual size may stay
+     smaller — pad the hit area, not the glyph. */
+  --tap: 44px;
+
+  /* Device safe areas (notches, home indicators). Zero on everything else,
+     so pages can add them unconditionally. Needs viewport-fit=cover, set in
+     app.html. */
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
 }
 
+/* Breakpoints. Custom properties cannot appear in media queries, so these are
+   a convention, not variables — use these exact values and no others:
+     @media (max-width: 720px)   phone (either orientation)
+     @media (max-width: 1080px)  compact: portrait tablet, split window
+     @media (pointer: coarse)    touch affordances (target size, no hover-only UI)
+   The legacy 640/760/900 queries are being migrated to these. */
+
 * { box-sizing: border-box; }
+
+/* Rows that legitimately exceed a phone's width (chip filters, wide tables)
+   scroll sideways inside their own box instead of widening the page. */
+.scroll-x {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
 
 html, body {
   margin: 0;

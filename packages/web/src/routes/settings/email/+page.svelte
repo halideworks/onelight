@@ -393,6 +393,15 @@
   label { display: grid; gap: 5px; color: var(--ink-text-dim); }
   input { border: 0; border-radius: var(--radius); background: var(--ink-000); color: var(--ink-text); padding: 9px 12px; font-size: var(--text-13); }
   .row { display: grid; grid-template-columns: 90px 1fr 1fr; gap: 10px; }
+  /* Text inputs carry an intrinsic minimum width (~20ch) that overflows the
+     90px port column and slides under its neighbour; the column decides. */
+  .row input { width: 100%; min-width: 0; }
+  /* Phone: text inputs have intrinsic minimum widths that push three columns
+     past the viewport — port and username share a line, password gets its own. */
+  @media (max-width: 720px) {
+    .row { grid-template-columns: 90px minmax(0, 1fr); }
+    .row label:last-child { grid-column: 1 / -1; }
+  }
 
   .actions { display: flex; align-items: center; gap: 12px; }
   .primary { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 9px 16px; font-size: var(--text-13); font-weight: 600; }

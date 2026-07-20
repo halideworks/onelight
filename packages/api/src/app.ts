@@ -7004,20 +7004,22 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         expires_at: env.clock.now() + 15 * 60 * 1000,
       });
     }
-    const rendition = (
-      await env.db
-        .select()
-        .from(renditions)
-        .where(
-          and(
-            eq(renditions.versionId, asset.currentVersionId),
-            eq(renditions.kind, "proxy_1080"),
-            isNull(renditions.shareId),
-          ),
-        )
-        .limit(1)
-        .all()
-    )[0];
+    /* Video serves the review proxy; a still has no proxy and serves its
+       full-resolution tile instead — without this, image assets in a share
+       answered 404 forever. */
+    const renditionRows = (await env.db
+      .select()
+      .from(renditions)
+      .where(
+        and(
+          eq(renditions.versionId, asset.currentVersionId),
+          inArray(renditions.kind, ["proxy_1080", "still_tiles"]),
+          isNull(renditions.shareId),
+        ),
+      )
+      .all()) as Array<typeof renditions.$inferSelect>;
+    const rendition =
+      renditionRows.find((row) => row.kind === "proxy_1080") ?? renditionRows[0];
     if (!rendition) throw errors.notFound("A review rendition is not ready.");
     return c.json({
       url: await publicMediaUrl(

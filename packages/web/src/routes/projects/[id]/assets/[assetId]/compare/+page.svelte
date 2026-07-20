@@ -301,7 +301,19 @@
 <style>
   .compare { min-height: 100vh; display: flex; flex-direction: column; background: var(--n-000); color: var(--n-800); font-size: var(--text-13); }
   .topbar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; }
-  .topbar a { color: var(--n-600); text-decoration: none; }
+  .topbar a { color: var(--n-600); text-decoration: none; white-space: nowrap; }
+  /* Phone: name and controls cannot share one line; the bar becomes two rows
+     (back + title, then pickers and mode) and the hint goes with the keyboard. */
+  @media (max-width: 720px) {
+    .topbar { flex-wrap: wrap; gap: 10px 16px; padding: 10px var(--pad-2); }
+    h1 { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .grow { display: none; }
+    .pickers { flex: 1; }
+    .modes { margin-left: auto; }
+  }
+  @media (pointer: coarse) {
+    .transport .hint { display: none; }
+  }
   .topbar a:hover { color: var(--n-900); }
   h1 { margin: 0; font-size: var(--text-16); font-weight: 600; color: var(--n-900); }
   .grow { flex: 1; }
