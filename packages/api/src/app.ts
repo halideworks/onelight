@@ -2851,23 +2851,56 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.json(await projectWire(project, user.id, user.role));
   });
 
+  /* A connection carrying Last-Event-ID is catching up and gets everything it
+     missed. A connection without one is a new subscriber that has just loaded
+     its state over REST, and replaying the log to it re-announces every asset
+     ever created as though it were news. That is how a trashed asset climbed
+     back into the browser's list on every page load: the original
+     asset.created replayed, and the client added the row back.
+
+     So a first connection is handed a cursor and nothing else: the id of the
+     newest event, which the browser stores and echoes back as Last-Event-ID
+     when the stream reconnects, putting it on the catch-up path above with
+     nothing missed in between. The cursor is an event type no client
+     subscribes to, since its only job is to seed that buffer. "0" sorts below
+     every ULID, so a project with no events yet still receives what comes
+     next rather than being pinned to an id that never arrives. */
   api.get("/projects/:id/events", requireAuth, async (c) => {
     const actor = userFromContext(c);
     await requireProject(c.req.param("id"), actor, "viewer");
     const lastEventId = c.req.header("last-event-id");
-    const rows = await env.db
-      .select()
-      .from(projectEvents)
-      .where(
-        and(
-          eq(projectEvents.projectId, c.req.param("id")),
-          lastEventId ? gt(projectEvents.id, lastEventId) : undefined,
-        ),
-      )
-      .orderBy(asc(projectEvents.id))
-      .limit(500)
-      .all();
+    const rows = lastEventId
+      ? await env.db
+          .select()
+          .from(projectEvents)
+          .where(
+            and(
+              eq(projectEvents.projectId, c.req.param("id")),
+              gt(projectEvents.id, lastEventId),
+            ),
+          )
+          .orderBy(asc(projectEvents.id))
+          .limit(500)
+          .all()
+      : [];
+    const cursor = lastEventId
+      ? null
+      : ((
+          await env.db
+            .select({ id: projectEvents.id })
+            .from(projectEvents)
+            .where(eq(projectEvents.projectId, c.req.param("id")))
+            .orderBy(desc(projectEvents.id))
+            .limit(1)
+            .all()
+        )[0]?.id ?? "0");
     return streamSSE(c, async (stream) => {
+      if (cursor !== null)
+        await stream.writeSSE({
+          id: cursor,
+          event: "stream.cursor",
+          data: "{}",
+        });
       for (const event of rows)
         await stream.writeSSE({
           id: event.id,
@@ -8771,6 +8804,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       await assetParam(c.req.param("id")),
       actor,
     );
+    /* Trashed is gone as far as reads are concerned. Restore still works: it
+       goes through assetForActor with the id the trash listing already has,
+       and does not come through here. */
+    if (asset.deletedAt !== null) throw errors.notFound("Asset was not found.");
     return c.json(assetWire(asset));
   });
 

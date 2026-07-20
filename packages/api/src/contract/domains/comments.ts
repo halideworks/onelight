@@ -1420,6 +1420,19 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
         projectId: project.id,
         userId: seed.admin.id,
       });
+      /* Subscribe first, the way a browser does: the opening connection just
+         names where the stream stands, and everything after it arrives on the
+         reconnect that carries that cursor back. */
+      const opening = await req(h, `/api/v1/projects/${project.id}/events`, {
+        cookie: seed.admin.cookie,
+      });
+      expect(opening.status).toBe(200);
+      const openingEvents = parseSse(await opening.text());
+      expect(openingEvents.map((event) => event.event)).toEqual([
+        "stream.cursor",
+      ]);
+      const cursor = openingEvents[0]?.id ?? "";
+      expect(cursor).not.toBe("");
       const created = await postComment(h, seed.admin.cookie, media.versionId, {
         frame_in: 12,
         body_text: "live event check",
@@ -1428,6 +1441,7 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       const commentId = (await json<{ id: string }>(created)).id;
       const stream = await req(h, `/api/v1/projects/${project.id}/events`, {
         cookie: seed.admin.cookie,
+        headers: { "last-event-id": cursor },
       });
       expect(stream.status).toBe(200);
       const events = parseSse(await stream.text());
@@ -1457,6 +1471,7 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
         await (
           await req(h, `/api/v1/projects/${project.id}/events`, {
             cookie: seed.admin.cookie,
+            headers: { "last-event-id": cursor },
           })
         ).text(),
       );

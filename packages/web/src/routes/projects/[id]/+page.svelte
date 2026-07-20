@@ -35,6 +35,7 @@
     kind: string;
     status: string;
     current_version_id?: string | null;
+    deleted_at?: number | null;
     created_at: number;
     updated_at: number;
   };
@@ -274,6 +275,10 @@
         try {
           const asset = await api<Asset>(`/api/v1/assets/${assetId}`);
           if (id !== projectId || asset.project_id !== id) return;
+          /* An event says an asset was created, not that it still exists. The
+             API refuses to read a trashed asset now, so this is belt and
+             braces: nothing puts a deleted row back in the list. */
+          if (asset.deleted_at) return;
           if (selectedFolder && asset.folder_id !== selectedFolder) return;
           if (assets.some((entry) => entry.id === assetId)) return;
           assets = [asset, ...assets];

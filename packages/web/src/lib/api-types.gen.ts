@@ -3340,7 +3340,7 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description Project event stream (SSE, Last-Event-ID replay). */
+                /** @description Project event stream (SSE). A connection without Last-Event-ID is a new subscriber: it receives a single stream.cursor event naming the newest event id and no history. Send that id back as Last-Event-ID to receive everything after it. */
                 200: {
                     headers: {
                         [name: string]: unknown;

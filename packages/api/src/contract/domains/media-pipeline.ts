@@ -724,12 +724,23 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
       expect(listing.items.some((item) => item.id === media.assetId)).toBe(
         false,
       );
+      /* Hidden from the list is not enough: reading one by id has to refuse
+         too, or a stale asset.created event puts the row back in the browser
+         by fetching it straight from here. */
+      const readWhileTrashed = await req(h, `/api/v1/assets/${media.assetId}`, {
+        cookie: seed.editor.cookie,
+      });
+      expect(readWhileTrashed.status).toBe(404);
       const restored = await req(h, `/api/v1/assets/${media.assetId}/restore`, {
         method: "POST",
         cookie: seed.editor.cookie,
       });
       expect(restored.status).toBe(200);
       expect((await json(restored)).deleted_at).toBeNull();
+      const readAfterRestore = await req(h, `/api/v1/assets/${media.assetId}`, {
+        cookie: seed.editor.cookie,
+      });
+      expect(readAfterRestore.status).toBe(200);
       const softDeleted = await req(h, `/api/v1/assets/${media.assetId}`, {
         method: "DELETE",
         cookie: seed.editor.cookie,
@@ -924,28 +935,119 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
           })
           .run();
       }
-      const full = await req(h, `/api/v1/projects/${project.id}/events`, {
+      /* A first connection replays nothing: it gets one cursor naming the
+         newest event, which is what the browser sends back as Last-Event-ID.
+         Replaying here re-announced every historical asset.created to a
+         client that had just loaded the same assets over REST. */
+      const fresh = await req(h, `/api/v1/projects/${project.id}/events`, {
         cookie: seed.viewer.cookie,
       });
-      expect(full.status).toBe(200);
-      expect(full.headers.get("content-type")).toContain("text/event-stream");
-      const events = parseSse(await full.text());
-      expect(events.length).toBeGreaterThanOrEqual(3);
-      const ids = events.map((event) => event.id);
-      expect(new Set(ids).size).toBe(ids.length);
-      expect(ids).toEqual([...ids].sort());
-      const anchor = ids[0] ?? "";
-      const replay = await req(h, `/api/v1/projects/${project.id}/events`, {
-        cookie: seed.viewer.cookie,
-        headers: { "last-event-id": anchor },
-      });
-      const replayed = parseSse(await replay.text());
-      expect(replayed.map((event) => event.id)).toEqual(ids.slice(1));
-      expect(replayed.map((event) => event.id)).toContain(extraIds[1] ?? "");
+      expect(fresh.status).toBe(200);
+      expect(fresh.headers.get("content-type")).toContain("text/event-stream");
+      const opening = parseSse(await fresh.text());
+      expect(opening.map((event) => event.event)).toEqual(["stream.cursor"]);
+      const cursor = opening[0]?.id ?? "";
+      expect(cursor).toBe(extraIds[1]);
+
+      /* Reconnecting on that cursor is caught up, and stays caught up until
+         something new lands. */
+      const caughtUp = parseSse(
+        await (
+          await req(h, `/api/v1/projects/${project.id}/events`, {
+            cookie: seed.viewer.cookie,
+            headers: { "last-event-id": cursor },
+          })
+        ).text(),
+      );
+      expect(caughtUp).toEqual([]);
+
+      const freshId = h.ids.ulid();
+      await h.db
+        .insert(projectEvents)
+        .values({
+          id: freshId,
+          projectId: project.id,
+          type: "contract.test",
+          payloadJson: JSON.stringify({ index: 2 }),
+          createdAt: h.clock.now(),
+        })
+        .run();
+      const delivered = parseSse(
+        await (
+          await req(h, `/api/v1/projects/${project.id}/events`, {
+            cookie: seed.viewer.cookie,
+            headers: { "last-event-id": cursor },
+          })
+        ).text(),
+      );
+      expect(delivered.map((event) => event.id)).toEqual([freshId]);
+
+      /* Catch-up from an older anchor still returns everything after it, in
+         order, with no duplicates and no cursor mixed in. */
+      const anchor = extraIds[0] ?? "";
+      const replayed = parseSse(
+        await (
+          await req(h, `/api/v1/projects/${project.id}/events`, {
+            cookie: seed.viewer.cookie,
+            headers: { "last-event-id": anchor },
+          })
+        ).text(),
+      );
+      const replayedIds = replayed.map((event) => event.id);
+      expect(replayedIds).toEqual([extraIds[1], freshId]);
+      expect(new Set(replayedIds).size).toBe(replayedIds.length);
+      expect(replayedIds).toEqual([...replayedIds].sort());
+      expect(replayed.every((event) => event.event !== "stream.cursor")).toBe(
+        true,
+      );
+
       const foreign = await req(h, `/api/v1/projects/${project.id}/events`, {
         cookie: seed.other.admin.cookie,
       });
       expect(foreign.status).toBe(404);
+    });
+
+    /* A project with no events yet cannot name a newest id. The floor cursor
+       keeps such a client subscribed to whatever arrives next instead of
+       pinning it to an id that never comes. */
+    it("hands an empty project a floor cursor that still delivers later events", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin);
+      await h.db
+        .delete(projectEvents)
+        .where(eq(projectEvents.projectId, project.id))
+        .run();
+      const opening = parseSse(
+        await (
+          await req(h, `/api/v1/projects/${project.id}/events`, {
+            cookie: seed.admin.cookie,
+          })
+        ).text(),
+      );
+      expect(opening.map((event) => event.event)).toEqual(["stream.cursor"]);
+      expect(opening[0]?.id).toBe("0");
+
+      const laterId = h.ids.ulid();
+      await h.db
+        .insert(projectEvents)
+        .values({
+          id: laterId,
+          projectId: project.id,
+          type: "contract.test",
+          payloadJson: "{}",
+          createdAt: h.clock.now(),
+        })
+        .run();
+      const delivered = parseSse(
+        await (
+          await req(h, `/api/v1/projects/${project.id}/events`, {
+            cookie: seed.admin.cookie,
+            headers: { "last-event-id": "0" },
+          })
+        ).text(),
+      );
+      expect(delivered.map((event) => event.id)).toEqual([laterId]);
     });
   });
 
