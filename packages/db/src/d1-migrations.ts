@@ -53,6 +53,15 @@ const projectsHavePublicId = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes("public_id"));
 };
 
+const sharesHaveApprovals = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='shares'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("allow_approvals"));
+};
+
 const usersHaveGuest = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -318,6 +327,14 @@ export const d1Migrations: D1Migration[] = [
       "CREATE UNIQUE INDEX projects_public_id_uq ON projects(public_id)",
       "CREATE UNIQUE INDEX assets_public_id_uq ON assets(public_id)",
       "CREATE UNIQUE INDEX shares_public_id_uq ON shares(public_id)",
+    ],
+  },
+  {
+    name: "0018_share_approvals.sql",
+    applied: sharesHaveApprovals,
+    statements: [
+      "ALTER TABLE shares ADD COLUMN allow_approvals INTEGER NOT NULL DEFAULT 1",
+      "UPDATE shares SET allow_approvals = 0 WHERE kind = 'presentation'",
     ],
   },
 ];

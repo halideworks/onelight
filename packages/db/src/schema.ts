@@ -703,6 +703,9 @@ export const shares = sqliteTable("shares", {
   allowComments: integer("allow_comments", { mode: "boolean" })
     .notNull()
     .default(true),
+  allowApprovals: integer("allow_approvals", { mode: "boolean" })
+    .notNull()
+    .default(true),
   showAllVersions: integer("show_all_versions", { mode: "boolean" })
     .notNull()
     .default(false),

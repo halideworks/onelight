@@ -6139,6 +6139,7 @@ export interface paths {
                                 /** @enum {string} */
                                 allow_download: "none" | "proxy" | "original";
                                 allow_comments: boolean;
+                                allow_approvals: boolean;
                                 show_all_versions: boolean;
                                 watermark_spec: {
                                     [key: string]: unknown;
@@ -6225,6 +6226,7 @@ export interface paths {
                         allow_download?: "none" | "proxy" | "original";
                         /** @default true */
                         allow_comments?: boolean;
+                        allow_approvals?: boolean;
                         /** @default false */
                         show_all_versions?: boolean;
                         watermark_spec?: {
@@ -6267,6 +6269,7 @@ export interface paths {
                                 /** @enum {string} */
                                 allow_download: "none" | "proxy" | "original";
                                 allow_comments: boolean;
+                                allow_approvals: boolean;
                                 show_all_versions: boolean;
                                 watermark_spec: {
                                     [key: string]: unknown;
@@ -6366,6 +6369,7 @@ export interface paths {
                             /** @enum {string} */
                             allow_download: "none" | "proxy" | "original";
                             allow_comments: boolean;
+                            allow_approvals: boolean;
                             show_all_versions: boolean;
                             watermark_spec: {
                                 [key: string]: unknown;
@@ -6504,6 +6508,7 @@ export interface paths {
                         /** @enum {string} */
                         allow_download?: "none" | "proxy" | "original";
                         allow_comments?: boolean;
+                        allow_approvals?: boolean;
                         show_all_versions?: boolean;
                         watermark_spec?: {
                             [key: string]: unknown;
@@ -6544,6 +6549,7 @@ export interface paths {
                             /** @enum {string} */
                             allow_download: "none" | "proxy" | "original";
                             allow_comments: boolean;
+                            allow_approvals: boolean;
                             show_all_versions: boolean;
                             watermark_spec: {
                                 [key: string]: unknown;
@@ -6730,6 +6736,7 @@ export interface paths {
                                 /** @enum {string} */
                                 allow_download: "none" | "proxy" | "original";
                                 allow_comments: boolean;
+                                allow_approvals: boolean;
                                 show_all_versions: boolean;
                                 watermark_spec: {
                                     [key: string]: unknown;
@@ -7680,6 +7687,7 @@ export interface paths {
                                 /** @enum {string} */
                                 allow_download: "none" | "proxy" | "original";
                                 allow_comments: boolean;
+                                allow_approvals: boolean;
                                 show_all_versions: boolean;
                                 expires_at: number | null;
                                 revoked_at: number | null;
@@ -7922,6 +7930,7 @@ export interface paths {
                                 /** @enum {string} */
                                 allow_download: "none" | "proxy" | "original";
                                 allow_comments: boolean;
+                                allow_approvals: boolean;
                                 show_all_versions: boolean;
                                 expires_at: number | null;
                                 revoked_at: number | null;

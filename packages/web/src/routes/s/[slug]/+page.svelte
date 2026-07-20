@@ -38,6 +38,7 @@
     kind: 'review' | 'presentation';
     layout: 'grid' | 'list' | 'reel';
     allow_comments: boolean;
+    allow_approvals: boolean;
     allow_download: 'none' | 'proxy' | 'original';
     expires_at: number | null;
     watermark_spec: Record<string, unknown> | null;
@@ -319,6 +320,7 @@
       kind: record['kind'] === 'presentation' ? 'presentation' : 'review',
       layout: record['layout'] === 'list' ? 'list' : record['layout'] === 'reel' ? 'reel' : 'grid',
       allow_comments: Boolean(record['allow_comments'] ?? record['allowComments']),
+      allow_approvals: Boolean(record['allow_approvals'] ?? record['allowApprovals']),
       allow_download: download === 'proxy' || download === 'original' ? download : 'none',
       expires_at: typeof expires === 'number' ? expires : null,
       watermark_spec: parseSpec(),
@@ -382,6 +384,16 @@
           name: typeof viewer['name'] === 'string' ? viewer['name'] : null,
           email: typeof viewer['email'] === 'string' ? viewer['email'] : null
         };
+        await loadAssets(currentSlug);
+        openFromUrl();
+        autoOpen();
+      } else if (share && share.kind === 'presentation' && !share.allow_comments) {
+        /* A presentation that collects nothing has no business asking who
+           you are: walk straight in on an anonymous viewer. Passphrase
+           shares still 401 above and still gate. */
+        await apiPost(`/api/v1/s/${currentSlug}/access`, {});
+        if (currentSlug !== slug) return;
+        viewerIdentity = { name: null, email: null };
         await loadAssets(currentSlug);
         openFromUrl();
         autoOpen();
@@ -1024,6 +1036,7 @@
           <button type="button" class="copylink" onclick={() => void copyFrameLink()}>Copy link at this timecode</button>
           {#if copyNotice}<span class="copy-note" role="status">{copyNotice}</span>{/if}
         {/if}
+        {#if share.allow_approvals}
         <span class="approval" role="group" aria-label="Your decision">
           <button
             type="button"
@@ -1038,6 +1051,7 @@
             onclick={() => void setApproval('changes_requested')}
           >{selected.status === 'changes_requested' ? 'Changes requested' : 'Request changes'}</button>
         </span>
+        {/if}
         {#if showtime && share.allow_comments}
           <button type="button" class="railtoggle" aria-pressed={!railHidden} onclick={() => { railHidden = !railHidden; }}>
             {railHidden ? 'Show notes' : 'Hide notes'}
@@ -1061,6 +1075,16 @@
            simple chrome, so the props pass unconditionally. -->
       <div class="room" class:solo={!railOpen}>
       <div class="maincol">
+      <div class="stageflank">
+      {#if showtime && assets.length > 1 && selected}
+        {@const at = assets.findIndex((candidate) => candidate.id === selected?.id)}
+        <!-- The chevrons flank the picture as columns of their own: the video
+             is the hero and nothing sits on it. Phones drop them entirely —
+             the carousel is the navigation there. -->
+        <button type="button" class="skip prev" disabled={at <= 0} aria-label="Previous" onclick={() => { if (at > 0) void openAsset(assets[at - 1]); }}>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5L8 12l6.5 6.5" /></svg>
+        </button>
+      {/if}
       {#key selected.id}
       <div class="picture">
       {#if playerActive}
@@ -1106,23 +1130,15 @@
       {:else}
         <p class="empty">A review rendition is not ready.</p>
       {/if}
-      <!-- Skipping lives on the picture itself: the chevrons centre on the
-           artwork's edges, never on the transport below it. -->
-      {#if showtime && assets.length > 1 && selected}
-        {@const at = assets.findIndex((candidate) => candidate.id === selected?.id)}
-        {#if at > 0}
-          <button type="button" class="skip prev" aria-label="Previous" onclick={() => void openAsset(assets[at - 1])}>
-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5L8 12l6.5 6.5" /></svg>
-          </button>
-        {/if}
-        {#if at >= 0 && at < assets.length - 1}
-          <button type="button" class="skip next" aria-label="Next" onclick={() => void openAsset(assets[at + 1])}>
-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 5.5L16 12l-6.5 6.5" /></svg>
-          </button>
-        {/if}
-      {/if}
       </div>
       {/key}
+      {#if showtime && assets.length > 1 && selected}
+        {@const at = assets.findIndex((candidate) => candidate.id === selected?.id)}
+        <button type="button" class="skip next" disabled={at < 0 || at >= assets.length - 1} aria-label="Next" onclick={() => { if (at >= 0 && at < assets.length - 1) void openAsset(assets[at + 1]); }}>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 5.5L16 12l-6.5 6.5" /></svg>
+        </button>
+      {/if}
+      </div>
       {#if showtime && assets.length > 1}
         <!-- The whole share, current one marked: the client skips through the
              work from here, never back out to a menu. -->
@@ -1473,9 +1489,6 @@
     .showtime .maincol :global(.cluster) { gap: 2px; }
     .showtime .maincol :global(.side:not(.volume)) { display: none; }
     .showtime .maincol :global(.side.volume) { margin-left: 0; order: 0; }
-    /* Touch: slightly smaller chevrons, deeper ink so they read over any
-       footage; they centre on the picture because they live inside it. */
-    .preview button.skip { width: 40px; height: 40px; background: rgba(13, 17, 23, 0.65); }
   }
 
   /* Presentation carousel: the whole share at the foot of the picture,
@@ -1537,12 +1550,18 @@
   /* Skipping lives on the picture's own gutters: a circular chevron either
      side, quiet until the pointer comes near. */
   .maincol { position: relative; }
-  /* .preview button carries higher specificity than a lone class and was
-     flattening these into small grey squares; the chevrons are circles. */
-  .preview button.skip { position: absolute; top: 50%; z-index: 2; display: grid; place-items: center; width: 46px; height: 46px; padding: 0; border: 0; border-radius: 50%; background: rgba(13, 17, 23, 0.55); color: rgba(250, 248, 244, 0.8); transform: translateY(-50%); transition: background 140ms ease, color 140ms ease; }
-  .preview button.skip:hover { background: rgba(13, 17, 23, 0.85); color: #fff; }
-  .skip.prev { left: clamp(8px, 1.6vw, 28px); }
-  .skip.next { right: clamp(8px, 1.6vw, 28px); }
+  /* The picture and its chevrons share a grid: the video is the hero and the
+     chevrons keep to the gutters beside it, never on it. (.preview button
+     carries higher specificity than a lone class — hence the long selector —
+     it once flattened these circles into small grey squares.) */
+  .stageflank { flex: 1; min-height: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: clamp(8px, 1.4vw, 20px); }
+  .stageflank > .picture { grid-column: 2; }
+  .preview button.skip { display: grid; place-items: center; width: 46px; height: 46px; padding: 0; border: 0; border-radius: 50%; background: rgba(13, 17, 23, 0.55); color: rgba(250, 248, 244, 0.8); transition: background 140ms ease, color 140ms ease, opacity 140ms ease; }
+  .preview button.skip:hover:not(:disabled) { background: rgba(13, 17, 23, 0.85); color: #fff; }
+  .preview button.skip:disabled { opacity: 0.25; cursor: default; }
+  @media (max-width: 900px) {
+    .preview button.skip { display: none; }
+  }
 
   /* Notes in showtime: the same thread, dressed for the room. Cards on
      translucent ink, cream type, roomy line height, and a composer that

@@ -1106,6 +1106,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     expires_at: share.expiresAt,
     allow_download: share.allowDownload,
     allow_comments: Boolean(share.allowComments),
+    allow_approvals: Boolean(share.allowApprovals),
     show_all_versions: Boolean(share.showAllVersions),
     watermark_spec: share.watermarkSpecJson
       ? parseJsonObject(share.watermarkSpecJson)
@@ -1129,6 +1130,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     layout: share.layout,
     allow_download: share.allowDownload,
     allow_comments: Boolean(share.allowComments),
+    allow_approvals: Boolean(share.allowApprovals),
     show_all_versions: Boolean(share.showAllVersions),
     expires_at: share.expiresAt,
     revoked_at: share.revokedAt,
@@ -5343,6 +5345,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         expiresAt: body.expires_at ?? null,
         allowDownload: body.allow_download,
         allowComments: body.allow_comments,
+        allowApprovals: body.allow_approvals ?? body.kind !== "presentation",
         showAllVersions: body.show_all_versions,
         watermarkSpecJson: watermarkJson,
         watermarkSpecHash: watermarkJson
@@ -5520,6 +5523,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         ...(body.allow_comments === undefined
           ? {}
           : { allowComments: body.allow_comments }),
+        ...(body.allow_approvals === undefined
+          ? {}
+          : { allowApprovals: body.allow_approvals }),
         ...(body.show_all_versions === undefined
           ? {}
           : { showAllVersions: body.show_all_versions }),
@@ -6950,6 +6956,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.patch("/s/:slug/approval", async (c) => {
     const share = await shareBySlug(c.req.param("slug"));
+    if (!share.allowApprovals)
+      throw errors.forbidden("This share does not take approval decisions.");
     const projection = await publicShare(c, share);
     if (!projection.viewer) throw errors.unauthorized();
     const body = await jsonBody(c, bodies.shareApprovalPatch);

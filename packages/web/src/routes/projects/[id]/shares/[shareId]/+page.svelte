@@ -517,6 +517,14 @@
           <label class="check">
             <input
               type="checkbox"
+              checked={share.allow_approvals}
+              onchange={(event) => void patch({ allow_approvals: event.currentTarget.checked }, 'Approvals saved')}
+            />
+            Approve / request changes
+          </label>
+          <label class="check">
+            <input
+              type="checkbox"
               checked={share.show_all_versions}
               onchange={(event) => void patch({ show_all_versions: event.currentTarget.checked }, 'Versions saved')}
             />

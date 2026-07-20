@@ -9493,6 +9493,9 @@
                     "type": "boolean",
                     "default": true
                   },
+                  "allow_approvals": {
+                    "type": "boolean"
+                  },
                   "show_all_versions": {
                     "type": "boolean",
                     "default": false
@@ -9652,6 +9655,9 @@
                         "allow_comments": {
                           "type": "boolean"
                         },
+                        "allow_approvals": {
+                          "type": "boolean"
+                        },
                         "show_all_versions": {
                           "type": "boolean"
                         },
@@ -9712,6 +9718,7 @@
                         "expires_at",
                         "allow_download",
                         "allow_comments",
+                        "allow_approvals",
                         "show_all_versions",
                         "watermark_spec",
                         "brand",
@@ -9859,6 +9866,9 @@
                           "allow_comments": {
                             "type": "boolean"
                           },
+                          "allow_approvals": {
+                            "type": "boolean"
+                          },
                           "show_all_versions": {
                             "type": "boolean"
                           },
@@ -9919,6 +9929,7 @@
                           "expires_at",
                           "allow_download",
                           "allow_comments",
+                          "allow_approvals",
                           "show_all_versions",
                           "watermark_spec",
                           "brand",
@@ -10059,6 +10070,9 @@
                     "allow_comments": {
                       "type": "boolean"
                     },
+                    "allow_approvals": {
+                      "type": "boolean"
+                    },
                     "show_all_versions": {
                       "type": "boolean"
                     },
@@ -10142,6 +10156,7 @@
                     "expires_at",
                     "allow_download",
                     "allow_comments",
+                    "allow_approvals",
                     "show_all_versions",
                     "watermark_spec",
                     "brand",
@@ -10266,6 +10281,9 @@
                     ]
                   },
                   "allow_comments": {
+                    "type": "boolean"
+                  },
+                  "allow_approvals": {
                     "type": "boolean"
                   },
                   "show_all_versions": {
@@ -10413,6 +10431,9 @@
                     "allow_comments": {
                       "type": "boolean"
                     },
+                    "allow_approvals": {
+                      "type": "boolean"
+                    },
                     "show_all_versions": {
                       "type": "boolean"
                     },
@@ -10473,6 +10494,7 @@
                     "expires_at",
                     "allow_download",
                     "allow_comments",
+                    "allow_approvals",
                     "show_all_versions",
                     "watermark_spec",
                     "brand",
@@ -10808,6 +10830,9 @@
                         "allow_comments": {
                           "type": "boolean"
                         },
+                        "allow_approvals": {
+                          "type": "boolean"
+                        },
                         "show_all_versions": {
                           "type": "boolean"
                         },
@@ -10868,6 +10893,7 @@
                         "expires_at",
                         "allow_download",
                         "allow_comments",
+                        "allow_approvals",
                         "show_all_versions",
                         "watermark_spec",
                         "brand",
@@ -12068,6 +12094,9 @@
                         "allow_comments": {
                           "type": "boolean"
                         },
+                        "allow_approvals": {
+                          "type": "boolean"
+                        },
                         "show_all_versions": {
                           "type": "boolean"
                         },
@@ -12120,6 +12149,7 @@
                         "layout",
                         "allow_download",
                         "allow_comments",
+                        "allow_approvals",
                         "show_all_versions",
                         "expires_at",
                         "revoked_at",
@@ -12386,6 +12416,9 @@
                         "allow_comments": {
                           "type": "boolean"
                         },
+                        "allow_approvals": {
+                          "type": "boolean"
+                        },
                         "show_all_versions": {
                           "type": "boolean"
                         },
@@ -12438,6 +12471,7 @@
                         "layout",
                         "allow_download",
                         "allow_comments",
+                        "allow_approvals",
                         "show_all_versions",
                         "expires_at",
                         "revoked_at",

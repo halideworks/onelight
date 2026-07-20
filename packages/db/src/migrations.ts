@@ -21,6 +21,7 @@ export const migrationFiles = [
   "0015_guest_accounts.sql",
   "0016_transfers.sql",
   "0017_public_ids.sql",
+  "0018_share_approvals.sql",
 ];
 
 const migrationPath = (file: string): string =>
