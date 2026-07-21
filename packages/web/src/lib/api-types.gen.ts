@@ -11607,6 +11607,100 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{id}/trash": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Assets in this project's trash, newest first, with the folder each would be restored into. Editor and above; GET /trash is the workspace-wide admin ledger. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                id: string;
+                                public_id: string;
+                                project_id: string;
+                                folder_id: string | null;
+                                name: string;
+                                /** @enum {string} */
+                                kind: "video" | "audio" | "image" | "pdf" | "file";
+                                current_version_id: string | null;
+                                /** @enum {string} */
+                                status: "none" | "in_review" | "approved" | "changes_requested";
+                                description: string;
+                                tags: string[];
+                                has_thumbnail: boolean;
+                                deleted_at: number | null;
+                                created_at: number;
+                                updated_at: number;
+                                folder_name: string | null;
+                            }[];
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assets/{id}": {
         parameters: {
             query?: never;

@@ -975,14 +975,18 @@
   .project small { color: var(--ink-text-dim); }
   .thumb { flex: none; width: 34px; height: 24px; border-radius: 2px; overflow: hidden; display: grid; }
 
-  /* Grid card: the thumbnail leads and the name sits under it. */
-  .grid .project { flex-direction: column; align-items: stretch; gap: 0; padding: 0; overflow: hidden; }
+  /* Grid card: the thumbnail leads and the name sits under it. Same system as
+     the asset grid inside a project -- a padded box whose background is the
+     hover and selection state, and a picture with its own corner radius -- so
+     picking things works the same way in both places. */
+  .grid .project { display: grid; gap: 8px; padding: 8px; border-radius: var(--radius-lg); background: none; }
+  .grid .project:hover { background: var(--ink-100); }
   /* The thumb scales with its column instead of clamping at one height that
      only suited 180px cards. */
-  .grid .thumb { width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: 0; }
+  .grid .thumb { width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: var(--radius); }
   /* The component's own <span> is the box; let it fill the wrapper. */
   .thumb :global(.cover) { width: 100%; height: 100%; }
-  .grid .meta { display: grid; gap: 3px; padding: 10px 12px; }
+  .grid .meta { display: grid; gap: 3px; padding: 0 2px; }
   .grid .meta small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   .empty { color: var(--ink-text-dim); }
@@ -1011,8 +1015,12 @@
   .selbar .danger { color: var(--warn); }
   .selbar .danger:hover:not(:disabled) { background: var(--warn); color: #12080a; }
 
-  /* Selection is a value step and an outline, never a tint over the artwork. */
-  .project.picked { background: var(--ink-300); outline: 2px solid var(--accent-bright); outline-offset: -2px; }
+  /* Selection is a value step, the same one the asset grid uses: cards go to
+     ink-200 over their hover, rows in the list go one step further because
+     they already sit on ink-100. */
+  .grid .project.picked, .grid .project.picked:hover { background: var(--ink-200); }
+  .projectlist:not(.grid) .project.picked { background: var(--ink-300); }
+  .project:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
   .thumb { position: relative; }
   /* The unread count: the same yellow disc the nav bell wears. */
   .badge { position: absolute; top: 5px; right: 5px; min-width: 18px; height: 18px; display: grid; place-items: center; padding: 0 5px; border: 0; border-radius: 9px; background: #edc95f; color: #191307; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; cursor: pointer; }

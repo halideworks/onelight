@@ -799,7 +799,7 @@
      road: a PNG through an ordinary upload session, then PUT
      /assets/:id/thumbnail. No transcode, because a still is already a still. */
   let thumbBusy = $state(false);
-  let thumbMenuOpen = $state(false);
+  let moreOpen = $state(false);
   let thumbNotice = $state('');
 
   const putThumbnail = async (file: File): Promise<void> => {
@@ -824,7 +824,6 @@
   };
 
   const thumbnailFromFrame = async (): Promise<void> => {
-    thumbMenuOpen = false;
     const blob = await player?.captureFrame();
     if (!blob) {
       railError = 'This frame could not be captured. Wait for the picture to load, then try again.';
@@ -834,7 +833,6 @@
   };
 
   const thumbnailFromFile = async (event: Event): Promise<void> => {
-    thumbMenuOpen = false;
     const input = event.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
     input.value = '';
@@ -842,7 +840,6 @@
   };
 
   const clearThumbnail = async (): Promise<void> => {
-    thumbMenuOpen = false;
     const target = asset;
     if (!target || thumbBusy) return;
     thumbBusy = true;
@@ -1309,25 +1306,10 @@
           </button>
         </h1>
       {/if}
-      {#if selectedVersion}<span class="vbadge tc">v{selectedVersion.version_no}</span>{/if}
       <span class="grow"></span>
       <!-- On desktop this wrapper is display:contents and changes nothing; on
            a phone it is the actions band that scrolls under the title row. -->
       <div class="acts">
-      <span class="upload-new">
-        <label class="filebtn">
-          New version
-          <input
-            type="file"
-            onchange={uploadVersion}
-            disabled={uploadState.status === 'uploading' || uploadState.status === 'registering'}
-          />
-        </label>
-        <label class="carry-opt">
-          <input type="checkbox" bind:checked={carryForwardOnUpload} />
-          Carry open notes
-        </label>
-      </span>
       <!-- Versions: a menu that states which version you are looking at, rather
            than a rail competing with the notes for the same space. -->
       <div class="vmenu" use:dismissable={() => { versionMenuOpen = false; }}>
@@ -1392,36 +1374,23 @@
               </div>
             {/each}
             {#if railError}<p class="error-text" role="alert">{railError}</p>{/if}
-          </div>
-        {/if}
-      </div>
-      <!-- The picture this asset shows everywhere else: in the project grid,
-           in a share room, in a link preview. Decided here, where the footage
-           is on screen, because that is the only place the decision can be
-           made by looking. -->
-      <div class="thumbwrap" use:dismissable={() => { thumbMenuOpen = false; }}>
-        <button
-          type="button"
-          class="thumb-trigger"
-          aria-haspopup="menu"
-          aria-expanded={thumbMenuOpen}
-          disabled={thumbBusy}
-          onclick={() => { thumbMenuOpen = !thumbMenuOpen; }}
-        >{thumbBusy ? 'Saving' : 'Thumbnail'}</button>
-        {#if thumbMenuOpen}
-          <div class="thumb-panel" role="menu" tabindex="-1">
-            <button type="button" role="menuitem" onclick={() => void thumbnailFromFrame()}>
-              Use this frame
-            </button>
-            <label class="thumb-upload">
-              Upload a picture…
-              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onchange={(event) => void thumbnailFromFile(event)} />
-            </label>
-            {#if asset?.has_thumbnail}
-              <button type="button" role="menuitem" onclick={() => void clearThumbnail()}>
-                Use the generated poster
-              </button>
-            {/if}
+            <!-- Adding a version is a version verb: it lived in the top bar
+                 with its own checkbox beside it, which cost the bar two
+                 controls to say what this menu is already about. -->
+            <div class="vfoot">
+              <label class="filebtn vupload">
+                Upload a new version
+                <input
+                  type="file"
+                  onchange={uploadVersion}
+                  disabled={uploadState.status === 'uploading' || uploadState.status === 'registering'}
+                />
+              </label>
+              <label class="carry-opt">
+                <input type="checkbox" bind:checked={carryForwardOnUpload} />
+                Carry open notes forward
+              </label>
+            </div>
           </div>
         {/if}
       </div>
@@ -1449,27 +1418,63 @@
           </div>
         {/if}
       </div>
-      {#if versions.length >= 2}
-        <a
-          class="compare-link"
-          href={`/projects/${projectSeg}/assets/${assetSeg}/compare${selectedVersionId ? `?a=${selectedVersionId}` : ''}`}
-        >
-          Compare
-        </a>
-      {/if}
-      {#if selectedVersionId}
+      <!-- One overflow menu for what this asset can do, rather than a row of
+           four buttons competing with the version, the info panel and the
+           approval decision for the same strip of bar. -->
+      <div class="morewrap" use:dismissable={() => { moreOpen = false; }}>
         <button
           type="button"
-          class="compare-link download-link"
-          disabled={downloadBusy}
-          title={projectRole === 'editor' || projectRole === 'manager'
-            ? 'Download the original file'
-            : 'Download the review proxy'}
-          onclick={() => void downloadCurrent()}
+          class="more-trigger"
+          aria-haspopup="menu"
+          aria-expanded={moreOpen}
+          aria-label="More actions"
+          title="More actions"
+          onclick={() => { moreOpen = !moreOpen; }}
         >
-          Download
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="currentColor"><circle cx="3" cy="8" r="1.4" /><circle cx="8" cy="8" r="1.4" /><circle cx="13" cy="8" r="1.4" /></svg>
         </button>
-      {/if}
+        {#if moreOpen}
+          <div class="more-panel" role="menu" tabindex="-1">
+            {#if versions.length >= 2}
+              <a
+                class="more-item"
+                role="menuitem"
+                href={`/projects/${projectSeg}/assets/${assetSeg}/compare${selectedVersionId ? `?a=${selectedVersionId}` : ''}`}
+              >Compare versions</a>
+            {/if}
+            {#if selectedVersionId}
+              <button
+                type="button"
+                role="menuitem"
+                class="more-item"
+                disabled={downloadBusy}
+                onclick={() => { moreOpen = false; void downloadCurrent(); }}
+              >{projectRole === 'editor' || projectRole === 'manager' ? 'Download the original' : 'Download the proxy'}</button>
+            {/if}
+            <p class="more-label">Thumbnail</p>
+            <button
+              type="button"
+              role="menuitem"
+              class="more-item"
+              disabled={thumbBusy}
+              onclick={() => { moreOpen = false; void thumbnailFromFrame(); }}
+            >Use this frame</button>
+            <label class="more-item more-upload">
+              Upload a picture…
+              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={thumbBusy} onchange={(event) => { moreOpen = false; void thumbnailFromFile(event); }} />
+            </label>
+            {#if asset?.has_thumbnail}
+              <button
+                type="button"
+                role="menuitem"
+                class="more-item"
+                disabled={thumbBusy}
+                onclick={() => { moreOpen = false; void clearThumbnail(); }}
+              >Use the generated poster</button>
+            {/if}
+          </div>
+        {/if}
+      </div>
       <label class="approval">Approval
         <select value={asset.status} onchange={(event) => updateApproval((event.currentTarget as HTMLSelectElement).value)}>
           <option value="none">No decision</option>
@@ -1881,16 +1886,10 @@
   .renametrigger:hover { background: var(--n-200); }
   .rename { display: flex; align-items: center; gap: 6px; }
   .rename input { font-size: var(--text-16); min-width: 260px; }
-  .vbadge { color: var(--n-600); font-size: var(--text-13); font-weight: 600; }
 
   /* Versions menu: says which version you are on, and opens the rest. */
-  .compare-link { display: inline-flex; align-items: center; background: var(--n-150); color: var(--n-800); padding: 8px 12px; border-radius: var(--radius); font-size: var(--text-13); font-weight: 500; text-decoration: none; }
-  .download-link { border: 0; cursor: pointer; font-family: inherit; }
-  .download-link:disabled { opacity: 0.6; cursor: default; }
-  .compare-link:hover { background: var(--n-300); color: var(--n-900); }
   .infowrap { position: relative; }
-  .info-trigger, .thumb-trigger { background: var(--n-150); color: var(--n-800); padding: 8px 12px; border-radius: var(--radius); font-size: var(--text-13); font-weight: 500; }
-  .thumb-trigger:disabled { opacity: 0.5; cursor: default; }
+  .info-trigger { background: var(--n-150); color: var(--n-800); padding: 8px 12px; border-radius: var(--radius); font-size: var(--text-13); font-weight: 500; }
   .info-trigger:hover, .info-trigger[aria-expanded='true'] { background: var(--n-300); color: var(--n-900); }
   .info-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: 320px; max-height: 70vh; overflow-y: auto; background: var(--n-100); border: 1px solid var(--n-300); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   .info-group h3 { margin: 0 0 6px; font-size: var(--text-12); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--n-600); display: flex; align-items: center; gap: 8px; }
@@ -1911,7 +1910,6 @@
   select, input, textarea { border: 0; border-radius: var(--radius); background: var(--n-200); color: var(--n-900); padding: 8px 10px; }
 
   /* Upload-new-version: a file input styled as the button it acts as. */
-  .upload-new { display: flex; align-items: center; gap: 10px; }
   .filebtn { position: relative; display: inline-block; border-radius: var(--radius); background: var(--n-200); color: var(--n-800); padding: 8px 12px; font-size: var(--text-13); font-weight: 500; cursor: pointer; }
   .filebtn:hover { background: var(--n-300); color: var(--n-900); }
   .filebtn input { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; }
@@ -2089,14 +2087,24 @@
   .exchange-note { margin: 0; font-size: var(--text-12); color: var(--n-700); }
   .tagfilter { margin-left: auto; background: var(--n-300); color: var(--n-900); font-weight: 600; padding: 4px 10px; }
   .tagfilter span { color: var(--n-600); font-weight: 400; margin-left: 6px; }
-  .thumbwrap { position: relative; }
-  .thumb-panel { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 200px; display: grid; gap: 1px; padding: 4px; border-radius: var(--radius); background: var(--n-100); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35); }
-  .thumb-panel button, .thumb-upload { display: block; width: 100%; border: 0; border-radius: 2px; background: none; color: var(--n-900); padding: 8px 10px; font-size: var(--text-13); text-align: left; cursor: pointer; }
-  .thumb-panel button:hover, .thumb-upload:hover { background: var(--n-200); }
+  /* The overflow menu: the asset's own verbs, one click from the bar. */
+  .morewrap { position: relative; }
+  .more-trigger { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; background: var(--n-150); color: var(--n-800); border-radius: var(--radius); }
+  .more-trigger[aria-expanded='true'] { background: var(--n-200); }
+  .more-panel { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 210px; display: grid; gap: 1px; padding: 4px; border-radius: var(--radius); background: var(--n-100); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35); }
+  .more-item { display: block; width: 100%; border: 0; border-radius: 2px; background: none; color: var(--n-900); padding: 8px 10px; font-size: var(--text-13); font-weight: 500; text-align: left; text-decoration: none; cursor: pointer; }
+  a.more-item, a.more-item:hover { color: var(--n-900); }
+  .more-item:hover { background: var(--n-200); }
+  .more-item:disabled { opacity: 0.5; cursor: default; }
+  .more-label { margin: 6px 0 2px; padding: 0 10px; color: var(--n-600); font-size: var(--text-12); }
   /* The file input itself is unstylable across browsers; the label is the
      button, and the input is the part that never shows. */
-  .thumb-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-  .thumb-upload:focus-within { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
+  .more-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .more-upload:focus-within { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
+  /* The version menu's footer: where a new version comes from. */
+  .vfoot { display: grid; gap: 6px; margin-top: 4px; padding: 8px 10px 2px; border-top: 1px solid var(--n-200); }
+  /* .filebtn already carries the button dress and the invisible input. */
+  .vupload { display: block; text-align: center; }
   .carry-note { margin: 0 0 12px; color: var(--n-700); font-size: var(--text-13); }
   .carry-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 12px; margin: 0 0 12px; background: var(--n-150); border-radius: var(--radius); color: var(--n-800); }
   .notes article { display: flex; justify-content: space-between; gap: 20px; padding: 10px; margin: 0 0 2px; border-radius: var(--radius); }

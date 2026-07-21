@@ -10,7 +10,13 @@ import {
   deliverDueWebhookDeliveries,
   scheduleWebhookDeliveries,
 } from "../../webhooks.js";
-import { assertSnakeCaseKeys, errorCode, json, req } from "../harness.js";
+import {
+  assertSnakeCaseKeys,
+  errorCode,
+  forbiddenKeysIn,
+  json,
+  req,
+} from "../harness.js";
 import type { ContractHarness } from "../harness.js";
 import {
   createProject,
@@ -704,6 +710,58 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       });
       const after = await json<{ items: Array<{ id: string }> }>(
         await req(h, "/api/v1/trash", { cookie: seed.admin.cookie }),
+      );
+      expect(after.items.some((item) => item.id === media.assetId)).toBe(false);
+    });
+
+    /* The project-scoped bin: an editor working in a room can see what they
+       threw away without being a workspace admin. */
+    it("lists a project's own trash for its editors and no one else's", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const media = await seedAssetVersion(h, {
+        workspaceId: seed.workspaceId,
+        projectId: seed.project.id,
+        userId: seed.admin.id,
+      });
+      const empty = await json<{ items: Array<{ id: string }> }>(
+        await req(h, `/api/v1/projects/${seed.project.id}/trash`, {
+          cookie: seed.editor.cookie,
+        }),
+      );
+      expect(empty.items.some((item) => item.id === media.assetId)).toBe(false);
+      await req(h, `/api/v1/assets/${media.assetId}/trash`, {
+        method: "POST",
+        cookie: seed.editor.cookie,
+      });
+      const listed = await json<{
+        items: Array<Record<string, unknown>>;
+      }>(
+        await req(h, `/api/v1/projects/${seed.project.id}/trash`, {
+          cookie: seed.editor.cookie,
+        }),
+      );
+      const row = listed.items.find((item) => item.id === media.assetId);
+      expect(row).toBeDefined();
+      expect(row?.deleted_at).toBeTruthy();
+      expect(assertSnakeCaseKeys(listed)).toEqual([]);
+      expect(forbiddenKeysIn(listed, ["blob_key", "blobKey"])).toEqual([]);
+      /* Looking is an editor's right here, not a commenter's. */
+      expect(
+        (
+          await req(h, `/api/v1/projects/${seed.project.id}/trash`, {
+            cookie: seed.commenter.cookie,
+          })
+        ).status,
+      ).toBe(403);
+      await req(h, `/api/v1/assets/${media.assetId}/restore`, {
+        method: "POST",
+        cookie: seed.editor.cookie,
+      });
+      const after = await json<{ items: Array<{ id: string }> }>(
+        await req(h, `/api/v1/projects/${seed.project.id}/trash`, {
+          cookie: seed.editor.cookie,
+        }),
       );
       expect(after.items.some((item) => item.id === media.assetId)).toBe(false);
     });

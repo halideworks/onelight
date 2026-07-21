@@ -1824,6 +1824,13 @@ export const routeDocs: Record<string, RouteDoc> = {
     query: { token: { description: "Signed media token.", required: true } },
     responses: { "200": binary("application/octet-stream") },
   },
+  "GET /projects/:id/trash": {
+    summary:
+      "Assets in this project's trash, newest first, with the folder each would be restored into. Editor and above; GET /trash is the workspace-wide admin ledger.",
+    responses: {
+      "200": ok(list(asset.extend({ folder_name: z.string().nullable() }))),
+    },
+  },
   "GET /trash": {
     responses: {
       "200": ok(

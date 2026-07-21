@@ -8804,6 +8804,39 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     );
   });
 
+  /* This project's trash. GET /trash is the workspace-wide, admin-only
+     ledger; a person working in a project needs to see what they threw away
+     without being an admin and without leaving the room. Editor, because
+     restoring is an editor's verb (POST /assets/:id/restore). */
+  api.get("/projects/:id/trash", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const { project } = await requireProject(
+      c.req.param("id"),
+      actor,
+      "editor",
+    );
+    const rows = (await env.db
+      .select({ asset: assets, folderName: folders.name })
+      .from(assets)
+      .leftJoin(folders, eq(assets.folderId, folders.id))
+      .where(and(eq(assets.projectId, project.id), isNotNull(assets.deletedAt)))
+      .orderBy(desc(assets.deletedAt))
+      .limit(500)
+      .all()) as Array<{
+      asset: typeof assets.$inferSelect;
+      folderName: string | null;
+    }>;
+    /* The folder name travels with the row so the list can say where a thing
+       will land when it is restored, which is the question anyone looking at
+       a bin actually has. */
+    return c.json({
+      items: rows.map((row) => ({
+        ...assetWire(row.asset),
+        folder_name: row.folderName,
+      })),
+    });
+  });
+
   api.get("/projects/:id/assets", requireAuth, async (c) => {
     const actor = userFromContext(c);
     await requireProject(c.req.param("id"), actor, "viewer");

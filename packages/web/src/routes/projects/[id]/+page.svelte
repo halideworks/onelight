@@ -140,6 +140,37 @@
   const listSuffix = (): string =>
     selectedFolder ? `&folder_id=${encodeURIComponent(selectedFolder)}` : '';
 
+  /* The project's own bin. Workspace settings has an admin-only ledger of
+     everything trashed anywhere; what a person in a room needs is what THEY
+     threw away, where they threw it, with the way back. */
+  type TrashedAsset = Asset & { folder_name?: string | null };
+  let trash = $state<TrashedAsset[]>([]);
+  let showTrash = $state(false);
+  let trashBusy = $state(false);
+
+  const loadTrash = async (id: string): Promise<void> => {
+    try {
+      trash = (await api<{ items: TrashedAsset[] }>(`/api/v1/projects/${id}/trash`)).items;
+    } catch {
+      /* Commenters and viewers cannot see it; the rail simply omits it. */
+      trash = [];
+    }
+  };
+
+  const restoreFromTrash = async (asset: TrashedAsset): Promise<void> => {
+    const id = projectId;
+    if (!id || trashBusy) return;
+    trashBusy = true;
+    try {
+      await apiPost(`/api/v1/assets/${asset.id}/restore`, {});
+      await Promise.all([loadTrash(id), loadAssets(id)]);
+    } catch (caught) {
+      error = messageFrom(caught, 'That asset could not be restored.');
+    } finally {
+      trashBusy = false;
+    }
+  };
+
   const loadAssets = async (id: string): Promise<void> => {
     const folder = selectedFolder;
     const suffix = listSuffix();
@@ -251,7 +282,7 @@
     } catch (caught) {
       treeError = messageFrom(caught, 'Folders could not be loaded.');
     }
-    await Promise.all([loadAssets(canonical), loadShares(canonical)]);
+    await Promise.all([loadAssets(canonical), loadShares(canonical), loadTrash(canonical)]);
   };
 
   $effect(() => {
@@ -332,7 +363,8 @@
     | { kind: 'folder'; id: string; depth: number }
     | { kind: 'asset'; id: string; depth: number; asset: Asset }
     | { kind: 'sharesroot'; id: 'sharesroot'; depth: number }
-    | { kind: 'share'; id: string; depth: number };
+    | { kind: 'share'; id: string; depth: number }
+    | { kind: 'trash'; id: 'trash'; depth: number };
 
   const visibleRows = $derived.by(() => {
     const rows: Row[] = [{ kind: 'root', id: 'root', depth: 0 }];
@@ -366,6 +398,10 @@
           rows.push({ kind: 'share', id: share.id, depth: 1 });
       }
     }
+    /* The bin shows up once it holds something, the same rule the Shares
+       heading follows: an empty heading for a thing that has never happened
+       is furniture. */
+    if (trash.length > 0) rows.push({ kind: 'trash', id: 'trash', depth: 0 });
     return rows;
   });
 
@@ -401,11 +437,20 @@
 
   const select = async (id: string | null): Promise<void> => {
     selectedFolder = id;
+    showTrash = false;
     selected = [];
     anchor = null;
     if (id) await expand(id);
     const project_ = projectId;
     if (project_) await loadAssets(project_);
+  };
+
+  const openTrash = (): void => {
+    showTrash = true;
+    selected = [];
+    anchor = null;
+    const id = projectId;
+    if (id) void loadTrash(id);
   };
 
   /* A share row is a door to the share's own page: the link, the settings,
@@ -972,6 +1017,7 @@
       if (asset) void goto(assetHref(asset.id));
       else if (row.kind === 'share') openShare(id);
       else if (row.kind === 'sharesroot') sharesOpen = !sharesOpen;
+      else if (row.kind === 'trash') openTrash();
       else void select(row.kind === 'root' ? null : id);
     } else if (event.key === 'F2') {
       event.preventDefault();
@@ -1414,7 +1460,9 @@
     });
     selected = [];
     const id = projectId;
-    if (id) await loadAssets(id);
+    /* Refresh the bin too, or the rail keeps saying the project has no trash
+       while the thing you just threw away is sitting in it. */
+    if (id) await Promise.all([loadAssets(id), loadTrash(id)]);
   };
 
   /* ---- uploads ---- */
@@ -1738,6 +1786,25 @@
                 </span>
                 <span class="name">All assets</span>
               </div>
+            {:else if row.kind === 'trash'}
+              <div
+                id="tree-row-trash"
+                class="row root trashrow"
+                class:selected={showTrash}
+                role="treeitem"
+                aria-level="1"
+                aria-selected={showTrash}
+                tabindex={focusedRow === 'trash' ? 0 : -1}
+                onclick={openTrash}
+                onkeydown={onTreeKeydown}
+                onfocus={() => (focusedRow = 'trash')}
+              >
+                <span class="ic" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 8h5.6l.7-8" /></svg>
+                </span>
+                <span class="name">Trash</span>
+                <span class="tc railcount">{trash.length}</span>
+              </div>
             {:else if row.kind === 'sharesroot'}
               <div
                 id="tree-row-sharesroot"
@@ -1911,6 +1978,10 @@
       </aside>
 
       <section class="main">
+        <!-- The uploader stands down in the bin: nothing is being added to a
+             room you are looking at the deleted things in, and the panel's own
+             label would be talking about a folder you are not in. -->
+        {#if !showTrash}
         <section
           class="uploader"
           class:dropactive={dropActive}
@@ -2006,11 +2077,12 @@
             </ul>
           {/if}
         </section>
+        {/if}
 
         <div class="browser-bar">
-          <h2 class="browser-title">{selectedName}</h2>
+          <h2 class="browser-title">{showTrash ? 'Trash' : selectedName}</h2>
           <span class="grow"></span>
-          {#if view === 'grid'}
+          {#if view === 'grid' && !showTrash}
             <label class="sizectl">
               <span class="vh">Thumbnail size</span>
               <input
@@ -2024,13 +2096,43 @@
               />
             </label>
           {/if}
-          <div class="views" role="group" aria-label="View mode">
-            <button type="button" class="viewbtn" aria-pressed={view === 'grid'} onclick={() => setView('grid')}>Grid</button>
-            <button type="button" class="viewbtn" aria-pressed={view === 'list'} onclick={() => setView('list')}>List</button>
-          </div>
+          {#if !showTrash}
+            <div class="views" role="group" aria-label="View mode">
+              <button type="button" class="viewbtn" aria-pressed={view === 'grid'} onclick={() => setView('grid')}>Grid</button>
+              <button type="button" class="viewbtn" aria-pressed={view === 'list'} onclick={() => setView('list')}>List</button>
+            </div>
+          {:else}
+            <button type="button" class="quiet" onclick={() => void select(selectedFolder)}>Back to assets</button>
+          {/if}
         </div>
 
-        {#if selected.length > 0 || batch.running || batch.errors.length > 0}
+        {#if showTrash}
+          <!-- Names, where each came from, when it went, and the way back.
+               Trashed assets keep their versions and their notes; the server's
+               purge sweep is what finally removes them. -->
+          <p class="hint">
+            Trashed assets stop appearing in the project and in shares. They keep their versions
+            and their notes until the server purges them.
+          </p>
+          {#if trash.length === 0}
+            <p class="empty">The trash is empty.</p>
+          {:else}
+            <ul class="trashlist">
+              {#each trash as item (item.id)}
+                <li>
+                  <span class="trashname">{item.name}</span>
+                  <span class="trashwhere">{item.folder_name ?? 'All assets'}</span>
+                  <span class="tc trashwhen" title={item.deleted_at ? whenAbsolute(item.deleted_at) : ''}>
+                    {item.deleted_at ? whenRelative(item.deleted_at) : ''}
+                  </span>
+                  <button type="button" class="quiet" disabled={trashBusy} onclick={() => void restoreFromTrash(item)}>
+                    Restore
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        {:else if selected.length > 0 || batch.running || batch.errors.length > 0}
           <div class="batchbar" aria-live="polite">
             {#if batch.running}
               <span class="tc">{batch.label} {batch.done} of {batch.total}</span>
@@ -2103,7 +2205,9 @@
           </th>
         {/snippet}
 
-        {#if displayed.length === 0}
+        {#if showTrash}
+          <!-- The bin is above; the asset browser stands down while it is open. -->
+        {:else if displayed.length === 0}
           <p class="empty">{selectedFolder ? 'No assets in this folder. Drop media above to fill it.' : 'No assets yet. Upload media to start a review.'}</p>
         {:else if view === 'grid'}
           <div
@@ -2260,7 +2364,7 @@
             {loadingMore ? 'Loading' : 'Load more'}
           </button>
         {/if}
-        {#if displayed.length > 0}
+        {#if displayed.length > 0 && !showTrash}
           <p class="hint kbdhint">Click opens, hold selects. Ctrl-click adds, Shift-click extends, right-click shares.</p>
         {/if}
       </section>
@@ -2687,6 +2791,17 @@
     table.list td:nth-child(n + 4):nth-child(-n + 7) { display: none; }
   }
   input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
+
+  /* The bin: a plain ledger, one row per thing, the way back on the right. */
+  .trashlist { list-style: none; margin: var(--pad-2) 0 0; padding: 0; display: grid; gap: 2px; max-width: 900px; }
+  .trashlist li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 12px; padding: 9px 12px; border-radius: var(--radius); background: var(--ink-100); font-size: var(--text-13); }
+  .trashlist li:hover { background: var(--ink-200); }
+  .trashname { min-width: 0; overflow-wrap: anywhere; color: var(--ink-text); }
+  .trashwhere, .trashwhen { color: var(--ink-text-dim); white-space: nowrap; }
+  @media (max-width: 720px) {
+    .trashlist li { grid-template-columns: minmax(0, 1fr) auto; row-gap: 4px; }
+    .trashname { grid-column: 1 / -1; }
+  }
 
   .more { margin-top: var(--pad-2); }
   .empty { color: var(--ink-text-dim); margin-top: var(--pad-2); }
