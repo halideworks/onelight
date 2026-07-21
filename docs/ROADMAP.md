@@ -570,6 +570,13 @@ built server on nyx:
 - **Both grids size their cards** (a persisted four-stop slider), and list mode
   reads out kind, runtime, size and format from the stored probe.
 
+Project duplicate was asked for with a question mark and is deliberately not
+built (David, 2026-07-21: "leave out the dupe"). There is no honest default:
+copying the shell (name, palette, members, folders) and copying the media are
+different features with different costs, and a project full of duplicated
+originals is an expensive thing to create by accident. It stays out until
+someone wants a specific one of the two.
+
 Two robustness fixes the browser caught and the tests did not: `whenRelative`
 and `whenAbsolute` return "" for a non-finite stamp (one absent field took the
 whole projects page down with a DateTimeFormat throw), and the context menu
