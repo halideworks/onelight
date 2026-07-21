@@ -744,6 +744,28 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       expect(copy?.body_text).toBe("open note");
       expect(copy?.carried_from_comment_id).toBe(open.id);
       expect(copy?.completed_at).toBeNull();
+
+      /* Carrying the same source twice must not double the notes: the copy
+         is aimable at any version from the version menu now, so a second
+         press is a normal thing for a person to do. */
+      const again = await req(
+        h,
+        `/api/v1/versions/${second.versionId}/carry-forward`,
+        {
+          cookie: seed.manager.cookie,
+          json: { from_version_id: media.versionId },
+        },
+      );
+      expect(again.status).toBe(200);
+      expect((await json<{ items: string[] }>(again)).items).toHaveLength(0);
+      const afterSecond = await json<{
+        items: Array<Record<string, unknown>>;
+      }>(
+        await req(h, `/api/v1/versions/${second.versionId}/comments`, {
+          cookie: seed.viewer.cookie,
+        }),
+      );
+      expect(afterSecond.items).toHaveLength(1);
     });
   });
 

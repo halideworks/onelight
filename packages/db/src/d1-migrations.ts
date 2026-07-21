@@ -71,6 +71,15 @@ const usersHaveGuest = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes('"guest"') || row?.sql?.includes("guest"));
 };
 
+const assetsHaveThumbnail = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='assets'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("thumbnail_blob_key"));
+};
+
 const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -336,6 +345,11 @@ export const d1Migrations: D1Migration[] = [
       "ALTER TABLE shares ADD COLUMN allow_approvals INTEGER NOT NULL DEFAULT 1",
       "UPDATE shares SET allow_approvals = 0 WHERE kind = 'presentation'",
     ],
+  },
+  {
+    name: "0019_asset_thumbnails.sql",
+    applied: assetsHaveThumbnail,
+    statements: ["ALTER TABLE assets ADD COLUMN thumbnail_blob_key TEXT"],
   },
 ];
 

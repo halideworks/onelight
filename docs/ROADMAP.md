@@ -522,6 +522,60 @@ full pro tool. Standing decisions from this direction:
   which also gives watermarked shares a bulk path since their zip
   refuses by design.
 
+## The list, the picture and the note (2026-07-21, punch list from David)
+
+Seven asks, plus two that arrived mid-pass, all verified in a browser against a
+built server on nyx:
+
+- **Uploading no longer waits for a button.** Choosing or dropping files starts
+  them; `pump()` is the single serial driver and enqueue, resume and resume-all
+  only mark work and wake it. The folder is captured at drop time (uploads run
+  unattended now, so the selection will have moved on), and the "New version
+  of..." pick stays live while the bytes move, since the branch is read at
+  commit time.
+- **The confirm dialog stopped clipping.** Its body was a `display: grid` with
+  the implicit `auto` track, whose minimum is min-content: an interpolated
+  filename pushed the dialog past its own box and grew a horizontal scrollbar.
+  `minmax(0, 1fr)` plus `overflow-wrap: anywhere` on the title and body, and a
+  phone block that stacks the buttons full width.
+- **Notes copy between any two versions.** `POST /versions/:id/carry-forward`
+  already took an arbitrary source; the client only ever aimed it at the
+  previous version and only from the head of the stack. The version menu now
+  offers "Copy notes here" on every other row, and the copier skips sources
+  already carried into the target, so pressing it twice cannot double the notes.
+- **An asset can be given its own picture** (migration 0019,
+  `assets.thumbnail_blob_key`). The generated poster is a frame ten percent in,
+  which is often a slate or a fade up. The review page can keep the frame on
+  screen (captured from the player's own video element as a PNG, uploaded
+  through an ordinary session) or take an uploaded image. It overrides the
+  poster in the project grid, in share rooms and in link previews; clearing it
+  brings the generated poster back. Not a rendition: the renditions `kind` CHECK
+  cannot take a new value without rebuilding the table on D1, and the choice
+  should survive a new version landing.
+- **The projects page became a room.** Multi-select (hold, shift, ctrl,
+  right-click) with the asset grid's gestures, a context menu, archive and an
+  archive view, admin delete behind typing the project name, download, a People
+  dialog over the members editor now shared with project settings
+  (`ProjectMembers.svelte`), filter by name, sort by name, created or recently
+  edited, and per-project notification badges that clear where they are read.
+  "Recently edited" is a new `last_activity_at` on the project wire: the newest
+  project event, which is what a person means, rather than `updated_at`, which
+  only moves when the project's own record is edited.
+- **Avatars stopped disappearing.** `referencedBlobKeys` never listed
+  `users.avatarKey`, so the blob GC deleted every avatar a day after upload
+  (confirmed in the production log). That list is a survival list, not a
+  cleanup list; the new thumbnail column is on it too, and the avatar endpoint
+  now clears a pointer whose blob is already gone instead of serving a broken
+  image forever.
+- **Both grids size their cards** (a persisted four-stop slider), and list mode
+  reads out kind, runtime, size and format from the stored probe.
+
+Two robustness fixes the browser caught and the tests did not: `whenRelative`
+and `whenAbsolute` return "" for a non-finite stamp (one absent field took the
+whole projects page down with a DateTimeFormat throw), and the context menu
+reads its state optionally, since closing it inside a handler nulls that state
+while the block is still on screen.
+
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
 1. DONE 2026-07-17: first green run of the integration and media-qc CI jobs on Linux, exercising compose end to end, the HDR libplacebo tonemap on lavapipe, the zscale conversion, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Getting there surfaced and fixed: CI had never actually executed (a pnpm/action-setup version pin conflicted with packageManager and killed every run at setup); the node job was missing the web:check gate and the SPA build the workers pool needs; the qa HDR smoke run omitted the worker's VULKAN_HWDEVICE_ARGS so libplacebo refused lavapipe (the spec now mirrors the worker invocation exactly); and Playwright WebKit on Linux reads the 75 percent bars low (a GStreamer/GL decode artifact, not real Safari; the exact deviation is pinned per-engine-and-platform in the qa color spec so any decoder drift still fails, and the reference tolerances were never widened).

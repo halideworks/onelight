@@ -95,14 +95,17 @@
 <style>
   dialog { width: min(420px, calc(100vw - 48px)); padding: 0; border: 0; border-radius: var(--radius-lg); background: var(--ink-100); color: var(--ink-text); box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55); }
   dialog::backdrop { background: rgba(5, 8, 12, 0.7); }
-  .body { display: grid; gap: 8px; padding: 20px; }
-  h2 { margin: 0; font-size: var(--text-16); font-weight: 600; }
-  p { margin: 0; color: var(--ink-text-dim); font-size: var(--text-13); line-height: 1.5; }
-  form { display: grid; }
+  /* minmax(0, 1fr), not the implicit auto track: these bodies interpolate raw
+     filenames, and an auto track refuses to shrink below their min-content
+     width, which pushed the dialog past its own box and grew a scrollbar. */
+  .body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 20px; }
+  h2 { margin: 0; font-size: var(--text-16); font-weight: 600; overflow-wrap: anywhere; }
+  p { margin: 0; color: var(--ink-text-dim); font-size: var(--text-13); line-height: 1.5; overflow-wrap: anywhere; }
+  form { display: grid; grid-template-columns: minmax(0, 1fr); }
   input { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 9px 12px; font-size: var(--text-13); }
   input::placeholder { color: var(--ink-text-dim); }
   input:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 1px; }
-  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+  .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 8px; }
   button { border: 0; border-radius: var(--radius); padding: 8px 14px; font-size: var(--text-13); font-weight: 600; }
   button:disabled { opacity: 0.5; cursor: default; }
   .primary { background: var(--accent); color: #0b1214; }
@@ -113,4 +116,15 @@
   .quiet { background: var(--ink-200); color: var(--ink-text); font-weight: 500; }
   .quiet:hover { background: var(--ink-300); }
   button:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+  @media (max-width: 720px) {
+    dialog { width: min(420px, calc(100vw - 24px)); }
+    .body { padding: 16px; }
+    /* Full-width stacked buttons: at this size a right-aligned pair leaves the
+       confirm under the thumb of nobody in particular. */
+    .actions { flex-direction: column-reverse; }
+    .actions button { width: 100%; }
+  }
+  @media (pointer: coarse) {
+    button { min-height: var(--tap); }
+  }
 </style>

@@ -17,7 +17,14 @@ const STEPS: Array<{ unit: Intl.RelativeTimeFormatUnit; ms: number }> = [
   { unit: "minute", ms: 60_000 },
 ];
 
+/* A missing or nonsense stamp renders as nothing rather than throwing:
+   Intl.DateTimeFormat raises on a non-finite value, and one absent field on
+   one row used to take the whole page down with it. */
+const usable = (epochMs: number): boolean =>
+  typeof epochMs === "number" && Number.isFinite(epochMs);
+
 export const whenRelative = (epochMs: number): string => {
+  if (!usable(epochMs)) return "";
   const delta = epochMs - Date.now();
   for (const step of STEPS) {
     if (Math.abs(delta) >= step.ms)
@@ -27,7 +34,7 @@ export const whenRelative = (epochMs: number): string => {
 };
 
 export const whenAbsolute = (epochMs: number): string =>
-  ABSOLUTE.format(new Date(epochMs));
+  usable(epochMs) ? ABSOLUTE.format(new Date(epochMs)) : "";
 
 export const excerpt = (text: string, max = 140): string =>
   text.length <= max ? text : `${text.slice(0, max - 3).trimEnd()}...`;

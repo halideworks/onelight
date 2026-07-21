@@ -2955,6 +2955,7 @@ export interface paths {
                                 created_by: string;
                                 created_at: number;
                                 updated_at: number;
+                                last_activity_at: number;
                                 /** @enum {string} */
                                 my_role?: "manager" | "editor" | "commenter" | "viewer";
                             }[];
@@ -3041,6 +3042,7 @@ export interface paths {
                             created_by: string;
                             created_at: number;
                             updated_at: number;
+                            last_activity_at: number;
                             /** @enum {string} */
                             my_role?: "manager" | "editor" | "commenter" | "viewer";
                         };
@@ -3129,6 +3131,7 @@ export interface paths {
                             created_by: string;
                             created_at: number;
                             updated_at: number;
+                            last_activity_at: number;
                             /** @enum {string} */
                             my_role?: "manager" | "editor" | "commenter" | "viewer";
                         };
@@ -3277,6 +3280,7 @@ export interface paths {
                             created_by: string;
                             created_at: number;
                             updated_at: number;
+                            last_activity_at: number;
                             /** @enum {string} */
                             my_role?: "manager" | "editor" | "commenter" | "viewer";
                         };
@@ -3443,6 +3447,7 @@ export interface paths {
                             created_by: string;
                             created_at: number;
                             updated_at: number;
+                            last_activity_at: number;
                             /** @enum {string} */
                             my_role?: "manager" | "editor" | "commenter" | "viewer";
                         };
@@ -5470,6 +5475,7 @@ export interface paths {
                             status: "none" | "in_review" | "approved" | "changes_requested";
                             description: string;
                             tags: string[];
+                            has_thumbnail: boolean;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;
@@ -11470,6 +11476,7 @@ export interface paths {
                                 status: "none" | "in_review" | "approved" | "changes_requested";
                                 description: string;
                                 tags: string[];
+                                has_thumbnail: boolean;
                                 deleted_at: number | null;
                                 created_at: number;
                                 updated_at: number;
@@ -11637,6 +11644,7 @@ export interface paths {
                             status: "none" | "in_review" | "approved" | "changes_requested";
                             description: string;
                             tags: string[];
+                            has_thumbnail: boolean;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;
@@ -11782,6 +11790,7 @@ export interface paths {
                             status: "none" | "in_review" | "approved" | "changes_requested";
                             description: string;
                             tags: string[];
+                            has_thumbnail: boolean;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;
@@ -11826,6 +11835,220 @@ export interface paths {
                 };
             };
         };
+        trace?: never;
+    };
+    "/api/v1/assets/{id}/thumbnail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The chosen thumbnail image, or 404 when none was chosen. */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Cache-busting update stamp. */
+                    v?: string;
+                };
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Binary payload */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/png": string;
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        /** Set a completed image upload as this asset's thumbnail, overriding the generated poster wherever the asset is shown, share rooms included. */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        upload_id: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            public_id: string;
+                            project_id: string;
+                            folder_id: string | null;
+                            name: string;
+                            /** @enum {string} */
+                            kind: "video" | "audio" | "image" | "pdf" | "file";
+                            current_version_id: string | null;
+                            /** @enum {string} */
+                            status: "none" | "in_review" | "approved" | "changes_requested";
+                            description: string;
+                            tags: string[];
+                            has_thumbnail: boolean;
+                            deleted_at: number | null;
+                            created_at: number;
+                            updated_at: number;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        /** Drop the chosen thumbnail; the generated poster stands again. */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description No content */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/assets/{id}/versions": {
@@ -11960,6 +12183,7 @@ export interface paths {
                                 status: "none" | "in_review" | "approved" | "changes_requested";
                                 description: string;
                                 tags: string[];
+                                has_thumbnail: boolean;
                                 deleted_at: number | null;
                                 created_at: number;
                                 updated_at: number;
@@ -12146,6 +12370,7 @@ export interface paths {
                             status: "none" | "in_review" | "approved" | "changes_requested";
                             description: string;
                             tags: string[];
+                            has_thumbnail: boolean;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;

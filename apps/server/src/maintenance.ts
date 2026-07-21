@@ -724,6 +724,25 @@ export const referencedBlobKeys = async (db: AppDb): Promise<Set<string>> => {
     .from(captionTracks)
     .all())
     keys.add(row.key);
+  /* Chosen asset thumbnails (migration 0019). The blob is an upload session's
+     object, and sessions are reaped, so the asset row is the only thing
+     keeping it alive. */
+  for (const row of await db
+    .select({ key: assets.thumbnailBlobKey })
+    .from(assets)
+    .where(isNotNull(assets.thumbnailBlobKey))
+    .all())
+    if (row.key) keys.add(row.key);
+  /* Avatars live under the same blob root as everything else, so omitting them
+     here does not merely fail to clean up: the GC walks them, finds no
+     reference, and deletes the picture a day after it was uploaded. That is
+     exactly what happened in production before this loop existed. */
+  for (const row of await db
+    .select({ key: users.avatarKey })
+    .from(users)
+    .where(isNotNull(users.avatarKey))
+    .all())
+    if (row.key) keys.add(row.key);
   return keys;
 };
 

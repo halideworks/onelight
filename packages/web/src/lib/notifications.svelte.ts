@@ -37,6 +37,31 @@ export const notifications = {
   get unread(): number {
     return state.items.filter((item) => item.read_at === null).length;
   },
+  /* The same cheap signal, split by project, for the badges on the projects
+     list. Every notification payload carries project_id (createNotifications
+     puts it there); anything without one is workspace-level and belongs to no
+     card. Bounded by the same newest page as the bell: a badge that says 50
+     when there are 200 is still the right shape of answer. */
+  get unreadByProject(): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const item of state.items) {
+      if (item.read_at !== null) continue;
+      const project = item.payload.project_id;
+      if (typeof project !== "string" || project.length === 0) continue;
+      counts[project] = (counts[project] ?? 0) + 1;
+    }
+    return counts;
+  },
+  async markProjectRead(projectId: string): Promise<void> {
+    await this.markRead(
+      state.items
+        .filter(
+          (item) =>
+            item.read_at === null && item.payload.project_id === projectId,
+        )
+        .map((item) => item.id),
+    );
+  },
   async refresh(): Promise<void> {
     try {
       const page = await api<NotificationPage>(

@@ -4137,6 +4137,9 @@
                           "updated_at": {
                             "type": "integer"
                           },
+                          "last_activity_at": {
+                            "type": "integer"
+                          },
                           "my_role": {
                             "type": "string",
                             "enum": [
@@ -4159,7 +4162,8 @@
                           "restricted",
                           "created_by",
                           "created_at",
-                          "updated_at"
+                          "updated_at",
+                          "last_activity_at"
                         ],
                         "additionalProperties": false
                       }
@@ -4329,6 +4333,9 @@
                     "updated_at": {
                       "type": "integer"
                     },
+                    "last_activity_at": {
+                      "type": "integer"
+                    },
                     "my_role": {
                       "type": "string",
                       "enum": [
@@ -4351,7 +4358,8 @@
                     "restricted",
                     "created_by",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "last_activity_at"
                   ],
                   "additionalProperties": false
                 }
@@ -4472,6 +4480,9 @@
                     "updated_at": {
                       "type": "integer"
                     },
+                    "last_activity_at": {
+                      "type": "integer"
+                    },
                     "my_role": {
                       "type": "string",
                       "enum": [
@@ -4494,7 +4505,8 @@
                     "restricted",
                     "created_by",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "last_activity_at"
                   ],
                   "additionalProperties": false
                 }
@@ -4672,6 +4684,9 @@
                     "updated_at": {
                       "type": "integer"
                     },
+                    "last_activity_at": {
+                      "type": "integer"
+                    },
                     "my_role": {
                       "type": "string",
                       "enum": [
@@ -4694,7 +4709,8 @@
                     "restricted",
                     "created_by",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "last_activity_at"
                   ],
                   "additionalProperties": false
                 }
@@ -4959,6 +4975,9 @@
                     "updated_at": {
                       "type": "integer"
                     },
+                    "last_activity_at": {
+                      "type": "integer"
+                    },
                     "my_role": {
                       "type": "string",
                       "enum": [
@@ -4981,7 +5000,8 @@
                     "restricted",
                     "created_by",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "last_activity_at"
                   ],
                   "additionalProperties": false
                 }
@@ -8494,6 +8514,9 @@
                         "type": "string"
                       }
                     },
+                    "has_thumbnail": {
+                      "type": "boolean"
+                    },
                     "deleted_at": {
                       "anyOf": [
                         {
@@ -8522,6 +8545,7 @@
                     "status",
                     "description",
                     "tags",
+                    "has_thumbnail",
                     "deleted_at",
                     "created_at",
                     "updated_at"
@@ -18690,6 +18714,9 @@
                               "type": "string"
                             }
                           },
+                          "has_thumbnail": {
+                            "type": "boolean"
+                          },
                           "deleted_at": {
                             "anyOf": [
                               {
@@ -18718,6 +18745,7 @@
                           "status",
                           "description",
                           "tags",
+                          "has_thumbnail",
                           "deleted_at",
                           "created_at",
                           "updated_at"
@@ -18856,6 +18884,9 @@
                         "type": "string"
                       }
                     },
+                    "has_thumbnail": {
+                      "type": "boolean"
+                    },
                     "deleted_at": {
                       "anyOf": [
                         {
@@ -18884,6 +18915,7 @@
                     "status",
                     "description",
                     "tags",
+                    "has_thumbnail",
                     "deleted_at",
                     "created_at",
                     "updated_at"
@@ -19052,6 +19084,9 @@
                         "type": "string"
                       }
                     },
+                    "has_thumbnail": {
+                      "type": "boolean"
+                    },
                     "deleted_at": {
                       "anyOf": [
                         {
@@ -19080,6 +19115,7 @@
                     "status",
                     "description",
                     "tags",
+                    "has_thumbnail",
                     "deleted_at",
                     "created_at",
                     "updated_at"
@@ -19145,6 +19181,315 @@
         "responses": {
           "204": {
             "description": "No content"
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assets/{id}/thumbnail": {
+      "put": {
+        "summary": "Set a completed image upload as this asset's thumbnail, overriding the generated poster wherever the asset is shown, share rooms included.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "upload_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "upload_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "public_id": {
+                      "type": "string"
+                    },
+                    "project_id": {
+                      "type": "string"
+                    },
+                    "folder_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "video",
+                        "audio",
+                        "image",
+                        "pdf",
+                        "file"
+                      ]
+                    },
+                    "current_version_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "in_review",
+                        "approved",
+                        "changes_requested"
+                      ]
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "has_thumbnail": {
+                      "type": "boolean"
+                    },
+                    "deleted_at": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_at": {
+                      "type": "integer"
+                    },
+                    "updated_at": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "public_id",
+                    "project_id",
+                    "folder_id",
+                    "name",
+                    "kind",
+                    "current_version_id",
+                    "status",
+                    "description",
+                    "tags",
+                    "has_thumbnail",
+                    "deleted_at",
+                    "created_at",
+                    "updated_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Drop the chosen thumbnail; the generated poster stands again.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No content"
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "The chosen thumbnail image, or 404 when none was chosen.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "v",
+            "in": "query",
+            "required": false,
+            "description": "Cache-busting update stamp.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Binary payload",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
           },
           "400": {
             "description": "Validation failure",
@@ -19482,6 +19827,9 @@
                             "type": "string"
                           }
                         },
+                        "has_thumbnail": {
+                          "type": "boolean"
+                        },
                         "deleted_at": {
                           "anyOf": [
                             {
@@ -19510,6 +19858,7 @@
                         "status",
                         "description",
                         "tags",
+                        "has_thumbnail",
                         "deleted_at",
                         "created_at",
                         "updated_at"
@@ -19820,6 +20169,9 @@
                         "type": "string"
                       }
                     },
+                    "has_thumbnail": {
+                      "type": "boolean"
+                    },
                     "deleted_at": {
                       "anyOf": [
                         {
@@ -19848,6 +20200,7 @@
                     "status",
                     "description",
                     "tags",
+                    "has_thumbnail",
                     "deleted_at",
                     "created_at",
                     "updated_at"

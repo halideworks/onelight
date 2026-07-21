@@ -1077,6 +1077,26 @@
     jumpTo(targetFrame);
   }
 
+  /* The frame on screen, as a PNG. The host uploads it as a chosen thumbnail:
+     what you were looking at when you decided is exactly what gets kept, which
+     no server-side extraction can promise. Drawn annotations stay out of it --
+     they live in their own overlay, and a poster is the picture, not the
+     notes. */
+  export function captureFrame(maxWidth = 1280): Promise<Blob | null> {
+    const element = video;
+    if (!element || element.videoWidth === 0) return Promise.resolve(null);
+    const scale = Math.min(1, maxWidth / element.videoWidth);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(element.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(element.videoHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) return Promise.resolve(null);
+    context.drawImage(element, 0, 0, canvas.width, canvas.height);
+    return new Promise((resolve) => {
+      canvas.toBlob((blob) => resolve(blob), 'image/png');
+    });
+  }
+
   /* Hosts set the marked range directly (a ranged note re-arming its span);
      the same ordering rule as the I/O keys applies. */
   export function setRange(inAt: number, outAt: number): void {

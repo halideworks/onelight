@@ -1,8 +1,13 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { api, createProject, getBootstrap, messageFrom } from '$lib/api.js';
+  import { api, apiDelete, apiPatch, createProject, getBootstrap, messageFrom } from '$lib/api.js';
   import { auth } from '$lib/auth.svelte.js';
+  import { askConfirm, askText } from '$lib/confirm.svelte.js';
+  import { notifications } from '$lib/notifications.svelte.js';
+  import { whenAbsolute, whenRelative } from '$lib/format.js';
+  import { triggerDownload } from '$lib/downloads.js';
   import ProjectCover from '$lib/ProjectCover.svelte';
+  import ProjectMembers from '$lib/ProjectMembers.svelte';
   import { pretty } from '$lib/ids.js';
   import { pageWashFor } from '$lib/washes.js';
   import { grainLayer } from '$lib/grain.js';
@@ -15,10 +20,51 @@
     name: string;
     status: string;
     palette: string;
+    restricted?: boolean;
     cover_url?: string | null;
     my_role?: string;
+    created_at: number;
+    updated_at: number;
+    /* Older servers do not send it; the sort falls back rather than sorting
+       everything into one heap. */
+    last_activity_at?: number;
   };
   let projects = $state<Project[]>([]);
+  let archived = $state<Project[]>([]);
+  let listError = $state('');
+  let busy = $state(false);
+
+  /* The archive is a second room, not a filter chip: archived projects are out
+     of the way by default and looked at deliberately. */
+  let showArchived = $state(false);
+  const shelf = $derived(showArchived ? archived : projects);
+
+  let filter = $state('');
+  type SortKey = 'activity' | 'name' | 'created';
+  let sortKey = $state<SortKey>('activity');
+  let sortDir = $state<'asc' | 'desc'>('desc');
+  const SORT_LABELS: Record<SortKey, string> = {
+    activity: 'Recently edited',
+    name: 'Name',
+    created: 'Created'
+  };
+
+  const activityOf = (project: Project): number =>
+    project.last_activity_at ?? project.updated_at ?? project.created_at ?? 0;
+
+  const displayed = $derived.by(() => {
+    const needle = filter.trim().toLowerCase();
+    const rows = needle
+      ? shelf.filter((project) => project.name.toLowerCase().includes(needle))
+      : [...shelf];
+    const sign = sortDir === 'asc' ? 1 : -1;
+    rows.sort((a, b) => {
+      if (sortKey === 'name') return sign * a.name.localeCompare(b.name);
+      if (sortKey === 'created') return sign * (a.created_at - b.created_at);
+      return sign * (activityOf(a) - activityOf(b));
+    });
+    return rows;
+  });
 
   /* Grid or list, remembered per user: a wall of thumbnails is right for a few
      projects, a list is right for forty. */
@@ -31,6 +77,28 @@
       /* Storage can be unavailable; the default view stands. */
     }
   });
+  /* How big a project card is, remembered per person: the same control the
+     asset grid has, for the same reason. */
+  const SIZE_KEY = 'onelight.projects.cardsize';
+  const CARD_SIZES = [150, 220, 300, 400];
+  let sizeStep = $state(1);
+  $effect(() => {
+    try {
+      const stored = Number(localStorage.getItem(SIZE_KEY));
+      if (Number.isInteger(stored) && stored >= 0 && stored < CARD_SIZES.length) sizeStep = stored;
+    } catch {
+      /* Storage can be unavailable; the default size stands. */
+    }
+  });
+  const setSize = (next: number): void => {
+    sizeStep = next;
+    try {
+      localStorage.setItem(SIZE_KEY, String(next));
+    } catch {
+      /* Non-persistent, still applied for the session. */
+    }
+  };
+
   const setView = (next: 'grid' | 'list'): void => {
     view = next;
     try {
@@ -58,17 +126,252 @@
       );
   });
 
+  /* Every page of both shelves: a projects list that stops at fifty and says
+     nothing is a list that lies about what you own. */
+  const fetchShelf = async (status: 'active' | 'archived'): Promise<Project[]> => {
+    const items: Project[] = [];
+    let cursor: string | null = null;
+    for (;;) {
+      const query = new URLSearchParams({ status, limit: '200' });
+      if (cursor) query.set('cursor', cursor);
+      const page: { items: Project[]; next_cursor: string | null } = await api(
+        `/api/v1/projects?${query.toString()}`
+      );
+      items.push(...page.items);
+      if (!page.next_cursor) return items;
+      cursor = page.next_cursor;
+    }
+  };
+
+  const reload = async (): Promise<void> => {
+    try {
+      const [active, shelved] = await Promise.all([fetchShelf('active'), fetchShelf('archived')]);
+      projects = active;
+      archived = shelved;
+      listError = '';
+    } catch (caught) {
+      listError = messageFrom(caught, 'The projects could not be loaded.');
+    }
+  };
+
   $effect(() => {
     if (!auth.ready || !auth.signedIn || projectsLoaded) return;
     projectsLoaded = true;
-    void (async () => {
-      try {
-        projects = (await api<{ items: Project[] }>('/api/v1/projects')).items;
-      } catch {
-        /* The empty state stands in. */
-      }
-    })();
+    void reload();
   });
+
+  /* ---- selection: click opens, hold selects. The asset grid taught these
+          gestures; a projects list that behaved differently would be a second
+          set of rules for the same picture-in-a-grid. ---- */
+  let selected = $state<string[]>([]);
+  let anchor = $state<string | null>(null);
+  const isSelected = (id: string): boolean => selected.includes(id);
+  const selectedProjects = $derived(displayed.filter((project) => isSelected(project.id)));
+  /* Leaving the shelf, or filtering a card out from under a selection, must
+     not leave invisible items selected and armed for a delete. */
+  $effect(() => {
+    const visible = new Set(displayed.map((project) => project.id));
+    if (selected.some((id) => !visible.has(id)))
+      selected = selected.filter((id) => visible.has(id));
+  });
+
+  const HOLD_MS = 380;
+  const HOLD_SLOP = 6;
+  let holdTimer: ReturnType<typeof setTimeout> | null = null;
+  let holdFired = false;
+  let pressAt: { x: number; y: number } | null = null;
+
+  const cancelHold = (): void => {
+    if (holdTimer !== null) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    }
+  };
+
+  const toggleOne = (id: string): void => {
+    selected = isSelected(id) ? selected.filter((entry) => entry !== id) : [...selected, id];
+    anchor = id;
+  };
+
+  const onCardPointerDown = (event: PointerEvent, id: string): void => {
+    if (event.button !== 0 || event.shiftKey || event.metaKey || event.ctrlKey) return;
+    holdFired = false;
+    pressAt = { x: event.clientX, y: event.clientY };
+    cancelHold();
+    holdTimer = setTimeout(() => {
+      holdFired = true;
+      holdTimer = null;
+      toggleOne(id);
+      /* Confirm the hold on devices that can: without it, a long press feels
+         like the app froze. */
+      navigator.vibrate?.(8);
+    }, HOLD_MS);
+  };
+
+  const onCardPointerMove = (event: PointerEvent): void => {
+    if (!pressAt) return;
+    if (Math.hypot(event.clientX - pressAt.x, event.clientY - pressAt.y) > HOLD_SLOP) {
+      pressAt = null;
+      cancelHold();
+    }
+  };
+
+  const onCardPointerUp = (): void => {
+    pressAt = null;
+    cancelHold();
+  };
+
+  const handleSelect = (event: MouseEvent, id: string): void => {
+    if (event.shiftKey && anchor) {
+      const order = displayed.map((project) => project.id);
+      const from = order.indexOf(anchor);
+      const to = order.indexOf(id);
+      if (from >= 0 && to >= 0) {
+        const [low, high] = from < to ? [from, to] : [to, from];
+        selected = order.slice(low, high + 1);
+        return;
+      }
+    }
+    if (event.ctrlKey || event.metaKey) {
+      toggleOne(id);
+      return;
+    }
+    selected = isSelected(id) && selected.length === 1 ? [] : [id];
+    anchor = id;
+  };
+
+  const onCardClick = (event: MouseEvent, project: Project): void => {
+    /* The hold already acted; the click that follows it must not also open. */
+    if (holdFired) {
+      holdFired = false;
+      event.preventDefault();
+      return;
+    }
+    if (event.shiftKey || event.metaKey || event.ctrlKey) {
+      event.preventDefault();
+      handleSelect(event, project.id);
+      return;
+    }
+    /* With a selection running, a plain click keeps picking rather than
+       yanking you into a project mid-multi-select. */
+    if (selected.length > 0) {
+      event.preventDefault();
+      toggleOne(project.id);
+      return;
+    }
+    void notifications.markProjectRead(project.id);
+  };
+
+  /* ---- the right-click menu ---- */
+  let menu = $state<{ x: number; y: number; ids: string[] } | null>(null);
+  const closeMenu = (): void => {
+    menu = null;
+  };
+  const openMenu = (event: MouseEvent, id: string): void => {
+    event.preventDefault();
+    /* Right-clicking outside the selection acts on what you pointed at; inside
+       it, on all of it. Anything else silently drops the other cards. */
+    if (!isSelected(id)) {
+      selected = [id];
+      anchor = id;
+    }
+    menu = { x: event.clientX, y: event.clientY, ids: [...selected] };
+  };
+  const takeMenu = (): string[] => {
+    const ids = menu?.ids ?? [];
+    closeMenu();
+    return ids;
+  };
+  const keepOnScreen = (node: HTMLElement): void => {
+    const box = node.getBoundingClientRect();
+    const overflowX = box.right - (window.innerWidth - 8);
+    const overflowY = box.bottom - (window.innerHeight - 8);
+    if (overflowX > 0) node.style.left = `${Math.max(8, box.left - overflowX)}px`;
+    if (overflowY > 0) node.style.top = `${Math.max(8, box.top - overflowY)}px`;
+    node.focus();
+  };
+
+  const byId = (id: string): Project | undefined =>
+    projects.find((project) => project.id === id) ?? archived.find((project) => project.id === id);
+  const nameOf = (id: string): string => byId(id)?.name ?? 'this project';
+  const canManage = (project: Project | undefined): boolean =>
+    project?.my_role === 'manager' || auth.user?.role === 'admin';
+
+  /* ---- the verbs ---- */
+  const setStatus = async (ids: string[], status: 'active' | 'archived'): Promise<void> => {
+    if (ids.length === 0 || busy) return;
+    busy = true;
+    try {
+      for (const id of ids) await apiPatch(`/api/v1/projects/${id}`, { status });
+      selected = [];
+      await reload();
+    } catch (caught) {
+      listError = messageFrom(caught, 'That change could not be saved.');
+    } finally {
+      busy = false;
+    }
+  };
+
+  const download = (ids: string[]): void => {
+    /* One zip per project, spaced out: the endpoint streams a project at a
+       time, and browsers allow the first programmatic download freely then ask
+       once about the rest. An <a download> rather than a navigation, so a
+       failure lands in the download manager instead of replacing the page. */
+    for (const [index, id] of ids.entries())
+      setTimeout(() => triggerDownload(`/api/v1/projects/${id}/zip`), index * 900);
+  };
+
+  const removeProjects = async (ids: string[]): Promise<void> => {
+    if (ids.length === 0 || busy) return;
+    /* No trash for projects: this cascades through every asset, version, note
+       and share in them. Typing the name is the only guard that survives an
+       accidental double-click, so the single-project case asks for it. */
+    if (ids.length === 1) {
+      const name = nameOf(ids[0] as string);
+      const typed = await askText({
+        title: `Delete ${name}?`,
+        body: 'Every asset, version, note and share in this project is deleted with it, and there is no trash to fetch them back from. Type the project name to confirm.',
+        label: 'Project name',
+        confirmLabel: 'Delete forever',
+        danger: true
+      });
+      if (typed?.trim() !== name) return;
+    } else {
+      const confirmed = await askConfirm({
+        title: `Delete ${ids.length} projects?`,
+        body: 'Every asset, version, note and share in them is deleted too. There is no trash to fetch them back from.',
+        confirmLabel: `Delete ${ids.length} projects forever`,
+        danger: true
+      });
+      if (!confirmed) return;
+    }
+    busy = true;
+    try {
+      for (const id of ids) await apiDelete(`/api/v1/projects/${id}`);
+      selected = [];
+      await reload();
+    } catch (caught) {
+      listError = messageFrom(caught, 'That project could not be deleted.');
+    } finally {
+      busy = false;
+    }
+  };
+
+  /* ---- people, without leaving the list ---- */
+  let peopleFor = $state<Project | null>(null);
+  let peopleDialog = $state<HTMLDialogElement | null>(null);
+  $effect(() => {
+    if (peopleFor && !peopleDialog?.open) peopleDialog?.showModal();
+    else if (!peopleFor && peopleDialog?.open) peopleDialog.close();
+  });
+
+  /* ---- notification badges ---- */
+  const unreadFor = (id: string): number => notifications.unreadByProject[id] ?? 0;
+  const clearBadge = async (event: MouseEvent, id: string): Promise<void> => {
+    event.preventDefault();
+    event.stopPropagation();
+    await notifications.markProjectRead(id);
+  };
 
   /* Name is the only required field: the server round-robins the palette and
      enrols the creator as manager. */
@@ -214,6 +517,17 @@
 
 <svelte:head><title>Onelight</title></svelte:head>
 
+<svelte:window
+  onscroll={closeMenu}
+  onkeydown={(event) => {
+    if (event.key !== 'Escape') return;
+    /* One key backs out of both, menu first: Escape with a menu open should
+       not also throw away the selection it was opened on. */
+    if (menu) closeMenu();
+    else if (selected.length > 0) selected = [];
+  }}
+/>
+
 <main
   class="shell"
   class:signed-in={auth.signedIn}
@@ -242,25 +556,132 @@
       {#if createError}<p class="error" role="alert">{createError}</p>{/if}
 
       <div class="listhead">
-        <span class="count">{projects.length} {projects.length === 1 ? 'project' : 'projects'}</span>
+        <span class="count">
+          {displayed.length}
+          {displayed.length === 1 ? 'project' : 'projects'}{filter.trim() ? ` matching "${filter.trim()}"` : ''}
+        </span>
+        <input
+          class="filter"
+          bind:value={filter}
+          placeholder="Filter by name"
+          aria-label="Filter projects by name"
+          maxlength="200"
+        />
+        <label class="sortpick">
+          <span class="vh">Sort by</span>
+          <select bind:value={sortKey}>
+            {#each Object.entries(SORT_LABELS) as [key, label] (key)}
+              <option value={key}>{label}</option>
+            {/each}
+          </select>
+        </label>
+        <button
+          type="button"
+          class="dirbtn"
+          aria-label={sortDir === 'desc' ? 'Descending, click for ascending' : 'Ascending, click for descending'}
+          onclick={() => (sortDir = sortDir === 'desc' ? 'asc' : 'desc')}
+        >
+          <svg class="dir" class:desc={sortDir === 'desc'} viewBox="0 0 8 8" width="10" height="10" aria-hidden="true"><path d="M4 2l3 4H1z" fill="currentColor" /></svg>
+        </button>
+        {#if archived.length > 0 || showArchived}
+          <button
+            type="button"
+            class="archbtn"
+            aria-pressed={showArchived}
+            onclick={() => { showArchived = !showArchived; selected = []; }}
+          >{showArchived ? 'Back to projects' : `Archive (${archived.length})`}</button>
+        {/if}
+        {#if view === 'grid'}
+          <label class="sizectl">
+            <span class="vh">Card size</span>
+            <input
+              type="range"
+              min="0"
+              max={CARD_SIZES.length - 1}
+              step="1"
+              value={sizeStep}
+              aria-label="Card size"
+              oninput={(event) => setSize(Number(event.currentTarget.value))}
+            />
+          </label>
+        {/if}
         <div class="viewtoggle" role="group" aria-label="Project view">
           <button type="button" aria-pressed={view === 'grid'} onclick={() => setView('grid')}>Grid</button>
           <button type="button" aria-pressed={view === 'list'} onclick={() => setView('list')}>List</button>
         </div>
       </div>
 
-      {#if projects.length === 0}<p class="empty">No projects yet. Name one to start.</p>{/if}
+      {#if listError}<p class="error" role="alert">{listError}</p>{/if}
 
-      <div class="projectlist" class:grid={view === 'grid'}>
-        {#each projects as project (project.id)}
-          <a class="project" href={`/projects/${pretty(project.public_id, project.name)}`}>
+      {#if selected.length > 0}
+        <div class="selbar" aria-live="polite">
+          <span class="count">{selected.length} selected</span>
+          {#if showArchived}
+            <button type="button" class="quiet" disabled={busy} onclick={() => void setStatus(selected, 'active')}>Restore</button>
+          {:else}
+            <button type="button" class="quiet" disabled={busy} onclick={() => void setStatus(selected, 'archived')}>Archive</button>
+          {/if}
+          <button type="button" class="quiet" onclick={() => download(selected)}>Download zip</button>
+          {#if selected.length === 1 && canManage(byId(selected[0] as string))}
+            <button type="button" class="quiet" onclick={() => (peopleFor = byId(selected[0] as string) ?? null)}>People</button>
+          {/if}
+          {#if auth.user?.role === 'admin'}
+            <button type="button" class="quiet danger" disabled={busy} onclick={() => void removeProjects(selected)}>Delete</button>
+          {/if}
+          <button type="button" class="quiet" onclick={() => (selected = [])}>Clear</button>
+        </div>
+      {/if}
+
+      {#if displayed.length === 0}
+        <p class="empty">
+          {#if filter.trim()}Nothing matches that name.
+          {:else if showArchived}The archive is empty.
+          {:else}No projects yet. Name one to start.{/if}
+        </p>
+      {/if}
+
+      <div
+        class="projectlist"
+        class:grid={view === 'grid'}
+        style={`--card: ${String(CARD_SIZES[sizeStep] ?? 220)}px;`}
+      >
+        {#each displayed as project (project.id)}
+          {@const unread = unreadFor(project.id)}
+          <a
+            class="project"
+            class:picked={isSelected(project.id)}
+            href={`/projects/${pretty(project.public_id, project.name)}`}
+            aria-current={isSelected(project.id) ? 'true' : undefined}
+            onpointerdown={(event) => onCardPointerDown(event, project.id)}
+            onpointermove={onCardPointerMove}
+            onpointerup={onCardPointerUp}
+            onpointercancel={onCardPointerUp}
+            onclick={(event) => onCardClick(event, project)}
+            oncontextmenu={(event) => openMenu(event, project.id)}
+          >
             <!-- Every project has a picture: the one it chose, or the one
                  generated from its palette and name. Neither costs a request
                  beyond this page's own. -->
-            <span class="thumb"><ProjectCover {project} monogram={view === 'grid'} /></span>
+            <span class="thumb">
+              <ProjectCover {project} monogram={view === 'grid'} />
+              {#if unread > 0}
+                <!-- The badge is the clear button: a count you cannot dismiss
+                     from where you read it is a count you learn to ignore. -->
+                <button
+                  type="button"
+                  class="badge"
+                  title={`${unread} unread ${unread === 1 ? 'notification' : 'notifications'}. Click to clear.`}
+                  onclick={(event) => void clearBadge(event, project.id)}
+                >{unread > 99 ? '99+' : unread}</button>
+              {/if}
+            </span>
             <span class="meta">
               <span class="name">{project.name}</span>
-              <small>{project.my_role ?? 'viewer'}</small>
+              <small title={whenAbsolute(sortKey === 'created' ? project.created_at : activityOf(project))}>
+                {project.my_role ?? 'viewer'} · {sortKey === 'created'
+                  ? `created ${whenRelative(project.created_at)}`
+                  : whenRelative(activityOf(project))}
+              </small>
             </span>
           </a>
         {/each}
@@ -338,6 +759,74 @@
     </div>
   {/if}
 </main>
+
+<!-- Right-click menu, positioned at the pointer and dismissed by the next
+     click anywhere, Escape or a scroll: a menu that outlives its context is
+     worse than no menu. -->
+{#if menu}
+  <!-- Every read of the menu is optional: closing it inside a handler nulls
+       the state while this block is still on screen, and a bare menu.ids threw
+       on the way out. -->
+  {@const ids = menu.ids}
+  {@const only = ids.length === 1 ? byId(ids[0] as string) : undefined}
+  <div
+    class="menuveil"
+    role="presentation"
+    onclick={closeMenu}
+    oncontextmenu={(event) => { event.preventDefault(); closeMenu(); }}
+  ></div>
+  <div
+    class="ctxmenu"
+    role="menu"
+    tabindex="-1"
+    aria-label="Project actions"
+    style={`left: ${menu.x}px; top: ${menu.y}px;`}
+    use:keepOnScreen
+  >
+    <p class="ctxhead">{ids.length === 1 ? nameOf(ids[0] as string) : `${ids.length} projects`}</p>
+    {#if only}
+      <button type="button" role="menuitem" onclick={() => { const target = only; closeMenu(); void goto(`/projects/${pretty(target.public_id, target.name)}`); }}>Open</button>
+      {#if canManage(only)}
+        <button type="button" role="menuitem" onclick={() => { const target = only; closeMenu(); void goto(`/projects/${pretty(target.public_id, target.name)}/settings`); }}>Settings</button>
+        <button type="button" role="menuitem" onclick={() => { const target = only; closeMenu(); peopleFor = target; }}>People…</button>
+      {/if}
+    {/if}
+    <button type="button" role="menuitem" onclick={() => download(takeMenu())}>Download zip</button>
+    {#if showArchived}
+      <button type="button" role="menuitem" onclick={() => void setStatus(takeMenu(), 'active')}>Restore from archive</button>
+    {:else}
+      <button type="button" role="menuitem" onclick={() => void setStatus(takeMenu(), 'archived')}>Archive</button>
+    {/if}
+    {#if auth.user?.role === 'admin'}
+      <div class="ctxsep"></div>
+      <button type="button" role="menuitem" class="danger" onclick={() => void removeProjects(takeMenu())}>Delete forever</button>
+    {/if}
+  </div>
+{/if}
+
+<!-- People, without leaving the list: the same editor project settings uses. -->
+<dialog
+  class="people"
+  bind:this={peopleDialog}
+  aria-label="People"
+  oncancel={(event) => { event.preventDefault(); peopleFor = null; }}
+  onclick={(event) => { if (event.target === peopleDialog) peopleFor = null; }}
+>
+  {#if peopleFor}
+    {@const target = peopleFor}
+    <div class="peoplebody">
+      <div class="peoplehead">
+        <h2>{target.name}</h2>
+        <button type="button" class="quiet" onclick={() => (peopleFor = null)}>Done</button>
+      </div>
+      <ProjectMembers
+        projectId={target.id}
+        isManager={canManage(target)}
+        restricted={target.restricted ?? false}
+      />
+    </div>
+  {/if}
+</dialog>
 
 <style>
   /* Signed out, the landing is the one page allowed the FULL wash: it ends
@@ -458,7 +947,11 @@
   .newproject button:hover { background: var(--accent-bright); }
   .newproject button:disabled { opacity: 0.5; cursor: default; }
 
-  .listhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 28px 0 10px; }
+  /* Count on the left, controls gathered on the right: space-between scattered
+     five controls across a 2560px window with the filter stranded in the
+     middle of nothing. */
+  .listhead { display: flex; align-items: center; gap: 8px; margin: 28px 0 10px; }
+  .count { margin-right: auto; }
   .count { color: var(--ink-text-dim); font-size: var(--text-13); }
   .viewtoggle { display: flex; gap: 2px; padding: 2px; border-radius: var(--radius); background: var(--ink-100); }
   .viewtoggle button { border: 0; border-radius: 2px; background: none; color: var(--ink-text-dim); padding: 4px 10px; font-size: var(--text-12); font-weight: 500; }
@@ -466,7 +959,13 @@
   .viewtoggle button[aria-pressed='true'] { background: var(--ink-300); color: #fff; }
 
   .projectlist { display: grid; gap: 2px; }
-  .projectlist.grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+  .projectlist.grid { grid-template-columns: repeat(auto-fill, minmax(var(--card, 220px), 1fr)); gap: 14px; }
+  .sizectl { display: flex; align-items: center; }
+  .sizectl input { width: 96px; accent-color: var(--accent); }
+  @media (max-width: 720px) {
+    .projectlist.grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+    .sizectl { display: none; }
+  }
 
   /* List row: thumbnail as a small swatch. */
   .project { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: var(--radius); background: var(--ink-100); transition: background 100ms ease; }
@@ -483,8 +982,58 @@
   .grid .thumb { width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: 0; }
   /* The component's own <span> is the box; let it fill the wrapper. */
   .thumb :global(.cover) { width: 100%; height: 100%; }
-  .grid .meta { padding: 10px 12px; }
+  .grid .meta { display: grid; gap: 3px; padding: 10px 12px; }
+  .grid .meta small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   .empty { color: var(--ink-text-dim); }
   .error { margin: 12px 0 0; color: var(--warn); font-size: var(--text-13); }
+
+  /* The head is a control bar now: count, filter, sort, the archive door and
+     the view toggle, wrapping rather than overflowing. */
+  .listhead { flex-wrap: wrap; }
+  .filter { min-width: 140px; width: 240px; border: 0; border-radius: var(--radius); background: var(--ink-100); color: var(--ink-text); padding: 7px 12px; font-size: var(--text-13); }
+  .filter::placeholder { color: var(--ink-text-dim); }
+  .filter:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 1px; }
+  .sortpick select, .dirbtn, .archbtn { border: 0; border-radius: var(--radius); background: var(--ink-100); color: var(--ink-text); padding: 7px 10px; font-size: var(--text-12); }
+  .sortpick select:focus-visible { outline: none; background: var(--ink-300); }
+  .dirbtn { min-width: 30px; padding: 8px; display: grid; place-items: center; color: var(--ink-text); }
+  .dirbtn:hover { color: var(--ink-text); }
+  .dir.desc { transform: rotate(180deg); }
+  .dirbtn:hover, .archbtn:hover { background: var(--ink-200); }
+  .archbtn[aria-pressed='true'] { background: var(--ink-300); }
+  /* Visually hidden, still read aloud. */
+  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+  .selbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; padding: 8px 12px; border-radius: var(--radius); background: var(--ink-100); }
+  .selbar .quiet { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 6px 12px; font-size: var(--text-12); font-weight: 500; }
+  .selbar .quiet:hover { background: var(--ink-300); }
+  .selbar .quiet:disabled { opacity: 0.5; cursor: default; }
+  .selbar .danger { color: var(--warn); }
+  .selbar .danger:hover:not(:disabled) { background: var(--warn); color: #12080a; }
+
+  /* Selection is a value step and an outline, never a tint over the artwork. */
+  .project.picked { background: var(--ink-300); outline: 2px solid var(--accent-bright); outline-offset: -2px; }
+  .thumb { position: relative; }
+  /* The unread count: the same yellow disc the nav bell wears. */
+  .badge { position: absolute; top: 5px; right: 5px; min-width: 18px; height: 18px; display: grid; place-items: center; padding: 0 5px; border: 0; border-radius: 9px; background: #edc95f; color: #191307; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; cursor: pointer; }
+  .badge:hover { background: #f6dc8b; }
+  .projectlist:not(.grid) .badge { top: -3px; right: -3px; }
+
+  .menuveil { position: fixed; inset: 0; z-index: 60; }
+  .ctxmenu { position: fixed; z-index: 61; min-width: 200px; max-height: 60vh; overflow-y: auto; display: grid; gap: 1px; padding: 4px; border-radius: var(--radius); background: var(--ink-100); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); }
+  .ctxmenu button { border: 0; border-radius: 2px; background: none; color: var(--ink-text); padding: 7px 10px; font-size: var(--text-13); text-align: left; }
+  .ctxmenu button:hover { background: var(--ink-300); }
+  .ctxmenu:focus-visible { outline: none; }
+  .ctxhead { margin: 0; padding: 6px 10px 4px; color: var(--ink-text-dim); font-size: var(--text-12); overflow-wrap: anywhere; }
+  .ctxsep { height: 1px; margin: 3px 0; background: var(--ink-300); }
+  .ctxmenu button.danger { color: var(--warn); }
+  .ctxmenu button.danger:hover { background: color-mix(in oklab, var(--warn) 22%, var(--ink-200)); color: #fff; }
+
+  .people { width: min(620px, calc(100vw - 24px)); padding: 0; border: 0; border-radius: var(--radius-lg); background: var(--ink-100); color: var(--ink-text); box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55); }
+  .people::backdrop { background: rgba(5, 8, 12, 0.7); }
+  .peoplebody { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 20px; }
+  .peoplehead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .peoplehead h2 { margin: 0; font-size: var(--text-16); font-weight: 600; overflow-wrap: anywhere; }
+  .peoplehead .quiet { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 7px 14px; font-size: var(--text-13); font-weight: 500; }
+  .peoplehead .quiet:hover { background: var(--ink-300); }
 </style>

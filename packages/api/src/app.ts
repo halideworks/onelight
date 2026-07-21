@@ -331,7 +331,24 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       restricted: Boolean(project.restricted),
       created_by: project.createdBy,
       created_at: project.createdAt,
+      /* When the project's own record was last edited: its name, palette,
+         cover, restriction. Not when anyone last did any work in it. */
       updated_at: project.updatedAt,
+      /* When anything last happened in it -- an upload, a note, an approval.
+         The event log is already written for the SSE stream and is indexed on
+         (project_id, id), so the newest row is one seek; ids are ULIDs, so id
+         order is time order. This is what "recently edited" means to someone
+         looking at a list of projects. */
+      last_activity_at:
+        (
+          await env.db
+            .select({ createdAt: projectEvents.createdAt })
+            .from(projectEvents)
+            .where(eq(projectEvents.projectId, project.id))
+            .orderBy(desc(projectEvents.id))
+            .limit(1)
+            .all()
+        )[0]?.createdAt ?? project.updatedAt,
       my_role: myRole,
     };
   };
@@ -737,6 +754,26 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         ),
       )
       .all();
+    /* Already carried here once. Copying is now something a person can aim at
+       any version from the version menu, so pressing it twice must not double
+       the notes; provenance is what makes that answerable. A copy the reviewer
+       later deleted stays deleted rather than coming back. */
+    const alreadyCarried = new Set(
+      (
+        await env.db
+          .select({ from: comments.carriedFromCommentId })
+          .from(comments)
+          .where(
+            and(
+              eq(comments.versionId, targetVersionId),
+              isNotNull(comments.carriedFromCommentId),
+            ),
+          )
+          .all()
+      )
+        .map((row) => row.from)
+        .filter((from): from is string => from !== null),
+    );
     /* Re-anchor where the host can see the pictures: frames follow the
        footage across a recut instead of the arithmetic. An unavailable or
        unconvinced matcher changes nothing. */
@@ -752,6 +789,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     for (const sourceComment of sourceComments as Array<
       typeof comments.$inferSelect
     >) {
+      if (alreadyCarried.has(sourceComment.id)) continue;
       const id = env.ids.ulid();
       let frameIn = sourceComment.frameIn;
       let frameOut = sourceComment.frameOut;
@@ -950,6 +988,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     tags: Array.isArray(parseJsonValue(asset.tagsJson))
       ? parseJsonValue(asset.tagsJson)
       : [],
+    /* Whether a picture was chosen for this asset. The client builds
+       /assets/:id/thumbnail?v=updated_at from it; no signed URL is needed
+       because every internal surface that shows it is already authenticated. */
+    has_thumbnail: Boolean(asset.thumbnailBlobKey),
     deleted_at: asset.deletedAt,
     created_at: asset.createdAt,
     updated_at: asset.updatedAt,
@@ -2069,7 +2111,21 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const contentType =
       Object.entries(AVATAR_TYPES).find(([, ext]) => ext === extension)?.[0] ??
       "image/png";
-    const stream = await env.blobStore.getStream(target.avatarKey);
+    let stream: ReadableStream;
+    try {
+      stream = await env.blobStore.getStream(target.avatarKey);
+    } catch {
+      /* The pointer outlived its blob (a GC sweep, a restore from a database
+         backup taken after the blob was gone). Reconcile rather than serving a
+         broken image forever: clearing the column makes userWire stop emitting
+         an avatar_url and the initials stand in cleanly. */
+      await env.db
+        .update(users)
+        .set({ avatarKey: null, updatedAt: env.clock.now() })
+        .where(eq(users.id, target.id))
+        .run();
+      throw errors.notFound();
+    }
     return new Response(stream, {
       headers: {
         "Content-Type": contentType,
@@ -6149,9 +6205,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         typeof spriteMeta.vtt_blob_key === "string"
           ? spriteMeta.vtt_blob_key
           : undefined;
+      /* A thumbnail chosen for the asset beats the generated poster here as
+         well as inside the app: the room is the place it was chosen for. */
+      const posterKey = asset.thumbnailBlobKey ?? poster?.blobKey ?? null;
       urls.set(asset.id, {
-        poster: poster
-          ? await publicMediaUrl(share, asset.id, versionId, poster.blobKey)
+        poster: posterKey
+          ? await publicMediaUrl(share, asset.id, versionId, posterKey)
           : null,
         sprite:
           sprite && vttKey
@@ -6280,7 +6339,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (!first) throw errors.notFound();
     const asset = (
       await env.db
-        .select({ currentVersionId: assets.currentVersionId })
+        .select({
+          currentVersionId: assets.currentVersionId,
+          thumbnailBlobKey: assets.thumbnailBlobKey,
+        })
         .from(assets)
         .where(eq(assets.id, first.assetId))
         .limit(1)
@@ -6301,11 +6363,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .limit(1)
         .all()
     )[0];
-    if (!poster) throw errors.notFound();
-    const stream = await env.blobStore.getStream(poster.blobKey);
+    /* The chosen thumbnail is the picture of this share in every other
+       surface; the link preview is not the place to disagree. */
+    const key = asset.thumbnailBlobKey ?? poster?.blobKey;
+    if (!key) throw errors.notFound();
+    const stream = await env.blobStore.getStream(key);
     return new Response(stream, {
       headers: {
-        "Content-Type": "image/png",
+        "Content-Type": await blobContentType(key),
         "Cache-Control": "public, max-age=3600",
       },
     });
@@ -7027,7 +7092,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       )
       .all()) as Array<typeof renditions.$inferSelect>;
     const rendition =
-      renditionRows.find((row) => row.kind === "proxy_1080") ?? renditionRows[0];
+      renditionRows.find((row) => row.kind === "proxy_1080") ??
+      renditionRows[0];
     if (!rendition) throw errors.notFound("A review rendition is not ready.");
     return c.json({
       url: await publicMediaUrl(
@@ -8862,6 +8928,71 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .where(eq(assets.id, asset.id))
       .run();
     return c.body(null, 204);
+  });
+
+  /* A chosen thumbnail: an uploaded picture, or a frame captured out of the
+     viewer and uploaded as a PNG. Same shape as the project cover -- a
+     completed upload session, no transcode, no asset row -- because this is
+     already a still and the poster pipeline exists to make stills out of
+     footage. The old blob is left for the GC rather than deleted inline: the
+     new pointer is the truth, and a delete that races a reader serves a
+     broken picture. */
+  api.put("/assets/:id/thumbnail", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const asset = await assetForActor(c.req.param("id"), actor, "editor");
+    const body = await jsonBody(c, bodies.assetThumbnailPut);
+    const upload = await findUpload(body.upload_id, actor);
+    if (upload.projectId !== asset.projectId || upload.status !== "completed")
+      throw errors.validation("Upload must be completed for this project.");
+    if (!isImageFilename(upload.clientFilename))
+      throw errors.validation("A thumbnail must be an image.");
+    await env.db
+      .update(assets)
+      .set({ thumbnailBlobKey: upload.blobKey, updatedAt: env.clock.now() })
+      .where(eq(assets.id, asset.id))
+      .run();
+    const updated = (
+      await env.db
+        .select()
+        .from(assets)
+        .where(eq(assets.id, asset.id))
+        .limit(1)
+        .all()
+    )[0];
+    if (!updated) throw errors.notFound();
+    return c.json(assetWire(updated));
+  });
+
+  api.delete("/assets/:id/thumbnail", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const asset = await assetForActor(c.req.param("id"), actor, "editor");
+    await env.db
+      .update(assets)
+      .set({ thumbnailBlobKey: null, updatedAt: env.clock.now() })
+      .where(eq(assets.id, asset.id))
+      .run();
+    return c.body(null, 204);
+  });
+
+  /* Served from a stable path rather than a signed media URL so that the wire
+     mapper can stay synchronous: the asset row already says whether there is
+     one, and updated_at busts the cache when it changes. */
+  api.get("/assets/:id/thumbnail", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const asset = await assetForActor(c.req.param("id"), actor);
+    if (!asset.thumbnailBlobKey || !env.blobStore) throw errors.notFound();
+    let stream: ReadableStream;
+    try {
+      stream = await env.blobStore.getStream(asset.thumbnailBlobKey);
+    } catch {
+      throw errors.notFound();
+    }
+    return new Response(stream, {
+      headers: {
+        "Content-Type": await blobContentType(asset.thumbnailBlobKey),
+        "Cache-Control": "private, max-age=86400",
+      },
+    });
   });
 
   api.get("/assets/:id/versions", requireAuth, async (c) => {

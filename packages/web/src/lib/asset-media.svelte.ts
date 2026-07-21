@@ -27,6 +27,11 @@ export interface MediaEntry {
 interface ObservedAsset {
   id: string;
   current_version_id?: string | null;
+  /* A picture chosen for this asset overrides the generated poster on every
+     surface that draws a thumbnail. The stamp busts the browser cache when the
+     choice changes. */
+  has_thumbnail?: boolean;
+  updated_at?: number;
 }
 
 const CONCURRENCY = 3;
@@ -94,7 +99,9 @@ export const createMediaCache = (): MediaCache => {
           versionCount: versions.length,
           currentVersion: current,
           transcodeStatus: current?.transcode_status ?? null,
-          posterUrl,
+          posterUrl: asset.has_thumbnail
+            ? `/api/v1/assets/${asset.id}/thumbnail?v=${String(asset.updated_at ?? 0)}`
+            : posterUrl,
           spriteUrl,
           spriteVttUrl,
         },

@@ -78,7 +78,12 @@ const putPart = async (
 /** Direct-DB completed upload so asset attachment works without a store. */
 const seedCompletedUpload = async (
   h: ContractHarness,
-  options: { workspaceId: string; projectId: string; userId: string },
+  options: {
+    workspaceId: string;
+    projectId: string;
+    userId: string;
+    filename?: string;
+  },
 ): Promise<{ id: string }> => {
   const id = h.ids.ulid();
   const now = h.clock.now();
@@ -89,11 +94,11 @@ const seedCompletedUpload = async (
       workspaceId: options.workspaceId,
       projectId: options.projectId,
       createdBy: options.userId,
-      clientFilename: `${unique("attach")}.mp4`,
+      clientFilename: options.filename ?? `${unique("attach")}.mp4`,
       relativePath: "",
       size: 10,
       checksumCrc32c: "abc",
-      blobKey: `${options.workspaceId}/${options.projectId}/uploads/${id}/attach.mp4`,
+      blobKey: `${options.workspaceId}/${options.projectId}/uploads/${id}/${options.filename ?? "attach.mp4"}`,
       uploadId: null,
       partSize: null,
       status: "completed",
@@ -499,6 +504,86 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
   });
 
   describe("assets and versions", () => {
+    /* The chosen thumbnail (migration 0019): the picture an asset shows in
+       every grid and every share room, decided instead of guessed. */
+    it("sets, reports and clears a chosen thumbnail", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const source = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: seed.project.id,
+        userId: seed.editor.id,
+      });
+      const created = await req(
+        h,
+        `/api/v1/projects/${seed.project.id}/assets`,
+        {
+          cookie: seed.editor.cookie,
+          json: { upload_id: source.id, name: unique("Thumbed") },
+        },
+      );
+      expect(created.status).toBe(201);
+      const asset = await json<{ id: string }>(created);
+      const fresh = await json<{ has_thumbnail: boolean }>(
+        await req(h, `/api/v1/assets/${asset.id}`, {
+          cookie: seed.editor.cookie,
+        }),
+      );
+      expect(fresh.has_thumbnail).toBe(false);
+
+      /* Only pictures: the poster pipeline is what turns footage into a
+         still, and this path deliberately skips it. */
+      const notAnImage = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: seed.project.id,
+        userId: seed.editor.id,
+      });
+      const rejected = await req(h, `/api/v1/assets/${asset.id}/thumbnail`, {
+        method: "PUT",
+        cookie: seed.editor.cookie,
+        json: { upload_id: notAnImage.id },
+      });
+      expect(rejected.status).toBe(400);
+
+      const picture = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: seed.project.id,
+        userId: seed.editor.id,
+        filename: `${unique("chosen")}.png`,
+      });
+      const set = await req(h, `/api/v1/assets/${asset.id}/thumbnail`, {
+        method: "PUT",
+        cookie: seed.editor.cookie,
+        json: { upload_id: picture.id },
+      });
+      expect(set.status).toBe(200);
+      const withThumb = await json<Record<string, unknown>>(set);
+      expect(withThumb.has_thumbnail).toBe(true);
+      /* The blob key is the store's business and never the viewer's. */
+      expect(forbiddenKeysIn(withThumb, ["blob_key", "blobKey"])).toEqual([]);
+      expect(assertSnakeCaseKeys(withThumb)).toEqual([]);
+
+      /* A commenter may look at the room but not redecorate it. */
+      const denied = await req(h, `/api/v1/assets/${asset.id}/thumbnail`, {
+        method: "PUT",
+        cookie: seed.commenter.cookie,
+        json: { upload_id: picture.id },
+      });
+      expect(denied.status).toBe(403);
+
+      const cleared = await req(h, `/api/v1/assets/${asset.id}/thumbnail`, {
+        method: "DELETE",
+        cookie: seed.editor.cookie,
+      });
+      expect(cleared.status).toBe(204);
+      const after = await req(h, `/api/v1/assets/${asset.id}`, {
+        cookie: seed.editor.cookie,
+      });
+      expect(
+        (await json<{ has_thumbnail: boolean }>(after)).has_thumbnail,
+      ).toBe(false);
+    });
+
     it("attaches a completed upload once and enqueues the probe job", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

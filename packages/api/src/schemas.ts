@@ -221,6 +221,11 @@ export const bodies = {
   projectCoverPut: z.object({
     upload_id: z.string(),
   }),
+  /* A completed image upload in the same project, chosen as this asset's
+     thumbnail: either a picture or a frame captured out of the viewer. */
+  assetThumbnailPut: z.object({
+    upload_id: z.string(),
+  }),
   shareAssetsAdd: z.object({
     asset_ids: z.array(z.string()).min(1).max(1000),
   }),
@@ -423,6 +428,9 @@ const project = z.object({
   created_by: z.string(),
   created_at: timestamp,
   updated_at: timestamp,
+  /* Newest project event, falling back to updated_at where nothing has
+     happened yet: "recently edited" in the sense a person means it. */
+  last_activity_at: timestamp,
   my_role: projectRole.optional(),
 });
 
@@ -728,6 +736,9 @@ const asset = z.object({
   status: approvalStatus,
   description: z.string(),
   tags: z.array(z.string()),
+  /* True when a picture was chosen for this asset, overriding the generated
+     poster: GET /assets/:id/thumbnail serves it. */
+  has_thumbnail: z.boolean(),
   deleted_at: timestamp.nullable(),
   created_at: timestamp,
   updated_at: timestamp,
@@ -1668,6 +1679,23 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: { "200": ok(asset) },
   },
   "DELETE /assets/:id": { responses: { "204": noContent } },
+  "PUT /assets/:id/thumbnail": {
+    summary:
+      "Set a completed image upload as this asset's thumbnail, overriding the generated poster wherever the asset is shown, share rooms included.",
+    request: bodies.assetThumbnailPut,
+    responses: { "200": ok(asset) },
+  },
+  "DELETE /assets/:id/thumbnail": {
+    summary: "Drop the chosen thumbnail; the generated poster stands again.",
+    responses: { "204": noContent },
+  },
+  "GET /assets/:id/thumbnail": {
+    summary: "The chosen thumbnail image, or 404 when none was chosen.",
+    query: {
+      v: { description: "Cache-busting update stamp.", required: false },
+    },
+    responses: { "200": binary("image/png") },
+  },
   "GET /assets/:id/versions": { responses: { "200": ok(list(version)) } },
   "POST /assets/:id/versions": {
     summary:

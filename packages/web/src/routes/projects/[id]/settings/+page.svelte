@@ -2,12 +2,11 @@
   import { onMount } from 'svelte';
   import { PALETTES } from '@onelight/core';
   import { page } from '$app/state';
-  import { goto } from '$app/navigation';
-  import { api, apiDelete, apiPatch, apiPost, apiPut, messageFrom } from '$lib/api.js';
+    import { api, apiDelete, apiPatch, apiPost, messageFrom } from '$lib/api.js';
   import { askConfirm } from '$lib/confirm.svelte.js';
   import { createMediaCache } from '$lib/asset-media.svelte.js';
   import { uploadFile } from '$lib/upload.js';
-  import Avatar from '$lib/Avatar.svelte';
+  import ProjectMembers from '$lib/ProjectMembers.svelte';
   import ProjectCover from '$lib/ProjectCover.svelte';
   import { canonicalizePath } from '$lib/canonical.js';
   import { idFrom, pretty } from '$lib/ids.js';
@@ -28,18 +27,7 @@
   };
   type Asset = { id: string; name: string; kind: string; current_version_id?: string | null };
   type CoverUpload = { id: string; filename: string; url: string; current: boolean };
-  type Member = { user: { id: string; name: string; email: string; avatar_url?: string | null }; role: string };
-  type User = { id: string; name: string; email: string };
 
-  const ROLES = ['manager', 'editor', 'commenter', 'viewer'] as const;
-  /* What each role can actually do, in the words a person would use. A role
-     picker with no explanation is a quiz. */
-  const ROLE_NOTES: Record<string, string> = {
-    manager: 'Everything, including settings, members and approval.',
-    editor: 'Upload versions, organise folders, comment.',
-    commenter: 'Watch and leave notes.',
-    viewer: 'Watch only.'
-  };
 
   const routeId = $derived(idFrom(page.params.id));
   /* Canonical ULID once the project loads; the route may carry the short
@@ -47,10 +35,6 @@
   let projectId = $state('');
 
   let project = $state<Project | null>(null);
-  let members = $state<Member[]>([]);
-  let workspaceUsers = $state<User[]>([]);
-  let addUserId = $state('');
-  let addRole = $state<string>('commenter');
   let error = $state('');
   let saved = $state('');
   let loaded = $state(false);
@@ -85,12 +69,7 @@
         canonicalizePath(
           `/projects/${pretty(loadedProject.public_id, loadedProject.name)}/settings`
         );
-        const [loadedMembers, loadedUsers, loadedAssets, loadedCovers] =
-          await Promise.all([
-          api<{ items: Member[] }>(`/api/v1/projects/${projectId}/members`),
-          /* Everyone in the workspace, so someone can actually be added --
-             including yourself, if you removed your own grant. */
-          api<{ items: User[] }>('/api/v1/users').catch(() => ({ items: [] as User[] })),
+        const [loadedAssets, loadedCovers] = await Promise.all([
           api<{ items: Asset[] }>(`/api/v1/projects/${projectId}/assets`).catch(() => ({
             items: [] as Asset[]
           })),
@@ -100,8 +79,6 @@
         ]);
         project = loadedProject;
         name = loadedProject.name;
-        members = loadedMembers.items;
-        workspaceUsers = loadedUsers.items;
         coverAssets = loadedAssets.items.filter(
           (asset) => asset.kind === 'video' || asset.kind === 'image'
         );
@@ -140,68 +117,6 @@
     await patch({ name: next }, 'Name saved');
   };
 
-  const setRole = async (member: Member, role: string): Promise<void> => {
-    try {
-      await apiPut(`/api/v1/projects/${projectId}/members/${member.user.id}`, { role });
-      members = members.map((entry) =>
-        entry.user.id === member.user.id ? { ...entry, role } : entry
-      );
-      error = '';
-      saved = `${member.user.name} is now ${role}`;
-    } catch (caught) {
-      error = messageFrom(caught, 'That role could not be changed.');
-    }
-  };
-
-  /* Everyone in the workspace who has no role here yet. */
-  const addable = $derived(
-    workspaceUsers
-      .filter((user) => !members.some((member) => member.user.id === user.id))
-      .sort((a, b) => a.name.localeCompare(b.name))
-  );
-
-  const addMember = async (event: SubmitEvent): Promise<void> => {
-    event.preventDefault();
-    const user = addable.find((candidate) => candidate.id === addUserId);
-    if (!user) return;
-    try {
-      await apiPut(`/api/v1/projects/${projectId}/members/${user.id}`, { role: addRole });
-      members = [...members, { user, role: addRole }];
-      addUserId = '';
-      error = '';
-      saved = `${user.name} added as ${addRole}`;
-    } catch (caught) {
-      error = messageFrom(caught, 'That person could not be added.');
-    }
-  };
-
-  const removeMember = async (member: Member): Promise<void> => {
-    /* Removing yourself is allowed -- a manager may genuinely be leaving -- but
-       it is a door that locks behind you on a restricted project, so it says so
-       rather than just doing it. */
-    const isSelf = member.user.id === auth.user?.id;
-    const locksOut = isSelf && project?.restricted === true && auth.user?.role !== 'admin';
-    const confirmed = await askConfirm({
-      title: isSelf ? 'Remove your own access?' : `Remove ${member.user.name}?`,
-      body: isSelf
-        ? locksOut
-          ? 'This project is restricted, so you will lose access to it immediately and will not be able to add yourself back. A workspace admin, or another manager, would have to.'
-          : 'You will lose your role here. The project is not restricted, so you can still open it as a workspace member.'
-        : `${member.user.name} loses their role on this project. Their notes stay.`,
-      confirmLabel: isSelf ? 'Remove my access' : 'Remove',
-      danger: true
-    });
-    if (!confirmed) return;
-    try {
-      await apiDelete(`/api/v1/projects/${projectId}/members/${member.user.id}`);
-      members = members.filter((entry) => entry.user.id !== member.user.id);
-      error = '';
-      saved = `${member.user.name} removed`;
-      if (locksOut) await goto('/');
-    } catch (caught) {
-      error = messageFrom(caught, 'That member could not be removed.');
-    }
-  };
 
   /* A cover set from a just-uploaded file has no poster yet -- the transcode
      that makes one runs after the upload returns. Rather than show the
@@ -488,58 +403,12 @@
     <section class="panel" aria-label="People">
       <h2>People</h2>
       <p class="sub">Workspace members are added from <a href="/settings/members">workspace settings</a>; roles here are per project.</p>
-      {#if members.length === 0}
-        <p class="empty">No one has a role on this project yet.</p>
-      {/if}
-      {#if isManager}
-        <form class="addform" onsubmit={addMember}>
-          <select bind:value={addUserId} aria-label="Person to add">
-            <option value="" disabled>Add someone…</option>
-            {#each addable as user (user.id)}
-              <option value={user.id}>{user.name} ({user.email})</option>
-            {/each}
-          </select>
-          <select bind:value={addRole} aria-label="Role for the new member">
-            {#each ROLES as role (role)}<option value={role}>{role}</option>{/each}
-          </select>
-          <button type="submit" disabled={!addUserId}>Add</button>
-        </form>
-        {#if addable.length === 0}
-          <p class="empty">Everyone in the workspace already has a role here.</p>
-        {/if}
-      {/if}
-      <ul class="members">
-        {#each members as member (member.user.id)}
-          <li>
-            <span class="who">
-              <Avatar name={member.user.name} id={member.user.id} url={member.user.avatar_url ?? null} size={30} />
-              <span class="whotext">
-                <strong>{member.user.name}</strong>
-                <small>{member.user.email}</small>
-              </span>
-            </span>
-            <span class="rolecell">
-              <select
-                value={member.role}
-                disabled={!isManager}
-                aria-label={`Role for ${member.user.name}`}
-                title={ROLE_NOTES[member.role]}
-                onchange={(event) => void setRole(member, event.currentTarget.value)}
-              >
-                {#each ROLES as role (role)}<option value={role}>{role}</option>{/each}
-              </select>
-            </span>
-            <!-- Quiet until meant: a filled red button on every row made the
-                 list read as a demolition plan. -->
-            <button type="button" class="quiet remove" disabled={!isManager} onclick={() => void removeMember(member)}>Remove</button>
-          </li>
-        {/each}
-      </ul>
-      <p class="rolelegend">
-        {#each ROLES as role, index (role)}
-          <span><strong>{role}</strong> {ROLE_NOTES[role].toLowerCase()}</span>{#if index < ROLES.length - 1}<span class="sep" aria-hidden="true"></span>{/if}
-        {/each}
-      </p>
+      <ProjectMembers
+        {projectId}
+        {isManager}
+        restricted={project.restricted}
+        leaveTo="/"
+      />
     </section>
     </div>
   {:else if loaded}
@@ -581,7 +450,7 @@
   h2 { margin: 0 0 4px; font-size: var(--text-13); font-weight: 600; color: var(--ink-text); }
   .sub { margin: 0 0 12px; color: var(--ink-text-dim); }
   .sub a { color: var(--ink-text); }
-  input, select { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 10px; font: inherit; }
+  input { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 10px; font: inherit; }
 
   /* ---- identity ---- */
   .identity { padding: var(--pad-3); }
@@ -606,25 +475,6 @@
   .check span { display: grid; gap: 2px; }
   .check small { color: var(--ink-text-dim); }
 
-  .members { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-  .members li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 8px; margin: 0 -8px; border-radius: var(--radius); }
-  .addform { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
-  .addform select { min-width: 0; }
-  .addform select:first-child { flex: 1; max-width: 420px; }
-  .members li:hover { background: var(--ink-200); }
-  .who { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .whotext { display: grid; gap: 2px; min-width: 0; }
-  .who small { color: var(--ink-text-dim); }
-  .rolecell { display: grid; justify-items: end; }
-  /* Removing someone is a real action, not the row's theme: quiet until
-     pointed at, and only then does it say what it costs. */
-  button.remove { color: var(--ink-text-dim); }
-  button.remove:hover:not(:disabled) { background: var(--warn); color: #12080a; }
-  /* One legend under the list instead of a note per row saying the same
-     four sentences over and over. */
-  .rolelegend { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0 0; color: var(--ink-text-dim); font-size: var(--text-12); }
-  .rolelegend strong { color: var(--ink-text); font-weight: 600; }
-  .rolelegend .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--ink-300); }
 
   button { border: 0; border-radius: var(--radius); background: var(--accent); color: #0b1214; padding: 8px 14px; font-size: var(--text-13); font-weight: 600; }
   button:hover { background: var(--accent-bright); }
@@ -634,7 +484,6 @@
   .hint, .empty { margin: 0 var(--pad-4) 12px; color: var(--ink-text-dim); }
   .error { margin: 0 var(--pad-4) 12px; color: var(--warn); }
   button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
-  select:focus-visible { outline: none; background: var(--ink-300); }
 
   /* Cover */
   .coverpreview { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: var(--radius); overflow: hidden; display: grid; }
@@ -667,17 +516,11 @@
   .pickdrop:hover { background: var(--warn); }
   .pickone:not(.active):hover { outline: 1px solid var(--ink-400, var(--ink-300)); outline-offset: -1px; }
 
-  /* Phone: panels stack single-column inside tighter gutters (the 400px track
-     minimum was the page's horizontal overflow), and a member row becomes two
-     lines — who they are, then what they can do. */
+  /* Phone: panels stack single-column inside tighter gutters; the 400px track
+     minimum was the page's horizontal overflow. */
   @media (max-width: 720px) {
     .wash { padding: var(--pad-2) var(--pad-2) var(--pad-3); }
     .panels { grid-template-columns: 1fr; margin: 0 var(--pad-2); }
-    .members li {
-      grid-template-columns: minmax(0, 1fr) auto;
-      row-gap: 6px;
-    }
-    .members li .who { grid-column: 1 / -1; }
   }
   /* Touch cannot hover a delete button into existence. */
   @media (pointer: coarse) {

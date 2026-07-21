@@ -1,0 +1,15 @@
+-- A chosen thumbnail for an asset.
+--
+-- The generated poster is a frame taken ten percent into the file, which is a
+-- guess and often a black one: a slate, a fade up, a hold on an empty room.
+-- What a client sees first in a share room should be a decision, not an
+-- arithmetic accident, so an asset may carry a picture chosen for it: either
+-- an uploaded image or a frame picked out of the footage in the viewer.
+--
+-- It is a blob key on the asset, not a rendition, for two reasons. The
+-- renditions table's kind CHECK cannot take a new value without rebuilding the
+-- table on every deployment including D1, and a chosen thumbnail belongs to
+-- the asset rather than to one version of it: it should survive a new version
+-- landing, which is exactly when the generated poster changes underneath you.
+-- Null means the generated poster stands, so clearing the choice is reversible.
+ALTER TABLE assets ADD COLUMN thumbnail_blob_key TEXT;

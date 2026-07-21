@@ -2,6 +2,12 @@ import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  applyNodeMigrations,
+  createNodeDb,
+  users,
+  workspaces,
+} from "@onelight/db";
 import type { MailMessage, Mailer } from "./mailer.js";
 import {
   DEFAULT_GC_INTERVAL_MS,
@@ -9,6 +15,7 @@ import {
   DEFAULT_UPLOAD_REAP_AFTER_MS,
   diffOrphanBlobs,
   maintenanceConfigFromEnv,
+  referencedBlobKeys,
   notificationDeepLink,
   planEmailSweep,
   subjectForKind,
@@ -276,6 +283,37 @@ describe("blob gc diff", () => {
       );
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /* Avatars sit under the same blob root as renditions, so a table missing
+     from referencedBlobKeys is not a missed cleanup: it is a delete. This
+     shipped, and every avatar vanished a day after upload. */
+  it("counts user avatars as referenced", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await db
+        .insert(workspaces)
+        .values({ id: "ws-1", name: "Studio", createdAt: 1_000 })
+        .run();
+      await db
+        .insert(users)
+        .values({
+          id: "user-1",
+          workspaceId: "ws-1",
+          email: "a@example.com",
+          name: "A",
+          role: "admin",
+          avatarKey: "avatars/user-1.jpg",
+          createdAt: 1_000,
+          updatedAt: 1_000,
+        })
+        .run();
+      const keys = await referencedBlobKeys(db);
+      expect(keys.has("avatars/user-1.jpg")).toBe(true);
+    } finally {
+      sqlite.close();
     }
   });
 });

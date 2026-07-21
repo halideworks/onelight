@@ -55,6 +55,9 @@
        new version of this asset instead of a new asset. */
     versionOf: string | null;
     carryForward: boolean;
+    /* The folder in force when the file was dropped, not when it finished.
+       Uploads run unattended now, so the selection will have moved on. */
+    folderId: string | null;
   };
 
   let project = $state<Project | null>(null);
@@ -1038,6 +1041,59 @@
   });
   const displayed = $derived(view === 'grid' ? assets : sortedAssets);
 
+  /* How big a card is, remembered per person. A wall of contact-sheet
+     thumbnails and a wall of poster-sized ones are both right, for different
+     work: eight hundred stills to sort through, or four shots to look at. */
+  const SIZE_KEY = 'onelight.assets.cardsize';
+  const CARD_SIZES = [130, 200, 280, 380];
+  let sizeStep = $state(1);
+  $effect(() => {
+    try {
+      const stored = Number(localStorage.getItem(SIZE_KEY));
+      if (Number.isInteger(stored) && stored >= 0 && stored < CARD_SIZES.length) sizeStep = stored;
+    } catch {
+      /* Storage can be unavailable; the default size stands. */
+    }
+  });
+  const setSize = (next: number): void => {
+    sizeStep = next;
+    try {
+      localStorage.setItem(SIZE_KEY, String(next));
+    } catch {
+      /* Non-persistent, still applied for the session. */
+    }
+  };
+
+  /* Codec and picture size, read out of the stored probe. media_info is the
+     raw ffprobe record: the answer is in its video stream, not at the top. */
+  const formatOf = (version: { media_info?: Record<string, unknown> | null } | null | undefined): string => {
+    const info = version?.media_info;
+    const streams = Array.isArray(info?.streams) ? (info.streams as Array<Record<string, unknown>>) : [];
+    const video = streams.find((stream) => stream.codec_type === 'video') ?? streams[0];
+    if (!video) return '';
+    const codec = typeof video.codec_name === 'string' ? video.codec_name : '';
+    const width = typeof video.width === 'number' ? video.width : 0;
+    const height = typeof video.height === 'number' ? video.height : 0;
+    const size = width > 0 && height > 0 ? `${String(width)}x${String(height)}` : '';
+    return [codec, size].filter(Boolean).join(' ');
+  };
+
+  /* Running time from the current version's probe: integer frames over a
+     rational rate, never seconds off the wire. */
+  const runtimeOf = (version: { duration_frames?: number | null; frame_rate_num?: number | null; frame_rate_den?: number | null } | null | undefined): string => {
+    const frames = version?.duration_frames ?? null;
+    const num = version?.frame_rate_num ?? null;
+    const den = version?.frame_rate_den ?? null;
+    if (frames === null || !num || !den) return '';
+    const seconds = Math.round((frames * den) / num);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const pad = (value: number): string => String(value).padStart(2, '0');
+    return hours > 0
+      ? `${String(hours)}:${pad(minutes % 60)}:${pad(seconds % 60)}`
+      : `${String(minutes)}:${pad(seconds % 60)}`;
+  };
+
   let selected = $state<string[]>([]);
   let anchor = $state<string | null>(null);
   const isSelected = (id: string): boolean => selected.includes(id);
@@ -1396,9 +1452,12 @@
       status: 'queued' as const,
       error: '',
       versionOf: null,
-      carryForward: true
+      carryForward: true,
+      folderId: selectedFolder
     }));
     queue = [...queue, ...additions];
+    /* Choosing the files is the decision; there is nothing left to confirm. */
+    void pump();
   };
 
   const chooseFiles = (event: Event): void => {
@@ -1503,7 +1562,7 @@
         await apiPost(`/api/v1/projects/${id}/assets`, {
           upload_id: sessionId,
           name: item.file.name,
-          ...(selectedFolder ? { folder_id: selectedFolder } : {})
+          ...(item.folderId ? { folder_id: item.folderId } : {})
         });
         await loadAssets(id);
       }
@@ -1521,27 +1580,36 @@
     }
   };
 
-  const uploadAll = async (event: SubmitEvent): Promise<void> => {
-    event.preventDefault();
+  /* The single serial driver. Dropping files, resuming one and resuming all
+     do not upload anything themselves: they mark work queued and wake the
+     pump, so no file can be run twice by two callers at once. */
+  const pump = async (): Promise<void> => {
     if (uploading) return;
     uploading = true;
     try {
-      for (const item of queue) {
-        if (item.status === 'queued' || item.status === 'failed') await uploadOne(item);
+      for (;;) {
+        /* Re-read the queue every pass: files dropped while this is running
+           join the same run instead of waiting for it to drain. Failed items
+           are deliberately not picked up -- an error that repeats forever is
+           not progress, so resuming stays a decision. */
+        const next = queue.find((item) => item.status === 'queued');
+        if (!next) break;
+        await uploadOne(next);
       }
     } finally {
       uploading = false;
     }
   };
 
-  const retry = async (item: UploadItem): Promise<void> => {
-    if (uploading) return;
-    uploading = true;
-    try {
-      await uploadOne(item);
-    } finally {
-      uploading = false;
-    }
+  const retry = (item: UploadItem): void => {
+    if (item.status !== 'failed') return;
+    item.status = 'queued';
+    item.error = '';
+    void pump();
+  };
+
+  const retryAll = (): void => {
+    for (const item of queue) if (item.status === 'failed') retry(item);
   };
 
   const clearFinished = (): void => {
@@ -1549,8 +1617,7 @@
     queue = queue.filter((item) => item.status !== 'done');
   };
 
-  const hasPending = $derived(queue.some((item) => item.status === 'queued' || item.status === 'failed'));
-  const pendingCount = $derived(queue.filter((item) => item.status === 'queued' || item.status === 'failed').length);
+  const failedCount = $derived(queue.filter((item) => item.status === 'failed').length);
   const overall = $derived.by(() => {
     let total = 0;
     let bytes = 0;
@@ -1852,7 +1919,8 @@
           ondragleave={() => (dropActive = false)}
           ondrop={onQueueDrop}
         >
-          <form class="upload" onsubmit={uploadAll}>
+          <!-- No form and no submit: choosing the files starts the upload. -->
+          <div class="upload">
             <span class="upload-label">Add media to {selectedName}</span>
             <label class="filebtn">Add files
               <input type="file" multiple onchange={chooseFiles} />
@@ -1860,14 +1928,16 @@
             <label class="filebtn folderbtn">Add a folder
               <input type="file" webkitdirectory multiple onchange={chooseFiles} />
             </label>
-            <button type="submit" class="uploadbtn" class:ready={hasPending && !uploading} disabled={!hasPending || uploading}>
-              {#if uploading}Uploading{:else if pendingCount > 0}Upload {pendingCount} {pendingCount === 1 ? 'file' : 'files'}{:else}Upload{/if}
-            </button>
+            {#if failedCount > 0}
+              <button type="button" class="uploadbtn ready" onclick={retryAll}>
+                Resume {failedCount} {failedCount === 1 ? 'file' : 'files'}
+              </button>
+            {/if}
             {#if queue.some((item) => item.status === 'done')}
               <button type="button" class="quiet" onclick={clearFinished}>Clear finished</button>
             {/if}
-          </form>
-          <p class="hint kbdhint">Drop files or folders anywhere in this panel. Folder structure is kept as each file's relative path.</p>
+          </div>
+          <p class="hint kbdhint">Drop files or folders anywhere in this panel. Uploading starts as soon as they land, and folder structure is kept as each file's relative path.</p>
           {#if queue.length > 1}
             <p class="summary tc" aria-live="polite">
               {overall.done} of {overall.count} files, {formatBytes(overall.bytes)} of {formatBytes(overall.total)}{overall.rate > 0 ? `, ${formatRate(overall.rate)}` : ''}
@@ -1893,17 +1963,22 @@
                       <span class="qpath">{item.relativePath}</span>
                     {/if}
                   </span>
+                  <!-- The pick stays live while the bytes move: the branch is
+                       read at commit time, so it can be made any time before
+                       the file lands. Once it has landed it is a decision
+                       already taken, and the version menu on the asset owns
+                       the rest. -->
                   <span class="stackpick">
                     <AssetSelect
                       options={versionOptions}
                       bind:value={item.versionOf}
                       label={`New version of, for ${item.file.name}`}
                       placeholder="New version of..."
-                      disabled={item.status !== 'queued' && item.status !== 'failed'}
+                      disabled={item.status === 'done' || item.status === 'quarantined'}
                     />
                     {#if item.versionOf}
                       <label class="carry">
-                        <input type="checkbox" bind:checked={item.carryForward} disabled={item.status !== 'queued' && item.status !== 'failed'} />
+                        <input type="checkbox" bind:checked={item.carryForward} disabled={item.status === 'done' || item.status === 'quarantined'} />
                         Carry comments forward
                       </label>
                     {/if}
@@ -1916,7 +1991,7 @@
                     aria-valuemax="100"
                   ><span style={`width: ${item.file.size > 0 ? (item.bytes / item.file.size) * 100 : 0}%;`}></span></span>
                   <span class="state tc">
-                    {#if item.status === 'queued'}Ready to upload
+                    {#if item.status === 'queued'}Waiting
                     {:else if item.status === 'uploading'}{formatBytes(item.bytes)} of {formatBytes(item.file.size)}{item.rate > 0 ? `, ${formatRate(item.rate)}` : ''}
                     {:else if item.status === 'done'}Done
                     {:else if item.status === 'quarantined'}Quarantined
@@ -1935,6 +2010,20 @@
         <div class="browser-bar">
           <h2 class="browser-title">{selectedName}</h2>
           <span class="grow"></span>
+          {#if view === 'grid'}
+            <label class="sizectl">
+              <span class="vh">Thumbnail size</span>
+              <input
+                type="range"
+                min="0"
+                max={CARD_SIZES.length - 1}
+                step="1"
+                value={sizeStep}
+                aria-label="Thumbnail size"
+                oninput={(event) => setSize(Number(event.currentTarget.value))}
+              />
+            </label>
+          {/if}
           <div class="views" role="group" aria-label="View mode">
             <button type="button" class="viewbtn" aria-pressed={view === 'grid'} onclick={() => setView('grid')}>Grid</button>
             <button type="button" class="viewbtn" aria-pressed={view === 'list'} onclick={() => setView('list')}>List</button>
@@ -2017,7 +2106,13 @@
         {#if displayed.length === 0}
           <p class="empty">{selectedFolder ? 'No assets in this folder. Drop media above to fill it.' : 'No assets yet. Upload media to start a review.'}</p>
         {:else if view === 'grid'}
-          <div class="grid" role="listbox" aria-multiselectable="true" aria-label="Assets">
+          <div
+            class="grid"
+            role="listbox"
+            aria-multiselectable="true"
+            aria-label="Assets"
+            style={`--card: ${String(CARD_SIZES[sizeStep] ?? 200)}px;`}
+          >
             {#each displayed as asset (asset.id)}
               {@const entry = media.entries[asset.id]}
               {@const detail = entry?.media}
@@ -2068,6 +2163,7 @@
             {/each}
           </div>
         {:else}
+          <div class="listwrap">
           <table class="list" aria-label="Assets">
             <thead>
               <tr>
@@ -2082,6 +2178,10 @@
                 </th>
                 {@render sortHeader('name', 'Name')}
                 {@render sortHeader('status', 'Status')}
+                <th>Kind</th>
+                <th>Runtime</th>
+                <th>Size</th>
+                <th>Format</th>
                 <th>Versions</th>
                 {@render sortHeader('created_at', 'Created')}
                 {@render sortHeader('updated_at', 'Updated')}
@@ -2139,6 +2239,12 @@
                       <span class="chip t-{detail?.transcodeStatus}">{transcodeLabel(detail?.transcodeStatus ?? null)}</span>
                     {/if}
                   </td>
+                  <td class="kindcell">{asset.kind}</td>
+                  <td class="tc">{runtimeOf(detail?.currentVersion)}</td>
+                  <td class="tc">{detail?.currentVersion?.size ? formatBytes(detail.currentVersion.size) : ''}</td>
+                  <!-- What it actually is, from the probe: a list of names
+                       cannot tell a ProRes from an H.264 named the same. -->
+                  <td class="fmtcell">{formatOf(detail?.currentVersion)}</td>
                   <td class="tc">{detail ? detail.versionCount : ''}</td>
                   <td class="tc" title={whenAbsolute(asset.created_at)}>{whenRelative(asset.created_at)}</td>
                   <td class="tc" title={whenAbsolute(asset.updated_at)}>{whenRelative(asset.updated_at)}</td>
@@ -2146,6 +2252,7 @@
               {/each}
             </tbody>
           </table>
+          </div>
           <p class="hint">Sorting orders the {assets.length} loaded assets; load more to include the rest.</p>
         {/if}
         {#if nextCursor}
@@ -2514,11 +2621,18 @@
   .movebar label { display: grid; gap: 6px; color: var(--ink-text-dim); font-size: var(--text-13); font-weight: 500; min-width: 220px; }
 
   /* ---- grid ---- */
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-top: var(--pad-2); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card, 200px), 1fr)); gap: 14px; margin-top: var(--pad-2); }
+  .sizectl { display: flex; align-items: center; }
+  .sizectl input { width: 96px; accent-color: var(--accent); }
+  /* Visually hidden, still read aloud. */
+  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   /* Two-up thumbnails on phones: one 358px column made each card a monument
      and the page a kilometer. 170px thumbs still read fine for picking a clip. */
   @media (max-width: 720px) {
+    /* Two up on a phone whatever the slider says: the size control is a
+       desktop affordance and a 380px card would be one per screen. */
     .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+    .sizectl { display: none; }
   }
   .card { cursor: pointer; }
   /* List rows carry the same poster the grid does, at row height. */
@@ -2560,6 +2674,18 @@
   .namecell a { color: var(--ink-text); font-weight: 500; text-decoration: none; }
   .namecell a:hover { color: var(--accent-bright); }
   td.tc, .state.tc, .summary.tc { font-variant-numeric: tabular-nums; }
+  table.list td.tc { white-space: nowrap; }
+  .kindcell, .fmtcell { color: var(--ink-text-dim); white-space: nowrap; }
+  /* The list is wide now: it scrolls sideways in its own box rather than
+     making the page do it. */
+  .listwrap { overflow-x: auto; }
+  /* Narrow: the technical columns (kind, runtime, size, format) go and the
+     name, status and dates stay. A row that needs a sideways scroll to read a
+     filename is not a list. */
+  @media (max-width: 900px) {
+    table.list th:nth-child(n + 4):nth-child(-n + 7),
+    table.list td:nth-child(n + 4):nth-child(-n + 7) { display: none; }
+  }
   input[type='checkbox'] { accent-color: var(--accent); margin: 0; }
 
   .more { margin-top: var(--pad-2); }

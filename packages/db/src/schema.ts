@@ -343,6 +343,10 @@ export const assets = sqliteTable(
       .default("none"),
     description: text("description").notNull().default(""),
     tagsJson: text("tags_json").notNull().default("[]"),
+    /* A picture chosen for this asset (migration 0019), overriding the
+       generated poster wherever a thumbnail is shown. Null means the poster
+       stands. */
+    thumbnailBlobKey: text("thumbnail_blob_key"),
     deletedAt: integer("deleted_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),

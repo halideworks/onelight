@@ -16,7 +16,8 @@
   import { dismissable } from '$lib/dismiss.js';
   import { holdRepeat } from '$lib/hold-repeat.js';
   import { replaceState } from '$app/navigation';
-  import { api, apiDelete, apiPatch, apiPost, messageFrom } from '$lib/api.js';
+  import { api, apiDelete, apiPatch, apiPost, apiPut, messageFrom } from '$lib/api.js';
+  import { uploadFile } from '$lib/upload.js';
   import { projectEvents } from '$lib/sse.svelte.js';
   import AttachmentImage from '$lib/AttachmentImage.svelte';
   import { auth } from '$lib/auth.svelte.js';
@@ -38,6 +39,8 @@
     kind: string;
     status: string;
     current_version_id: string | null;
+    has_thumbnail?: boolean;
+    updated_at?: number;
   };
   type Version = {
     id: string;
@@ -137,6 +140,14 @@
   let prevVersion = $state<Version | null>(null);
   let prevOpenCount = $state(0);
   let carrying = $state(false);
+  let carryNotice = $state('');
+  /* Status lines say what just happened, then get out of the way. */
+  const noticeFor = (message: string): void => {
+    carryNotice = message;
+    setTimeout(() => {
+      if (carryNotice === message) carryNotice = '';
+    }, 4000);
+  };
   /* The Info drawer: everything the probe knows about the version on screen,
      grouped the way a post professional reads it -- picture, color, motion,
      sound, file. The full ffprobe record is stored per version; this renders
@@ -744,21 +755,109 @@
     }
   };
 
-  const carryForward = async (): Promise<void> => {
+  /* Copy the open notes of any version onto the one on screen. The banner
+     below the notes is the common case (the version just before this one);
+     the version menu aims the same thing anywhere in the stack, which is what
+     a recut needs when v4 is really a revision of v2. Repeat presses are safe:
+     the server skips sources already carried here. */
+  const carryFrom = async (from: Version): Promise<void> => {
     const target = selectedVersionId;
-    const from = prevVersion;
-    if (!target || !from || carrying) return;
+    if (!target || carrying || from.id === target) return;
     carrying = true;
     railError = '';
+    carryNotice = '';
     try {
-      await apiPost(`/api/v1/versions/${target}/carry-forward`, { from_version_id: from.id });
+      const result = await apiPost<{ items: string[] }>(
+        `/api/v1/versions/${target}/carry-forward`,
+        { from_version_id: from.id }
+      );
+      const count = result.items.length;
+      noticeFor(
+        count === 0
+          ? `Every open note on v${from.version_no} is already here.`
+          : `${count} ${count === 1 ? 'note' : 'notes'} copied from v${from.version_no}.`
+      );
       const token = versionToken;
       await refreshComments(target, token);
       await checkCarrySource(token);
     } catch (caught) {
-      railError = messageFrom(caught, 'Notes could not be carried forward.');
+      railError = messageFrom(caught, 'Notes could not be copied.');
     } finally {
       carrying = false;
+    }
+  };
+
+  const carryForward = async (): Promise<void> => {
+    if (prevVersion) await carryFrom(prevVersion);
+  };
+
+  /* ---- the chosen thumbnail ----
+
+     The generated poster is a frame ten percent in, which is a guess: a slate,
+     a fade up, an empty room. Here the picture can be decided instead, either
+     by keeping the frame on screen or by uploading one. Both take the same
+     road: a PNG through an ordinary upload session, then PUT
+     /assets/:id/thumbnail. No transcode, because a still is already a still. */
+  let thumbBusy = $state(false);
+  let thumbMenuOpen = $state(false);
+  let thumbNotice = $state('');
+
+  const putThumbnail = async (file: File): Promise<void> => {
+    const target = asset;
+    const pid = projectId;
+    if (!target || !pid || thumbBusy) return;
+    thumbBusy = true;
+    thumbNotice = '';
+    railError = '';
+    try {
+      const sessionId = await uploadFile({ projectId: pid, file, relativePath: '' });
+      asset = await apiPut<Asset>(`/api/v1/assets/${target.id}/thumbnail`, { upload_id: sessionId });
+      thumbNotice = 'Thumbnail set.';
+      setTimeout(() => {
+        if (thumbNotice === 'Thumbnail set.') thumbNotice = '';
+      }, 4000);
+    } catch (caught) {
+      railError = messageFrom(caught, 'That thumbnail could not be set.');
+    } finally {
+      thumbBusy = false;
+    }
+  };
+
+  const thumbnailFromFrame = async (): Promise<void> => {
+    thumbMenuOpen = false;
+    const blob = await player?.captureFrame();
+    if (!blob) {
+      railError = 'This frame could not be captured. Wait for the picture to load, then try again.';
+      return;
+    }
+    await putThumbnail(new File([blob], `thumbnail-${String(currentFrame)}.png`, { type: 'image/png' }));
+  };
+
+  const thumbnailFromFile = async (event: Event): Promise<void> => {
+    thumbMenuOpen = false;
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (file) await putThumbnail(file);
+  };
+
+  const clearThumbnail = async (): Promise<void> => {
+    thumbMenuOpen = false;
+    const target = asset;
+    if (!target || thumbBusy) return;
+    thumbBusy = true;
+    thumbNotice = '';
+    try {
+      await apiDelete(`/api/v1/assets/${target.id}/thumbnail`);
+      asset = { ...target, has_thumbnail: false, updated_at: Date.now() };
+      thumbNotice = 'The generated poster stands again.';
+      setTimeout(() => {
+        if (thumbNotice === 'The generated poster stands again.') thumbNotice = '';
+      }, 4000);
+    } catch (caught) {
+      railError = messageFrom(caught, 'That thumbnail could not be cleared.');
+    } finally {
+      thumbBusy = false;
     }
   };
 
@@ -1274,12 +1373,55 @@
                   </span>
                   <span class="vmeta">{memberName(version.uploaded_by)} · {whenRelative(version.created_at)}</span>
                 </button>
-                {#if asset && version.id !== asset.current_version_id}
-                  <button type="button" class="quiet setcur" onclick={() => void setCurrent(version)}>Set current</button>
-                {/if}
+                <span class="vacts">
+                  {#if asset && version.id !== asset.current_version_id}
+                    <button type="button" class="quiet setcur" onclick={() => void setCurrent(version)}>Set current</button>
+                  {/if}
+                  {#if version.id !== selectedVersionId}
+                    <!-- Copies onto the version on screen, not onto this row:
+                         you are pulling notes towards what you are watching. -->
+                    <button
+                      type="button"
+                      class="quiet setcur"
+                      disabled={carrying}
+                      title={`Copy the open notes of v${version.version_no} onto v${selectedVersion?.version_no ?? '--'}`}
+                      onclick={() => { versionMenuOpen = false; void carryFrom(version); }}
+                    >Copy notes here</button>
+                  {/if}
+                </span>
               </div>
             {/each}
             {#if railError}<p class="error-text" role="alert">{railError}</p>{/if}
+          </div>
+        {/if}
+      </div>
+      <!-- The picture this asset shows everywhere else: in the project grid,
+           in a share room, in a link preview. Decided here, where the footage
+           is on screen, because that is the only place the decision can be
+           made by looking. -->
+      <div class="thumbwrap" use:dismissable={() => { thumbMenuOpen = false; }}>
+        <button
+          type="button"
+          class="thumb-trigger"
+          aria-haspopup="menu"
+          aria-expanded={thumbMenuOpen}
+          disabled={thumbBusy}
+          onclick={() => { thumbMenuOpen = !thumbMenuOpen; }}
+        >{thumbBusy ? 'Saving' : 'Thumbnail'}</button>
+        {#if thumbMenuOpen}
+          <div class="thumb-panel" role="menu" tabindex="-1">
+            <button type="button" role="menuitem" onclick={() => void thumbnailFromFrame()}>
+              Use this frame
+            </button>
+            <label class="thumb-upload">
+              Upload a picture…
+              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onchange={(event) => void thumbnailFromFile(event)} />
+            </label>
+            {#if asset?.has_thumbnail}
+              <button type="button" role="menuitem" onclick={() => void clearThumbnail()}>
+                Use the generated poster
+              </button>
+            {/if}
           </div>
         {/if}
       </div>
@@ -1478,6 +1620,8 @@
               </button>
             </div>
           {/if}
+          {#if carryNotice}<p class="carry-note" role="status">{carryNotice}</p>{/if}
+          {#if thumbNotice}<p class="carry-note" role="status">{thumbNotice}</p>{/if}
           {#snippet note(comment: Comment, isReply: boolean)}
             <!-- The whole note seeks to its frame. Buttons and links inside stop
                  the event, so Resolve and #tag still do their own thing.
@@ -1745,7 +1889,8 @@
   .download-link:disabled { opacity: 0.6; cursor: default; }
   .compare-link:hover { background: var(--n-300); color: var(--n-900); }
   .infowrap { position: relative; }
-  .info-trigger { background: var(--n-150); color: var(--n-800); padding: 8px 12px; border-radius: var(--radius); font-size: var(--text-13); font-weight: 500; }
+  .info-trigger, .thumb-trigger { background: var(--n-150); color: var(--n-800); padding: 8px 12px; border-radius: var(--radius); font-size: var(--text-13); font-weight: 500; }
+  .thumb-trigger:disabled { opacity: 0.5; cursor: default; }
   .info-trigger:hover, .info-trigger[aria-expanded='true'] { background: var(--n-300); color: var(--n-900); }
   .info-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: 320px; max-height: 70vh; overflow-y: auto; background: var(--n-100); border: 1px solid var(--n-300); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   .info-group h3 { margin: 0 0 6px; font-size: var(--text-12); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--n-600); display: flex; align-items: center; gap: 8px; }
@@ -1855,7 +2000,9 @@
   .vstate { color: var(--n-600); font-size: var(--text-13); }
   .vstate.failed { color: var(--warn); }
   .vmeta { color: var(--n-600); font-size: var(--text-13); }
+  .vacts { display: flex; flex-wrap: wrap; gap: 6px; }
   .setcur { justify-self: start; margin: 0 0 8px 10px; padding: 3px 8px; font-size: var(--text-13); }
+  .vacts .setcur + .setcur { margin-left: 0; }
 
   /* ---- notes ---- */
   .notes { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: var(--pad-2); gap: 10px; }
@@ -1942,6 +2089,15 @@
   .exchange-note { margin: 0; font-size: var(--text-12); color: var(--n-700); }
   .tagfilter { margin-left: auto; background: var(--n-300); color: var(--n-900); font-weight: 600; padding: 4px 10px; }
   .tagfilter span { color: var(--n-600); font-weight: 400; margin-left: 6px; }
+  .thumbwrap { position: relative; }
+  .thumb-panel { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 200px; display: grid; gap: 1px; padding: 4px; border-radius: var(--radius); background: var(--n-100); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35); }
+  .thumb-panel button, .thumb-upload { display: block; width: 100%; border: 0; border-radius: 2px; background: none; color: var(--n-900); padding: 8px 10px; font-size: var(--text-13); text-align: left; cursor: pointer; }
+  .thumb-panel button:hover, .thumb-upload:hover { background: var(--n-200); }
+  /* The file input itself is unstylable across browsers; the label is the
+     button, and the input is the part that never shows. */
+  .thumb-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .thumb-upload:focus-within { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
+  .carry-note { margin: 0 0 12px; color: var(--n-700); font-size: var(--text-13); }
   .carry-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 12px; margin: 0 0 12px; background: var(--n-150); border-radius: var(--radius); color: var(--n-800); }
   .notes article { display: flex; justify-content: space-between; gap: 20px; padding: 10px; margin: 0 0 2px; border-radius: var(--radius); }
   .notes article:hover { background: var(--n-150); }
