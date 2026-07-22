@@ -1129,6 +1129,10 @@
 
   const handleLoadedMetadata = (): void => {
     if (!video) return;
+    /* A rendition swap replaces the source under any seek that was in flight;
+       its seeked is not coming. */
+    seekInFlight = false;
+    queuedSeekTarget = null;
     /* The picture's own shape, which every rendition of a version shares. The
        stage is sized from this rather than from the decoded pixels, so
        switching 540 to 1080 rescales the picture inside a box that does not
@@ -1180,6 +1184,26 @@
      playhead backward after the pointer settles. */
   let seekGeneration = 0;
 
+  /* One seek in flight at a time; the newest target waits for it. Assigning
+     currentTime while the previous seek is still decoding CANCELS it, so a
+     scrub throttled to one seek per animation frame still starved the decoder:
+     measured on a drag, 129 seeks were issued and 4 completed, a picture
+     changing under 4 times a second. Serialized, every issued seek presents a
+     frame, and the pointer's latest position is what lands next. The 300ms
+     escape hatch covers a seeked that never comes back (an element swapped or
+     errored mid-seek), where waiting forever would freeze all seeking. */
+  let seekInFlight = false;
+  let seekInFlightSince = 0;
+  let queuedSeekTarget: number | null = null;
+
+  const handleSeeked = (): void => {
+    seekInFlight = false;
+    if (queuedSeekTarget === null) return;
+    const next = queuedSeekTarget;
+    queuedSeekTarget = null;
+    if (video && video.readyState > 0) issueSeek(next);
+  };
+
   /* Seek a quarter into the frame (see SEEK_POSITION_IN_FRAME). With rVFC,
      verify the presented mediaTime maps to
      the target frame and re-seek once if it does not. */
@@ -1189,6 +1213,18 @@
       return;
     }
     const next = boundedFrame(targetFrame);
+    if (seekInFlight && performance.now() - seekInFlightSince < 300) {
+      queuedSeekTarget = next;
+      return;
+    }
+    issueSeek(next);
+  };
+
+  const issueSeek = (next: number): void => {
+    if (!video) return;
+    seekInFlight = true;
+    seekInFlightSince = performance.now();
+    queuedSeekTarget = null;
     const generation = ++seekGeneration;
     video.currentTime = mediaTimeInsideFrame(next, rate);
     if (hasRvfc) {
@@ -1196,10 +1232,23 @@
       const verify = (_now: number, metadata: VideoFrameCallbackMetadata): void => {
         if (!video || retried) return;
         /* A later seek has superseded this one: leave the playhead where the
-           newer target put it. */
+           newer target put it. A queued target counts -- the verify can fire
+           in the rendering step before the seeked task issues it, and a retry
+           here would cancel that newer seek to re-land an abandoned one. */
         if (isVerifyStale(generation, seekGeneration)) return;
+        if (queuedSeekTarget !== null) return;
+        /* Still seeking: the frame in hand was presented by the PREVIOUS seek,
+           not this one, and judging this target by it would "retry" a seek that
+           is already on its way -- cancelling it. Wait for a frame this seek
+           actually presented. */
+        if (video.seeking) {
+          pictureElement()?.requestVideoFrameCallback(verify);
+          return;
+        }
         if (frameAtMediaTime(metadata.mediaTime, rate) !== next) {
           retried = true;
+          seekInFlight = true;
+          seekInFlightSince = performance.now();
           video.currentTime = mediaTimeInsideFrame(next, rate);
         }
       };
@@ -1501,6 +1550,7 @@
           bind:volume
           ontimeupdate={handleTimeUpdate}
           onloadedmetadata={handleLoadedMetadata}
+          onseeked={handleSeeked}
           onloadeddata={() => { pictureIn = true; }}
           onplay={() => onplaystate?.(true)}
           onpause={() => onplaystate?.(false)}
@@ -1529,6 +1579,7 @@
         playsinline
         ontimeupdate={hasRvfc ? undefined : handleTimeUpdate}
         onloadedmetadata={handleLoadedMetadata}
+        onseeked={handleSeeked}
         onloadeddata={() => { pictureIn = true; }}
         onplay={() => onplaystate?.(true)}
         onpause={() => onplaystate?.(false)}
