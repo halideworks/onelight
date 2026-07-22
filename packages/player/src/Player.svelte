@@ -17,6 +17,7 @@
   import WaveformStage from './WaveformStage.svelte';
   import {
     applyMark,
+    ignoresAutoRepeat,
     isRangeDrag,
     isVerifyStale,
     rangeFromClick,
@@ -1216,6 +1217,16 @@
     reverseSpeed = 0;
   };
 
+  /* Leaving the shuttle puts the element back at speed one. Nothing read a
+     stale rate directly, but the rendition-switch restore CAPTURES
+     video.playbackRate and reapplies it after the swap: shuttle to 4x, stop,
+     change quality, and playback resumed at four times speed with no shuttle
+     showing and the sound unusable. The element should not carry a speed that
+     no longer describes what the transport is doing. */
+  const restoreRate = (): void => {
+    if (video && video.playbackRate !== 1) video.playbackRate = 1;
+  };
+
   /* Any explicit transport action cancels a rendition-switch restore in
      flight: the reviewer's intent supersedes the frame/play state captured
      before the swap, and letting the restore run would fight it (for example
@@ -1232,6 +1243,7 @@
     stopReverse();
     forwardSpeed = 0;
     video?.pause();
+    restoreRate();
     seekFrame(targetFrame);
   };
 
@@ -1260,6 +1272,7 @@
     stopReverse();
     forwardSpeed = 0;
     video.pause();
+    restoreRate();
   };
 
   const playForward = (): void => {
@@ -1279,6 +1292,7 @@
     cancelPendingRestore();
     video.pause();
     forwardSpeed = 0;
+    restoreRate();
     reverseSpeed = reverseSpeed > 0 ? Math.min(4, reverseSpeed * 2) : 1;
     if (reverseTimer === null) {
       reverseTimer = setInterval(
@@ -1352,6 +1366,12 @@
     )
       return;
     const key = event.key.toLowerCase();
+    /* The operating system is allowed to repeat a step, not to escalate a
+       shuttle or flip a toggle. See ignoresAutoRepeat for what this was. */
+    if (event.repeat && ignoresAutoRepeat(event.key)) {
+      event.preventDefault();
+      return;
+    }
     if (allowDrawing && key === 'd') {
       event.preventDefault();
       toggleDraw();

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyMark,
+  ignoresAutoRepeat,
   isRangeDrag,
   isVerifyStale,
   rangeFromClick,
@@ -82,6 +83,41 @@ describe("mark ordering", () => {
   it("re-marking on the valid side leaves the other mark alone", () => {
     expect(applyMark("in", 5, 10, 50)).toEqual({ in: 5, out: 50 });
     expect(applyMark("out", 90, 10, 50)).toEqual({ in: 10, out: 90 });
+  });
+});
+
+describe("auto-repeat", () => {
+  it("refuses the keys that escalate", () => {
+    for (const key of ["j", "l", "J", "L"])
+      expect(ignoresAutoRepeat(key)).toBe(true);
+  });
+
+  it("refuses the keys that toggle", () => {
+    for (const key of [" ", "k", "i", "o", "x", "p", "f", "m", "d"])
+      expect(ignoresAutoRepeat(key)).toBe(true);
+  });
+
+  it("lets the stepping keys repeat", () => {
+    /* Holding an arrow to walk through the footage is the point of them. */
+    for (const key of ["ArrowLeft", "ArrowRight", ",", ".", "Home", "End"])
+      expect(ignoresAutoRepeat(key)).toBe(false);
+  });
+
+  it("invariant: holding L cannot climb the shuttle", () => {
+    /* The reported bug. Twenty auto-repeats of L used to reach 4x in about a
+       tenth of a second; only the first press, the one the person made, may
+       act. A deliberate second press is a separate keydown with repeat unset
+       and still doubles. */
+    let speed = 0;
+    const press = (repeat: boolean): void => {
+      if (repeat && ignoresAutoRepeat("l")) return;
+      speed = speed > 0 ? Math.min(4, speed * 2) : 1;
+    };
+    press(false);
+    for (let i = 0; i < 20; i += 1) press(true);
+    expect(speed).toBe(1);
+    press(false);
+    expect(speed).toBe(2);
   });
 });
 

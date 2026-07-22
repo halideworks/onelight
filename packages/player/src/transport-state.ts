@@ -47,6 +47,43 @@ export function applyMark(
   return { in: inFrame !== null && inFrame >= at ? null : inFrame, out: at };
 }
 
+/* ---- keys the operating system must not press for you ----
+
+   Holding a key makes the OS repeat it, tens of times a second, at a rate the
+   person sets in their own system preferences. For a key that STEPS that is
+   the point: hold the left arrow and walk back through the footage.
+
+   For a key that ESCALATES it is a bug, and it was this one. Every L doubles
+   the shuttle, so resting on L for a moment does not play at speed one, it
+   runs to four in about a tenth of a second -- fast enough that the reviewer
+   never sees the 1x or the 2x go by, and far enough that the audio is no
+   longer something you can listen to. It reproduced for one person and not
+   another because the two of them have different key-repeat settings, and it
+   followed them across browsers and across operating systems because it was
+   never the browser doing it.
+
+   The same goes for anything that toggles: an auto-repeated F would enter and
+   leave fullscreen thirty times a second.
+
+   A deliberate second press still doubles the shuttle, which is what J and L
+   are for. This only refuses the presses the person did not make. */
+export function ignoresAutoRepeat(key: string): boolean {
+  return [
+    "j",
+    "l",
+    "k",
+    " ",
+    "spacebar",
+    "i",
+    "o",
+    "x",
+    "p",
+    "f",
+    "m",
+    "d",
+  ].includes(key.toLowerCase());
+}
+
 /* ---- painting a range on the timeline ----
 
    The keyboard sets marks one at a time (I, then O). The pointer paints a
