@@ -180,8 +180,18 @@ export const deliverDueWebhookDeliveries = async (
         },
         body,
         signal: controller.signal,
+        /* Do not follow redirects. The SSRF guard above vets only the URL the
+           user registered; a 3xx to http://169.254.169.254/… or a private
+           address would sail past it and, since the response body is stored
+           and readable by the workspace, exfiltrate internal metadata. A
+           webhook endpoint is expected to answer 2xx directly. */
+        redirect: "manual",
       });
       clearTimeout(timeout);
+      if (response.status >= 300 && response.status < 400)
+        throw new Error(
+          "Webhook endpoint redirected; redirects are not followed.",
+        );
       const responseBody = (await response.text()).slice(0, 4096);
       if (!response.ok) throw new Error(`Webhook returned ${response.status}.`);
       await db

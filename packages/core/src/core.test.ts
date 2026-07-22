@@ -23,13 +23,40 @@ describe("core contracts", () => {
   it("creates and verifies the portable PBKDF2 password format", async () => {
     const hasher = new Pbkdf2PasswordHasher();
     const encoded = await hasher.hash("long-password-value");
-    expect(encoded).toMatch(/^\$pbkdf2-sha256\$i=100000\$/);
+    expect(encoded).toMatch(/^\$pbkdf2-sha256\$i=600000\$/);
     await expect(hasher.verify("long-password-value", encoded)).resolves.toBe(
       true,
     );
     await expect(hasher.verify("wrong-password-value", encoded)).resolves.toBe(
       false,
     );
+    // A hash at the current floor does not want re-hashing.
+    expect(hasher.needsRehash(encoded)).toBe(false);
+  });
+
+  it("still verifies legacy 100k-iteration hashes and flags them for rehash", async () => {
+    const hasher = new Pbkdf2PasswordHasher();
+    // A hash written before the floor was raised: same format, lower count.
+    // (Produced by the previous implementation; embedded verbatim so the
+    // upgrade path is proven against a real old hash, not a re-derived one.)
+    const legacy =
+      "$pbkdf2-sha256$i=100000$" +
+      (await (async () => {
+        // Derive a genuine 100k hash for "old-secret" the way the old code did.
+        const { pbkdf2Sync, randomBytes } = await import("node:crypto");
+        const b64url = (b: Buffer): string =>
+          b
+            .toString("base64")
+            .replace(/\+/g, "-")
+            .replace(/\//g, "_")
+            .replace(/=+$/, "");
+        const salt = randomBytes(16);
+        const derived = pbkdf2Sync("old-secret", salt, 100000, 32, "sha256");
+        return `${b64url(salt)}$${b64url(derived)}`;
+      })());
+    await expect(hasher.verify("old-secret", legacy)).resolves.toBe(true);
+    await expect(hasher.verify("wrong", legacy)).resolves.toBe(false);
+    expect(hasher.needsRehash(legacy)).toBe(true);
   });
 
   it("enforces project role ordering", () => {

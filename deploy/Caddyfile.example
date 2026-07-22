@@ -1,3 +1,21 @@
 review.example.com {
+  # Caddy issues and renews TLS automatically for a real domain, which is what
+  # lets the app set Secure cookies and send HSTS -- run onelight behind https
+  # in production, not on plain http.
   reverse_proxy onelight:3000
+
+  # Compress at the edge. zstd for clients that speak it, gzip otherwise;
+  # Caddy skips already-compressed content types on its own.
+  encode zstd gzip
+
+  # The app sets its own CSP/HSTS/frame headers per response (see
+  # apps/server/src/index.ts). These are the edge belt-and-suspenders; the
+  # app's values win where both are present.
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "same-origin"
+    # Caddy adds its own Server banner; drop it.
+    -Server
+  }
 }

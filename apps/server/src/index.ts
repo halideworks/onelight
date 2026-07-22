@@ -4,6 +4,7 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
+import { compress } from "hono/compress";
 import {
   buildShareOgTags,
   createApp,
@@ -280,13 +281,49 @@ const start = async (): Promise<void> => {
   /* Baseline response hardening. Frames are same-origin (nothing here is
      built to be embedded elsewhere today), sniffing is off, and referrers
      stay inside the origin so share slugs never leak through outbound
-     links. */
+     links. HSTS is sent only when the origin is https, since it cannot be
+     honoured -- and would pin a broken state -- over plain http. */
+  const hstsValue =
+    config.PUBLIC_URL.startsWith("https://")
+      ? "max-age=31536000; includeSubDomains"
+      : null;
+  /* Everything the app itself needs and nothing more: its own scripts, styles
+     and fonts; data:/blob: pictures and media (posters, lightbox, the player);
+     same-origin XHR/SSE. object-src none kills plugin embeds, frame-ancestors
+     self replaces X-Frame-Options for modern browsers, base-uri self stops a
+     tag rewriting relative URLs. SvelteKit's bootstrap is inline, so
+     script/style keep 'unsafe-inline' -- the frontend carries no {@html} or
+     other injection sink, so this is defence in depth, not the only line.
+     Applied to HTML documents only; API JSON and the sandboxed media/logo
+     routes keep their own response headers. */
+  const documentCsp = [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'self'",
+  ].join("; ");
   app.use("*", async (c, next) => {
     await next();
     c.header("x-content-type-options", "nosniff");
     c.header("referrer-policy", "same-origin");
     c.header("x-frame-options", "SAMEORIGIN");
+    if (hstsValue) c.header("strict-transport-security", hstsValue);
+    if ((c.res.headers.get("content-type") ?? "").includes("text/html"))
+      c.header("content-security-policy", documentCsp);
   });
+  /* Compress the compressible: JSON list payloads, the HTML shell, the JS/CSS
+     bundles. The default filter is a content-type allowlist, so already-packed
+     video, images and audio streams are left alone rather than burning CPU on
+     incompressible bytes. Deployments behind Caddy can also `encode` at the
+     edge; this makes a bare node deploy compress on its own. */
+  app.use("*", compress());
   app.use("*", async (c, next) => {
     if (
       isShareLandingPath(c.req.path) &&
@@ -319,7 +356,18 @@ const start = async (): Promise<void> => {
     await next();
   });
   app.route("/", api);
-  app.use("*", serveStatic({ root: webRoot }));
+  /* SvelteKit fingerprints everything under _app/immutable/, so its bytes can
+     never change under a given URL: serve them with a year-long immutable
+     cache instead of the no-header default that re-fetched them every visit.
+     Everything else (index.html, favicon) keeps default revalidation. */
+  const immutableStatic = serveStatic({
+    root: webRoot,
+    onFound: (foundPath, c) => {
+      if (foundPath.includes("/_app/immutable/"))
+        c.header("cache-control", "public, max-age=31536000, immutable");
+    },
+  });
+  app.use("*", immutableStatic);
   app.get("*", serveStatic({ root: webRoot, path: "index.html" }));
   const server = serve({
     fetch: app.fetch,

@@ -843,6 +843,17 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   // never reset a still-live counter for another key.
   const RATE_LIMIT_RETENTION_MS = 15 * 60 * 1000;
 
+  /* A hash of a random secret nobody knows, made once at first login. When an
+     email has no account we still verify the submitted password against this,
+     so a missing user costs the same time as a wrong password -- otherwise the
+     no-user path (which skips the deliberately slow KDF) is measurably faster
+     and reveals which emails have accounts. */
+  let decoyHash: Promise<string> | null = null;
+  const spendVerifyBudget = async (password: string): Promise<void> => {
+    decoyHash ??= env.hasher.hash(base64UrlEncode(randomBytes(24)));
+    await env.hasher.verify(password, await decoyHash);
+  };
+
   const hitRateLimit = async (key: string, limit: number, windowMs: number) => {
     const now = env.clock.now();
     // Opportunistic cleanup keeps rate_limits from growing without bound: on
@@ -1302,20 +1313,31 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .limit(1)
       .all();
     const user = rows[0];
-    if (
-      !user ||
-      user.disabledAt ||
-      !user.passwordHash ||
-      !(await env.hasher.verify(body.password, user.passwordHash))
-    ) {
-      if (user)
-        await audit(
-          user.workspaceId,
-          user.id,
-          "user.login_failed",
-          `user:${user.id}`,
-        );
+    if (!user || user.disabledAt || !user.passwordHash) {
+      /* Spend the same KDF time a real verify would, so a missing or disabled
+         account is not faster to probe than a wrong password. */
+      await spendVerifyBudget(body.password);
       throw errors.invalidCredentials();
+    }
+    if (!(await env.hasher.verify(body.password, user.passwordHash))) {
+      await audit(
+        user.workspaceId,
+        user.id,
+        "user.login_failed",
+        `user:${user.id}`,
+      );
+      throw errors.invalidCredentials();
+    }
+    /* A correct password made under an older iteration count is re-hashed to
+       the current floor here, transparently, so the store drifts upward as
+       people sign in rather than staying at whatever it was provisioned with. */
+    if (env.hasher.needsRehash(user.passwordHash)) {
+      const upgraded = await env.hasher.hash(body.password);
+      await env.db
+        .update(users)
+        .set({ passwordHash: upgraded })
+        .where(eq(users.id, user.id))
+        .run();
     }
     /* With TOTP verified, the password alone gets a five-minute, single
        purpose challenge token, never a session. The token proves the first
@@ -4642,14 +4664,21 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
        projects the caller cannot open, and the names of their shares with
        them. Both streams post-filter with the same rule the project read uses,
        and keep scanning so a filtered-out row does not consume a page slot. */
+    const visibleCache = new Map<string, boolean>();
     const visibleProject = async (
       project: typeof projects.$inferSelect,
-    ): Promise<boolean> =>
-      implicitProjectRole(
-        actor.role,
-        Boolean(project.restricted),
-        (await grantFor(project.id, actor.id)) ?? undefined,
-      ) !== undefined;
+    ): Promise<boolean> => {
+      const cached = visibleCache.get(project.id);
+      if (cached !== undefined) return cached;
+      const visible =
+        implicitProjectRole(
+          actor.role,
+          Boolean(project.restricted),
+          (await grantFor(project.id, actor.id)) ?? undefined,
+        ) !== undefined;
+      visibleCache.set(project.id, visible);
+      return visible;
+    };
 
     const matchingProjects = async (
       after: string | undefined,
@@ -4710,6 +4739,40 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         scanCursor = batch[batch.length - 1]?.share.id;
       }
     };
+    /* Assets carry a restricted project's names; like the project and share
+       streams, this post-filters every candidate through visibleProject so a
+       member without a grant -- or a guest, who may see nothing ungranted --
+       cannot read the names of assets in projects they cannot open. */
+    const matchingAssets = async (
+      after: string | undefined,
+      take: number,
+    ): Promise<Array<typeof assets.$inferSelect>> => {
+      const collected: Array<typeof assets.$inferSelect> = [];
+      let scanCursor = after;
+      for (;;) {
+        const batch = await env.db
+          .select({ asset: assets, project: projects })
+          .from(assets)
+          .innerJoin(projects, eq(assets.projectId, projects.id))
+          .where(
+            and(
+              eq(projects.workspaceId, actor.workspaceId),
+              isNull(assets.deletedAt),
+              sql`${assets.name} LIKE ${pattern} ESCAPE '\\'`,
+              scanCursor ? lt(assets.id, scanCursor) : undefined,
+            ),
+          )
+          .orderBy(desc(assets.id))
+          .limit(Math.max(take, 25))
+          .all();
+        for (const row of batch) {
+          if (await visibleProject(row.project)) collected.push(row.asset);
+          if (collected.length === take) return collected;
+        }
+        if (batch.length < Math.max(take, 25)) return collected;
+        scanCursor = batch[batch.length - 1]?.asset.id;
+      }
+    };
     const fetchCommentRows = (after: string | undefined, take: number) =>
       env.db
         .select()
@@ -4729,21 +4792,23 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .limit(take)
         .all();
     type CommentRow = Awaited<ReturnType<typeof fetchCommentRows>>[number];
+    /* Comment bodies are the most sensitive text in the app (client feedback),
+       so this always post-filters by project visibility -- and by the hashtag
+       token when the query is one. A plain LIKE over the workspace, as this
+       once was, disclosed the notes on restricted projects to anyone. */
     const matchingComments = async (
       after: string | undefined,
       take: number,
     ): Promise<CommentRow[]> => {
-      if (!tagQuery) return fetchCommentRows(after, take);
-      // Post-filtered keyset scan: batches stay ordered by id desc, so the
-      // filtered stream keeps the same cursor semantics as the plain LIKE.
       const batchSize = Math.max(take, 50);
       const collected: CommentRow[] = [];
       let cursor = after;
       for (;;) {
         const batch = await fetchCommentRows(cursor, batchSize);
         for (const row of batch) {
-          if (extractHashtags(row.comments.bodyText).includes(tagQuery))
-            collected.push(row);
+          const tagOk =
+            !tagQuery || extractHashtags(row.comments.bodyText).includes(tagQuery);
+          if (tagOk && (await visibleProject(row.projects))) collected.push(row);
           if (collected.length === take) return collected;
         }
         if (batch.length < batchSize) return collected;
@@ -4769,34 +4834,18 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       {
         t: "asset",
         page: async (after, take) =>
-          (
-            await env.db
-              .select()
-              .from(assets)
-              .innerJoin(projects, eq(assets.projectId, projects.id))
-              .where(
-                and(
-                  eq(projects.workspaceId, actor.workspaceId),
-                  isNull(assets.deletedAt),
-                  sql`${assets.name} LIKE ${pattern} ESCAPE '\\'`,
-                  after ? lt(assets.id, after) : undefined,
-                ),
-              )
-              .orderBy(desc(assets.id))
-              .limit(take)
-              .all()
-          ).map((row: { assets: typeof assets.$inferSelect }) => ({
-            id: row.assets.id,
+          (await matchingAssets(after, take)).map((asset) => ({
+            id: asset.id,
             wire: {
               type: "asset",
-              id: row.assets.id,
-              public_id: row.assets.publicId ?? row.assets.id,
-              name: row.assets.name,
-              project_id: row.assets.projectId,
+              id: asset.id,
+              public_id: asset.publicId ?? asset.id,
+              name: asset.name,
+              project_id: asset.projectId,
               /* Enough to draw the row without a second request per hit: the
                  version to fetch a poster for, and when it happened. */
-              current_version_id: row.assets.currentVersionId,
-              updated_at: row.assets.updatedAt,
+              current_version_id: asset.currentVersionId,
+              updated_at: asset.updatedAt,
             },
           })),
       },
@@ -4838,22 +4887,26 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       },
       {
         t: "person",
+        /* The member directory (names AND emails) is not for guests: a guest
+           has no project of their own and no reason to enumerate the team, and
+           this stream would otherwise hand them every address. */
         page: async (after, take) =>
-          (
-            await env.db
-              .select()
-              .from(users)
-              .where(
-                and(
-                  eq(users.workspaceId, actor.workspaceId),
-                  isNull(users.disabledAt),
-                  sql`(${users.name} LIKE ${pattern} ESCAPE '\\' OR ${users.email} LIKE ${pattern} ESCAPE '\\')`,
-                  after ? lt(users.id, after) : undefined,
-                ),
-              )
-              .orderBy(desc(users.id))
-              .limit(take)
-              .all()
+          (actor.role === "guest"
+            ? []
+            : await env.db
+                .select()
+                .from(users)
+                .where(
+                  and(
+                    eq(users.workspaceId, actor.workspaceId),
+                    isNull(users.disabledAt),
+                    sql`(${users.name} LIKE ${pattern} ESCAPE '\\' OR ${users.email} LIKE ${pattern} ESCAPE '\\')`,
+                    after ? lt(users.id, after) : undefined,
+                  ),
+                )
+                .orderBy(desc(users.id))
+                .limit(take)
+                .all()
           ).map((row: ActorUser) => ({
             id: row.id,
             wire: {
@@ -6338,6 +6391,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       headers: {
         "Content-Type": contentType,
         "Cache-Control": "public, max-age=86400",
+        /* A logo may be an SVG, and an SVG opened as a top-level document runs
+           its own script -- so a manager could upload a scripted mark and lure
+           a viewer to this public URL to run it in our origin. The sandbox
+           directive (no allow-scripts) neutralises that on direct navigation
+           while leaving <img> rendering, where SVG never executes, untouched.
+           nosniff stops a mislabelled blob from being sniffed into HTML. */
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        "X-Content-Type-Options": "nosniff",
       },
     });
   });
@@ -9206,6 +9267,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             and(
               inArray(renditions.versionId, currentIds),
               inArray(renditions.kind, ["poster", "sprite"]),
+              /* The base renditions index is partial (WHERE share_id IS NULL);
+                 without this predicate the planner cannot use it and falls to
+                 a full scan on the hottest path there is. Poster and sprite
+                 are always base renditions, so this only narrows to the rows
+                 we already want. */
+              isNull(renditions.shareId),
             ),
           )
           .all()
@@ -10022,6 +10089,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (!job) throw errors.notFound();
     const payload = parseJsonObject(job.payloadJson);
     if (payload.workspace_id !== actor.workspaceId) throw errors.notFound();
+    /* A job's status and error string belong to whoever can see its project,
+       not to the whole workspace: without this a guest could read the state
+       and failure message of any job in any project. Jobs that carry a
+       project scope are checked against it; the few workspace-level jobs
+       (no project_id) stay workspace-scoped as before. */
+    if (typeof payload.project_id === "string")
+      await requireProject(payload.project_id, actor, "viewer");
     return c.json(jobWire(job));
   });
 

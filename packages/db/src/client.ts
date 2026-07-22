@@ -25,6 +25,20 @@ export const createNodeDb = (
   const sqlite = new Database(filename);
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
+  /* This file is written concurrently by the API, the worker pump,
+     maintenance sweeps, backups and the webhook timer. Without busy_timeout a
+     colliding write throws SQLITE_BUSY immediately instead of waiting; five
+     seconds of retry turns almost every collision into a small pause rather
+     than an error. synchronous=NORMAL is the documented safe pairing with WAL
+     (durable across app crashes; only a power loss mid-checkpoint is at risk)
+     and drops an fsync per commit. The negative cache_size is KiB (~64 MB) and
+     mmap maps the file up to 256 MB, both cutting page faults on the
+     read-heavy list endpoints; temp_store=MEMORY keeps sorts off disk. */
+  sqlite.pragma("busy_timeout = 5000");
+  sqlite.pragma("synchronous = NORMAL");
+  sqlite.pragma("cache_size = -65536");
+  sqlite.pragma("mmap_size = 268435456");
+  sqlite.pragma("temp_store = MEMORY");
   return { db: drizzleNode(sqlite, { schema }), sqlite };
 };
 

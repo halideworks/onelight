@@ -866,6 +866,65 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       expect(unauth.status).toBe(401);
     });
 
+    it("hides restricted-project asset names and comment bodies from users without a grant", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const needle = unique("classified");
+      // A restricted project the searcher has no grant to.
+      const project = await createProject(h, seed.admin, { restricted: true });
+      const media = await seedAssetVersion(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+        name: `Asset ${needle}`,
+      });
+      const commentResponse = await postComment(
+        h,
+        seed.admin.cookie,
+        media.versionId,
+        { body_text: `Comment ${needle}` },
+      );
+      expect(commentResponse.status).toBe(201);
+      const commentId = (await json<{ id: string }>(commentResponse)).id;
+      // A plain workspace member with no grant to this restricted project.
+      const outsider = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      const searchAs = async (cookie: string) =>
+        json<{ items: Array<{ type: string; id: string }> }>(
+          await req(h, `/api/v1/search?q=${encodeURIComponent(needle)}`, {
+            cookie,
+          }),
+        );
+      // The outsider must see neither the asset name nor the comment body.
+      const hidden = await searchAs(outsider.cookie);
+      expect(
+        hidden.items.some(
+          (item) => item.type === "asset" && item.id === media.assetId,
+        ),
+      ).toBe(false);
+      expect(
+        hidden.items.some(
+          (item) => item.type === "comment" && item.id === commentId,
+        ),
+      ).toBe(false);
+      // Granting viewer access reveals exactly those hits: the filter tracks
+      // access, it does not blanket-hide the project's rows.
+      await grantRole(h, seed.admin, project.id, outsider.id, "viewer");
+      const revealed = await searchAs(outsider.cookie);
+      expect(
+        revealed.items.some(
+          (item) => item.type === "asset" && item.id === media.assetId,
+        ),
+      ).toBe(true);
+      expect(
+        revealed.items.some(
+          (item) => item.type === "comment" && item.id === commentId,
+        ),
+      ).toBe(true);
+    });
+
     it("escapes LIKE wildcards and returns frame_in on comment hits", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

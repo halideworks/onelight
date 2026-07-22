@@ -731,7 +731,12 @@ export const shares = sqliteTable("shares", {
   }),
   revokedAt: integer("revoked_at"),
   createdAt: integer("created_at").notNull(),
-});
+}, (table) => ({
+  /* Shares are listed and joined by project (the shares index page, the
+     asset-list share filter); without this the lookups scan the table. The
+     id tail keeps the keyset order the list pages by. */
+  projectIndex: index("shares_project_idx").on(table.projectId, table.id),
+}));
 
 export const shareAssets = sqliteTable(
   "share_assets",
