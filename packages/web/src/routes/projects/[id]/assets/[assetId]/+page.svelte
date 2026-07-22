@@ -155,7 +155,13 @@
   let uploadState = $state<UploadState>({ status: 'idle', progress: 0, error: '' });
   let carryForwardOnUpload = $state(true);
   let prevVersion = $state<Version | null>(null);
-  let prevOpenCount = $state(0);
+  /* The open notes of the previous version, by id, not by count: what the
+     banner offers is the notes that are not here yet, and whether one is here
+     yet is answered by the copies on screen. Holding a count instead meant the
+     banner still offered seven notes right after all seven were copied (they
+     are still open on their own version, which is not the question). */
+  let prevOpenIds = $state<string[]>([]);
+  let settledSources = $state<string[]>([]);
   let carrying = $state(false);
   let carryNotice = $state('');
   /* Status lines say what just happened, then get out of the way. */
@@ -324,6 +330,23 @@
   const selectedVersion = $derived(versions.find((version) => version.id === selectedVersionId) ?? null);
   const newestVersion = $derived(versions[0] ?? null);
   const isNewestSelected = $derived(Boolean(selectedVersion && newestVersion && selectedVersion.id === newestVersion.id));
+  /* Provenance, read off the notes on screen: a source that already has a copy
+     here is not on offer. Derived, so a carry (or a note arriving over SSE)
+     settles the banner without a refetch. */
+  const carriedSources = $derived(
+    new Set(
+      comments
+        .map((comment) => comment.carried_from_comment_id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    )
+  );
+  /* A copy the reviewer deleted is gone from `comments` but stays carried as
+     far as the server is concerned, so provenance alone would put the banner
+     back to offer a note that will never copy again. A completed press settles
+     every open note of its source, deleted copies included. */
+  const prevOpenCount = $derived(
+    prevOpenIds.filter((id) => !carriedSources.has(id) && !settledSources.includes(id)).length
+  );
   const carryAvailable = $derived(isNewestSelected && prevVersion !== null && prevOpenCount > 0);
   const memberNames = $derived(members.map((member) => member.user.name));
 
@@ -634,7 +657,8 @@
 
   const checkCarrySource = async (token: number): Promise<void> => {
     prevVersion = null;
-    prevOpenCount = 0;
+    prevOpenIds = [];
+    settledSources = [];
     if (!isNewestSelected || versions.length < 2) return;
     const previous = versions[1];
     if (!previous) return;
@@ -643,7 +667,9 @@
       if (token !== versionToken) return;
       rememberVersionNos(items, previous.version_no);
       prevVersion = previous;
-      prevOpenCount = items.filter((comment) => !comment.completed_at && !comment.parent_id).length;
+      prevOpenIds = items
+        .filter((comment) => !comment.completed_at && !comment.parent_id)
+        .map((comment) => comment.id);
     } catch {
       /* Carry-forward simply is not offered. */
     }
@@ -700,7 +726,7 @@
     filmstrip = null; waveformUrl = null; peaksUrl = null; spectrogramUrl = null;
     stillUrl = null; stillPrevUrl = null; rate = null; dropFrame = false; durationFrames = null;
     error = ''; comments = []; commentError = ''; highlightedId = null; pendingDrawing = null;
-    noteFilter = 'all'; activeTag = null; railError = ''; prevVersion = null; prevOpenCount = 0;
+    noteFilter = 'all'; activeTag = null; railError = ''; prevVersion = null; prevOpenIds = []; settledSources = [];
     versionNoByComment = {};
     assetId = null;
     projectId = null;
@@ -833,6 +859,11 @@
       const token = versionToken;
       await refreshComments(target, token);
       await checkCarrySource(token);
+      if (token !== versionToken) return;
+      /* Every open note on that version has now been answered for, whatever
+         the reviewer does with the copies. checkCarrySource clears this on a
+         version switch, so it only settles the press just made. */
+      if (from.id === prevVersion?.id) settledSources = [...prevOpenIds];
     } catch (caught) {
       railError = messageFrom(caught, 'Notes could not be copied.');
     } finally {
@@ -1362,7 +1393,7 @@
       <span class="grow"></span>
       <!-- On desktop this wrapper is display:contents and changes nothing; on
            a phone it is the actions band that scrolls under the title row. -->
-      <div class="acts">
+      <div class="acts" class:panelopen={versionMenuOpen || infoOpen || moreOpen}>
       <!-- Versions: a menu that states which version you are looking at, rather
            than a rail competing with the notes for the same space. -->
       <div class="vmenu" use:dismissable={() => { versionMenuOpen = false; }}>
@@ -1690,7 +1721,8 @@
             <div class="carry-row">
               <span>
                 {prevOpenCount} open {prevOpenCount === 1 ? 'note' : 'notes'} on
-                <span class="tc">v{prevVersion.version_no}</span> have not been carried to this version.
+                <span class="tc">v{prevVersion.version_no}</span>
+                {prevOpenCount === 1 ? 'has' : 'have'} not been carried to this version.
               </span>
               <button type="button" onclick={() => void carryForward()} disabled={carrying}>
                 {carrying ? 'Carrying' : `Carry forward from v${prevVersion.version_no}`}
@@ -2044,6 +2076,13 @@
       mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
     }
     .acts > * { flex: none; }
+    /* A mask paints its subtree through itself, and fixed positioning does not
+       escape that the way it escapes overflow: with the fade on, a panel opened
+       from this band was laid out correctly over the page and then painted only
+       where the 40px band is, which read as a button that does nothing. The fade
+       is there to say the row scrolls; while a panel is open, the panel says
+       everything. */
+    .acts.panelopen { mask-image: none; }
     .carry-opt { white-space: nowrap; }
     /* Panels anchored inside a sideways scroller would be clipped by it;
        pin them to the viewport instead. */
@@ -2173,6 +2212,12 @@
      button, and the input is the part that never shows. */
   .more-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
   .more-upload:focus-within { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
+  /* Phone: the same escape from the actions scroller the other two panels
+     make. It sits here rather than beside them because the base .more-panel
+     rule above carries equal specificity, and a rule later in the file wins. */
+  @media (max-width: 720px) {
+    .more-panel { position: fixed; left: var(--pad-2); right: var(--pad-2); top: 96px; }
+  }
   /* The version menu's footer: where a new version comes from. */
   .vfoot { display: grid; gap: 6px; margin-top: 4px; padding: 8px 10px 2px; border-top: 1px solid var(--n-200); }
   /* .filebtn already carries the button dress and the invisible input. */

@@ -71,7 +71,7 @@ jobs:
             -e E2E_PASSWORD=integration-only-password \
             -e E2E_PROJECT_ID="$project_id" \
             mcr.microsoft.com/playwright:v1.56.1-noble \
-            sh -c 'npm i --silent --no-save playwright@1.56.1 >/dev/null 2>&1 && node share-flows.e2e.mjs && node settings.e2e.mjs'
+            sh -c 'npm i --silent --no-save playwright@1.56.1 >/dev/null 2>&1 && node share-flows.e2e.mjs && node settings.e2e.mjs && node review-room.e2e.mjs'
       - name: Graceful shutdown within 15 seconds
         run: |
           started=$(date +%s)

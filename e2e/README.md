@@ -1,8 +1,8 @@
 # Browser end-to-end suite
 
 Driven-browser checks for the flows unit tests cannot see: the share room as a
-client uses it, the presentation room, annotations, attachments, and the
-settings surfaces. Every check asserts observable behaviour (a video that
+client uses it, the presentation room, annotations, attachments, the settings
+surfaces, and the review page on a phone. Every check asserts observable behaviour (a video that
 plays, an image that decodes, a drag that moved something), never mere element
 presence - a green check that proves markup converts "I didn't test this" into
 "I tested this and it works".
@@ -28,7 +28,7 @@ docker run --rm --network host \
   -e E2E_PASSWORD=... \
   -e E2E_PROJECT_ID=01KX... \
   mcr.microsoft.com/playwright:v1.56.1-noble \
-  sh -c 'npm i --silent --no-save playwright@1.56.1 >/dev/null 2>&1 && node share-flows.e2e.mjs && node settings.e2e.mjs'
+  sh -c 'npm i --silent --no-save playwright@1.56.1 >/dev/null 2>&1 && node share-flows.e2e.mjs && node settings.e2e.mjs && node review-room.e2e.mjs'
 ```
 
 Environment:

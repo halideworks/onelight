@@ -56,22 +56,60 @@
      always comfortably under the server's byte cap. Nobody should have to
      resize a photo by hand to get a face on a comment. */
   const AVATAR_SIDE = 512;
-  const normalizeAvatar = async (file: File): Promise<Blob> => {
+  /* A phone's camera roll is the common case and it does not hand over a PNG:
+     iOS offers HEIC, which createImageBitmap refuses even where the same bytes
+     paint fine in an <img>. Falling back to the element decoder means the
+     browser's own picture support decides what can be a face, and whatever it
+     decodes leaves here as the same 512px JPEG. */
+  const decodeToPainter = async (
+    file: File
+  ): Promise<{ source: CanvasImageSource; width: number; height: number; done: () => void }> => {
     try {
       const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
-      const side = Math.min(bitmap.width, bitmap.height);
+      return {
+        source: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        done: () => bitmap.close()
+      };
+    } catch {
+      const url = URL.createObjectURL(file);
+      try {
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+        return {
+          source: image,
+          width: image.naturalWidth,
+          height: image.naturalHeight,
+          done: () => URL.revokeObjectURL(url)
+        };
+      } catch (caught) {
+        URL.revokeObjectURL(url);
+        throw caught;
+      }
+    }
+  };
+
+  const normalizeAvatar = async (file: File): Promise<Blob> => {
+    try {
+      const picture = await decodeToPainter(file);
+      const side = Math.min(picture.width, picture.height);
       const canvas = document.createElement('canvas');
       canvas.width = AVATAR_SIDE;
       canvas.height = AVATAR_SIDE;
       const ctx = canvas.getContext('2d');
-      if (!ctx) return file;
+      if (!ctx) {
+        picture.done();
+        return file;
+      }
       ctx.fillStyle = '#1a2330';
       ctx.fillRect(0, 0, AVATAR_SIDE, AVATAR_SIDE);
       ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(
-        bitmap,
-        (bitmap.width - side) / 2,
-        (bitmap.height - side) / 2,
+        picture.source,
+        (picture.width - side) / 2,
+        (picture.height - side) / 2,
         side,
         side,
         0,
@@ -79,7 +117,7 @@
         AVATAR_SIDE,
         AVATAR_SIDE
       );
-      bitmap.close();
+      picture.done();
       const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
       return blob ?? file;
     } catch {
