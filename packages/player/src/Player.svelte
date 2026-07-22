@@ -12,9 +12,18 @@
     timecodeFromFrames
   } from '@onelight/core';
   import AnnotationOverlay from './AnnotationOverlay.svelte';
+  import Slider from './Slider.svelte';
   import Timeline from './Timeline.svelte';
   import WaveformStage from './WaveformStage.svelte';
-  import { applyMark, isVerifyStale, seeksLocked } from './transport-state.js';
+  import {
+    applyMark,
+    isRangeDrag,
+    isVerifyStale,
+    rangeFromClick,
+    rangeFromDrag,
+    rangeIsSet,
+    seeksLocked
+  } from './transport-state.js';
   import { ANNOTATION_INKS } from './annotations.js';
   import type { AnnotationPoint, AnnotationStroke, FrameAnnotation, PendingDrawing } from './annotations.js';
   import { markerInkFor } from './timeline.js';
@@ -123,6 +132,33 @@
   };
   const setOutMark = (at: number): void => {
     ({ in: inFrame, out: outFrame } = applyMark('out', at, inFrame, outFrame));
+  };
+
+  /* ---- painting a range with the pointer ----
+     The strip that scrubs is the strip that marks, so marking is armed first:
+     by asking for a ranged note, or by asking to loop with nothing marked. It
+     disarms itself the moment a usable range exists, which is the whole of its
+     lifetime. Alt-drag skips the arming for anyone who already knows.
+     The rules themselves live in transport-state.ts, tested there. */
+  let rangeArmed = $state(false);
+  export function armRange(): void {
+    rangeArmed = true;
+  }
+  export function disarmRange(): void {
+    rangeArmed = false;
+  }
+  const applyRange = (next: { in: number | null; out: number | null }): void => {
+    inFrame = next.in === null ? null : boundedFrame(next.in);
+    outFrame = next.out === null ? null : boundedFrame(next.out);
+  };
+  const rangeClicked = (at: number): void => {
+    applyRange(rangeFromClick(boundedFrame(at), { in: inFrame, out: outFrame }));
+  };
+  const rangeDragged = (anchor: number, at: number): void => {
+    applyRange(rangeFromDrag(boundedFrame(anchor), boundedFrame(at)));
+  };
+  const rangeGestureDone = (): void => {
+    if (rangeIsSet({ in: inFrame, out: outFrame })) rangeArmed = false;
   };
   let hasRvfc = $state(false);
   let forwardSpeed = $state(0);
@@ -364,6 +400,16 @@
     return () => cancelAnimationFrame(raf);
   });
 
+  /* Where the trace goes. Under the picture is right for a wide frame: the
+     stage is width-bound and there is height to spare below it. A tall frame
+     is the other way round -- the picture is height-bound and the room to
+     either side of it is empty -- so a band underneath does nothing but steal
+     the height the picture was going to use. Beside it, the 9:16 stays as big
+     as the window allows and the trace fills space that was wasted anyway.
+     Only on a screen wide enough to hold both; the narrow case falls back to
+     the band, in CSS. */
+  const scopesFlank = $derived(scopesOn && !isAudio && aspect < 1);
+
   const setScope = (mode: 'waveform' | 'parade'): void => {
     if (scopesOn && scopeMode === mode) {
       scopesOn = false;
@@ -538,16 +584,51 @@
     scrubTargetFrame = target;
     if (scrubRaf === null) scrubRaf = requestAnimationFrame(scrubApply);
   };
+  /* The frame under the pointer, without seeking to it: what the range gesture
+     reads off the same bar the scrub uses. */
+  const scrubFrameAt = (event: PointerEvent): number => {
+    if (!scrubEl || !durationFrames || durationFrames < 2) return frame;
+    const box = scrubEl.getBoundingClientRect();
+    const pct = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
+    return Math.round(pct * (durationFrames - 1));
+  };
+  let scrubPaint = $state<{ frame: number; x: number; moved: boolean } | null>(null);
   const onScrubDown = (event: PointerEvent): void => {
     if (seekLocked) return;
-    scrubbing = true;
     scrubEl?.setPointerCapture(event.pointerId);
+    /* Armed, this bar marks instead of seeking. A presentation has no I and O
+       keys and no marks row, so this gesture is the only way a viewer says
+       "from here to here", and it must not also move the picture out from
+       under them while they say it. */
+    if (rangeArmed || event.altKey) {
+      scrubPaint = { frame: scrubFrameAt(event), x: event.clientX, moved: false };
+      return;
+    }
+    scrubbing = true;
     scrubSeek(event);
   };
   const onScrubMove = (event: PointerEvent): void => {
+    if (scrubPaint) {
+      if (event.buttons === 0) {
+        onScrubUp(event);
+        return;
+      }
+      if (!scrubPaint.moved && !isRangeDrag(scrubPaint.x, event.clientX)) return;
+      scrubPaint = { ...scrubPaint, moved: true };
+      rangeDragged(scrubPaint.frame, scrubFrameAt(event));
+      return;
+    }
     if (scrubbing) scrubSeek(event);
   };
   const onScrubUp = (event: PointerEvent): void => {
+    const paint = scrubPaint;
+    if (paint) {
+      scrubPaint = null;
+      scrubEl?.releasePointerCapture(event.pointerId);
+      if (!paint.moved) rangeClicked(scrubFrameAt(event));
+      rangeGestureDone();
+      return;
+    }
     if (!scrubbing) return;
     scrubbing = false;
     scrubEl?.releasePointerCapture(event.pointerId);
@@ -996,14 +1077,39 @@
   const wmOpacity = $derived(Math.min(0.8, Math.max(0.05, watermark?.opacity ?? 0.28)));
   const wmText = $derived(wmLines.join('  '));
 
+  /* What loop means right now. A marked range is what someone marked it for;
+     with nothing marked, looping the whole thing is what a client watching a
+     cut expects, and it is the only thing the presentation chrome can mean
+     because it has no marks row. */
+  const hasRange = $derived(rangeIsSet({ in: inFrame, out: outFrame }));
+  const loopStart = $derived(hasRange ? (inFrame ?? 0) : 0);
+  const loopEnd = $derived(
+    hasRange
+      ? outFrame
+      : durationFrames !== null && durationFrames !== undefined && durationFrames > 0
+        ? durationFrames - 1
+        : null
+  );
+
   const setFrame = (next: number): void => {
     if (next !== frame) {
       frame = next;
       onframechange?.(next);
     }
-    if (loop && video && inFrame !== null && outFrame !== null && inFrame < outFrame && next >= outFrame) {
-      video.currentTime = mediaTimeInsideFrame(inFrame, rate);
+    /* Only forward playback wraps. Seeking onto the last frame by hand, or
+       shuttling backwards over it, is not the end of a pass. */
+    if (loop && video && forwardSpeed > 0 && loopEnd !== null && next >= loopEnd) {
+      video.currentTime = mediaTimeInsideFrame(loopStart, rate);
     }
+  };
+
+  /* The wrap above normally lands before the media runs out. If it does not
+     (a duration that disagrees with the file by a frame, a rendition that ends
+     early), the element ends and the loop would silently stop. */
+  const handleEnded = (): void => {
+    if (!loop || !video || forwardSpeed === 0) return;
+    video.currentTime = mediaTimeInsideFrame(loopStart, rate);
+    void video.play();
   };
 
   /* rVFC chain: when requestVideoFrameCallback exists it is the only frame
@@ -1349,7 +1455,7 @@
 </script>
 
 <svelte:window onkeydown={handleKeydown} onpointerdown={dismissVolPop} />
-<section class="player" aria-label="Review player">
+<section class="player" class:flank={scopesFlank} aria-label="Review player">
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="stage"
@@ -1378,6 +1484,7 @@
           onloadeddata={() => { pictureIn = true; }}
           onplay={() => onplaystate?.(true)}
           onpause={() => onplaystate?.(false)}
+          onended={handleEnded}
         ></audio>
         <WaveformStage
           {peaksUrl}
@@ -1405,6 +1512,7 @@
         onloadeddata={() => { pictureIn = true; }}
         onplay={() => onplaystate?.(true)}
         onpause={() => onplaystate?.(false)}
+        onended={handleEnded}
       >
         <track kind="captions" srclang="en" label="English captions" src={captionsSrc ?? 'data:text/vtt;charset=utf-8,WEBVTT'} />
       </video>
@@ -1587,6 +1695,23 @@
           <button type="button" class="icon step" onclick={() => step(1)} disabled={seekLocked} aria-label="Next frame" title="Next frame (right arrow or .)">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3v10l7-5z" /><rect x="12.4" y="3" width="1.6" height="10" /></svg>
           </button>
+          {#if chrome === 'simple'}
+            <!-- Presentation gets loop and nothing else from the marking
+                 vocabulary: watching a cut over and over is what a client
+                 does with it, and the marks row that would explain in and out
+                 is deliberately not in this room. It loops the marked stretch
+                 when there is one, and the whole thing when there is not. -->
+            <button
+              type="button"
+              class="icon loop"
+              aria-pressed={loop}
+              onclick={() => { loop = !loop; }}
+              aria-label={loop ? 'Stop looping' : 'Loop'}
+              title={hasRange ? 'Loop the marked stretch' : 'Loop'}
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5a3.5 3.5 0 013.5-3.5H12M12 3l-1.8-1.8M12 3l-1.8 1.8M13 9.5A3.5 3.5 0 019.5 13H4M4 13l1.8 1.8M4 13l1.8-1.8" /></svg>
+            </button>
+          {/if}
         </div>
         <span class="shuttle tc">{shuttleLabel}</span>
 
@@ -1603,9 +1728,30 @@
             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M11 3h2v10h-2v-1.5h.5v-7H11zM9 8L5 5v6z" fill="currentColor" /></svg>
             <span class="lbl">Set out</span>
           </button>
-          <button type="button" aria-pressed={loop} onclick={() => { loop = !loop; }} title="Loop the marked range (P)">
+          <!-- Loop with nothing marked has nothing to loop, so it asks for the
+               range instead of turning on a setting with no effect: the
+               timeline arms, and the next drag or pair of clicks says what to
+               loop. Once a range exists the button is just a switch again. -->
+          <button
+            type="button"
+            aria-pressed={hasRange ? loop : rangeArmed}
+            onclick={() => { if (hasRange) loop = !loop; else { rangeArmed = !rangeArmed; loop = true; } }}
+            title={hasRange ? 'Loop the marked range (P)' : 'Mark a range on the timeline to loop'}
+          >
             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5a3.5 3.5 0 013.5-3.5H12M12 3l-1.8-1.8M12 3l-1.8 1.8M13 9.5A3.5 3.5 0 019.5 13H4M4 13l1.8 1.8M4 13l1.8-1.8" /></svg>
             <span class="lbl">Loop</span>
+          </button>
+          <!-- Marking a range without meaning to loop it: a note that covers a
+               stretch wants the same two numbers. -->
+          <button
+            type="button"
+            class="rangebtn"
+            aria-pressed={rangeArmed}
+            onclick={() => { rangeArmed = !rangeArmed; }}
+            title="Drag the timeline to mark a range (or hold Alt and drag)"
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3.5 3v10M12.5 3v10M3.5 8h9" /></svg>
+            <span class="lbl">Range</span>
           </button>
           {#if inFrame !== null || outFrame !== null}
             <button type="button" class="icon clearmarks" onclick={() => { inFrame = null; outFrame = null; }} aria-label="Clear marks" title="Clear marks (X)">
@@ -1644,30 +1790,32 @@
           </button>
           {#if volPop}
             <div class="volpop" role="group" aria-label="Volume">
-              <input
-                class="volv"
-                type="range"
-                orient="vertical"
-                min="0"
-                max="1"
-                step="any"
-                bind:value={volume}
-                oninput={() => { muted = volume === 0; }}
-                aria-label="Volume"
+              <Slider
+                variant="neutral"
+                orientation="vertical"
+                length="88px"
+                label="Volume"
+                min={0}
+                max={1}
+                value={volume}
+                valueText={`${String(Math.round(volume * 100))} percent`}
+                oninput={(next) => { volume = next; muted = next === 0; }}
               />
             </div>
           {/if}
         </span>
-        <input
-          class="vol"
-          type="range"
-          min="0"
-          max="1"
-          step="any"
-          bind:value={volume}
-          oninput={() => { if (volume > 0) muted = false; }}
-          aria-label="Volume"
-        />
+        <span class="vol">
+          <Slider
+            variant="neutral"
+            length="72px"
+            label="Volume"
+            min={0}
+            max={1}
+            value={volume}
+            valueText={`${String(Math.round(volume * 100))} percent`}
+            oninput={(next) => { volume = next; if (next > 0) muted = false; }}
+          />
+        </span>
         <button type="button" class="icon" onclick={toggleFullscreen} aria-pressed={fullscreen} aria-label={fullscreen ? 'Exit full screen' : 'Full screen'} title="Full screen (F)">
           {#if fullscreen}
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2v4H2M10 14v-4h4" stroke="currentColor" stroke-width="1.4" fill="none" /></svg>
@@ -1726,17 +1874,18 @@
             <span class="nibbox" aria-hidden="true">
               <span class="nib" style={`width: ${drawWidthPx}px; height: ${drawWidthPx}px; background: ${drawColor};`}></span>
             </span>
-            <input
-              class="thick"
-              type="range"
-              min={DRAW_WIDTH_MIN}
-              max={DRAW_WIDTH_MAX}
-              step="0.0002"
-              value={drawWidth}
-              oninput={(event) => setDrawWidth(Number(event.currentTarget.value))}
-              aria-label="Line thickness"
-              title="Line thickness"
-            />
+            <span class="thick">
+              <Slider
+                variant="neutral"
+                length="88px"
+                label="Line thickness"
+                min={DRAW_WIDTH_MIN}
+                max={DRAW_WIDTH_MAX}
+                value={drawWidth}
+                valueText={`${String(drawWidthPx)} pixels`}
+                oninput={setDrawWidth}
+              />
+            </span>
           </span>
           <button type="button" onclick={undoStroke} disabled={pendingStrokes.length === 0}>Undo</button>
           <button type="button" onclick={clearStrokes} disabled={pendingStrokes.length === 0}>Clear</button>
@@ -1804,8 +1953,9 @@
           class="scrub"
           class:scrubbing
           bind:this={scrubEl}
+          class:arming={rangeArmed}
           role="slider"
-          aria-label="Position"
+          aria-label={rangeArmed ? 'Mark the stretch this note covers' : 'Position'}
           aria-valuemin="0"
           aria-valuemax={durationFrames - 1}
           aria-valuenow={frame}
@@ -1822,6 +1972,22 @@
                handle inside the carrier. -->
           <div class="scrub-track">
             <div class="scrub-played" style={`transform: scaleX(${scrubPct});`}></div>
+            <!-- The marked stretch, on the bar the viewer marked it on. A note
+                 that covers a range is otherwise a pair of timecodes in a
+                 composer with nothing on screen to check them against. -->
+            {#if durationFrames && durationFrames > 1 && inFrame !== null}
+              {#if outFrame !== null && outFrame > inFrame}
+                <div
+                  class="scrub-range"
+                  style={`left: ${((inFrame / (durationFrames - 1)) * 100).toFixed(3)}%; width: ${(((outFrame - inFrame) / (durationFrames - 1)) * 100).toFixed(3)}%;`}
+                ></div>
+              {:else}
+                <div
+                  class="scrub-range open"
+                  style={`left: ${((inFrame / (durationFrames - 1)) * 100).toFixed(3)}%;`}
+                ></div>
+              {/if}
+            {/if}
             <!-- Notes are visible on the simple bar too: a tick in the
                  author's ink per note, a translucent band for a range. -->
             {#if durationFrames && durationFrames > 1}
@@ -1865,8 +2031,12 @@
           filmstrip={isAudio || !showFilmLane ? null : filmstrip}
           waveformUrl={isAudio || !showWaveLane ? null : waveformUrl}
           disabled={seekLocked}
+          {rangeArmed}
           onseek={jumpTo}
           onmarkerselect={handleMarkerSelect}
+          onrangeclick={rangeClicked}
+          onrangedrag={rangeDragged}
+          onrangedone={rangeGestureDone}
         />
       {/if}
     {/if}
@@ -1880,7 +2050,30 @@
      Without a definite height to divide, the stage sized to its content and the
      content sized to the stage -- a loop that settled wherever it happened to
      start, which is why the picture sat in a box far smaller than the window. */
-  .player { display: flex; flex-direction: column; min-height: 0; height: 100%; background: var(--n-050, #101010); color: var(--n-800, #c4c4c4); padding: 16px; }
+  /* A grid rather than a column, so the scopes can move from underneath the
+     picture to beside it without the stage and the transport being re-parented
+     (the stage carries fullscreen, the annotation canvas and every measurement
+     the player makes; it does not get moved around for a panel). Auto-placement
+     handles the ordinary case: stage, then scopes if they are on, then the
+     transport. */
+  .player { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(120px, 1fr) auto auto; min-height: 0; height: 100%; background: var(--n-050, #101010); color: var(--n-800, #c4c4c4); padding: 16px; }
+  /* Tall picture: the trace takes the room to the right of it, and the picture
+     keeps the height. */
+  .player.flank { grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(120px, 1fr) auto; column-gap: 16px; }
+  .player.flank > .stage { grid-row: 1; grid-column: 1; }
+  .player.flank > .scopes { grid-row: 1; grid-column: 2; align-self: center; padding: 0; }
+  .player.flank > .transport { grid-row: 2; grid-column: 1 / 3; }
+  /* Its own column, sized to the room there is rather than to the trace: the
+     canvas keeps its drawn proportions inside it. */
+  .player.flank > .scopes canvas { width: clamp(220px, 24vw, 420px); height: auto; aspect-ratio: 512 / 180; }
+  /* Not enough width to give the trace a column of its own; it goes back under
+     the picture, where the ordinary auto-placement puts it. */
+  @media (max-width: 1080px) {
+    .player.flank { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(120px, 1fr) auto auto; column-gap: 0; }
+    .player.flank > .stage, .player.flank > .scopes, .player.flank > .transport { grid-row: auto; grid-column: auto; }
+    .player.flank > .scopes { align-self: auto; padding: 10px 0 0; }
+    .player.flank > .scopes canvas { width: min(100%, 720px); height: 180px; aspect-ratio: auto; }
+  }
   /* The stage reserves the picture's shape and the frame box fills it, so the
      box is exactly the picture: no letterboxing inside it, which is what keeps
      the annotation canvas (inset:0 on the box) on the footage.
@@ -1928,7 +2121,7 @@
   .nibbox { display: grid; place-items: center; flex: none; width: 18px; height: 18px; margin-left: 6px; }
   .nib { display: block; border-radius: 50%; max-width: 18px; max-height: 18px; }
   .thickrow { display: flex; align-items: center; gap: 6px; flex: none; }
-  .thick { width: 88px; }
+  .thick { display: inline-flex; align-items: center; }
   .ink { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; opacity: 0.75; }
   .ink:hover { opacity: 1; }
   .ink[aria-pressed='true'] { opacity: 1; box-shadow: 0 0 0 2px var(--n-050, #101010), 0 0 0 3.5px var(--n-800, #c4c4c4); }
@@ -1943,6 +2136,14 @@
   .scrub-mark:hover { opacity: 1; }
   .scrub:hover .scrub-track, .scrub.scrubbing .scrub-track, .scrub:focus-visible .scrub-track { height: 7px; }
   .scrub-played { position: absolute; top: 0; bottom: 0; left: 0; width: 100%; border-radius: 3px; background: var(--n-900, #e9e9e9); transform-origin: left center; will-change: transform; }
+  /* The stretch a note is being written about, drawn over the played run so it
+     reads on both sides of the playhead. Sits under the note marks: existing
+     notes are the durable thing, this is a draft. */
+  .scrub-range { position: absolute; top: -2px; bottom: -2px; border-radius: 2px; background: rgba(233, 233, 233, 0.34); box-shadow: inset 2px 0 0 var(--n-900, #e9e9e9), inset -2px 0 0 var(--n-900, #e9e9e9); pointer-events: none; }
+  .scrub-range.open { width: 2px; margin-left: -1px; background: var(--n-900, #e9e9e9); box-shadow: none; }
+  /* Armed, the bar marks rather than seeks, and the pointer says so. */
+  .scrub.arming { cursor: crosshair; }
+  .scrub.arming .scrub-track { height: 7px; }
   .scrub-carrier { position: absolute; top: 0; bottom: 0; left: 0; width: 0; will-change: transform; }
   /* The handle is the promise that this can be grabbed: a bright dot with a
      dark ring so it reads on any wash, grown a little under the pointer. */
@@ -2057,19 +2258,9 @@
   .icon.play:hover { background: var(--n-400, #3d3d3d); }
   .icon.step svg { opacity: 0.9; }
   .shuttle { color: var(--n-700, #9a9a9a); font-size: 11px; line-height: 1; font-weight: 600; min-height: 1em; }
-  /* Volume: a neutral track, no accent fill. */
-  /* The input is 18px tall so a click anywhere on the bar lands (a 3px hit
-     area missed almost every click); the visible track stays thin, drawn by
-     the track pseudo-elements inside it. Range inputs set their value at the
-     clicked position natively once they can actually be hit. */
-  .vol { width: 84px; height: 18px; appearance: none; background: none; border-radius: 2px; padding: 0; cursor: pointer; }
-  .vol::-webkit-slider-runnable-track { height: 3px; border-radius: 2px; background: var(--vol-track, var(--n-300, #2e2e2e)); }
-  .vol::-moz-range-track { height: 3px; border-radius: 2px; background: var(--vol-track, var(--n-300, #2e2e2e)); }
-  .vol::-moz-range-progress { height: 3px; border-radius: 2px; background: var(--n-700, #9a9a9a); }
-  .vol::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; margin-top: -4px; border-radius: 50%; background: var(--n-800, #c4c4c4); }
-  .vol::-moz-range-thumb { width: 11px; height: 11px; border: 0; border-radius: 50%; background: var(--n-800, #c4c4c4); }
-  .vol:hover::-webkit-slider-thumb { background: var(--n-900, #e9e9e9); }
-  .vol:hover::-moz-range-thumb { background: var(--n-900, #e9e9e9); }
+  /* Volume is a Slider now: the hit area, the track and the cap are all its
+     business, and this only says how much room it gets on the row. */
+  .vol { display: inline-flex; align-items: center; }
   /* Fullscreen: the stage fills the screen and keeps painting the surround, and
      the picture grows until it hits whichever edge binds first -- full width on
      a wide screen, full height on a tall one. The frame box still hugs the
@@ -2180,12 +2371,11 @@
     z-index: 6;
     display: grid;
     place-items: center;
-    padding: 12px 10px;
+    padding: 12px 4px;
     border-radius: var(--radius, 3px);
     background: var(--n-200, #232323);
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
   }
-  .volv { writing-mode: vertical-rl; direction: rtl; appearance: slider-vertical; width: 18px; height: 96px; cursor: pointer; accent-color: var(--n-800, #c4c4c4); }
   /* Touch: hardware buttons own loudness on the lock screen, not in a page —
      the slider moves to the popover — and every control grows to a real
      target. */

@@ -25,6 +25,7 @@
   } from '$lib/upload.js';
   import type { PendingFile } from '$lib/upload.js';
   import { pageWashFor } from '$lib/washes.js';
+  import Slider from '@onelight/player/Slider.svelte';
 
   type Asset = {
     id: string;
@@ -1089,22 +1090,39 @@
 
   /* How big a card is, remembered per person. A wall of contact-sheet
      thumbnails and a wall of poster-sized ones are both right, for different
-     work: eight hundred stills to sort through, or four shots to look at. */
+     work: eight hundred stills to sort through, or four shots to look at.
+
+     The size is a width in pixels and it moves continuously. Four fixed steps
+     made the wall jump between four layouts; sorting through a contact sheet
+     wants the size to answer the hand. */
   const SIZE_KEY = 'onelight.assets.cardsize';
-  const CARD_SIZES = [130, 200, 280, 380];
-  let sizeStep = $state(1);
+  const CARD_MIN = 120;
+  const CARD_MAX = 400;
+  const CARD_DEFAULT = 200;
+  /* What the four old steps meant, so a stored index becomes the width it used
+     to draw rather than a card 2px wide. */
+  const LEGACY_SIZES = [130, 200, 280, 380];
+  let cardSize = $state(CARD_DEFAULT);
   $effect(() => {
     try {
       const stored = Number(localStorage.getItem(SIZE_KEY));
-      if (Number.isInteger(stored) && stored >= 0 && stored < CARD_SIZES.length) sizeStep = stored;
+      if (!Number.isFinite(stored)) return;
+      if (Number.isInteger(stored) && stored >= 0 && stored < LEGACY_SIZES.length)
+        cardSize = LEGACY_SIZES[stored] ?? CARD_DEFAULT;
+      else if (stored >= CARD_MIN && stored <= CARD_MAX) cardSize = stored;
     } catch {
       /* Storage can be unavailable; the default size stands. */
     }
   });
   const setSize = (next: number): void => {
-    sizeStep = next;
+    cardSize = Math.round(next);
+  };
+  /* Written on release, not on every pointer move: a drag across the range is
+     one decision, not two hundred writes to localStorage. */
+  const commitSize = (next: number): void => {
+    cardSize = Math.round(next);
     try {
-      localStorage.setItem(SIZE_KEY, String(next));
+      localStorage.setItem(SIZE_KEY, String(cardSize));
     } catch {
       /* Non-persistent, still applied for the session. */
     }
@@ -2083,18 +2101,18 @@
           <h2 class="browser-title">{showTrash ? 'Trash' : selectedName}</h2>
           <span class="grow"></span>
           {#if view === 'grid' && !showTrash}
-            <label class="sizectl">
-              <span class="vh">Thumbnail size</span>
-              <input
-                type="range"
-                min="0"
-                max={CARD_SIZES.length - 1}
-                step="1"
-                value={sizeStep}
-                aria-label="Thumbnail size"
-                oninput={(event) => setSize(Number(event.currentTarget.value))}
+            <span class="sizectl">
+              <Slider
+                label="Thumbnail size"
+                length="104px"
+                min={CARD_MIN}
+                max={CARD_MAX}
+                value={cardSize}
+                valueText={`${String(cardSize)} pixels wide`}
+                oninput={setSize}
+                onchange={commitSize}
               />
-            </label>
+            </span>
           {/if}
           {#if !showTrash}
             <div class="views" role="group" aria-label="View mode">
@@ -2215,7 +2233,7 @@
             role="listbox"
             aria-multiselectable="true"
             aria-label="Assets"
-            style={`--card: ${String(CARD_SIZES[sizeStep] ?? 200)}px;`}
+            style={`--card: ${String(cardSize)}px;`}
           >
             {#each displayed as asset (asset.id)}
               {@const entry = media.entries[asset.id]}
@@ -2727,7 +2745,6 @@
   /* ---- grid ---- */
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card, 200px), 1fr)); gap: 14px; margin-top: var(--pad-2); }
   .sizectl { display: flex; align-items: center; }
-  .sizectl input { width: 96px; accent-color: var(--accent); }
   /* Visually hidden, still read aloud. */
   .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   /* Two-up thumbnails on phones: one 358px column made each card a monument

@@ -10,6 +10,7 @@
   import { canonicalizePath } from '$lib/canonical.js';
   import { idFrom, pretty } from '$lib/ids.js';
   import { pageWashFor, pageWashFromStops, washFor } from '$lib/washes.js';
+  import Slider from '@onelight/player/Slider.svelte';
 
   /* One share, one page. The old flow was a list of every share with a dialog
      of twenty settings behind an Edit button: to change one thing about one
@@ -690,18 +691,34 @@
               each viewer's name and email are drawn live on top of it.
             </p>
             <div class="pair">
-              <label class="field">Opacity
+              <span class="field">Opacity
                 <span class="rangewrap">
-                  <input type="range" min="0.05" max="1" step="0.05" bind:value={wmOpacity} />
+                  <Slider
+                    label="Watermark opacity"
+                    min={0.05}
+                    max={1}
+                    step={0.05}
+                    value={wmOpacity}
+                    valueText={`${String(Math.round(wmOpacity * 100))} percent`}
+                    oninput={(next) => { wmOpacity = next; }}
+                  />
                   <span class="tc rangeval">{Math.round(wmOpacity * 100)}%</span>
                 </span>
-              </label>
-              <label class="field">Size, fraction of frame height
+              </span>
+              <span class="field">Size, fraction of frame height
                 <span class="rangewrap">
-                  <input type="range" min="0.01" max="0.2" step="0.01" bind:value={wmSize} />
+                  <Slider
+                    label="Watermark size"
+                    min={0.01}
+                    max={0.2}
+                    step={0.01}
+                    value={wmSize}
+                    valueText={`${String(Math.round(wmSize * 100))} percent of frame height`}
+                    oninput={(next) => { wmSize = next; }}
+                  />
                   <span class="tc rangeval">{Math.round(wmSize * 100)}%</span>
                 </span>
-              </label>
+              </span>
             </div>
             <label class="check">
               <input type="checkbox" bind:checked={wmBox} />
@@ -933,7 +950,7 @@
   .passrow input { flex: 1; min-width: 0; }
   .clearpass { justify-self: start; }
   .rangewrap { display: flex; align-items: center; gap: 12px; }
-  .rangewrap input[type='range'] { flex: 1; accent-color: var(--accent); padding: 0; background: none; }
+  .rangewrap > :global(.slider) { flex: 1; }
   .rangeval { min-width: 44px; color: var(--ink-text); font-variant-numeric: tabular-nums; }
   .wmnote { margin: 0; padding: 9px 11px; border-radius: var(--radius); background: color-mix(in oklab, var(--note) 14%, var(--ink-200)); color: var(--ink-text); font-size: var(--text-12); line-height: 1.5; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--note) 30%, transparent); }
   .wmapply { display: flex; align-items: center; gap: 12px; }

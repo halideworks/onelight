@@ -6,6 +6,7 @@
     timecodeFromFrames
   } from '@onelight/core';
   import { frameForX, markerInkFor, spanForRange, xForFrame } from './timeline.js';
+  import { isRangeDrag } from './transport-state.js';
   import type { TimelineMarker } from './timeline.js';
   import { filmstripTiles, spriteSheetSize } from './filmstrip.js';
   import type { SpriteCue } from './filmstrip.js';
@@ -21,8 +22,12 @@
     filmstrip = null,
     waveformUrl = null,
     disabled = false,
+    rangeArmed = false,
     onseek = undefined,
-    onmarkerselect = undefined
+    onmarkerselect = undefined,
+    onrangeclick = undefined,
+    onrangedrag = undefined,
+    onrangedone = undefined
   }: {
     frame: number;
     durationFrames: number;
@@ -36,8 +41,18 @@
     /* Seeking is suspended (a drawing is armed upstream): pointer scrubbing
        and marker jumps are refused while this is true. */
     disabled?: boolean;
+    /* The pointer paints in/out instead of scrubbing. Armed upstream by asking
+       for a ranged note or for a loop with nothing marked; Alt does it for one
+       gesture without arming anything. */
+    rangeArmed?: boolean;
     onseek?: ((frame: number) => void) | undefined;
     onmarkerselect?: ((markerId: string, frame: number) => void) | undefined;
+    /* A press that never travelled. The ordering rule is the player's. */
+    onrangeclick?: ((frame: number) => void) | undefined;
+    /* Live through a paint drag, both ends at once. */
+    onrangedrag?: ((anchor: number, frame: number) => void) | undefined;
+    /* The gesture is over, whichever kind it was. */
+    onrangedone?: (() => void) | undefined;
   } = $props();
 
   let stack: HTMLDivElement | undefined = $state();
@@ -157,11 +172,20 @@
     return () => observer.disconnect();
   });
 
-  const seekFromEvent = (event: PointerEvent): void => {
-    if (!stack) return;
+  const frameFromEvent = (event: PointerEvent): number => {
+    if (!stack) return frame;
     const rect = stack.getBoundingClientRect();
-    onseek?.(frameForX(event.clientX - rect.left, durationFrames, rect.width));
+    return frameForX(event.clientX - rect.left, durationFrames, rect.width);
   };
+
+  const seekFromEvent = (event: PointerEvent): void => {
+    onseek?.(frameFromEvent(event));
+  };
+
+  /* A live paint gesture: where it started, in frames and in pixels. The pixel
+     anchor is what decides click-or-drag, because a frame of travel means
+     nothing on a two-hour timeline and everything on a two-second one. */
+  let painting = $state<{ frame: number; x: number; moved: boolean } | null>(null);
 
   const handlePointerDown = (event: PointerEvent): void => {
     if (!event.isPrimary || disabled) return;
@@ -169,16 +193,30 @@
     try {
       stack?.setPointerCapture(event.pointerId);
     } catch {
-      /* An inactive pointer id cannot be captured; the click still seeks. */
+      /* An inactive pointer id cannot be captured; the gesture still lands. */
+    }
+    if (rangeArmed || event.altKey) {
+      painting = { frame: frameFromEvent(event), x: event.clientX, moved: false };
+      return;
     }
     scrubbing = true;
     seekFromEvent(event);
   };
 
   const handlePointerMove = (event: PointerEvent): void => {
-    if (!scrubbing) return;
     /* If the pointerup was missed (capture failed, release off-track), no
-       button is held any more: drop the latch so a bare hover cannot seek. */
+       button is held any more: drop the latch so a bare hover cannot act. */
+    if (painting) {
+      if (event.buttons === 0) {
+        endGesture(event);
+        return;
+      }
+      if (!painting.moved && !isRangeDrag(painting.x, event.clientX)) return;
+      painting = { ...painting, moved: true };
+      onrangedrag?.(painting.frame, frameFromEvent(event));
+      return;
+    }
+    if (!scrubbing) return;
     if (event.buttons === 0) {
       scrubbing = false;
       return;
@@ -186,8 +224,22 @@
     seekFromEvent(event);
   };
 
-  const endScrub = (): void => {
+  const endGesture = (event: PointerEvent): void => {
     scrubbing = false;
+    const paint = painting;
+    painting = null;
+    if (!paint) return;
+    /* A press that never travelled is a click, and the click rule (first plants
+       the in, later closes it, earlier moves it) belongs to whoever owns the
+       marks. */
+    if (!paint.moved) onrangeclick?.(frameFromEvent(event));
+    onrangedone?.();
+  };
+
+  const cancelGesture = (): void => {
+    scrubbing = false;
+    painting = null;
+    onrangedone?.();
   };
 
   const showTip = (marker: TimelineMarker): void => {
@@ -227,11 +279,12 @@
     class="stack"
     role="presentation"
     class:disabled
+    class:arming={rangeArmed}
     bind:this={stack}
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
-    onpointerup={endScrub}
-    onpointercancel={endScrub}
+    onpointerup={endGesture}
+    onpointercancel={cancelGesture}
   >
     <div
       class="track"
@@ -249,6 +302,10 @@
           style:left={`${ioSpan.left * 100}%`}
           style:width={`${ioSpan.width * 100}%`}
         ></div>
+      {:else if inFrame !== null}
+        <!-- An in with no out yet. Half a range is still a decision that has
+             been made, and it has to be visible or the next click is a guess. -->
+        <div class="io-open" style:left={`${percentFor(inFrame)}%`}></div>
       {/if}
     </div>
     {#if showFilmstrip}
@@ -355,6 +412,23 @@
     bottom: 0;
     background: var(--n-300, #2e2e2e);
   }
+  /* While the range is being painted it is the thing being looked at, so it
+     takes a step up the neutral scale and its ends are drawn. */
+  .stack.arming .io {
+    background: var(--n-400, #3d3d3d);
+    box-shadow: inset 2px 0 0 var(--n-800, #c4c4c4), inset -2px 0 0 var(--n-800, #c4c4c4);
+  }
+  .io-open {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--n-700, #9a9a9a);
+  }
+  .stack.arming .io-open { background: var(--n-900, #e9e9e9); }
+  /* Armed, the pointer is a marking tool and says so. */
+  .stack.arming { cursor: crosshair; }
   .film {
     position: relative;
     height: 36px;

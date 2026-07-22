@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import Player from '@onelight/player/Player.svelte';
   import ImageViewer from '@onelight/player/ImageViewer.svelte';
+  import Slider from '@onelight/player/Slider.svelte';
   import { parseSpriteVtt } from '@onelight/player';
   import type {
     FrameAnnotation,
@@ -280,7 +281,12 @@
      titled Comments was furniture. In showtime the client can also put it
      away and bring it back; the room is theirs. */
   let railHidden = $state(false);
-  const railOpen = $derived(Boolean(share?.allow_comments) && !(showtime && railHidden));
+  /* Mounted whenever the share has notes at all, shown when it is not put
+     away. The two are separate because putting it away has to be watchable:
+     an unmounted panel cannot leave, it can only stop existing, which is why
+     Show notes animated and Hide notes did not. */
+  const railMounted = $derived(Boolean(share?.allow_comments));
+  const railOpen = $derived(railMounted && !(showtime && railHidden));
 
   const tagsOf = (comment: Comment): string[] =>
     Array.isArray(comment.tags) ? comment.tags : hashtagsIn(comment.body_text);
@@ -887,16 +893,29 @@
     stills?.setDrawWidth(width);
   };
 
-  /* A note can cover a stretch of time. The range lives in the composer
-     (simple chrome has no marks), reads as plain from/to, and nudges by
-     single frames. */
+  /* A note can cover a stretch of time. The range reads as plain from/to in
+     the composer and nudges by single frames, but it is MARKED on the picture:
+     asking for a range arms the player's own bar, and the viewer says where by
+     pointing at it. Guessing two seconds from the playhead and making them
+     nudge it into place was arithmetic standing in for a gesture.
+     The marks live in the player (it needs them for the loop anyway); this
+     mirrors them so the composer and the submit path can read them. */
   let noteRange = $state<{ in: number; out: number } | null>(null);
+  let rangeArming = $state(false);
   const openNoteRange = (): void => {
     if (!playerActive) return;
-    const rate = previewRate ? previewRate.num / previewRate.den : 24;
-    const last = Math.max(1, (previewDurationFrames ?? 1) - 1);
-    const start = Math.min(currentFrame, last - 1);
-    noteRange = { in: start, out: Math.min(last, start + Math.round(rate * 2)) };
+    rangeArming = true;
+    /* A fresh mark, not an edit of the last one: the bar starts clean so the
+       first click plants the in. */
+    noteRange = null;
+    player?.clearRange();
+    player?.armRange();
+  };
+  const closeNoteRange = (): void => {
+    rangeArming = false;
+    noteRange = null;
+    player?.disarmRange();
+    player?.clearRange();
   };
   const nudgeNoteRange = (end: 'in' | 'out', delta: number): void => {
     if (!noteRange) return;
@@ -904,6 +923,7 @@
     const nextOut = end === 'out' ? noteRange.out + delta : noteRange.out;
     if (nextIn < 0 || nextOut <= nextIn) return;
     noteRange = { in: nextIn, out: nextOut };
+    player?.setRange(nextIn, nextOut);
   };
 
   const addComment = async (event: SubmitEvent): Promise<void> => {
@@ -920,7 +940,9 @@
         ...(noteRange && !drawing ? { frame_out: noteRange.out } : {}),
         ...(drawing ? { annotation: { strokes: drawing.strokes } } : {})
       });
-      noteRange = null;
+      /* The posted note owns that stretch now; the bar goes back to being a
+         bar rather than keeping a stale mark on it. */
+      closeNoteRange();
       /* Files ride the new note; a failure names the file and keeps it on
          the composer for another try. */
       const uploaded: CommentAttachment[] = [];
@@ -1185,6 +1207,16 @@
           }}
           onmarkerselect={(id) => highlightComment(id)}
           ondrawingchange={(drawing) => { pendingDrawing = drawing; }}
+          onrangechange={(range) => {
+            /* Only a complete range is a note's range. A planted in with no out
+               yet is a gesture in progress, and the composer should not start
+               claiming a stretch that has not been closed. */
+            noteRange =
+              range.in !== null && range.out !== null && range.out > range.in
+                ? { in: range.in, out: range.out }
+                : null;
+            if (noteRange) rangeArming = false;
+          }}
         />
       {:else if stillActive}
         <!-- A still is the work itself here, not a link to it: the same
@@ -1242,8 +1274,8 @@
         </nav>
       {/if}
       </div>
-      {#if railOpen}
-      <aside class="rail">
+      {#if railMounted}
+      <aside class="rail" class:shut={!railOpen} aria-hidden={!railOpen || undefined} inert={!railOpen || undefined}>
       <section class="comments" aria-label="Comments">
         <div class="c-bar">
           <h3>Comments</h3>
@@ -1342,7 +1374,14 @@
                     <button type="button" use:holdRepeat={() => nudgeNoteRange('out', -1)} aria-label="End one frame earlier">◂</button>
                     <span class="tc anchor">{anchorLabel(noteRange.out)}</span>
                     <button type="button" use:holdRepeat={() => nudgeNoteRange('out', 1)} aria-label="End one frame later">▸</button>
-                    <button type="button" class="linky" onclick={() => { noteRange = null; }}>Just this moment</button>
+                    <button type="button" class="linky" onclick={closeNoteRange}>Just this moment</button>
+                  </span>
+                {:else if rangeArming}
+                  <!-- Armed and waiting for the viewer to point. The bar is
+                       already wearing a crosshair; this says what it wants. -->
+                  <span class="rangechip">
+                    <span class="rangeword">Mark the stretch on the bar below</span>
+                    <button type="button" class="linky" onclick={closeNoteRange}>Cancel</button>
                   </span>
                 {:else if playerActive}
                   <span class="tc anchor">at {anchorLabel(currentFrame)}</span>
@@ -1395,18 +1434,18 @@
                       ></button>
                     {/each}
                   </div>
-                  <label class="thickrow">
+                  <span class="thickrow">
                     <span class="lbl">Thickness</span>
-                    <input
-                      type="range"
+                    <Slider
+                      variant={showtime ? 'ink' : 'neutral'}
+                      length="96px"
+                      label="Line thickness"
                       min={DRAW_WIDTH_MIN}
                       max={DRAW_WIDTH_MAX}
-                      step="0.0002"
                       value={drawWidth}
-                      oninput={(event) => pickWidth(Number(event.currentTarget.value))}
-                      aria-label="Line thickness"
+                      oninput={pickWidth}
                     />
-                  </label>
+                  </span>
                 {/if}
               </div>
             {/if}
@@ -1543,8 +1582,12 @@
      review page divides it. Not ".stage": the player owns that name for its
      own picture area, and two different things under one class in a parent and
      its child is a trap for anything selecting either. */
-  .room { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 420px); align-items: stretch; }
-  .room.solo { grid-template-columns: minmax(0, 1fr); }
+  /* The column width is animated, so putting the notes away is a movement the
+     eye can follow and the picture grows into the room it just gained rather
+     than jumping into it. A browser that will not interpolate the track sizes
+     simply snaps, which is where this started. */
+  .room { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 420px); align-items: stretch; transition: grid-template-columns 380ms cubic-bezier(0.22, 1, 0.36, 1); }
+  .room.solo { grid-template-columns: minmax(0, 1fr) 0px; }
   /* A column too, so the player has a definite height to divide. overflow
      hidden rather than auto: the picture shrinks to fit instead of the room
      growing a scrollbar and hiding the transport below the fold. */
@@ -1554,14 +1597,25 @@
      gets a definite height. */
   .picture { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; animation: fadein 380ms ease both; }
   .picture > :global(.player) { flex: 1; min-height: 0; }
-  .rail { display: flex; flex-direction: column; min-height: 0; background: var(--n-100); }
+  .rail { display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: var(--n-100); transition: opacity 300ms cubic-bezier(0.22, 1, 0.36, 1), transform 380ms cubic-bezier(0.22, 1, 0.36, 1), visibility 0s; }
+  /* Put away: it leaves to the right, the way it arrived from. Visibility waits
+     for the fade so the panel is not yanked out from under its own exit, and
+     it is what keeps a hidden rail out of the tab order and off a screen
+     reader once the movement is over. */
+  .rail.shut { opacity: 0; transform: translateX(24px); visibility: hidden; transition-delay: 0s, 0s, 300ms; }
   @media (max-width: 900px) {
     .preview { overflow: auto; }
     /* Stacked, the room must grow with its content and let the preview
        scroll: flex:1 kept it at viewport height, the two implicit rows
        split that fixed height, and the rail painted over the player's
        overflow (overflow is visible here). */
-    .room { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; flex: none; height: auto; }
+    /* Stacked there is no second column to shrink, so .solo must be pulled
+       back to one track (it is the more specific selector and would otherwise
+       win here with a dead 0px column beside the picture). The rail leaves by
+       being taken out of the stack instead, which is the only honest thing a
+       row can do without an animatable height. */
+    .room, .room.solo { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; flex: none; height: auto; transition: none; }
+    .rail.shut { display: none; }
     .maincol { overflow: visible; }
     .maincol > :global(.player) { flex: none; }
     /* A short presentation floats on its wash instead of clinging to the top
@@ -1825,7 +1879,6 @@
   .drawrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .inkrow { display: flex; align-items: center; gap: 5px; }
   .thickrow { display: flex; align-items: center; gap: 8px; }
-  .thickrow input { width: 110px; }
   .thickrow .lbl { color: var(--n-600); font-size: var(--text-12); }
   .showtime .thickrow .lbl { color: var(--ink-text-dim); }
   .inkdot { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; opacity: 0.7; }
@@ -1895,11 +1948,16 @@
      as a glitch rather than an entrance. */
   .showtime .picture { animation: fadein 420ms ease both; }
   .showtime .carousel { animation: rise 620ms cubic-bezier(0.22, 1, 0.36, 1) 130ms both; }
-  .showtime .rail { animation: rise 620ms cubic-bezier(0.22, 1, 0.36, 1) 80ms both; }
+  /* backwards, not both: a forwards fill would pin opacity and transform at
+     the animation's end values forever, and the shut state below could never
+     move them. The arrival still plays; after it, the transition has the
+     element. */
+  .showtime .rail { animation: rise 620ms cubic-bezier(0.22, 1, 0.36, 1) 80ms backwards; }
   @media (prefers-reduced-motion: reduce) {
     .inner h1, .shell form, .assets .asset, .preview, .preview .empty,
     .showtime .preview-bar, .showtime .picture, .showtime .carousel, .showtime .rail, .picture {
       animation: none;
     }
+    .room, .rail { transition: none; }
   }
 </style>

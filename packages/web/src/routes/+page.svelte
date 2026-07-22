@@ -13,6 +13,7 @@
   import { grainLayer } from '$lib/grain.js';
   import HeroWash from '$lib/HeroWash.svelte';
   import Player from '@onelight/player/Player.svelte';
+  import Slider from '@onelight/player/Slider.svelte';
 
   type Project = {
     id: string;
@@ -78,22 +79,38 @@
     }
   });
   /* How big a project card is, remembered per person: the same control the
-     asset grid has, for the same reason. */
+     asset grid has, for the same reason.
+     The size is a width in pixels and it moves continuously. It used to be an
+     index into four fixed sizes, which made the grid lurch between four
+     layouts; a size control should answer the hand. */
   const SIZE_KEY = 'onelight.projects.cardsize';
-  const CARD_SIZES = [150, 220, 300, 400];
-  let sizeStep = $state(1);
+  const CARD_MIN = 140;
+  const CARD_MAX = 420;
+  const CARD_DEFAULT = 220;
+  /* What the four old steps meant, so a stored index becomes the width it
+     used to draw rather than a card 2px wide. */
+  const LEGACY_SIZES = [150, 220, 300, 400];
+  let cardSize = $state(CARD_DEFAULT);
   $effect(() => {
     try {
       const stored = Number(localStorage.getItem(SIZE_KEY));
-      if (Number.isInteger(stored) && stored >= 0 && stored < CARD_SIZES.length) sizeStep = stored;
+      if (!Number.isFinite(stored)) return;
+      if (Number.isInteger(stored) && stored >= 0 && stored < LEGACY_SIZES.length)
+        cardSize = LEGACY_SIZES[stored] ?? CARD_DEFAULT;
+      else if (stored >= CARD_MIN && stored <= CARD_MAX) cardSize = stored;
     } catch {
       /* Storage can be unavailable; the default size stands. */
     }
   });
   const setSize = (next: number): void => {
-    sizeStep = next;
+    cardSize = Math.round(next);
+  };
+  /* Written on release, not on every pointer move: a drag across the range
+     is one decision, not two hundred writes to localStorage. */
+  const commitSize = (next: number): void => {
+    cardSize = Math.round(next);
     try {
-      localStorage.setItem(SIZE_KEY, String(next));
+      localStorage.setItem(SIZE_KEY, String(cardSize));
     } catch {
       /* Non-persistent, still applied for the session. */
     }
@@ -592,18 +609,18 @@
           >{showArchived ? 'Back to projects' : `Archive (${archived.length})`}</button>
         {/if}
         {#if view === 'grid'}
-          <label class="sizectl">
-            <span class="vh">Card size</span>
-            <input
-              type="range"
-              min="0"
-              max={CARD_SIZES.length - 1}
-              step="1"
-              value={sizeStep}
-              aria-label="Card size"
-              oninput={(event) => setSize(Number(event.currentTarget.value))}
+          <span class="sizectl">
+            <Slider
+              label="Card size"
+              length="104px"
+              min={CARD_MIN}
+              max={CARD_MAX}
+              value={cardSize}
+              valueText={`${String(cardSize)} pixels wide`}
+              oninput={setSize}
+              onchange={commitSize}
             />
-          </label>
+          </span>
         {/if}
         <div class="viewtoggle" role="group" aria-label="Project view">
           <button type="button" aria-pressed={view === 'grid'} onclick={() => setView('grid')}>Grid</button>
@@ -643,7 +660,7 @@
       <div
         class="projectlist"
         class:grid={view === 'grid'}
-        style={`--card: ${String(CARD_SIZES[sizeStep] ?? 220)}px;`}
+        style={`--card: ${String(cardSize)}px;`}
       >
         {#each displayed as project (project.id)}
           {@const unread = unreadFor(project.id)}
@@ -961,7 +978,6 @@
   .projectlist { display: grid; gap: 2px; }
   .projectlist.grid { grid-template-columns: repeat(auto-fill, minmax(var(--card, 220px), 1fr)); gap: 14px; }
   .sizectl { display: flex; align-items: center; }
-  .sizectl input { width: 96px; accent-color: var(--accent); }
   @media (max-width: 720px) {
     .projectlist.grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
     .sizectl { display: none; }

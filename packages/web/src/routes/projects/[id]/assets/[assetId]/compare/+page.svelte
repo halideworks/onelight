@@ -4,6 +4,7 @@
   import { formatTimecode, timecodeFromFrames } from '@onelight/core';
   import { api, messageFrom } from '$lib/api.js';
   import { idFrom } from '$lib/ids.js';
+  import Slider from '@onelight/player/Slider.svelte';
 
   /* Two versions of the same asset against each other: side by side, or one
      picture with a wipe line. One transport drives both. Frame-step accuracy
@@ -93,6 +94,8 @@
     playing = false;
     videoA?.pause();
     videoB?.pause();
+    /* Whatever trim the sync was holding is spent; the next pass starts level. */
+    if (videoB) videoB.playbackRate = 1;
     /* Re-land on the exact frame, so a pause mid-play is frame-true. */
     seekMedia(frame);
   };
@@ -100,6 +103,8 @@
   const play = (): void => {
     if (!videoA || !videoB) return;
     playing = true;
+    videoA.playbackRate = 1;
+    videoB.playbackRate = 1;
     if (videoB.currentTime !== videoA.currentTime) videoB.currentTime = videoA.currentTime;
     void videoA.play();
     void videoB.play();
@@ -115,26 +120,81 @@
     seekTo(frame + delta);
   };
 
-  /* While playing, A's clock is the truth: the readout follows it and B is
-     pulled back whenever it drifts past half a frame. */
+  /* While playing, A's clock is the truth and B is held against it.
+
+     B used to be corrected by assignment: any drift past half a frame set
+     B.currentTime, which is a seek, which flushes a decode pipeline. Two
+     independent decoders drift constantly, so that fired several times a
+     second and B spent the pass stuttering. It also could not converge --
+     every correction cost more time than the drift it was fixing.
+
+     A seek is now the last resort. Inside a dead zone nothing happens at all;
+     past it B's playbackRate is trimmed by a few percent so it closes the gap
+     over the next second without dropping a frame, and only a gap too wide for
+     that (a stall, a tab that slept) is worth a seek. */
+  const SYNC_DEAD = 0.5; /* frames: below this, leave it alone */
+  const SYNC_TRIM = 0.06; /* the most B's rate is bent, either way */
+  const SYNC_SEEK = 0.4; /* seconds: past this, trimming will never catch up */
+
+  const holdSync = (): void => {
+    if (!videoA || !videoB) return;
+    const drift = videoB.currentTime - videoA.currentTime;
+    if (Math.abs(drift) > SYNC_SEEK) {
+      videoB.currentTime = videoA.currentTime;
+      videoB.playbackRate = 1;
+      return;
+    }
+    if (Math.abs(drift) <= SYNC_DEAD / fps) {
+      if (videoB.playbackRate !== 1) videoB.playbackRate = 1;
+      return;
+    }
+    /* Ahead means slow down. The trim is proportional so a small gap gets a
+       small correction and nothing oscillates. */
+    const trim = Math.max(-SYNC_TRIM, Math.min(SYNC_TRIM, -drift * 2));
+    videoB.playbackRate = 1 + trim;
+  };
+
   $effect(() => {
     if (!playing) return;
+    const leader = videoA;
+    if (!leader) return;
     let raf = 0;
-    const watch = (): void => {
-      if (videoA) {
-        frame = Math.max(0, Math.min(lastFrame, Math.floor(videoA.currentTime * fps)));
-        if (videoB && Math.abs(videoB.currentTime - videoA.currentTime) > 0.5 / fps)
-          videoB.currentTime = videoA.currentTime;
-        if (videoA.ended || videoA.paused) {
-          playing = false;
-          videoB?.pause();
-          return;
-        }
+    let live = true;
+    /* requestVideoFrameCallback where it exists: it fires once per PRESENTED
+       frame (24 a second on 24p footage) rather than once per display refresh,
+       and it hands over the media time of the frame actually on screen. Fewer
+       wake-ups and a truer number, both. */
+    const hasRvfc = typeof leader.requestVideoFrameCallback === 'function';
+    const advance = (mediaTime: number): void => {
+      frame = Math.max(0, Math.min(lastFrame, Math.floor(mediaTime * fps)));
+      holdSync();
+      if (leader.ended || leader.paused) {
+        playing = false;
+        videoB?.pause();
+        if (videoB) videoB.playbackRate = 1;
+        return;
       }
-      raf = requestAnimationFrame(watch);
     };
-    raf = requestAnimationFrame(watch);
-    return () => cancelAnimationFrame(raf);
+    if (hasRvfc) {
+      const onFrame = (_now: number, metadata: VideoFrameCallbackMetadata): void => {
+        if (!live) return;
+        advance(metadata.mediaTime);
+        if (live && playing) leader.requestVideoFrameCallback(onFrame);
+      };
+      leader.requestVideoFrameCallback(onFrame);
+    } else {
+      const watch = (): void => {
+        if (!live) return;
+        advance(leader.currentTime);
+        if (live && playing) raf = requestAnimationFrame(watch);
+      };
+      raf = requestAnimationFrame(watch);
+    }
+    return () => {
+      live = false;
+      if (raf) cancelAnimationFrame(raf);
+      if (videoB) videoB.playbackRate = 1;
+    };
   });
 
   const pickSource = async (which: 'a' | 'b', versionId: string): Promise<void> => {
@@ -197,9 +257,29 @@
     return () => window.removeEventListener('keydown', onKey);
   });
 
+  /* The wipe tracked the pointer directly, so every pointermove wrote a new
+     clip-path and a new left on the line: two style recalculations and a full
+     repaint of a video element per mouse event, at whatever rate the mouse
+     reports (often 125 Hz). One per animation frame is all a screen can show. */
+  let wipeRaf: number | null = null;
+  let wipePending: number | null = null;
   const wipeFrom = (event: PointerEvent, surface: HTMLElement): void => {
     const box = surface.getBoundingClientRect();
-    wipe = Math.max(0, Math.min(100, ((event.clientX - box.left) / box.width) * 100));
+    wipePending = Math.max(0, Math.min(100, ((event.clientX - box.left) / box.width) * 100));
+    if (wipeRaf !== null) return;
+    wipeRaf = requestAnimationFrame(() => {
+      wipeRaf = null;
+      if (wipePending !== null) wipe = wipePending;
+      wipePending = null;
+    });
+  };
+  const endWipe = (): void => {
+    draggingWipe = false;
+    /* The last position is the one meant, even if it arrived between frames. */
+    if (wipeRaf !== null) cancelAnimationFrame(wipeRaf);
+    wipeRaf = null;
+    if (wipePending !== null) wipe = wipePending;
+    wipePending = null;
   };
 </script>
 
@@ -258,7 +338,8 @@
         class="stage wipe"
         onpointerdown={(event) => { draggingWipe = true; (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId); wipeFrom(event, event.currentTarget as HTMLElement); }}
         onpointermove={(event) => { if (draggingWipe) wipeFrom(event, event.currentTarget as HTMLElement); }}
-        onpointerup={() => { draggingWipe = false; }}
+        onpointerup={endWipe}
+        onpointercancel={endWipe}
       >
         <!-- svelte-ignore a11y_media_has_caption -->
         <video bind:this={videoA} src={sourceA} preload="auto" playsinline onloadeddata={onLoaded}></video>
@@ -272,7 +353,13 @@
           onloadeddata={onLoaded}
           style={`clip-path: inset(0 0 0 ${wipe}%);`}
         ></video>
-        <span class="wipeline" style={`left: ${wipe}%;`} aria-hidden="true"></span>
+        <!-- The line rides a transform, not a left: a left change invalidates
+             layout for everything beside it, and this moves under a finger. The
+             carrier is the full width, so a percentage translate on it is a
+             percentage of the stage. -->
+        <span class="wipecarrier" style={`transform: translateX(${wipe}%);`} aria-hidden="true">
+          <span class="wipeline"></span>
+        </span>
         <span class="wipetag a">v{versionA?.version_no}</span>
         <span class="wipetag b">v{versionB?.version_no}</span>
       </div>
@@ -283,16 +370,18 @@
       <button type="button" onclick={() => step(-1)} aria-label="Back one frame">&lt;</button>
       <button type="button" onclick={() => step(1)} aria-label="Forward one frame">&gt;</button>
       <span class="clock tc">{timecodeAt(frame)}</span>
-      <input
-        class="seek"
-        type="range"
-        min="0"
-        max={lastFrame}
-        step="1"
-        value={frame}
-        oninput={(event) => { if (playing) pause(); seekTo(Number((event.currentTarget as HTMLInputElement).value)); }}
-        aria-label="Seek"
-      />
+      <span class="seek">
+        <Slider
+          variant="neutral"
+          label="Seek"
+          min={0}
+          max={lastFrame}
+          step={1}
+          value={frame}
+          valueText={timecodeAt(frame)}
+          oninput={(next) => { if (playing) pause(); seekTo(next); }}
+        />
+      </span>
       <span class="hint">Space plays. Arrows step a frame; hold Shift for ten.</span>
     </div>
   {/if}
@@ -335,7 +424,8 @@
   .stage.wipe { position: relative; display: flex; align-items: center; justify-content: center; cursor: ew-resize; touch-action: none; }
   .stage.wipe video { position: relative; max-width: 100%; }
   .stage.wipe video.over { position: absolute; inset: 0; margin: auto; max-height: calc(100vh - 170px); }
-  .wipeline { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--n-900); pointer-events: none; }
+  .wipecarrier { position: absolute; top: 0; bottom: 0; left: 0; width: 100%; pointer-events: none; will-change: transform; }
+  .wipeline { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; margin-left: -1px; background: var(--n-900); }
   .wipetag { position: absolute; top: 10px; background: rgba(10, 10, 10, 0.75); color: var(--n-900); padding: 3px 8px; border-radius: 2px; font-size: var(--text-12); pointer-events: none; }
   .wipetag.a { left: 10px; }
   .wipetag.b { right: 10px; }
@@ -346,7 +436,7 @@
   .playpause { min-width: 72px; }
   .clock { min-width: 108px; text-align: center; color: var(--n-900); }
   .tc { font-variant-numeric: tabular-nums; }
-  .seek { flex: 1; accent-color: var(--n-700); }
+  .seek { flex: 1; display: flex; align-items: center; }
   .hint { color: var(--n-500); white-space: nowrap; }
 
   .error { padding: 24px 20px; color: var(--warn); }

@@ -14,6 +14,7 @@
    * same endpoint, and they should be made with the same hand.
    */
   import AnnotationOverlay from './AnnotationOverlay.svelte';
+  import Slider from './Slider.svelte';
   import { ANNOTATION_INKS } from './annotations.js';
   import type { AnnotationPoint, AnnotationStroke, FrameAnnotation } from './annotations.js';
   import {
@@ -580,17 +581,18 @@
           <span class="nibbox" aria-hidden="true">
             <span class="nib" style={`width: ${Math.min(18, drawWidthPx)}px; height: ${Math.min(18, drawWidthPx)}px; background: ${drawColor};`}></span>
           </span>
-          <input
-            class="thick"
-            type="range"
-            min={DRAW_WIDTH_MIN}
-            max={DRAW_WIDTH_MAX}
-            step="0.0002"
-            value={drawWidth}
-            oninput={(event) => setDrawWidth(Number(event.currentTarget.value))}
-            aria-label="Line thickness"
-            title="Line thickness"
-          />
+          <span class="thick">
+            <Slider
+              variant="neutral"
+              length="88px"
+              label="Line thickness"
+              min={DRAW_WIDTH_MIN}
+              max={DRAW_WIDTH_MAX}
+              value={drawWidth}
+              valueText={`${String(drawWidthPx)} pixels`}
+              oninput={setDrawWidth}
+            />
+          </span>
         </span>
         <button type="button" onclick={undoStroke} disabled={pendingStrokes.length === 0}>Undo</button>
         <button type="button" onclick={clearStrokes} disabled={pendingStrokes.length === 0}>Clear</button>
@@ -693,7 +695,7 @@
   .nibbox { display: grid; place-items: center; flex: none; width: 18px; height: 18px; }
   .nib { display: block; border-radius: 50%; }
   .thickrow { display: flex; align-items: center; gap: 6px; flex: none; }
-  .thick { width: 88px; }
+  .thick { display: inline-flex; align-items: center; }
   .ink { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; opacity: 0.75; }
   .ink:hover { opacity: 1; }
   .ink[aria-pressed='true'] { opacity: 1; box-shadow: 0 0 0 2px var(--n-050, #101010), 0 0 0 3.5px var(--n-800, #c4c4c4); }

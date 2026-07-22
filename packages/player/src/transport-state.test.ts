@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { applyMark, isVerifyStale, seeksLocked } from "./transport-state.js";
+import {
+  applyMark,
+  isRangeDrag,
+  isVerifyStale,
+  rangeFromClick,
+  rangeFromDrag,
+  rangeIsSet,
+  seeksLocked,
+} from "./transport-state.js";
 
 describe("draw-mode seek lock", () => {
   it("does not lock while no strokes are pending", () => {
@@ -74,5 +82,87 @@ describe("mark ordering", () => {
   it("re-marking on the valid side leaves the other mark alone", () => {
     expect(applyMark("in", 5, 10, 50)).toEqual({ in: 5, out: 50 });
     expect(applyMark("out", 90, 10, 50)).toEqual({ in: 10, out: 90 });
+  });
+});
+
+describe("painting a range by click", () => {
+  const empty = { in: null, out: null };
+
+  it("plants the in on the first click", () => {
+    expect(rangeFromClick(24, empty)).toEqual({ in: 24, out: null });
+  });
+
+  it("closes the range with a click after the in", () => {
+    expect(rangeFromClick(96, { in: 24, out: null })).toEqual({
+      in: 24,
+      out: 96,
+    });
+  });
+
+  it("moves the in when the click lands before it", () => {
+    /* The rule David asked for: reaching backwards means the moment being
+       described started earlier, not that an inverted range was wanted. */
+    expect(rangeFromClick(10, { in: 24, out: null })).toEqual({
+      in: 10,
+      out: null,
+    });
+  });
+
+  it("treats a click on the in itself as moving the in, not a zero range", () => {
+    expect(rangeFromClick(24, { in: 24, out: null })).toEqual({
+      in: 24,
+      out: null,
+    });
+  });
+
+  it("starts over once the range is closed", () => {
+    expect(rangeFromClick(200, { in: 24, out: 96 })).toEqual({
+      in: 200,
+      out: null,
+    });
+  });
+
+  it("invariant: no sequence of clicks produces an inverted range", () => {
+    let range: { in: number | null; out: number | null } = empty;
+    for (const at of [50, 20, 80, 10, 5, 300, 299, 1]) {
+      range = rangeFromClick(at, range);
+      if (range.in !== null && range.out !== null)
+        expect(range.out).toBeGreaterThan(range.in);
+    }
+  });
+});
+
+describe("painting a range by drag", () => {
+  it("reads a forward drag as in then out", () => {
+    expect(rangeFromDrag(12, 90)).toEqual({ in: 12, out: 90 });
+  });
+
+  it("reads a backward drag the same way round", () => {
+    /* The hand may travel either direction; the range is the same span. */
+    expect(rangeFromDrag(90, 12)).toEqual({ in: 12, out: 90 });
+  });
+
+  it("needs real travel before a press counts as a drag", () => {
+    expect(isRangeDrag(100, 101)).toBe(false);
+    expect(isRangeDrag(100, 102)).toBe(false);
+    expect(isRangeDrag(100, 103)).toBe(true);
+    expect(isRangeDrag(100, 97)).toBe(true);
+  });
+});
+
+describe("when a range is finished", () => {
+  it("is unfinished until both ends exist", () => {
+    expect(rangeIsSet({ in: null, out: null })).toBe(false);
+    expect(rangeIsSet({ in: 10, out: null })).toBe(false);
+    expect(rangeIsSet({ in: null, out: 10 })).toBe(false);
+  });
+
+  it("is unfinished while the out is not genuinely later", () => {
+    expect(rangeIsSet({ in: 10, out: 10 })).toBe(false);
+    expect(rangeIsSet({ in: 10, out: 9 })).toBe(false);
+  });
+
+  it("is finished once the out is past the in", () => {
+    expect(rangeIsSet({ in: 10, out: 11 })).toBe(true);
   });
 });

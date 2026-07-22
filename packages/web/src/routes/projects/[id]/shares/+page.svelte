@@ -9,6 +9,7 @@
   import { canonicalizePath } from '$lib/canonical.js';
   import { idFrom, pretty } from '$lib/ids.js';
   import { pageWashFor } from '$lib/washes.js';
+  import Slider from '@onelight/player/Slider.svelte';
 
   /* The index of a project's shares. Each share has its own page now -- the
      link, the settings, the contents, the viewers -- so a card here is a door,
@@ -427,18 +428,34 @@
             Backing box
           </label>
         </div>
-        <label class="field">Opacity
+        <span class="field">Opacity
           <span class="rangewrap">
-            <input type="range" min="0.05" max="1" step="0.05" bind:value={form.wmOpacity} />
+            <Slider
+              label="Watermark opacity"
+              min={0.05}
+              max={1}
+              step={0.05}
+              value={form.wmOpacity}
+              valueText={`${String(Math.round(form.wmOpacity * 100))} percent`}
+              oninput={(next) => { form.wmOpacity = next; }}
+            />
             <span class="tc rangeval">{Math.round(form.wmOpacity * 100)}%</span>
           </span>
-        </label>
-        <label class="field">Size, fraction of frame height
+        </span>
+        <span class="field">Size, fraction of frame height
           <span class="rangewrap">
-            <input type="range" min="0.01" max="0.2" step="0.01" bind:value={form.wmSize} />
+            <Slider
+              label="Watermark size"
+              min={0.01}
+              max={0.2}
+              step={0.01}
+              value={form.wmSize}
+              valueText={`${String(Math.round(form.wmSize * 100))} percent of frame height`}
+              oninput={(next) => { form.wmSize = next; }}
+            />
             <span class="tc rangeval">{Math.round(form.wmSize * 100)}%</span>
           </span>
-        </label>
+        </span>
       {/if}
     </fieldset>
 
@@ -523,7 +540,7 @@
   .mini.blank { display: block; background: var(--ink-300); }
   .pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rangewrap { display: flex; align-items: center; gap: 12px; }
-  .rangewrap input[type='range'] { flex: 1; accent-color: var(--accent); padding: 0; background: none; }
+  .rangewrap > :global(.slider) { flex: 1; }
   .rangeval { min-width: 44px; color: var(--ink-text); font-variant-numeric: tabular-nums; }
   .hint { margin: 0; color: var(--ink-text-dim); font-size: var(--text-13); }
   .dialog-actions { display: flex; justify-content: end; gap: 10px; }
