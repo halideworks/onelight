@@ -59,7 +59,7 @@
       }
     }}
   >
-    <img src={url} alt={attachment.filename} loading="lazy" use:arrives onerror={() => void onError()} />
+    <img src={url} alt={attachment.filename} loading="lazy" decoding="async" use:arrives onerror={() => void onError()} />
   </button>
 {:else if failed}
   <span class="dead">{attachment.filename}</span>

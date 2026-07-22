@@ -80,7 +80,7 @@
     ></div>
     <div class="playhead" style={`left: ${(fraction ?? 0) * 100}%;`} aria-hidden="true"></div>
   {:else if poster}
-    <img src={poster} {alt} loading="lazy" draggable="false" use:arrives />
+    <img src={poster} {alt} loading="lazy" decoding="async" draggable="false" use:arrives />
   {:else}
     <div class="blank" aria-hidden="true"></div>
   {/if}

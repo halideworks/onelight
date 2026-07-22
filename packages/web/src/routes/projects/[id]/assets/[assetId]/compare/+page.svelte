@@ -26,6 +26,9 @@
 
   let asset = $state<Asset | null>(null);
   let versions = $state<Version[]>([]);
+  /* Ghost panes hold the stage until the version list has answered; only a
+     loaded list may say "needs two versions". */
+  let loaded = $state(false);
   let error = $state('');
   let aId = $state<string | null>(null);
   let bId = $state<string | null>(null);
@@ -256,6 +259,8 @@
         if (startB) await pickSource('b', startB);
       } catch (caught) {
         error = messageFrom(caught, 'This asset is not available.');
+      } finally {
+        loaded = true;
       }
     })();
     const onKey = (event: KeyboardEvent): void => {
@@ -350,9 +355,15 @@
   {#if error}
     <p class="error" role="alert">{error}</p>
   {:else if !sourceA || !sourceB}
-    <p class="empty">
-      {versions.length < 2 ? 'Comparing needs at least two versions.' : 'Loading both versions.'}
-    </p>
+    {#if versions.length >= 2 || !loaded}
+      <!-- Two dark panes breathing where the versions will stand. -->
+      <div class="stage side ghost" aria-hidden="true">
+        <span class="skeleton ghost-pane"></span>
+        <span class="skeleton ghost-pane"></span>
+      </div>
+    {:else}
+      <p class="empty">Comparing needs at least two versions.</p>
+    {/if}
   {:else}
     {#if mode === 'side'}
       <div class="stage side">
@@ -452,6 +463,9 @@
 
   .stage { flex: 1; min-height: 0; padding: 0 20px; }
   .stage.side { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: center; }
+  /* The waiting stage: neutral skeleton ink, panes at picture aspect. */
+  .stage.ghost { --skeleton-ink: var(--n-150); align-content: center; }
+  .ghost-pane { aspect-ratio: 16 / 9; width: 100%; border-radius: var(--radius); }
   figure { margin: 0; min-width: 0; position: relative; }
   video { display: block; width: 100%; max-height: calc(100vh - 170px); background: #000; }
   figcaption { position: absolute; top: 10px; left: 10px; background: rgba(10, 10, 10, 0.75); color: var(--n-900); padding: 3px 8px; border-radius: 2px; font-size: var(--text-12); }

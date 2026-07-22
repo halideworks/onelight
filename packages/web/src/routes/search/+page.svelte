@@ -220,7 +220,18 @@
   <section aria-label="Results" class="results" aria-busy={busy}>
     {#if !searched}
       <p class="empty">Type at least two characters. Searches assets, comments, projects, people and shares.</p>
-    {:else if hits.length === 0 && !busy}
+    {:else if hits.length === 0 && busy}
+      <!-- Ghost rows while the first results are on their way. -->
+      <div class="ghosts" aria-hidden="true">
+        {#each [54, 38, 61, 30] as width, index (index)}
+          <span class="hit static">
+            <span class="skeleton thumb"></span>
+            <span class="skeleton ghost-kind"></span>
+            <span class="skeleton ghost-name" style:width={`${String(width)}%`}></span>
+          </span>
+        {/each}
+      </div>
+    {:else if hits.length === 0}
       <p class="empty">Nothing matched "{searched}".</p>
     {/if}
     {#each sorted as hit (hit.type + hit.id)}
@@ -233,7 +244,7 @@
         >
           <span class="thumb">
             {#if entry?.media?.posterUrl}
-              <img src={entry.media.posterUrl} alt="" loading="lazy" />
+              <img src={entry.media.posterUrl} alt="" loading="lazy" decoding="async" />
             {/if}
           </span>
           <span class="kind">Asset</span>
@@ -274,7 +285,7 @@
         >
           <span class="thumb">
             {#if entry?.media?.posterUrl}
-              <img src={entry.media.posterUrl} alt="" loading="lazy" />
+              <img src={entry.media.posterUrl} alt="" loading="lazy" decoding="async" />
             {/if}
           </span>
           <span class="kind">Comment</span>
@@ -319,6 +330,11 @@
   .empty.small { font-size: var(--text-12); }
 
   .results { max-width: 860px; display: grid; gap: 2px; }
+  /* Ghost rows while results load (see .skeleton in tokens.css). */
+  .ghosts { display: grid; gap: 2px; }
+  .ghosts .thumb { background: none; }
+  .ghost-kind { flex: none; width: 64px; height: 11px; opacity: 0.6; }
+  .ghost-name { height: 13px; }
   /* A row with a picture in it: the thumbnail sets the height, so the row is
      centred rather than sitting on a baseline that no longer exists. */
   .hit { display: flex; align-items: center; gap: 14px; padding: 8px 14px; margin: 0 -14px; border: 0; border-radius: var(--radius); background: none; color: var(--ink-text); text-decoration: none; text-align: left; font-size: var(--text-13); }

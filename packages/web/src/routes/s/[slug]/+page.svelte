@@ -1176,6 +1176,7 @@
         <Player
           bind:this={player}
           kind={selected.kind === 'audio' ? 'audio' : 'video'}
+          posterUrl={selected.poster_url}
           peaksUrl={previewPeaksUrl}
           spectrogramUrl={previewSpectrogramUrl}
           oncopytimecode={copyText}
@@ -1239,9 +1240,14 @@
         />
       {:else if previewUrl}
         <p class="open-media"><a href={previewUrl}>Open media</a></p>
-      {:else if watermarkPending}
-        <p class="empty" role="status">Preparing watermarked media.</p>
-      {:else if !mediaLoading}
+      {:else if watermarkPending || mediaLoading}
+        <!-- A dark stage breathing where the picture will be; words only for
+             the wait that has a reason a viewer can use. -->
+        <div class="stage-wait" role="status">
+          <span class="skeleton stage-ghost"></span>
+          {#if watermarkPending}<span class="wait-line">Preparing watermarked media</span>{/if}
+        </div>
+      {:else}
         <p class="empty">A review rendition is not ready.</p>
       {/if}
       </div>
@@ -1476,6 +1482,22 @@
       </div>
     </section>
   {/if}
+{:else}
+  <!-- The share is on its way: the landing's own shape, breathing, instead
+       of a blank page between click and room. -->
+  <div class="shell landing-ghost" aria-hidden="true">
+    <div class="inner">
+      <span class="skeleton lg-title"></span>
+      <div class="lg-grid">
+        {#each { length: 4 } as _, index (index)}
+          <span class="lg-card">
+            <span class="skeleton lg-frame"></span>
+            <span class="skeleton lg-line" style:width={`${String(40 + ((index * 21) % 39))}%`}></span>
+          </span>
+        {/each}
+      </div>
+    </div>
+  </div>
 {/if}
 
 {#if lightbox}
@@ -1804,6 +1826,20 @@
   .preview button:hover { background: var(--n-300); color: var(--n-900); }
   .open-media { padding: var(--pad-3) var(--pad-2); }
   .open-media a { color: var(--n-900); }
+
+  /* The waiting stage: a dark pane breathing at picture aspect, one quiet
+     line only when the wait has a reason (watermarking). */
+  .stage-wait { --skeleton-ink: var(--n-150); flex: 1; min-height: 0; display: grid; place-items: center; align-content: center; gap: 14px; padding: var(--pad-2); }
+  .stage-ghost { width: min(100%, calc(72vh * 16 / 9)); aspect-ratio: 16 / 9; border-radius: var(--radius); }
+  .wait-line { color: var(--ink-text-dim); font-size: var(--text-13); }
+
+  /* The landing's ghost: title, then cards at frame aspect. */
+  .landing-ghost { --skeleton-ink: var(--ink-200); }
+  .lg-title { display: block; width: min(420px, 60%); height: clamp(30px, 5vw, 56px); margin: 0 0 44px; }
+  .lg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 20px 16px; }
+  .lg-card { display: grid; gap: 10px; }
+  .lg-frame { aspect-ratio: 16 / 9; width: 100%; border-radius: var(--radius-lg); }
+  .lg-line { height: 13px; }
   .empty { color: var(--n-600); padding: var(--pad-2); }
   .frame-readout { color: var(--n-600); font-size: var(--text-13); }
   .copy-note { color: var(--n-600); font-size: var(--text-13); }

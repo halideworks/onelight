@@ -801,6 +801,19 @@ const version = z.object({
   created_at: timestamp,
 });
 
+/* The asset row plus the media facts a browsing card needs. Only the list
+   endpoint pays for these (two batched reads per page); the single-asset GET
+   stays the bare row. */
+const assetWithMedia = asset.extend({
+  media: z.object({
+    version_count: z.number().int(),
+    current_version: version.nullable(),
+    poster_url: z.string().nullable(),
+    sprite_url: z.string().nullable(),
+    sprite_vtt_url: z.string().nullable(),
+  }),
+});
+
 const renditionItem = z.object({
   id: z.string(),
   version_id: z.string(),
@@ -1702,7 +1715,10 @@ export const routeDocs: Record<string, RouteDoc> = {
         description: "Filter to the assets in one of this project's shares.",
       },
     },
-    responses: { "200": ok(page(asset)) },
+    /* The list carries the media facts every browsing card needs (poster,
+       sprite, version count, current version) so a grid of N assets is one
+       request, not one plus 2N follow-ups. */
+    responses: { "200": ok(page(assetWithMedia)) },
   },
   "POST /projects/:id/assets": {
     request: bodies.assetCreate,

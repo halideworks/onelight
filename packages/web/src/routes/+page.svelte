@@ -127,6 +127,9 @@
   /* The layout owns session hydration (one GET /auth/session). Load projects
      once it reports a signed-in session, exactly once. */
   let projectsLoaded = false;
+  /* "Loading" and "loaded, empty" are different truths: the empty-state line
+     must never flash while the shelves are still on their way. */
+  let shelvesLoaded = $state(false);
 
   let newProjectName = $state('');
   let creating = $state(false);
@@ -168,6 +171,8 @@
       listError = '';
     } catch (caught) {
       listError = messageFrom(caught, 'The projects could not be loaded.');
+    } finally {
+      shelvesLoaded = true;
     }
   };
 
@@ -649,7 +654,26 @@
         </div>
       {/if}
 
-      {#if displayed.length === 0}
+      {#if !shelvesLoaded}
+        <!-- The shape of what is coming, breathing, instead of a flash of
+             "No projects yet" that the data then contradicts. -->
+        <div
+          class="projectlist ghosts"
+          class:grid={view === 'grid'}
+          style={`--card: ${String(cardSize)}px;`}
+          aria-hidden="true"
+        >
+          {#each { length: view === 'grid' ? 8 : 5 } as _, index (index)}
+            <div class="project">
+              <span class="thumb"><span class="skeleton fill"></span></span>
+              <span class="meta">
+                <span class="skeleton line" style:width={`${String(46 + ((index * 17) % 38))}%`}></span>
+                <span class="skeleton line thin"></span>
+              </span>
+            </div>
+          {/each}
+        </div>
+      {:else if displayed.length === 0}
         <p class="empty">
           {#if filter.trim()}Nothing matches that name.
           {:else if showArchived}The archive is empty.
@@ -1014,6 +1038,15 @@
 
   .empty { color: var(--ink-text-dim); }
   .error { margin: 12px 0 0; color: var(--warn); font-size: var(--text-13); }
+
+  /* Ghost cards while the shelves load: same layout, one value step up,
+     breathing (the .skeleton vocabulary from tokens.css). */
+  .ghosts .project { pointer-events: none; }
+  .ghosts .thumb :global(.skeleton.fill) { width: 100%; height: 100%; border-radius: inherit; }
+  .ghosts :global(.skeleton.line) { height: 13px; }
+  .ghosts :global(.skeleton.line.thin) { height: 11px; width: 30%; opacity: 0.6; }
+  .ghosts .meta { align-items: center; }
+  .ghosts.grid .meta { padding: 2px; }
 
   /* The head is a control bar now: count, filter, sort, the archive door and
      the view toggle, wrapping rather than overflowing. */

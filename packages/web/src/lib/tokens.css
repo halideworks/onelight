@@ -101,6 +101,15 @@
   --safe-r: env(safe-area-inset-right, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-l: env(safe-area-inset-left, 0px);
+
+  /* Motion. One easing for everything that glides (the settle curve the app
+     already uses ad hoc), three durations. Loading pulses use --dur-breathe;
+     anything faster reads as urgency, which a quiet wait is not. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-quick: 140ms;
+  --dur: 280ms;
+  --dur-slow: 420ms;
+  --dur-breathe: 1800ms;
 }
 
 /* Breakpoints. Custom properties cannot appear in media queries, so these are
@@ -137,3 +146,24 @@ html, body {
 
 button { font-family: inherit; cursor: pointer; }
 a { color: inherit; }
+
+/* ---- the waiting vocabulary ----
+
+   A place still loading is drawn as the shape of what will be there, one value
+   step above its background, breathing. No sweep, no gradient: the review room
+   bans tinted and gradient chrome outright, and the app world does not need a
+   glare to say "soon". Pages set --skeleton-ink to place it on their own
+   surface (neutral world: var(--n-150); app world default below). */
+.skeleton {
+  border-radius: var(--radius);
+  background: var(--skeleton-ink, var(--ink-200));
+  animation: breathe var(--dur-breathe) ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; opacity: 0.7; }
+}

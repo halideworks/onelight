@@ -32,9 +32,20 @@ interface ObservedAsset {
      choice changes. */
   has_thumbnail?: boolean;
   updated_at?: number;
+  /* The asset list now carries the media facts inline (poster, sprite,
+     version count, transcode state); an asset that arrives with them never
+     costs a follow-up request. Absent on older payloads and on surfaces that
+     only know an id -- those take the two-read path below. */
+  media?: {
+    version_count: number;
+    current_version: Version | null;
+    poster_url: string | null;
+    sprite_url: string | null;
+    sprite_vtt_url: string | null;
+  } | null;
 }
 
-const CONCURRENCY = 3;
+const CONCURRENCY = 6;
 
 export interface MediaCache {
   readonly entries: Record<string, MediaEntry>;
@@ -113,6 +124,22 @@ export const createMediaCache = (): MediaCache => {
 
   const request = (asset: ObservedAsset): void => {
     if (entries[asset.id]) return;
+    if (asset.media) {
+      entries[asset.id] = {
+        status: "ready",
+        media: {
+          versionCount: asset.media.version_count,
+          currentVersion: asset.media.current_version,
+          transcodeStatus: asset.media.current_version?.transcode_status ?? null,
+          posterUrl: asset.has_thumbnail
+            ? `/api/v1/assets/${asset.id}/thumbnail?v=${String(asset.updated_at ?? 0)}`
+            : asset.media.poster_url,
+          spriteUrl: asset.media.sprite_url,
+          spriteVttUrl: asset.media.sprite_vtt_url,
+        },
+      };
+      return;
+    }
     entries[asset.id] = { status: "loading" };
     waiting.push(() => load(asset));
     pump();

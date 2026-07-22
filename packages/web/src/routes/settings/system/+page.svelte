@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import GhostRows from '$lib/GhostRows.svelte';
   import { api, apiPost, messageFrom } from '$lib/api.js';
   import { formatBytes } from '$lib/upload.js';
   import { whenRelative } from '$lib/format.js';
@@ -192,7 +193,7 @@
     </div>
     <p class="hint footer">Refreshes every 15 seconds. Restore steps live in docs/BACKUPS.md.</p>
   {:else}
-    <p class="empty">Loading.</p>
+    <GhostRows rows={5} />
   {/if}
 </main>
 

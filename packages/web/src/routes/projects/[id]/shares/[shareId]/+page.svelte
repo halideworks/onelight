@@ -779,7 +779,7 @@
                     use:observeMedia={asset}
                   >
                     {#if entry?.media?.posterUrl}
-                      <img src={entry.media.posterUrl} alt="" loading="lazy" draggable="false" />
+                      <img src={entry.media.posterUrl} alt="" loading="lazy" decoding="async" draggable="false" />
                     {:else}
                       <span class="contentblank" aria-hidden="true"></span>
                     {/if}

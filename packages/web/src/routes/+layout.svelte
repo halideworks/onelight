@@ -1,11 +1,18 @@
 <script lang="ts">
   import '../lib/fonts.css';
   import '../lib/tokens.css';
+  /* The two faces every page sets immediately. Referenced through Vite so
+     the preload carries the same fingerprinted URL the CSS resolves to --
+     without it the fonts are not discovered until the stylesheet parses, and
+     the swap lands a beat late on every cold load. */
+  import switzer400 from '../lib/fonts/switzer-400.woff2';
+  import switzer500 from '../lib/fonts/switzer-500.woff2';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { auth } from '$lib/auth.svelte.js';
   import { notifications } from '$lib/notifications.svelte.js';
+  import NavProgress from '$lib/NavProgress.svelte';
   import NotificationsPanel from '$lib/NotificationsPanel.svelte';
   import Avatar from '$lib/Avatar.svelte';
   import ConfirmHost from '$lib/ConfirmHost.svelte';
@@ -97,7 +104,16 @@
       : undefined;
 </script>
 
+<svelte:head>
+  <link rel="preload" href={switzer400} as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href={switzer500} as="font" type="font/woff2" crossorigin="anonymous" />
+</svelte:head>
+
 <svelte:window onkeydown={onKeydown} />
+
+<!-- The review room bans tinted chrome near the frame, so the bar goes grey
+     there and verdigris everywhere else. -->
+<NavProgress neutral={inReviewRoom} />
 
 {#if chrome}
   <header class="topbar">

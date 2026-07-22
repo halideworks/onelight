@@ -9156,8 +9156,99 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .limit(limit + 1)
       .all();
     const page = rows.slice(0, limit);
+    /* The browsing surfaces need a poster, a sprite, a version count and the
+       current version's transcode state for every card. Leaving those to two
+       follow-up reads per asset made a grid of N cost up to 2N round-trips,
+       three at a time; two batched queries here put the same facts on the
+       list itself, and the client only falls back to the per-asset reads for
+       rows written by servers that predate this. */
+    const versionRows = page.length
+      ? await env.db
+          .select()
+          .from(assetVersions)
+          .where(
+            inArray(
+              assetVersions.assetId,
+              page.map((asset) => asset.id),
+            ),
+          )
+          .all()
+      : [];
+    const versionsByAsset = new Map<
+      string,
+      Array<typeof assetVersions.$inferSelect>
+    >();
+    for (const version of versionRows) {
+      const list = versionsByAsset.get(version.assetId) ?? [];
+      list.push(version);
+      versionsByAsset.set(version.assetId, list);
+    }
+    for (const list of versionsByAsset.values())
+      list.sort((a, b) => (a.id < b.id ? 1 : -1));
+    const currentOf = (
+      asset: typeof assets.$inferSelect,
+    ): (typeof assetVersions.$inferSelect) | null => {
+      const list = versionsByAsset.get(asset.id) ?? [];
+      return (
+        list.find((version) => version.id === asset.currentVersionId) ??
+        list[0] ??
+        null
+      );
+    };
+    const currentIds = page
+      .map((asset) => currentOf(asset)?.id)
+      .filter((id): id is string => Boolean(id));
+    const renditionRows = currentIds.length
+      ? await env.db
+          .select()
+          .from(renditions)
+          .where(
+            and(
+              inArray(renditions.versionId, currentIds),
+              inArray(renditions.kind, ["poster", "sprite"]),
+            ),
+          )
+          .all()
+      : [];
+    const renditionsByVersion = new Map<
+      string,
+      Array<typeof renditions.$inferSelect>
+    >();
+    for (const rendition of renditionRows) {
+      const list = renditionsByVersion.get(rendition.versionId) ?? [];
+      list.push(rendition);
+      renditionsByVersion.set(rendition.versionId, list);
+    }
+    const mediaFor = async (asset: typeof assets.$inferSelect) => {
+      const current = currentOf(asset);
+      const kinds = current ? (renditionsByVersion.get(current.id) ?? []) : [];
+      const poster = kinds.find((rendition) => rendition.kind === "poster");
+      const sprite = kinds.find((rendition) => rendition.kind === "sprite");
+      const spriteMeta = sprite ? parseJsonObject(sprite.metaJson) : {};
+      const vttKey =
+        typeof spriteMeta.vtt_blob_key === "string"
+          ? spriteMeta.vtt_blob_key
+          : undefined;
+      const signed = async (versionId: string, blobKey: string) =>
+        env.blobStore ? await privateMediaUrl({ versionId }, blobKey) : null;
+      return {
+        version_count: (versionsByAsset.get(asset.id) ?? []).length,
+        current_version: current ? versionWire(current) : null,
+        poster_url:
+          poster && current ? await signed(current.id, poster.blobKey) : null,
+        sprite_url:
+          sprite && current ? await signed(current.id, sprite.blobKey) : null,
+        sprite_vtt_url:
+          vttKey && current ? await signed(current.id, vttKey) : null,
+      };
+    };
     return c.json({
-      items: page.map((asset: typeof assets.$inferSelect) => assetWire(asset)),
+      items: await Promise.all(
+        page.map(async (asset: typeof assets.$inferSelect) => ({
+          ...assetWire(asset),
+          media: await mediaFor(asset),
+        })),
+      ),
       next_cursor:
         rows.length > limit
           ? encodeCursor(page[page.length - 1]?.id ?? "")

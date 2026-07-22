@@ -44,10 +44,12 @@
   const media = createMediaCache();
   const observeMedia = media.observe;
   const wash = $derived(pageWashFor(project?.palette));
+  /* The empty-state line must not flash while the list is on its way. */
+  let sharesLoaded = $state(false);
 
   const load = async (routeRef: string): Promise<void> => {
     project = null; shares = []; assets = []; pageError = ''; listError = '';
-    viewerCounts = {}; projectId = null;
+    viewerCounts = {}; projectId = null; sharesLoaded = false;
     let id = routeRef;
     try {
       const loaded = await api<Project>(`/api/v1/projects/${routeRef}`);
@@ -64,6 +66,8 @@
       shares = (await listShares(id)).items;
     } catch (caught) {
       listError = messageFrom(caught, 'Shares could not be loaded.');
+    } finally {
+      sharesLoaded = true;
     }
     /* Every deliverable in the project, for the create dialog's picker. */
     try {
@@ -257,7 +261,17 @@
         {#if listError}<p class="error" role="alert">{listError}</p>{/if}
       </div>
 
-      {#if shares.length === 0}
+      {#if !sharesLoaded}
+        <section class="shares" aria-hidden="true">
+          {#each [64, 46] as width, index (index)}
+            <article class="share ghost">
+              <span class="skeleton ghost-title" style:width={`${String(width - (index * 9))}%`}></span>
+              <span class="skeleton ghost-meta" style:width={`${String(width)}%`}></span>
+              <span class="skeleton ghost-link"></span>
+            </article>
+          {/each}
+        </section>
+      {:else if shares.length === 0}
         <p class="empty">No shares yet. A share is a client-facing link to a set of assets: review kind collects comments, presentation kind just plays.</p>
       {/if}
 
@@ -354,7 +368,7 @@
               onchange={() => togglePicked(asset.id)}
             />
             {#if entry?.media?.posterUrl}
-              <img class="mini" src={entry.media.posterUrl} alt="" loading="lazy" />
+              <img class="mini" src={entry.media.posterUrl} alt="" loading="lazy" decoding="async" />
             {:else}
               <span class="mini blank" aria-hidden="true"></span>
             {/if}
@@ -483,6 +497,11 @@
   /* A card that is a door: the whole surface opens the share's page via the
      stretched title link, and lifts a little to say so. */
   .share { position: relative; padding: 16px 18px; border-radius: var(--radius-lg); background: var(--ink-100); display: grid; gap: 10px; transition: background 100ms ease; }
+  /* Ghost cards while the list loads (see .skeleton in tokens.css). */
+  .share.ghost { pointer-events: none; }
+  .ghost-title { height: 15px; }
+  .ghost-meta { height: 12px; opacity: 0.7; }
+  .ghost-link { height: 30px; width: 100%; }
   .share:hover { background: var(--ink-200); }
   .share.dead { opacity: 0.6; }
   .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

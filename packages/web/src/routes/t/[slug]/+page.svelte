@@ -1,4 +1,5 @@
 <script lang="ts">
+  import GhostRows from '$lib/GhostRows.svelte';
   import { page } from '$app/state';
   import { PALETTES } from '@onelight/core';
   import { api, apiPost, messageFrom } from '$lib/api.js';
@@ -380,7 +381,7 @@
   </main>
 {:else}
   <main class="shell" style={`background-image: ${wash};`}>
-    <div class="inner"><p class="empty">Loading.</p></div>
+    <div class="inner"><GhostRows rows={4} /></div>
   </main>
 {/if}
 

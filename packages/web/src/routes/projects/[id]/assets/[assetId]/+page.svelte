@@ -80,6 +80,9 @@
   let selectedVersionId = $state<string | null>(null);
   let source = $state('');
   let renditionOptions = $state<PlayerRendition[]>([]);
+  /* The version's generated poster: the player shows it while the first
+     frame decodes, so opening an asset is never a black box. */
+  let posterUrl = $state<string | null>(null);
   let filmstrip = $state<{ url: string; cues: SpriteCue[] } | null>(null);
   let waveformUrl = $state<string | null>(null);
   /* Peak data and the spectrogram: the two halves of the audio stage. */
@@ -534,6 +537,8 @@
       source = (rendition && urlForRendition(rendition)) || '';
       const still = items.find((candidate) => candidate.kind === 'still_tiles');
       stillUrl = still ? urlForRendition(still) : null;
+      const poster = items.find((candidate) => candidate.kind === 'poster');
+      posterUrl = poster ? urlForRendition(poster) : null;
       const peaks = items.find((candidate) => candidate.kind === 'audio_peaks');
       waveformUrl = peaks ? urlForRendition(peaks) : null;
       const waveform = items.find((candidate) => candidate.kind === 'waveform_data');
@@ -695,6 +700,7 @@
     source = '';
     renditionOptions = [];
     filmstrip = null;
+    posterUrl = null;
     captionsUrl = null;
     peaksUrl = null;
     spectrogramUrl = null;
@@ -723,7 +729,7 @@
   const load = async (id: string): Promise<void> => {
     versionToken += 1;
     asset = null; versions = []; selectedVersionId = null; source = ''; renditionOptions = [];
-    filmstrip = null; waveformUrl = null; peaksUrl = null; spectrogramUrl = null;
+    filmstrip = null; waveformUrl = null; peaksUrl = null; spectrogramUrl = null; posterUrl = null;
     stillUrl = null; stillPrevUrl = null; rate = null; dropFrame = false; durationFrames = null;
     error = ''; comments = []; commentError = ''; highlightedId = null; pendingDrawing = null;
     noteFilter = 'all'; activeTag = null; railError = ''; prevVersion = null; prevOpenIds = []; settledSources = [];
@@ -1606,6 +1612,7 @@
           <Player
             bind:this={player}
             kind={mediaKind === 'audio' ? 'audio' : 'video'}
+            {posterUrl}
             {peaksUrl}
             {spectrogramUrl}
             src={source}
@@ -1970,7 +1977,26 @@
       </button>
     </div>
   {:else}
-    <p class="empty loading">Loading asset.</p>
+    <!-- The room's own shape while the asset loads: a dark stage where the
+         picture will be, a rail where the notes will be, breathing. Strictly
+         neutral; this is the review world. -->
+    <div class="content ghost" aria-hidden="true">
+      <div class="ghost-stage">
+        <span class="skeleton ghost-frame"></span>
+        <span class="ghost-deck">
+          <span class="skeleton ghost-strip"></span>
+          <span class="skeleton ghost-controls"></span>
+        </span>
+      </div>
+      <aside class="ghost-rail">
+        {#each [82, 58, 71, 44] as width, index (index)}
+          <span class="ghost-note">
+            <span class="skeleton ghost-head" style:width={`${String(30 + ((index * 13) % 22))}%`}></span>
+            <span class="skeleton ghost-body" style:width={`${String(width)}%`}></span>
+          </span>
+        {/each}
+      </aside>
+    </div>
   {/if}
 </main>
 
@@ -2090,7 +2116,23 @@
   }
   .stage-empty { padding: 18vh 0; text-align: center; background: var(--n-000); margin: 0; }
   .empty { color: var(--n-600); }
-  .loading { padding: 32px var(--pad-3); }
+
+  /* The waiting room. Neutral skeleton ink, one value step above the stage. */
+  .content.ghost { --skeleton-ink: var(--n-150); }
+  .ghost-stage { display: flex; flex-direction: column; gap: 10px; padding: var(--pad-2); min-width: 0; }
+  .ghost-frame { flex: 1; min-height: 0; border-radius: var(--radius); }
+  .ghost-deck { display: grid; gap: 8px; }
+  .ghost-strip { height: 58px; }
+  .ghost-controls { height: 34px; width: 42%; justify-self: center; }
+  .ghost-rail { display: flex; flex-direction: column; gap: 18px; padding: var(--pad-2); background: var(--n-100); }
+  .ghost-note { display: grid; gap: 7px; }
+  .ghost-head { height: 11px; opacity: 0.7; }
+  .ghost-body { height: 13px; }
+  @media (max-width: 720px) {
+    .content.ghost { height: auto; }
+    .ghost-frame { aspect-ratio: 16 / 9; flex: none; }
+    .ghost-rail { display: none; }
+  }
   .error { padding: 12px var(--pad-2); margin: 0; color: var(--warn); }
   .error-text { color: var(--warn); font-size: var(--text-13); }
 

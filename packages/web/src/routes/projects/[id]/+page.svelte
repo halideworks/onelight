@@ -172,6 +172,10 @@
     }
   };
 
+  /* Loading and loaded-empty are different truths; the ghost grid holds the
+     room until the first page answers. Changing folders re-opens the wait. */
+  let assetsLoaded = $state(false);
+
   const loadAssets = async (id: string): Promise<void> => {
     const folder = selectedFolder;
     const suffix = listSuffix();
@@ -185,6 +189,8 @@
       selected = selected.filter((entry) => loaded.items.some((asset) => asset.id === entry));
     } catch {
       /* Keep whatever list we had; the page error covers hard failures. */
+    } finally {
+      if (id === projectId && folder === selectedFolder) assetsLoaded = true;
     }
   };
 
@@ -261,7 +267,7 @@
 
   const load = async (id: string): Promise<void> => {
     project = null; assets = []; nextCursor = null; error = ''; listError = ''; queue = [];
-    nodes = {}; rootIds = []; selectedFolder = null; focusedRow = 'root';
+    nodes = {}; rootIds = []; selectedFolder = null; focusedRow = 'root'; assetsLoaded = false;
     shares = []; shareError = ''; shareMenu = null; rowMenu = null;
     renaming = null; treeError = ''; newFolderName = '';
     selected = []; anchor = null; batch = { running: false, label: '', done: 0, total: 0, errors: [] };
@@ -439,6 +445,7 @@
   const select = async (id: string | null): Promise<void> => {
     selectedFolder = id;
     showTrash = false;
+    assetsLoaded = false;
     selected = [];
     anchor = null;
     if (id) await expand(id);
@@ -2225,6 +2232,16 @@
 
         {#if showTrash}
           <!-- The bin is above; the asset browser stands down while it is open. -->
+        {:else if displayed.length === 0 && !assetsLoaded}
+          <!-- Ghost cards hold the room while the first page answers. -->
+          <div class="grid ghosts" style={`--card: ${String(cardSize)}px;`} aria-hidden="true">
+            {#each { length: 8 } as _, index (index)}
+              <div class="card">
+                <span class="skeleton ghost-thumb"></span>
+                <span class="skeleton ghost-line" style:width={`${String(42 + ((index * 19) % 41))}%`}></span>
+              </div>
+            {/each}
+          </div>
         {:else if displayed.length === 0}
           <p class="empty">{selectedFolder ? 'No assets in this folder. Drop media above to fill it.' : 'No assets yet. Upload media to start a review.'}</p>
         {:else if view === 'grid'}
@@ -2348,7 +2365,7 @@
                          row, and it is the same image the grid already has. -->
                     <span class="rowthumb" aria-hidden="true">
                       {#if detail?.posterUrl}
-                        <img src={detail.posterUrl} alt="" loading="lazy" use:arrives />
+                        <img src={detail.posterUrl} alt="" loading="lazy" decoding="async" use:arrives />
                       {/if}
                     </span>
                     <a href={assetHref(asset.id)} onclick={(event) => event.stopPropagation()}>{asset.name}</a>
@@ -2779,6 +2796,11 @@
   .chip.s-changes_requested { color: var(--note); }
   .chip.t-pending, .chip.t-processing { color: var(--ink-text-dim); }
   .chip.t-failed { color: var(--warn); }
+
+  /* Ghost cards: the grid's own geometry, breathing (see tokens.css). */
+  .ghosts .card { pointer-events: none; }
+  .ghost-thumb { display: block; aspect-ratio: 16 / 9; width: 100%; }
+  .ghost-line { display: block; height: 13px; margin: 2px 0; }
 
   /* ---- list ---- */
   table.list { width: 100%; border-collapse: collapse; margin-top: var(--pad-2); font-size: var(--text-13); }

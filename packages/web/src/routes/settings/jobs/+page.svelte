@@ -1,4 +1,5 @@
 <script lang="ts">
+  import GhostRows from '$lib/GhostRows.svelte';
   import { api, messageFrom } from '$lib/api.js';
   import { auth } from '$lib/auth.svelte.js';
   import { whenAbsolute, whenRelative } from '$lib/format.js';
@@ -85,7 +86,7 @@
 <main class="page">
   <h1>Job queue</h1>
   {#if !auth.ready}
-    <p class="empty">Checking access.</p>
+    <GhostRows rows={4} />
   {:else if !isAdmin}
     <p class="empty">This page is for workspace admins.</p>
   {:else}

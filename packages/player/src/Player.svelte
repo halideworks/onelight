@@ -48,6 +48,7 @@
     filmstrip = null,
     waveformUrl = null,
     kind = 'video',
+    posterUrl = null,
     peaksUrl = null,
     spectrogramUrl = null,
     onframechange = undefined,
@@ -90,6 +91,9 @@
        tools that only mean something over footage (scopes, the proxy ladder,
        drawing, the surround field) take themselves off screen. */
     kind?: 'video' | 'audio';
+    /* The version's poster: shown by the element itself while the first
+       frame decodes, so opening an asset is never a black box. */
+    posterUrl?: string | null;
     /* Peak data sidecar (waveform_data) for the audio stage. */
     peaksUrl?: string | null;
     spectrogramUrl?: string | null;
@@ -1184,6 +1188,28 @@
      playhead backward after the pointer settles. */
   let seekGeneration = 0;
 
+  /* ---- rebuffering ----
+
+     A frozen frame with no signal reads as a hang; the ring says the decoder
+     is waiting on bytes. The 300ms grace keeps ordinary seeks and cuts from
+     flashing it -- only a genuine stall earns the paint. */
+  let stalled = $state(false);
+  let stallTimer: ReturnType<typeof setTimeout> | null = null;
+  const noteStall = (): void => {
+    if (stallTimer !== null || stalled) return;
+    stallTimer = setTimeout(() => {
+      stallTimer = null;
+      stalled = true;
+    }, 300);
+  };
+  const clearStall = (): void => {
+    if (stallTimer !== null) {
+      clearTimeout(stallTimer);
+      stallTimer = null;
+    }
+    stalled = false;
+  };
+
   /* One seek in flight at a time; the newest target waits for it. Assigning
      currentTime while the previous seek is still decoding CANCELS it, so a
      scrub throttled to one seek per animation frame still starved the decoder:
@@ -1197,6 +1223,7 @@
   let queuedSeekTarget: number | null = null;
 
   const handleSeeked = (): void => {
+    clearStall();
     seekInFlight = false;
     if (queuedSeekTarget === null) return;
     const next = queuedSeekTarget;
@@ -1324,6 +1351,15 @@
     restoreRate();
   };
 
+  /* A play() the browser refused. Strict autoplay settings can decline a
+     KEYBOARD-initiated play while accepting a clicked one -- and those
+     settings sync across a person's browsers and machines, which is exactly
+     the bug report that "follows the reporter everywhere": J shuttles
+     (reverse is seek-stepping, no play()), the play button plays, and L does
+     nothing while the transport claims otherwise. Refusal must not leave a
+     playing UI over a frozen frame: reset to the truth and say what happened. */
+  let playRefused = $state(false);
+
   const playForward = (): void => {
     if (!video) return;
     cancelPendingRestore();
@@ -1331,7 +1367,12 @@
     stopReverse();
     forwardSpeed = wasPlayingForward ? Math.min(4, forwardSpeed * 2) : 1;
     video.playbackRate = forwardSpeed;
-    void video.play();
+    video.play().catch((refusal: unknown) => {
+      forwardSpeed = 0;
+      restoreRate();
+      playRefused = true;
+      console.warn('onelight player: play() was refused', refusal);
+    });
   };
 
   /* HTMLMediaElement cannot play backward: reverse shuttle is emulated by a
@@ -1552,7 +1593,7 @@
           onloadedmetadata={handleLoadedMetadata}
           onseeked={handleSeeked}
           onloadeddata={() => { pictureIn = true; }}
-          onplay={() => onplaystate?.(true)}
+          onplay={() => { playRefused = false; onplaystate?.(true); }}
           onpause={() => onplaystate?.(false)}
           onended={handleEnded}
         ></audio>
@@ -1572,8 +1613,9 @@
       {:else}
       <video
         bind:this={video}
-        class:arrived={pictureIn}
+        class:arrived={pictureIn || posterUrl !== null}
         src={currentSrc || src}
+        poster={posterUrl ?? undefined}
         bind:muted
         bind:volume
         playsinline
@@ -1581,8 +1623,12 @@
         onloadedmetadata={handleLoadedMetadata}
         onseeked={handleSeeked}
         onloadeddata={() => { pictureIn = true; }}
-        onplay={() => onplaystate?.(true)}
-        onpause={() => onplaystate?.(false)}
+        onwaiting={noteStall}
+        onstalled={noteStall}
+        oncanplay={clearStall}
+        onplaying={clearStall}
+        onplay={() => { playRefused = false; onplaystate?.(true); }}
+        onpause={() => { clearStall(); onplaystate?.(false); }}
         onended={handleEnded}
       >
         <track kind="captions" srclang="en" label="English captions" src={captionsSrc ?? 'data:text/vtt;charset=utf-8,WEBVTT'} />
@@ -1703,6 +1749,16 @@
           {:else}
             <span class="wm-cell">{wmText}</span>
           {/if}
+        </div>
+      {/if}
+      {#if stalled && !isAudio}
+        <!-- The decoder is waiting on bytes; say so instead of freezing
+             silently. Neutral hairline ring, nothing tinted near the frame. -->
+        <div class="buffering" aria-hidden="true"><span class="ring"></span></div>
+      {/if}
+      {#if playRefused}
+        <div class="playhint" role="status">
+          The browser declined to start playback from a key press. Click play once; the keys take over from there.
         </div>
       {/if}
     </div>
@@ -2232,6 +2288,49 @@
   @media (prefers-reduced-motion: reduce) {
     video:not(.arrived) { opacity: 1; }
     video.arrived { transition: none; }
+  }
+
+  /* Rebuffering: a neutral hairline ring, earned only by a real stall (see
+     noteStall). It rides its own layer and touches nothing else. */
+  .buffering {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+    z-index: 5;
+    animation: buffer-in 200ms ease both;
+  }
+  .ring {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 2px solid rgba(233, 233, 233, 0.16);
+    border-top-color: var(--n-800, #c4c4c4);
+    animation: spin 900ms linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes buffer-in { from { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .ring { animation: none; }
+  }
+
+  /* The browser refused a keyboard play: say so where the person is looking,
+     in the room's own neutral voice. Clears itself the moment playback runs. */
+  .playhint {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%);
+    max-width: min(92%, 480px);
+    padding: 8px 14px;
+    background: var(--n-150, #1c1c1c);
+    color: var(--n-800, #c4c4c4);
+    border-radius: var(--radius, 3px);
+    font-size: var(--text-13, 13px);
+    text-align: center;
+    z-index: 6;
+    animation: buffer-in 200ms ease both;
   }
   .watermark {
     position: absolute;

@@ -332,7 +332,7 @@
                 title={upload.filename}
                 onclick={() => void useUploadedCover(upload)}
               >
-                <img src={upload.url} alt="" loading="lazy" />
+                <img src={upload.url} alt="" loading="lazy" decoding="async" />
               </button>
               {#if isManager}
                 <button
@@ -363,7 +363,7 @@
               onclick={() => void setCover(asset.id)}
             >
               {#if entry?.media?.posterUrl}
-                <img src={entry.media.posterUrl} alt="" loading="lazy" />
+                <img src={entry.media.posterUrl} alt="" loading="lazy" decoding="async" />
               {:else}
                 <span class="pickfallback">{asset.name}</span>
               {/if}

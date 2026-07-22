@@ -51,6 +51,8 @@
     project ? pretty(project.public_id, project.name) : routeId
   );
   let transfers = $state<Transfer[]>([]);
+  /* The empty-state line must not flash while the list is on its way. */
+  let transfersLoaded = $state(false);
   let assets = $state<Asset[]>([]);
   let folders = $state<Folder[]>([]);
   let pageError = $state('');
@@ -62,7 +64,7 @@
 
   const load = async (routeRef: string): Promise<void> => {
     project = null; transfers = []; assets = []; folders = [];
-    pageError = ''; listError = ''; receiptsFor = {};
+    pageError = ''; listError = ''; receiptsFor = {}; transfersLoaded = false;
     projectId = null;
     let id = routeRef;
     try {
@@ -82,6 +84,8 @@
       ).items;
     } catch (caught) {
       listError = messageFrom(caught, 'Transfers could not be loaded.');
+    } finally {
+      transfersLoaded = true;
     }
     try {
       const collected: Asset[] = [];
@@ -279,7 +283,17 @@
         {#if listError}<p class="error" role="alert">{listError}</p>{/if}
       </div>
 
-      {#if transfers.length === 0}
+      {#if !transfersLoaded}
+        <section class="cards" aria-hidden="true">
+          {#each [58, 43] as width, index (index)}
+            <article class="card ghost">
+              <span class="skeleton ghost-title" style:width={`${String(width - (index * 7))}%`}></span>
+              <span class="skeleton ghost-meta" style:width={`${String(width)}%`}></span>
+              <span class="skeleton ghost-link"></span>
+            </article>
+          {/each}
+        </section>
+      {:else if transfers.length === 0}
         <p class="empty">No transfer links yet. Send files hands a set of originals to anyone with the link; Request files gives them a place to drop files into this project.</p>
       {/if}
 
@@ -443,6 +457,11 @@
 
   .cards { display: grid; gap: var(--pad); }
   .card { padding: 16px 18px; border-radius: var(--radius-lg); background: var(--ink-100); display: grid; gap: 10px; }
+  /* Ghost cards while the list loads (see .skeleton in tokens.css). */
+  .card.ghost { pointer-events: none; }
+  .ghost-title { height: 15px; }
+  .ghost-meta { height: 12px; opacity: 0.7; }
+  .ghost-link { height: 30px; width: 100%; }
   .card.dead { opacity: 0.6; }
   .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   h2 { margin: 0; font-size: var(--text-16); font-weight: 600; }

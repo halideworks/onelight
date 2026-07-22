@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import GhostRows from '$lib/GhostRows.svelte';
   import { api, apiPost, apiPut, apiDelete, messageFrom } from '$lib/api.js';
 
   /* The SMTP transport, editable in place. Stored settings take precedence
@@ -369,7 +370,7 @@
   {:else if error}
     <p class="warn" role="alert">{error}</p>
   {:else}
-    <p class="empty">Loading.</p>
+    <GhostRows rows={5} />
   {/if}
 </main>
 
@@ -422,5 +423,4 @@
 
   .warn { color: var(--warn); margin: 0; }
   .notice { color: var(--ink-text-dim); margin: 0; }
-  .empty { color: var(--ink-text-dim); }
 </style>

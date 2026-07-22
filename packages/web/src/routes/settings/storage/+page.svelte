@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import GhostRows from '$lib/GhostRows.svelte';
   import { api, messageFrom } from '$lib/api.js';
   import { formatBytes } from '$lib/upload.js';
   import { pretty } from '$lib/ids.js';
@@ -112,7 +113,7 @@
       </p>
     {/if}
   {:else}
-    <p class="empty">Loading.</p>
+    <GhostRows rows={5} />
   {/if}
 </main>
 

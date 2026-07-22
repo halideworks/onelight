@@ -45,7 +45,7 @@
     style={`width: ${size}px; height: ${size}px;`}
     src={url}
     alt=""
-    loading="lazy"
+    loading="lazy" decoding="async"
     onerror={() => {
       broken = true;
     }}
