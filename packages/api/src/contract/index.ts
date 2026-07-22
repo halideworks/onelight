@@ -22,6 +22,9 @@ import { registerWorkspaceUsersDomain } from "./domains/workspace-users.js";
 export type { ContractCapabilities, ContractHarness } from "./harness.js";
 export { FakeClock, StubMailer } from "./harness.js";
 export { MemoryBlobStore } from "./memory-blob-store.js";
+/* Request helpers, for legs that register their own tests rather than the
+   whole suite (apps/cf/src/conformance.workers.test.ts). */
+export { cookieFrom, forbiddenKeysIn, json, req } from "./harness.js";
 
 /**
  * The Onelight API contract suite. Register it from a vitest test file with
@@ -29,8 +32,11 @@ export { MemoryBlobStore } from "./memory-blob-store.js";
  *
  * - Node leg: packages/api/src/contract.node.test.ts builds the app on
  *   better-sqlite3 :memory: with an in-memory blob store.
- * - Workers leg: apps/cf/src/contract.workers.test.ts builds the same app
- *   on the vitest-pool-workers D1 binding (and R2 when bound).
+ * The Workers leg no longer registers this suite: vitest-pool-workers charges
+ * hundreds of milliseconds per request, so contract tests crossed a six second
+ * connection deadline and workerd killed the isolate. D1 is covered by
+ * apps/cf/src/conformance.workers.test.ts instead, which proves the migrations,
+ * the dialect and the driver rather than re-running the business rules.
  *
  * Capabilities gate blob-dependent tests; gated tests are counted and the
  * counts are printed after the run so each leg reports what it skipped.

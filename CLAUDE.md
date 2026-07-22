@@ -37,14 +37,15 @@ pnpm typecheck      # tsc -b across all packages (also builds the composite dist
 pnpm lint           # eslint, no warnings
 pnpm format         # prettier --check
 pnpm test           # Node/better-sqlite3 suite (contract, property, golden tests)
-pnpm test:workers   # the same contract suite on D1 via @cloudflare/vitest-pool-workers
+pnpm test:workers   # D1 conformance on @cloudflare/vitest-pool-workers: migrations, dialect, driver
 pnpm db:check       # migration D1-safety and FK check
 pnpm openapi:check  # committed openapi.json and generated client are not stale
 pnpm web:check      # svelte-check
 pnpm qa             # media verification harness (skips cleanly where ffmpeg/browsers are missing)
 ```
 
-- The contract suite must pass on BOTH better-sqlite3 (Node) and D1 (workers pool) at every step. Every new endpoint or contract change lands with contract tests in packages/api/src/contract/ (both legs run the same suite).
+- The contract suite runs on better-sqlite3 (Node) and must pass at every step. Every new endpoint or contract change lands with contract tests in packages/api/src/contract/.
+- The workers leg is D1 CONFORMANCE, not a second contract run (changed 2026-07-22). It ran the same 230-test suite until measurement showed it could not: vitest-pool-workers charges hundreds of milliseconds of isolated-storage bookkeeping per request, so any test making twenty or thirty crossed a ~6s connection deadline and workerd killed the isolate. It failed ~40 tests of 230 on EVERY run, never with an assertion, always `Network connection lost` inside `updateStackedStorage` -- the more thorough the test, the more certainly it failed, which is a gate that punishes coverage. `apps/cf/src/conformance.workers.test.ts` now proves what only D1 can answer (migrations apply, the dialect behaves, the driver round-trips, a few representative endpoints) in ~28s, green. Anything needing many requests belongs on the Node leg; keep additions here small.
 - OpenAPI is generated: request/response schemas come from the shared zod objects in packages/api/src/schemas.ts (one source of truth with the validators), paths from the registered routes. After API changes run `pnpm openapi:gen` and commit the regenerated openapi.json and api-types.gen.ts; openapi:check fails CI otherwise.
 - Frame accuracy and color correctness are the two credibility-critical domains; their tests (timecode property tests, marker golden fixtures, golden-frame color QC, WebCodecs ground truth) are never skipped or weakened to make CI pass.
 - NLE export formats (Resolve EDL, Avid, xmeml, FCPXML) are byte-exact golden-fixture tested. Never write an export format from memory: capture a real export from the target NLE or use the formats documented in docs/research, and round-trip before shipping.
