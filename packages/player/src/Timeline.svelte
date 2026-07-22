@@ -85,7 +85,7 @@
   /* Device-pixel-snapped playhead offset; see the comment at the element. */
   const playheadX = $derived.by(() => {
     if (laneWidth <= 0) return 0;
-    const raw = (percentFor(frame) / 100) * laneWidth;
+    const raw = (percentFor(shownFrame) / 100) * laneWidth;
     const ratio = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
     return Math.round(raw * ratio) / ratio;
   });
@@ -178,9 +178,43 @@
     return frameForX(event.clientX - rect.left, durationFrames, rect.width);
   };
 
-  const seekFromEvent = (event: PointerEvent): void => {
-    onseek?.(frameFromEvent(event));
+  /* Scrubbing tracks the POINTER and seeks once per animation frame.
+     A seek per pointermove is 125 of them a second from an ordinary mouse, and
+     each one pauses the element, assigns currentTime and arms a verify: the
+     decoder never lands one before the next arrives, so the picture tears and
+     the playhead crawls behind the finger. The newest target wins when the
+     frame ticks, and the line is drawn from where the pointer actually is, so
+     it stays glued to the hand however far behind the decoder falls. The
+     presentation scrub has worked this way; the instrument had not. */
+  let scrubPreview = $state<number | null>(null);
+  let scrubTarget: number | null = null;
+  let scrubRaf: number | null = null;
+
+  const applyScrub = (): void => {
+    scrubRaf = null;
+    if (scrubTarget === null) return;
+    const target = scrubTarget;
+    scrubTarget = null;
+    onseek?.(target);
   };
+
+  const seekFromEvent = (event: PointerEvent): void => {
+    const target = frameFromEvent(event);
+    scrubPreview = target;
+    scrubTarget = target;
+    if (scrubRaf === null) scrubRaf = requestAnimationFrame(applyScrub);
+  };
+
+  /* The preview holds after release until the real frame catches up, so the
+     line never snaps backwards to a stale position and then forwards again. */
+  $effect(() => {
+    void frame;
+    if (!scrubbing) scrubPreview = null;
+  });
+
+  /* Where the playhead is drawn: the pointer while dragging, the player's own
+     frame the rest of the time. */
+  const shownFrame = $derived(scrubPreview ?? frame);
 
   /* A live paint gesture: where it started, in frames and in pixels. The pixel
      anchor is what decides click-or-drag, because a frame of travel means
@@ -225,6 +259,13 @@
   };
 
   const endGesture = (event: PointerEvent): void => {
+    if (scrubbing) {
+      /* The last pointer position is the destination, precisely: waiting for
+         the next animation frame would drop the final few pixels of the drag. */
+      if (scrubRaf !== null) cancelAnimationFrame(scrubRaf);
+      scrubRaf = null;
+      applyScrub();
+    }
     scrubbing = false;
     const paint = painting;
     painting = null;
@@ -237,6 +278,10 @@
   };
 
   const cancelGesture = (): void => {
+    if (scrubRaf !== null) cancelAnimationFrame(scrubRaf);
+    scrubRaf = null;
+    scrubTarget = null;
+    scrubPreview = null;
     scrubbing = false;
     painting = null;
     onrangedone?.();
@@ -293,8 +338,8 @@
       aria-label="Timeline scrubber"
       aria-valuemin={0}
       aria-valuemax={lastFrame}
-      aria-valuenow={Math.min(frame, lastFrame)}
-      aria-valuetext={timecodeFor(frame)}
+      aria-valuenow={Math.min(shownFrame, lastFrame)}
+      aria-valuetext={timecodeFor(shownFrame)}
     >
       {#if ioSpan}
         <div

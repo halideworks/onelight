@@ -38,6 +38,14 @@
   let frame = $state(0);
   let wipe = $state(50);
   let draggingWipe = false;
+  /* Which side you are listening to.
+     Both versions used to play their audio at once, half a frame apart, which
+     is not a comparison -- it is a phasing mess that tells you nothing about
+     either mix. One side is audible at a time by default, and it is A, because
+     A is the side that owns the clock. Both can be silenced, and both can be
+     opened at once for anyone who genuinely wants to hear them fight. */
+  let hearA = $state(true);
+  let hearB = $state(false);
 
   const projectId = $derived(page.params.id ?? '');
   const assetId = $derived(idFrom(page.params.assetId));
@@ -213,9 +221,19 @@
     }
   };
 
+  /* The elements are told directly rather than through an attribute: a
+     `muted` binding fights the browser's own restore of the property across a
+     src change, and this has to survive picking a different version. */
+  $effect(() => {
+    if (videoA) videoA.muted = !hearA;
+    if (videoB) videoB.muted = !hearB;
+  });
+
   /* When a video (re)loads, put it back on the current frame. */
   const onLoaded = (): void => {
     seekMedia(frame);
+    if (videoA) videoA.muted = !hearA;
+    if (videoB) videoB.muted = !hearB;
   };
 
   onMount(() => {
@@ -305,6 +323,23 @@
           {/each}
         </select>
       </label>
+    </div>
+    <div class="listen" role="group" aria-label="Listen to">
+      <span class="listen-label">Sound</span>
+      <button
+        type="button"
+        class="ear"
+        aria-pressed={hearA}
+        onclick={() => { hearA = !hearA; }}
+        title={hearA ? 'Mute A' : 'Listen to A'}
+      >A</button>
+      <button
+        type="button"
+        class="ear"
+        aria-pressed={hearB}
+        onclick={() => { hearB = !hearB; }}
+        title={hearB ? 'Mute B' : 'Listen to B'}
+      >B</button>
     </div>
     <div class="modes" role="group" aria-label="Compare mode">
       <button type="button" aria-pressed={mode === 'side'} onclick={() => { mode = 'side'; }}>Side by side</button>
@@ -437,6 +472,13 @@
   .clock { min-width: 108px; text-align: center; color: var(--n-900); }
   .tc { font-variant-numeric: tabular-nums; }
   .seek { flex: 1; display: flex; align-items: center; }
+  /* Which side you hear. Pressed is lit, unpressed is a value step down; no
+     tint, this bar sits beside the footage. */
+  .listen { display: flex; align-items: center; gap: 6px; }
+  .listen-label { color: var(--n-600); }
+  .ear { min-width: 30px; border: 0; border-radius: var(--radius); background: var(--n-200); color: var(--n-600); padding: 5px 9px; font-size: var(--text-12); font-weight: 600; font-family: inherit; cursor: pointer; }
+  .ear:hover { background: var(--n-300); color: var(--n-800); }
+  .ear[aria-pressed='true'] { background: var(--n-800); color: var(--n-050); }
   .hint { color: var(--n-500); white-space: nowrap; }
 
   .error { padding: 24px 20px; color: var(--warn); }

@@ -2743,7 +2743,9 @@
   .movebar label { display: grid; gap: 6px; color: var(--ink-text-dim); font-size: var(--text-13); font-weight: 500; min-width: 220px; }
 
   /* ---- grid ---- */
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card, 200px), 1fr)); gap: 14px; margin-top: var(--pad-2); }
+  /* Fixed tracks, not stretched ones: see the note on the projects grid. The
+     slider moves the thumbnail continuously because the track IS the value. */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, min(var(--card, 200px), 100%)); gap: 14px; margin-top: var(--pad-2); }
   .sizectl { display: flex; align-items: center; }
   /* Visually hidden, still read aloud. */
   .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

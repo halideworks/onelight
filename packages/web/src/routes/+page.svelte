@@ -976,7 +976,14 @@
   .viewtoggle button[aria-pressed='true'] { background: var(--ink-300); color: #fff; }
 
   .projectlist { display: grid; gap: 2px; }
-  .projectlist.grid { grid-template-columns: repeat(auto-fill, minmax(var(--card, 220px), 1fr)); gap: 14px; }
+  /* Cards are exactly the size the slider says, not that size stretched to
+     fill the row. minmax(--card, 1fr) meant the drawn width was really
+     container/columns, so a continuous slider still moved the thumbnails in
+     jumps: every time the column count dropped, every card leapt wider. Fixed
+     tracks make the size continuous and honest, at the price of a gutter on
+     the right, which is what a contact sheet looks like everywhere else.
+     min(...,100%) keeps a card wider than its container from overflowing. */
+  .projectlist.grid { grid-template-columns: repeat(auto-fill, min(var(--card, 220px), 100%)); gap: 14px; }
   .sizectl { display: flex; align-items: center; }
   @media (max-width: 720px) {
     .projectlist.grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }

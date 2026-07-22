@@ -288,7 +288,7 @@
           {@const dead = transfer.revoked_at !== null || isExpired(transfer)}
           <article class="card" class:dead>
             <div class="head">
-              <h2>{transfer.title}</h2>
+              <h2><a href={`/projects/${projectPath}/transfers/${transfer.id}`}>{transfer.title}</a></h2>
               <span class="chip">{transfer.kind === 'package' ? 'Send' : 'Request'}</span>
               {#if transfer.has_passphrase}<span class="chip dim">Passphrase</span>{/if}
               {#if transfer.revoked_at !== null}
@@ -297,7 +297,9 @@
                 <span class="chip warn">Expired</span>
               {/if}
               <span class="grow"></span>
-              <a class="btnlink" href={`/projects/${projectPath}/transfers/${transfer.id}`}>Open</a>
+              <!-- "Open" read as "open the public link" on a page whose whole
+                   subject is links, so nobody found the settings behind it. -->
+              <a class="btnlink" href={`/projects/${projectPath}/transfers/${transfer.id}`}>Edit</a>
               <button type="button" class="quiet small" onclick={() => void patch(transfer, { revoked: transfer.revoked_at === null })}>
                 {transfer.revoked_at === null ? 'Revoke' : 'Reopen'}
               </button>
@@ -444,6 +446,8 @@
   .card.dead { opacity: 0.6; }
   .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   h2 { margin: 0; font-size: var(--text-16); font-weight: 600; }
+  h2 a { text-decoration: none; }
+  h2 a:hover { text-decoration: underline; }
   .grow { flex: 1; }
   .chip { padding: 2px 8px; border-radius: 9px; background: var(--ink-300); font-size: var(--text-12); font-weight: 500; }
   .chip.dim { background: var(--ink-200); color: var(--ink-text-dim); }

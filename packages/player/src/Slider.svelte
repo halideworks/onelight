@@ -212,6 +212,17 @@
     align-items: center;
     justify-content: center;
     touch-action: none;
+    /* The LENGTH lives here, not on the rail. It used to sit on the rail as
+       width: var(--length), which for the default of 100% asked the rail to be
+       a percentage of a parent that was itself sizing to its content: circular,
+       and it resolved to zero. Every caller passing an explicit pixel length
+       was fine, so the one slider taking the default -- the A/B compare seek --
+       was an invisible control that could not be grabbed. */
+    width: var(--length);
+  }
+  .slider.vertical {
+    width: auto;
+    height: var(--length);
   }
   .slider.ink {
     --line: var(--ink-300, #263140);
@@ -226,19 +237,19 @@
      give it all back as padding; the drawn parts are 2px. */
   .rail {
     position: relative;
-    width: var(--length);
+    width: 100%;
     height: 22px;
     outline: none;
     cursor: pointer;
   }
   .vertical .rail {
     width: 22px;
-    height: var(--length);
+    height: 100%;
   }
   .disabled .rail { cursor: default; }
   @media (pointer: coarse) {
     .rail { height: var(--tap, 44px); }
-    .vertical .rail { width: var(--tap, 44px); height: var(--length); }
+    .vertical .rail { width: var(--tap, 44px); height: 100%; }
   }
 
   /* The unfilled run, and the filled run over it. Two elements rather than a
