@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import Player from '@onelight/player/Player.svelte';
+  import ImageViewer from '@onelight/player/ImageViewer.svelte';
   import { parseSpriteVtt } from '@onelight/player';
   import type {
     FrameAnnotation,
@@ -67,6 +68,8 @@
       sidecars?: {
         sprite?: { url: string; vtt_url: string | null } | null;
         peaks?: { url: string } | null;
+        waveform?: { url: string; meta?: Record<string, unknown> } | null;
+        spectrogram?: { url: string } | null;
         captions?: Array<{ language: string; label: string; url: string | null }>;
       } | null;
       watermark: 'ready' | 'processing' | null;
@@ -83,6 +86,9 @@
   let previewRenditions = $state<PlayerRendition[]>([]);
   let previewFilmstrip = $state<{ url: string; cues: SpriteCue[] } | null>(null);
   let previewWaveformUrl = $state<string | null>(null);
+  /* The audio stage's two sidecars: peak data and the spectrogram. */
+  let previewPeaksUrl = $state<string | null>(null);
+  let previewSpectrogramUrl = $state<string | null>(null);
   let previewCaptionsUrl = $state<string | null>(null);
   let watermarkPending = $state(false);
   /* True from opening an asset until its media answer lands: the "not ready"
@@ -100,6 +106,7 @@
   let error = $state('');
   let currentFrame = $state(0);
   let player = $state<Player | null>(null);
+  let stills = $state<ImageViewer | null>(null);
   let highlightedId = $state<string | null>(null);
   let pendingDrawing = $state<PendingDrawing | null>(null);
   let activeTag = $state<string | null>(null);
@@ -495,6 +502,8 @@
     previewRenditions = [];
     previewFilmstrip = null;
     previewWaveformUrl = null;
+    previewPeaksUrl = null;
+    previewSpectrogramUrl = null;
     previewCaptionsUrl = null;
     watermarkPending = false;
     mediaLoading = true;
@@ -525,6 +534,10 @@
          filmstrip tile geometry. Absent sidecars mean absent lanes. */
       const sidecars = version?.sidecars;
       if (token === mediaPollToken && sidecars?.peaks?.url) previewWaveformUrl = sidecars.peaks.url;
+      if (token === mediaPollToken) {
+        previewPeaksUrl = sidecars?.waveform?.url ?? null;
+        previewSpectrogramUrl = sidecars?.spectrogram?.url ?? null;
+      }
       if (token === mediaPollToken)
         previewCaptionsUrl = sidecars?.captions?.find((track) => track.url)?.url ?? null;
       if (sidecars?.sprite?.url && sidecars.sprite.vtt_url) {
@@ -590,6 +603,8 @@
     previewRenditions = [];
     previewFilmstrip = null;
     previewWaveformUrl = null;
+    previewPeaksUrl = null;
+    previewSpectrogramUrl = null;
     previewCaptionsUrl = null;
     watermarkPending = false;
     downloadNote = '';
@@ -743,7 +758,11 @@
     }
   };
 
-  const playerActive = $derived(Boolean(selected && previewUrl && selected.kind === 'video'));
+  /* Footage and sound both play; a still is shown in the viewer instead. */
+  const playerActive = $derived(
+    Boolean(selected && previewUrl && (selected.kind === 'video' || selected.kind === 'audio'))
+  );
+  const stillActive = $derived(Boolean(selected && previewUrl && selected.kind === 'image'));
 
   /* Timecode, always: everyone reads clocks. Frames are a working language
      that lives in the data, not on the label. */
@@ -833,15 +852,19 @@
     }
   };
 
+  /* The rail drives whichever instrument is on screen. A still and a frame
+     take the same drawing, so the controls are the same controls. */
   const setDraw = (on: boolean, tool: 'pen' | 'arrow' | 'rect' | 'text' = drawTool): void => {
     drawTool = tool;
     player?.setDraw(on, tool);
-    player?.setDrawColor(inkChoice ?? myInk);
+    stills?.setDraw(on, tool);
+    pickInk(inkChoice ?? myInk);
   };
 
   const pickInk = (ink: string): void => {
     inkChoice = ink;
     player?.setDrawColor(ink);
+    stills?.setDrawColor(ink);
   };
 
   /* A note can cover a stretch of time. The range lives in the composer
@@ -903,6 +926,7 @@
       error = '';
       if (drawing) {
         player?.clearDrawing();
+        stills?.clearDrawing();
         pendingDrawing = null;
       }
     } catch (caught) {
@@ -923,6 +947,7 @@
 
   const discardDrawing = (): void => {
     player?.clearDrawing();
+    stills?.clearDrawing();
     pendingDrawing = null;
   };
 </script>
@@ -1108,6 +1133,9 @@
       {#if playerActive}
         <Player
           bind:this={player}
+          kind={selected.kind === 'audio' ? 'audio' : 'video'}
+          peaksUrl={previewPeaksUrl}
+          spectrogramUrl={previewSpectrogramUrl}
           oncopytimecode={copyText}
           src={previewUrl}
           rate={previewRate ?? { num: 24, den: 1 }}
@@ -1138,9 +1166,25 @@
           onmarkerselect={(id) => highlightComment(id)}
           ondrawingchange={(drawing) => { pendingDrawing = drawing; }}
         />
-      {:else if previewUrl && selected.kind === 'image'}
-        <!-- A still is the work itself here, not a link to it. -->
-        <img class="stillview" src={previewUrl} alt={selected.name} />
+      {:else if stillActive}
+        <!-- A still is the work itself here, not a link to it: the same
+             viewer the review room uses, with the working tools folded away
+             when this is a client's presentation. -->
+        <ImageViewer
+          bind:this={stills}
+          src={previewUrl}
+          alt={selected.name}
+          {annotations}
+          allowDrawing={share.allow_comments}
+          drawDefaultColor={inkChoice ?? myInk}
+          chrome={playerChrome}
+          watermark={watermark ? { lines: watermark.lines, opacity: watermark.opacity ?? 0.28 } : null}
+          ondrawmodechange={(on, tool) => {
+            drawOn = on;
+            drawTool = tool;
+          }}
+          ondrawingchange={(drawing) => { pendingDrawing = drawing; }}
+        />
       {:else if previewUrl}
         <p class="open-media"><a href={previewUrl}>Open media</a></p>
       {:else if watermarkPending}
@@ -1302,9 +1346,12 @@
                 {/each}
               </span>
             {/if}
-            {#if showtime && playerActive}
+            {#if showtime && (stillActive || (playerActive && selected?.kind !== 'audio'))}
               <!-- The player's own draw controls belong to the full
-                   instrument; here the rail hosts them. -->
+                   instrument; here the rail hosts them. There is nothing to
+                   draw on in an audio room: a stroke over a waveform points
+                   at a moment, which is what the timecode on the note
+                   already says. -->
               <div class="drawrow" role="group" aria-label="Drawing">
                 <button type="button" class="quiet" aria-pressed={drawOn} onclick={() => setDraw(!drawOn)}>
                   {drawOn ? 'Stop drawing' : 'Draw on the frame'}

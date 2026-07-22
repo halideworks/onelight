@@ -20,10 +20,15 @@ import {
   buildWatermarkFilter,
   canUseVaapi,
   clampToSupportedRate,
+  createPeakCollector,
   escapeDrawtextValue,
+  isAudioOnly,
   needsBt709Conversion,
   normalizeProbe,
   parseRational,
+  peaksChannels,
+  peaksPcmArgs,
+  peaksSamplesPerPixel,
   planRenditions,
   posterSeekSeconds,
   primaryRenditionKinds,
@@ -835,7 +840,7 @@ describe("rendition planning per asset kind", () => {
       "proxy_540",
       "poster",
       "sprite",
-      "audio_peaks",
+      "waveform_data",
     ]);
     const hd = mediaInfoOf({
       streams: [{ codec_type: "video", width: 1920 }],
@@ -876,7 +881,10 @@ describe("rendition planning per asset kind", () => {
 
   it("plans audio, image, and pdf assets without a video map", () => {
     expect(planRenditions("audio", mediaInfoOf())).toEqual([
-      { kind: "audio_peaks", filename: "audio_peaks.png" },
+      { kind: "proxy_audio", filename: "proxy_audio.m4a" },
+      { kind: "waveform_data", filename: "waveform.dat" },
+      { kind: "spectrogram", filename: "spectrogram.png" },
+      { kind: "poster", filename: "poster.png" },
     ]);
     expect(planRenditions("image", mediaInfoOf()).map((e) => e.kind)).toEqual([
       "still_tiles",
@@ -890,8 +898,178 @@ describe("rendition planning per asset kind", () => {
 
   it("declares the primary readiness rendition per kind", () => {
     expect(primaryRenditionKinds("video")).toEqual(["proxy_1080"]);
-    expect(primaryRenditionKinds("audio")).toEqual(["audio_peaks"]);
+    expect(primaryRenditionKinds("audio")).toEqual([
+      "proxy_audio",
+      "audio_peaks",
+    ]);
     expect(primaryRenditionKinds("image")).toEqual(["still_tiles", "poster"]);
     expect(primaryRenditionKinds("pdf")).toEqual(["pdf_pages"]);
+  });
+});
+
+describe("audio sidecars", () => {
+  const audioInfo = (channels = 2, duration?: number): MediaInfo => ({
+    ...mediaInfoOf({
+      format: duration === undefined ? {} : { duration: String(duration) },
+      streams: [{ codec_type: "audio", channels }],
+    }),
+    /* An audio source is probed without a picture, so it reaches the sidecar
+       builders with the nominal timebase, not a video rate. */
+    frameRateNum: 60,
+    frameRateDen: 1,
+  });
+
+  it("gives an audio source a nominal 60 fps timebase", () => {
+    const probed = normalizeProbe({
+      format: { duration: "125.5" },
+      streams: [{ codec_type: "audio", channels: 2 }],
+    });
+    expect(probed.frameRateNum).toBe(60);
+    expect(probed.frameRateDen).toBe(1);
+    expect(probed.nominalRate).toBe(true);
+    expect(probed.durationFrames).toBe(7530);
+    /* A source with picture keeps the rate it actually has. */
+    const video = normalizeProbe({
+      format: { duration: "10" },
+      streams: [
+        { codec_type: "video", avg_frame_rate: "24/1", nb_frames: "240" },
+        { codec_type: "audio" },
+      ],
+    });
+    expect(video.frameRateNum).toBe(24);
+    expect(video.nominalRate).toBeUndefined();
+    /* A still is not audio and gets no invented timebase. */
+    expect(
+      normalizeProbe({ format: {}, streams: [] }).nominalRate,
+    ).toBeUndefined();
+  });
+
+  it("knows a source with no picture in it", () => {
+    expect(isAudioOnly(audioInfo())).toBe(true);
+    expect(
+      isAudioOnly(
+        mediaInfoOf({
+          streams: [{ codec_type: "video" }, { codec_type: "audio" }],
+        }),
+      ),
+    ).toBe(false);
+    /* A PDF or a still has neither stream and is not audio either. */
+    expect(isAudioOnly(mediaInfoOf())).toBe(false);
+  });
+
+  it("encodes a stereo AAC proxy and drops cover art", () => {
+    const args = sidecarArgs(
+      jobOf(audioInfo()),
+      "/out/proxy_audio.m4a",
+      "proxy_audio",
+    );
+    expect(args).toBeDefined();
+    expect(args).toContain("-vn");
+    expect(flag(args ?? [], "-c:a")).toBe("aac");
+    expect(flag(args ?? [], "-b:a")).toBe("192k");
+    expect(flag(args ?? [], "-ac")).toBe("2");
+    expect(args?.[args.length - 1]).toBe("/out/proxy_audio.m4a");
+  });
+
+  it("renders the spectrogram as luminance on log axes", () => {
+    const args = sidecarArgs(
+      jobOf(audioInfo()),
+      "/out/spectrogram.png",
+      "spectrogram",
+    );
+    const filter = flag(args ?? [], "-filter_complex") ?? "";
+    expect(filter).toContain("showspectrumpic");
+    expect(filter).toContain("scale=log");
+    expect(filter).toContain("fscale=log");
+    /* Gray, so the player picks the colour, not ffmpeg. */
+    expect(filter).toContain("format=gray");
+    expect(filter).toContain("legend=0");
+  });
+
+  it("draws the poster from the sound when there is no picture", () => {
+    const audio = sidecarArgs(jobOf(audioInfo()), "/out/poster.png", "poster");
+    const filter = flag(audio ?? [], "-filter_complex") ?? "";
+    expect(filter).toContain("showwavespic");
+    expect(filter).toContain("overlay");
+    /* A video source keeps the frame-grab poster it always had. */
+    const video = sidecarArgs(
+      jobOf(mediaInfoOf({ streams: [{ codec_type: "video", width: 1920 }] })),
+      "/out/poster.png",
+      "poster",
+    );
+    expect(flag(video ?? [], "-vf")).toContain("thumbnail=");
+  });
+
+  it("asks the decoder for raw interleaved PCM on stdout", () => {
+    const args = peaksPcmArgs("source.wav", 2);
+    expect(flag(args, "-f")).toBe("s16le");
+    expect(flag(args, "-ar")).toBe("48000");
+    expect(flag(args, "-ac")).toBe("2");
+    expect(args[args.length - 1]).toBe("pipe:1");
+  });
+
+  it("folds a surround source down to stereo and mono to mono", () => {
+    expect(peaksChannels(audioInfo(6))).toBe(2);
+    expect(peaksChannels(audioInfo(2))).toBe(2);
+    expect(peaksChannels(audioInfo(1))).toBe(1);
+  });
+
+  it("caps the sidecar size on long files instead of growing forever", () => {
+    /* Five minutes: the plain 200 points per second rate. */
+    expect(peaksSamplesPerPixel(48000, 300)).toBe(240);
+    /* Three hours would be two million points at that rate; it is capped. */
+    const long = peaksSamplesPerPixel(48000, 3 * 3600);
+    expect((3 * 3600 * 48000) / long).toBeLessThanOrEqual(120_000);
+    expect(long).toBeGreaterThan(240);
+    /* Unknown duration still produces a sane bucket. */
+    expect(peaksSamplesPerPixel(48000, 0)).toBe(240);
+  });
+
+  it("reduces PCM to min/max pairs per channel", () => {
+    const pcm = new Int16Array([
+      // bucket 0: L -100..300, R -50..50
+      -100, -50, 300, 50,
+      // bucket 1: L 0..0, R -32768..1000
+      0, -32768, 0, 1000,
+    ]);
+    const collector = createPeakCollector(2, 2);
+    collector.push(new Uint8Array(pcm.buffer));
+    const { samples, length } = collector.finish();
+    expect(length).toBe(2);
+    expect(samples[0]).toBeCloseTo(-100 / 32768, 6);
+    expect(samples[1]).toBeCloseTo(300 / 32768, 6);
+    expect(samples[2]).toBeCloseTo(-50 / 32768, 6);
+    expect(samples[3]).toBeCloseTo(50 / 32768, 6);
+    expect(samples[6]).toBeCloseTo(-1, 6);
+    expect(samples[7]).toBeCloseTo(1000 / 32768, 6);
+  });
+
+  it("gives the same answer however the pipe splits the bytes", () => {
+    const pcm = new Int16Array(64);
+    for (let index = 0; index < pcm.length; index += 1)
+      pcm[index] = Math.round(20000 * Math.sin(index / 3));
+    const bytes = new Uint8Array(pcm.buffer);
+    const whole = createPeakCollector(2, 5);
+    whole.push(bytes);
+    const expected = whole.finish();
+    /* Odd split sizes cut sample frames and even single samples in half. */
+    for (const size of [1, 3, 7, 13]) {
+      const split = createPeakCollector(2, 5);
+      for (let at = 0; at < bytes.length; at += size)
+        split.push(bytes.subarray(at, Math.min(bytes.length, at + size)));
+      const actual = split.finish();
+      expect(actual.length).toBe(expected.length);
+      expect(Array.from(actual.samples)).toEqual(Array.from(expected.samples));
+    }
+  });
+
+  it("keeps a partly filled last bucket", () => {
+    const pcm = new Int16Array([1000, -1000, 500]);
+    const collector = createPeakCollector(1, 2);
+    collector.push(new Uint8Array(pcm.buffer));
+    const { length, samples } = collector.finish();
+    expect(length).toBe(2);
+    expect(samples[2]).toBeCloseTo(0, 6);
+    expect(samples[3]).toBeCloseTo(500 / 32768, 6);
   });
 });

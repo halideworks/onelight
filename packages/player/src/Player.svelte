@@ -13,6 +13,7 @@
   } from '@onelight/core';
   import AnnotationOverlay from './AnnotationOverlay.svelte';
   import Timeline from './Timeline.svelte';
+  import WaveformStage from './WaveformStage.svelte';
   import { applyMark, isVerifyStale, seeksLocked } from './transport-state.js';
   import { ANNOTATION_INKS } from './annotations.js';
   import type { AnnotationPoint, AnnotationStroke, FrameAnnotation, PendingDrawing } from './annotations.js';
@@ -36,6 +37,9 @@
     watermark = null,
     filmstrip = null,
     waveformUrl = null,
+    kind = 'video',
+    peaksUrl = null,
+    spectrogramUrl = null,
     onframechange = undefined,
     onmarkerselect = undefined,
     ondrawingchange = undefined,
@@ -70,6 +74,15 @@
     watermark?: WatermarkOverlay | null;
     filmstrip?: { url: string; cues: SpriteCue[] } | null;
     waveformUrl?: string | null;
+    /* What is being reviewed. Audio is the same instrument with a different
+       picture: the transport, the marks, the timeline and the notes are
+       identical, and the stage draws sound instead of showing footage. The
+       tools that only mean something over footage (scopes, the proxy ladder,
+       drawing, the surround field) take themselves off screen. */
+    kind?: 'video' | 'audio';
+    /* Peak data sidecar (waveform_data) for the audio stage. */
+    peaksUrl?: string | null;
+    spectrogramUrl?: string | null;
     onframechange?: ((frame: number) => void) | undefined;
     onmarkerselect?: ((markerId: string, frame: number) => void) | undefined;
     ondrawingchange?: ((drawing: PendingDrawing | null) => void) | undefined;
@@ -88,7 +101,15 @@
     oncopytimecode?: ((text: string) => Promise<boolean>) | undefined;
   } = $props();
 
-  let video: HTMLVideoElement | undefined = $state();
+  /* The element that plays. A video for footage, an audio element for a mix:
+     everything the transport does (play, pause, currentTime, playbackRate,
+     volume) is HTMLMediaElement, and the few places that need pixels ask for
+     the picture element explicitly. */
+  let video: HTMLMediaElement | undefined = $state();
+  const isAudio = $derived(kind === 'audio');
+  /* The playing element when it has a picture, and nothing when it does not. */
+  const pictureElement = (): HTMLVideoElement | null =>
+    video && 'videoWidth' in video ? (video as HTMLVideoElement) : null;
   let videoWidth = $state(0);
   let videoHeight = $state(0);
   let frame = $state(0);
@@ -209,13 +230,14 @@
      when the caller should retry shortly (mid-seek, decoder not ready). */
   const renderScope = (): boolean => {
     const target = scopeCanvas;
-    if (!target || !video || video.videoWidth === 0) return false;
+    const picture = pictureElement();
+    if (!target || !picture || picture.videoWidth === 0) return false;
     /* Mid-seek the element still presents the old frame; drawing now would
        memoize stale pixels under the new time. Wait for the seek to land. */
-    if (video.seeking) return false;
+    if (picture.seeking) return false;
     if (
-      video.paused &&
-      video.currentTime === scopeDrawnAt &&
+      picture.paused &&
+      picture.currentTime === scopeDrawnAt &&
       scopeMode === scopeDrawnMode &&
       target === scopeDrawnOn
     )
@@ -228,14 +250,14 @@
     const sampler = sampleCanvas.getContext('2d', { willReadFrequently: true });
     const ctx = target.getContext('2d');
     if (!sampler || !ctx) return true;
-    sampler.drawImage(video, 0, 0, SAMPLE_W, SAMPLE_H);
+    sampler.drawImage(picture, 0, 0, SAMPLE_W, SAMPLE_H);
     let data: Uint8ClampedArray;
     try {
       data = sampler.getImageData(0, 0, SAMPLE_W, SAMPLE_H).data;
     } catch {
       return true;
     }
-    scopeDrawnAt = video.currentTime;
+    scopeDrawnAt = picture.currentTime;
     scopeDrawnMode = scopeMode;
     scopeDrawnOn = target;
     if (!scopeImage) scopeImage = ctx.createImageData(SCOPE_W, SCOPE_H);
@@ -620,6 +642,29 @@
   };
   const hasFilmstrip = $derived(Boolean(filmstrip && filmstrip.cues.length > 0));
 
+  /* ---- what the audio stage shows, persisted per user ----
+     Both readings by default. Someone cutting dialogue wants the waveform
+     tall and the spectrogram gone; someone chasing a hum wants the opposite,
+     and the choice should still be theirs on the next asset. */
+  const AUDIO_VIEW_KEY = 'onelight.audio.view';
+  let audioView = $state<'both' | 'wave' | 'spec'>('both');
+  $effect(() => {
+    try {
+      const stored = localStorage.getItem(AUDIO_VIEW_KEY);
+      if (stored === 'both' || stored === 'wave' || stored === 'spec') audioView = stored;
+    } catch {
+      /* Storage can be unavailable; both readings stand. */
+    }
+  });
+  const setAudioView = (next: 'both' | 'wave' | 'spec'): void => {
+    audioView = next;
+    try {
+      localStorage.setItem(AUDIO_VIEW_KEY, next);
+    } catch {
+      /* Non-persistent choice still applies for the session. */
+    }
+  };
+
   /* ---- drawing ---- */
   const INK_NEUTRAL = '#e9e9e9'; /* --n-900, neutral-safe ink */
   const INK_ACCENT = '#a5605a'; /* --warn, the one functional accent */
@@ -893,7 +938,7 @@
      currentTime. */
   const rvfcLoop = (_now: number, metadata: VideoFrameCallbackMetadata): void => {
     setFrame(frameAtMediaTime(metadata.mediaTime, rate));
-    video?.requestVideoFrameCallback(rvfcLoop);
+    pictureElement()?.requestVideoFrameCallback(rvfcLoop);
   };
 
   /* Non-rVFC fallback only. */
@@ -908,12 +953,13 @@
        stage is sized from this rather than from the decoded pixels, so
        switching 540 to 1080 rescales the picture inside a box that does not
        move. */
-    if (video.videoWidth > 0 && video.videoHeight > 0)
-      aspect = video.videoWidth / video.videoHeight;
-    hasRvfc = 'requestVideoFrameCallback' in video;
-    if (hasRvfc && !rvfcStarted) {
+    const picture = pictureElement();
+    if (picture && picture.videoWidth > 0 && picture.videoHeight > 0)
+      aspect = picture.videoWidth / picture.videoHeight;
+    hasRvfc = Boolean(picture && 'requestVideoFrameCallback' in picture);
+    if (picture && hasRvfc && !rvfcStarted) {
       rvfcStarted = true;
-      video.requestVideoFrameCallback(rvfcLoop);
+      picture.requestVideoFrameCallback(rvfcLoop);
     }
     if (pendingRestore) {
       const restore = pendingRestore;
@@ -977,7 +1023,7 @@
           video.currentTime = mediaTimeInsideFrame(next, rate);
         }
       };
-      video.requestVideoFrameCallback(verify);
+      pictureElement()?.requestVideoFrameCallback(verify);
     } else {
       setFrame(next);
     }
@@ -1083,7 +1129,7 @@
      they live in their own overlay, and a poster is the picture, not the
      notes. */
   export function captureFrame(maxWidth = 1280): Promise<Blob | null> {
-    const element = video;
+    const element = pictureElement();
     if (!element || element.videoWidth === 0) return Promise.resolve(null);
     const scale = Math.min(1, maxWidth / element.videoWidth);
     const canvas = document.createElement('canvas');
@@ -1189,6 +1235,24 @@
     if (key === 'm') { event.preventDefault(); muted = !muted; }
   };
 
+  /* An audio element has no requestVideoFrameCallback and its timeupdate
+     fires about four times a second, which would make the playhead crawl in
+     steps a third of a second wide. Sound has no frames to present anyway, so
+     the clock is the display's: read currentTime once per animation frame
+     while anything is moving. Frame identity comes from the same
+     frameAtCurrentTime the non-rVFC video path uses, against the nominal
+     timebase the version carries. */
+  $effect(() => {
+    if (!isAudio || !playing) return;
+    let raf = 0;
+    const tick = (): void => {
+      handleTimeUpdate();
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  });
+
   /* Window resize does not fire the video element's resize event (that event
      is for intrinsic size changes), so track layout size with a ResizeObserver. */
   $effect(() => {
@@ -1222,7 +1286,40 @@
     onpointermove={fullscreen ? wakeOverlay : undefined}
     onpointerleave={fullscreen ? () => { overlayHot = false; } : undefined}
   >
-    <div class="frame-box" bind:this={frameBox} style:width={boxWidth > 0 ? `${String(boxWidth)}px` : undefined}>
+    <div
+      class="frame-box"
+      class:audio={isAudio}
+      bind:this={frameBox}
+      style:width={isAudio || boxWidth <= 0 ? undefined : `${String(boxWidth)}px`}
+    >
+      {#if isAudio}
+        <!-- The sound plays from an element with nothing to show; the stage
+             above is what the reviewer actually looks at. -->
+        <audio
+          bind:this={video}
+          src={currentSrc || src}
+          bind:muted
+          bind:volume
+          ontimeupdate={handleTimeUpdate}
+          onloadedmetadata={handleLoadedMetadata}
+          onloadeddata={() => { pictureIn = true; }}
+          onplay={() => onplaystate?.(true)}
+          onpause={() => onplaystate?.(false)}
+        ></audio>
+        <WaveformStage
+          {peaksUrl}
+          peaksImageUrl={waveformUrl}
+          {spectrogramUrl}
+          {frame}
+          durationFrames={durationFrames ?? 0}
+          {inFrame}
+          {outFrame}
+          view={audioView}
+          washed={chrome === 'simple'}
+          timecodeAt={rateSupported ? tcAt : undefined}
+          onseek={jumpTo}
+        />
+      {:else}
       <video
         bind:this={video}
         class:arrived={pictureIn}
@@ -1238,6 +1335,8 @@
       >
         <track kind="captions" srclang="en" label="English captions" src={captionsSrc ?? 'data:text/vtt;charset=utf-8,WEBVTT'} />
       </video>
+      {/if}
+      {#if !isAudio}
       <AnnotationOverlay
         strokes={canvasStrokes}
         width={videoWidth}
@@ -1308,7 +1407,8 @@
           </div>
         {/if}
       {/each}
-      {#if textDraft}
+      {/if}
+      {#if textDraft && !isAudio}
         <!-- The caret lives in the DOM; the committed stroke lives on the
              canvas. Enter commits, Escape lets it go, and clicking elsewhere
              in text mode simply moves the draft. -->
@@ -1508,7 +1608,7 @@
     </div>
   {/snippet}
 
-  {#if scopesOn && chrome === 'full'}
+  {#if scopesOn && chrome === 'full' && !isAudio}
     <div class="scopes">
       <canvas
         bind:this={scopeCanvas}
@@ -1526,7 +1626,7 @@
          draw controls in the page (the notes rail), so the row never shows. -->
     {#if chrome === 'full'}
     <div class="transport-row settings">
-      {#if allowDrawing}
+      {#if allowDrawing && !isAudio}
         <button type="button" aria-pressed={drawMode} onclick={toggleDraw}>Draw</button>
         {#if drawMode}
           <div class="seg" role="group" aria-label="Drawing tool">
@@ -1556,7 +1656,7 @@
       {/if}
       <span class="grow"></span>
       {#if chrome === 'full'}
-      {#if (hasFilmstrip || waveformUrl) && durationFrames !== null && durationFrames > 0}
+      {#if !isAudio && (hasFilmstrip || waveformUrl) && durationFrames !== null && durationFrames > 0}
         <span class="ctl-label" id="lanes-label">Lanes</span>
         <div class="seg" role="group" aria-labelledby="lanes-label">
           {#if hasFilmstrip}
@@ -1567,6 +1667,15 @@
           {/if}
         </div>
       {/if}
+      {#if isAudio && spectrogramUrl}
+        <span class="ctl-label" id="audioview-label">Stage</span>
+        <div class="seg" role="group" aria-labelledby="audioview-label">
+          <button type="button" aria-pressed={audioView === 'both'} onclick={() => setAudioView('both')}>Both</button>
+          <button type="button" aria-pressed={audioView === 'wave'} onclick={() => setAudioView('wave')}>Waveform</button>
+          <button type="button" aria-pressed={audioView === 'spec'} onclick={() => setAudioView('spec')}>Spectrogram</button>
+        </div>
+      {/if}
+      {#if !isAudio}
       <span class="ctl-label" id="scopes-label">Scopes</span>
       <div class="seg" role="group" aria-labelledby="scopes-label">
         <button type="button" aria-pressed={scopesOn && scopeMode === 'waveform'} onclick={() => setScope('waveform')}>Waveform</button>
@@ -1578,7 +1687,8 @@
         <button type="button" aria-pressed={surround === 'grey18'} onclick={() => setSurround('grey18')}>18% Grey</button>
         <button type="button" aria-pressed={surround === 'black'} onclick={() => setSurround('black')}>Black</button>
       </div>
-      {#if ladder.length}
+      {/if}
+      {#if ladder.length && !isAudio}
         <span class="ctl-label" id="quality-label">Quality</span>
         <div class="seg" role="group" aria-labelledby="quality-label">
           <button type="button" aria-pressed={quality === 'auto'} onclick={() => { quality = 'auto'; }}>Auto</button>
@@ -1661,8 +1771,8 @@
           {inFrame}
           {outFrame}
           {markers}
-          filmstrip={showFilmLane ? filmstrip : null}
-          waveformUrl={showWaveLane ? waveformUrl : null}
+          filmstrip={isAudio || !showFilmLane ? null : filmstrip}
+          waveformUrl={isAudio || !showWaveLane ? null : waveformUrl}
           disabled={seekLocked}
           onseek={jumpTo}
           onmarkerselect={handleMarkerSelect}
@@ -1693,6 +1803,20 @@
      fills it: width comes from boxWidth, measured, not from a vh guess. */
   .stage { flex: 1; display: grid; place-items: center; min-height: 120px; overflow: hidden; }
   .frame-box { position: relative; width: min(100%, calc(72vh * var(--ar, 1.7778))); max-height: 100%; }
+  /* Sound has no shape to preserve, so the audio stage takes the room instead
+     of a rectangle of the right proportions: full width, and as tall as the
+     stage will give it inside a band that stays readable on a laptop. */
+  .frame-box.audio {
+    width: 100%;
+    height: 100%;
+    /* Capped: given a tall window the lanes would stretch until the waveform
+       stopped reading as a waveform and became a wall. Two channel lanes and
+       a spectrogram want about this much and no more; the rest of the height
+       belongs to the room. */
+    max-height: 560px;
+    min-height: 180px;
+    align-self: center;
+  }
   video { display: block; width: 100%; height: auto; background: #000000; }
   /* The floating text entry: bare type on the footage, no box furniture --
      what is typed is what the note will burn. */

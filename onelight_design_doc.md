@@ -109,7 +109,7 @@ One codebase, three blessed deployments:
 │   job queue table + scheduler                   │
 ├─────────────────────────────────────────────────┤
 │ onelight-worker (container, 1..N)               │
-│   ffmpeg / ffprobe / audiowaveform / renderer   │
+│   ffmpeg / ffprobe / poppler / vips / renderer  │
 │   pulls jobs over HTTP from API                 │
 ├─────────────────────────────────────────────────┤
 │ storage volume (originals + proxies)            │
@@ -167,7 +167,7 @@ Rule: `packages/core` and all route handlers import only the ports. CI runs the 
 
 ### 4.3 The worker image
 
-One Docker image, `onelight-worker`, used identically as the self-hosted transcode worker and the Cloudflare Container. Contents: ffmpeg (with libplacebo, zscale, libx264, libx265, libsvtav1), ffprobe, audiowaveform (BBC, invoked as subprocess only - GPL isolation), poppler-utils (PDF rasters), libvips (stills), skia-canvas + Node runtime for annotation burn-in rendering, and a small HTTP job runner: `POST /jobs` with a signed job spec, progress via callback URL (HMAC), streams I/O directly from/to BlobStore URLs (never stages >20GB - CF Container disk limit; ffmpeg reads via HTTP range from presigned GET, writes via multipart PUT).
+One Docker image, `onelight-worker`, used identically as the self-hosted transcode worker and the Cloudflare Container. Contents: ffmpeg (with libplacebo, zscale, libx264, libx265, libsvtav1), ffprobe, poppler-utils (PDF rasters), libvips (stills), skia-canvas + Node runtime for annotation burn-in rendering, and a small HTTP job runner: `POST /jobs` with a signed job spec, progress via callback URL (HMAC), streams I/O directly from/to BlobStore URLs (never stages >20GB - CF Container disk limit; ffmpeg reads via HTTP range from presigned GET, writes via multipart PUT).
 
 ### 4.4 Monorepo
 
@@ -222,7 +222,7 @@ asset_versions(id, asset_id, version_no, original_blob_key, original_filename,
        duration_frames, color_json,                              -- primaries/transfer/matrix/range
        transcode_status: pending|processing|ready|failed|skipped)
 renditions(id, version_id, kind: proxy_2160|proxy_1080|proxy_540|hdr_hevc|hdr_av1|
-       audio_peaks|sprite|poster|pdf_pages|still_tiles|watermarked,
+       proxy_audio|audio_peaks|waveform_data|spectrogram|sprite|poster|pdf_pages|still_tiles|watermarked,
        blob_key, meta_json, share_id?)                           -- share_id set for watermarked variants
 
 comments(id, version_id, parent_id?, author_user_id?, author_name?, author_email?, -- anonymous authors
@@ -275,7 +275,7 @@ Blob key layout: `{workspace}/{project}/{asset}/{version}/original/{filename}` a
 upload complete ─► probe job ─► plan job (decides rendition set from media_info)
                                    ├─► proxy renditions (parallel)
                                    ├─► poster + sprite/filmstrip + VTT storyboard
-                                   ├─► audio peaks (audiowaveform -> .dat)
+                                   ├─► audio peaks (ffmpeg PCM -> .dat)
                                    └─► (HDR sources) HDR rail + tonemapped SDR
      each job -> progress events -> SSE -> UI;  all jobs idempotent, resumable, prioritized
 ```
@@ -317,10 +317,11 @@ Player-side gating in §7.4.
 
 - **Poster**: middle frame or user-set (`set frame as thumbnail`).
 - **Sprite/filmstrip**: `fps=1/2,scale=160:-2,tile=10x10` sheets + WebVTT storyboard with `#xywh=` fragments (denser than streaming-standard because review scrubbing is the point).
-- **Audio peaks**: `audiowaveform -b 8 -z 256` -> binary `.dat`, rendered with peaks.js-compatible custom Svelte component.
+- **Audio peaks**: binary `.dat` in the BBC audiowaveform format (version 2), rendered by a custom Svelte component. *(Superseded 2026-07-21: the worker computes the peaks itself from ffmpeg's streamed PCM instead of shelling out to `audiowaveform`. Same container, so a self-hoster's own `.dat` files are readable and ours are readable by anything that speaks the format, but one less GPL binary in the image and no 690 MB of intermediate PCM on a container disk that does not have it. The rendition kind is `waveform_data`; the older `audio_peaks` PNG is still read as a fallback for versions transcoded before the change.)*
+- **Spectrogram** *(added 2026-07-21)*: `showspectrumpic` at log frequency and log amplitude, resampled to 48 kHz first so the frequency axis is knowable, written as luminance and coloured in the browser through a palette LUT. Kind `spectrogram`. The player's axis table is measured against the shipped filter string and re-measured by `qa/spectrogram-axis.spec.ts`.
 - **Stills**: libvips -> sized JPEG/PNG previews; very large stills -> DZI tiles + OpenSeadragon-style deep zoom. EXR/DPX singles via oiiotool (`--colorconvert` OCIO) -> then vips.
 - **PDFs**: poppler `pdftoppm` page rasters + pdf.js in the player; comments carry `page_no`.
-- **Audio-only assets**: peaks + AAC proxy; player shows waveform timeline.
+- **Audio-only assets**: peaks + AAC proxy (kind `proxy_audio`) + spectrogram + a waveform poster. *(Built 2026-07-21.)* The player shows the waveform and the spectrogram as the stage, on one time axis, and audio versions carry a nominal 60/1 timebase (`nominalRate`) so notes anchor to integer frames like everything else.
 
 ### 6.6 Job system
 
@@ -511,7 +512,7 @@ The halideworks differentiator, phased:
 | ffmpeg ProRes/DNx decode | Low (universal practice) | Decode freely; never advertise ProRes *encoding* as a service without Apple certification |
 | R3D SDK | **High** - SaaS/cloud use unaddressed, instant-termination clause | No R3D in core. Optional self-hosted plugin *only after* written clearance from RED/Nikon |
 | BRAW SDK | Medium - free but proprietary EULA, redistribution unverified | Read EULA before Phase 7 plugin; ship as user-installed optional component, never redistributed |
-| audiowaveform (GPL-3.0) | Low | Subprocess-only in the worker image (AGPL app + GPL tool coexist fine as separate programs) |
+| audiowaveform (GPL-3.0) | None | No longer used (2026-07-21): the worker computes peak data itself in the same published `.dat` container, so no GPL binary ships in the image |
 | tldraw | License-key requirement | Avoided - perfect-freehand (MIT) + own tools |
 | ffmpeg builds | LGPL/GPL config matters | Worker image builds ffmpeg with a documented, redistributable configuration |
 

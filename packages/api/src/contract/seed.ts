@@ -154,6 +154,8 @@ export const seedAssetVersion = async (
     name?: string;
     durationFrames?: number | null;
     folderId?: string | null;
+    /** What kind of media this is. Video unless a test says otherwise. */
+    kind?: "video" | "audio" | "image" | "pdf" | "file";
   },
 ): Promise<SeededVersion> => {
   const uploadSessionId = h.ids.ulid();
@@ -188,7 +190,7 @@ export const seedAssetVersion = async (
       projectId: options.projectId,
       folderId: options.folderId ?? null,
       name,
-      kind: "video",
+      kind: options.kind ?? "video",
       currentVersionId: versionId,
       status: "in_review",
       description: "",
@@ -355,7 +357,17 @@ export const seedRendition = async (
   },
 ): Promise<{ id: string; blobKey: string; bytes: Uint8Array }> => {
   const id = h.ids.ulid();
-  const blobKey = `renditions/${id}.mp4`;
+  /* The extension follows the kind, because the media route falls back to it
+     when a kind is not in the content-type map. */
+  const extension =
+    options.kind === "proxy_audio"
+      ? "m4a"
+      : options.kind === "waveform_data"
+        ? "dat"
+        : options.kind && !options.kind.startsWith("proxy_")
+          ? "png"
+          : "mp4";
+  const blobKey = `renditions/${id}.${extension}`;
   const bytes = new TextEncoder().encode(
     options.content ?? "proxy-bytes-0123456789",
   );
@@ -364,7 +376,8 @@ export const seedRendition = async (
     .values({
       id,
       versionId: options.versionId,
-      kind: (options.kind ?? "proxy_1080") as "proxy_1080",
+      kind: (options.kind ??
+        "proxy_1080") as typeof renditions.$inferInsert.kind,
       blobKey,
       metaJson: JSON.stringify(options.meta ?? {}),
       size: bytes.byteLength,

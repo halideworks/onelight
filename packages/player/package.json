@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     ".": "./dist/index.js",
-    "./Player.svelte": "./src/Player.svelte"
+    "./Player.svelte": "./src/Player.svelte",
+    "./ImageViewer.svelte": "./src/ImageViewer.svelte"
   },
   "types": "./dist/index.d.ts",
   "scripts": {

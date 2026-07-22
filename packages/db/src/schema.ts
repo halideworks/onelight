@@ -427,7 +427,12 @@ export const renditions = sqliteTable(
         "proxy_540",
         "hdr_hevc",
         "hdr_av1",
+        "proxy_audio",
+        /* The pre-rendered waveform PNG. Superseded by waveform_data, kept
+           because versions transcoded before it still carry one. */
         "audio_peaks",
+        "waveform_data",
+        "spectrogram",
         "sprite",
         "poster",
         "pdf_pages",

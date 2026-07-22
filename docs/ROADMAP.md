@@ -583,6 +583,64 @@ whole projects page down with a DateTimeFormat throw), and the context menu
 reads its state optionally, since closing it inside a handler nulls that state
 while the block is still on screen.
 
+## Sound and stills get instruments (2026-07-21)
+
+Audio and image assets were kinds the pipeline knew about and the app had
+nothing to show for: an audio asset planned one `audio_peaks` PNG and nothing
+playable, so its review page was an empty player forever, and a still was an
+`<img>` with a max-height in the share room and nothing at all in the review
+room. Both are now first-class media with their own instrument, on the same
+page, with the same notes rail, anchors, versions and drawings.
+
+- **Three rendition kinds** (migration 0020, the renditions table rebuilt
+  because SQLite cannot alter a CHECK): `proxy_audio` (AAC 192k, so a 24-bit
+  WAV or an AIFF plays anywhere), `waveform_data` (peak data in the BBC
+  audiowaveform `.dat` container, version 2, written by the worker itself from
+  streamed PCM rather than by the GPL tool), and `spectrogram` (log-frequency,
+  log-amplitude, rendered as luminance). Video with sound now plans
+  `waveform_data` in place of the PNG; the old kind stays in the CHECK and the
+  clients still read it, because versions transcoded before this carry one.
+- **Audio has a nominal 60 fps timebase.** Positions in this system are integer
+  frames plus a rational rate, and sound has no frames. 60/1 is the finest
+  supported rate with an exact denominator: 16.67 ms per note anchor, and
+  timecode that reads like everything else. `normalizeProbe` assigns it (with a
+  `nominalRate` flag) only when a source has audio and no picture.
+- **The audio stage**: waveform above, spectrogram below, one time axis, one
+  playhead, drawn in the browser from the sidecars. Both are canvases sized to
+  the lane, so the drawing is sharp at any width; the playhead and the veil
+  over the not-yet-played part are transforms on their own layers, the lesson
+  the timeline already learned. The spectrogram is shipped as grey and coloured
+  here through a palette LUT (a gamma keeps mids dark), because the room
+  decides the colour and a colour map baked into a PNG never can. David
+  approved colour in the review instrument for this specific case: there is no
+  picture to judge, and a frequency reading without colour is a texture.
+- **The frequency axis is measured, not guessed.** ffmpeg's `fscale=log` is not
+  a plain logarithm and its shape depends on the Nyquist frequency, so the
+  worker resamples to 48 kHz before the filter and the player carries a table
+  measured at third-octave centres against that exact filter string.
+  `qa/spectrogram-axis.spec.ts` retakes the measurement and fails if an ffmpeg
+  upgrade moves the tones, so the axis cannot quietly start lying.
+- **The still viewer**: fit, one-to-one, 400% with nearest-neighbour above
+  100%, wheel zoom about the pointer, drag pan bounded by the picture's own
+  edges, keyboard (0, 1, +/-, arrows), and A/B against the previous version as
+  a wipe or a blink. Drawing is the player's overlay and contract, unchanged,
+  so a note on a still and a note on a frame are the same note.
+- **Audio assets have a poster** (two lanes of waveform on ink, square-root
+  scaled because a thumbnail of -20 dBFS material is otherwise a hairline), so
+  they are no longer blank tiles in the grid, the share room and link previews.
+- **Fixes found on the way**: a proxy-only share answered "not ready" forever
+  for a still, because the single-file download looked for a 1080 video proxy
+  regardless of kind (the zip bundle already knew better); the zip bundle
+  silently shipped audio originals in a proxy-only share; and the share media
+  endpoint picked its rendition by a fixed order rather than by asset kind.
+
+Verified on nyx against a built server: a 40 second stereo WAV and a 4096x2730
+still uploaded through the real pipeline, both rooms and the share room
+screenshotted, the waveform and spectrogram canvases read back pixel by pixel
+(not merely asserted present), playback confirmed to advance the timecode
+(00:00:02:31 at 151 frames of 60), zoom and pan confirmed by the transform they
+produce, and notes posted from both instruments.
+
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
 1. DONE 2026-07-17: first green run of the integration and media-qc CI jobs on Linux, exercising compose end to end, the HDR libplacebo tonemap on lavapipe, the zscale conversion, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Getting there surfaced and fixed: CI had never actually executed (a pnpm/action-setup version pin conflicted with packageManager and killed every run at setup); the node job was missing the web:check gate and the SPA build the workers pool needs; the qa HDR smoke run omitted the worker's VULKAN_HWDEVICE_ARGS so libplacebo refused lavapipe (the spec now mirrors the worker invocation exactly); and Playwright WebKit on Linux reads the 75 percent bars low (a GStreamer/GL decode artifact, not real Safari; the exact deviation is pinned per-engine-and-platform in the qa color spec so any decoder drift still fails, and the reference tolerances were never widened).

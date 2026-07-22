@@ -80,6 +80,17 @@ const assetsHaveThumbnail = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes("thumbnail_blob_key"));
 };
 
+const renditionsHaveAudioKinds = async (
+  binding: D1Database,
+): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='renditions'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("waveform_data"));
+};
+
 const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -350,6 +361,18 @@ export const d1Migrations: D1Migration[] = [
     name: "0019_asset_thumbnails.sql",
     applied: assetsHaveThumbnail,
     statements: ["ALTER TABLE assets ADD COLUMN thumbnail_blob_key TEXT"],
+  },
+  {
+    name: "0020_audio_renditions.sql",
+    applied: renditionsHaveAudioKinds,
+    statements: [
+      "CREATE TABLE renditions_new (\n  id TEXT PRIMARY KEY,\n  version_id TEXT NOT NULL REFERENCES asset_versions(id) ON DELETE CASCADE,\n  kind TEXT NOT NULL CHECK (kind IN ('proxy_2160','proxy_1080','proxy_540','hdr_hevc','hdr_av1','proxy_audio','audio_peaks','waveform_data','spectrogram','sprite','poster','pdf_pages','still_tiles','watermarked')),\n  blob_key TEXT NOT NULL,\n  meta_json TEXT NOT NULL DEFAULT '{}',\n  size INTEGER NOT NULL DEFAULT 0,\n  checksum_sha256 TEXT NOT NULL DEFAULT '',\n  share_id TEXT,\n  created_at INTEGER NOT NULL\n)",
+      "INSERT INTO renditions_new (id, version_id, kind, blob_key, meta_json, size, checksum_sha256, share_id, created_at) SELECT id, version_id, kind, blob_key, meta_json, size, checksum_sha256, share_id, created_at FROM renditions",
+      "DROP TABLE renditions",
+      "ALTER TABLE renditions_new RENAME TO renditions",
+      "CREATE UNIQUE INDEX renditions_base_uq ON renditions(version_id, kind) WHERE share_id IS NULL",
+      "CREATE UNIQUE INDEX renditions_share_uq ON renditions(version_id, kind, share_id) WHERE share_id IS NOT NULL",
+    ],
   },
 ];
 

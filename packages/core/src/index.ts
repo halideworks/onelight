@@ -5,6 +5,7 @@ export * from "./crc32c.js";
 export * from "./errors.js";
 export * from "./ids.js";
 export * from "./palettes.js";
+export * from "./peaks.js";
 export * from "./permissions.js";
 export * from "./time.js";
 export * from "./ports.js";

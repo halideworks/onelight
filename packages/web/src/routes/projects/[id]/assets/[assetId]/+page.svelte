@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import Player from '@onelight/player/Player.svelte';
+  import ImageViewer from '@onelight/player/ImageViewer.svelte';
   import { parseSpriteVtt } from '@onelight/player';
   import { annotationInkFor } from '@onelight/player';
   import { formatTimecode, timecodeFromFrames } from '@onelight/core';
@@ -81,6 +82,13 @@
   let renditionOptions = $state<PlayerRendition[]>([]);
   let filmstrip = $state<{ url: string; cues: SpriteCue[] } | null>(null);
   let waveformUrl = $state<string | null>(null);
+  /* Peak data and the spectrogram: the two halves of the audio stage. */
+  let peaksUrl = $state<string | null>(null);
+  let spectrogramUrl = $state<string | null>(null);
+  /* The still itself, at full resolution, and the previous version of it for
+     A/B. Images have no proxy ladder: still_tiles is the review file. */
+  let stillUrl = $state<string | null>(null);
+  let stillPrevUrl = $state<string | null>(null);
   /* First caption track's URL; the player takes one track. */
   let captionsUrl = $state<string | null>(null);
   let rate = $state<{ num: number; den: number } | null>(null);
@@ -92,6 +100,15 @@
   let commentError = $state('');
   let currentFrame = $state(0);
   let player = $state<Player | null>(null);
+  let stills = $state<ImageViewer | null>(null);
+  /* Which instrument this asset gets. The page is the same page either way:
+     the same notes rail, the same anchors, the same versions. */
+  const mediaKind = $derived(asset?.kind === 'audio' || asset?.kind === 'image' ? asset.kind : 'video');
+  /* Drawings and thumbnails come from whichever instrument is on screen. */
+  const clearInstrumentDrawing = (): void => {
+    player?.clearDrawing();
+    stills?.clearDrawing();
+  };
   let noteFilter = $state<NoteFilter>('all');
   let activeTag = $state<string | null>(null);
   let highlightedId = $state<string | null>(null);
@@ -485,12 +502,21 @@
           const url = urlForRendition(candidate);
           return url ? [{ kind: candidate.kind, url }] : [];
         });
+      /* The playable file, per kind: the 1080 proxy for footage, the AAC
+         proxy for a mix. A still has neither and is shown, not played. */
       const rendition =
         items.find((candidate) => candidate.kind === 'proxy_1080') ??
+        items.find((candidate) => candidate.kind === 'proxy_audio') ??
         items.find((candidate) => candidate.kind.startsWith('proxy_'));
       source = (rendition && urlForRendition(rendition)) || '';
+      const still = items.find((candidate) => candidate.kind === 'still_tiles');
+      stillUrl = still ? urlForRendition(still) : null;
       const peaks = items.find((candidate) => candidate.kind === 'audio_peaks');
       waveformUrl = peaks ? urlForRendition(peaks) : null;
+      const waveform = items.find((candidate) => candidate.kind === 'waveform_data');
+      peaksUrl = waveform ? urlForRendition(waveform) : null;
+      const spectrogram = items.find((candidate) => candidate.kind === 'spectrogram');
+      spectrogramUrl = spectrogram ? urlForRendition(spectrogram) : null;
       const sprite = items.find((candidate) => candidate.kind === 'sprite');
       const spriteUrl = sprite ? urlForRendition(sprite) : null;
       const vttUrl = sprite?.vtt_url ?? null;
@@ -585,6 +611,27 @@
 
   /* Carry-forward offers notes from the immediately previous version when
      the newest is on screen and that previous version still has open notes. */
+  /* The still one version back, for the viewer's A/B. Fetched only for image
+     assets and only when there is a version before this one; everything else
+     leaves the compare controls off. */
+  const loadPreviousStill = async (token: number): Promise<void> => {
+    stillPrevUrl = null;
+    if (asset?.kind !== 'image') return;
+    const index = versions.findIndex((version) => version.id === selectedVersionId);
+    const previous = index >= 0 ? versions[index + 1] : undefined;
+    if (!previous) return;
+    try {
+      const listing = await api<{ items: Rendition[] }>(
+        `/api/v1/versions/${previous.id}/renditions`
+      );
+      if (token !== versionToken) return;
+      const still = listing.items.find((candidate) => candidate.kind === 'still_tiles');
+      stillPrevUrl = still ? urlForRendition(still) : null;
+    } catch {
+      /* No A/B for this version; the viewer simply does not offer it. */
+    }
+  };
+
   const checkCarrySource = async (token: number): Promise<void> => {
     prevVersion = null;
     prevOpenCount = 0;
@@ -623,6 +670,9 @@
     renditionOptions = [];
     filmstrip = null;
     captionsUrl = null;
+    peaksUrl = null;
+    spectrogramUrl = null;
+    stillUrl = null;
     infoOpen = false;
     infoFor = null;
     infoDetail = null;
@@ -637,6 +687,8 @@
     if (options?.fromUser) writeVersionParam(versionId);
     await loadRenditions(versionId, token);
     if (token !== versionToken) return;
+    await loadPreviousStill(token);
+    if (token !== versionToken) return;
     await refreshComments(versionId, token);
     if (token !== versionToken) return;
     await checkCarrySource(token);
@@ -645,7 +697,8 @@
   const load = async (id: string): Promise<void> => {
     versionToken += 1;
     asset = null; versions = []; selectedVersionId = null; source = ''; renditionOptions = [];
-    filmstrip = null; waveformUrl = null; rate = null; dropFrame = false; durationFrames = null;
+    filmstrip = null; waveformUrl = null; peaksUrl = null; spectrogramUrl = null;
+    stillUrl = null; stillPrevUrl = null; rate = null; dropFrame = false; durationFrames = null;
     error = ''; comments = []; commentError = ''; highlightedId = null; pendingDrawing = null;
     noteFilter = 'all'; activeTag = null; railError = ''; prevVersion = null; prevOpenCount = 0;
     versionNoByComment = {};
@@ -824,7 +877,7 @@
   };
 
   const thumbnailFromFrame = async (): Promise<void> => {
-    const blob = await player?.captureFrame();
+    const blob = await (player ? player.captureFrame() : stills?.captureFrame());
     if (!blob) {
       railError = 'This frame could not be captured. Wait for the picture to load, then try again.';
       return;
@@ -1217,7 +1270,7 @@
       picked = [];
       mentionQuery = null;
       if (drawing) {
-        player?.clearDrawing();
+        clearInstrumentDrawing();
         pendingDrawing = null;
       }
     } catch (caught) {
@@ -1273,7 +1326,7 @@
   };
 
   const discardDrawing = (): void => {
-    player?.clearDrawing();
+    clearInstrumentDrawing();
     pendingDrawing = null;
   };
 </script>
@@ -1502,9 +1555,28 @@
   {:else if asset}
     <div class="content" class:notes-closed={!notesOpen}>
       <div class="maincol">
-        {#if source}
+        {#if mediaKind === 'image' && stillUrl}
+          <!-- A still is reviewed in the still viewer: zoom, one-to-one, and
+               A/B against the version before it. The notes rail either side
+               of this is identical to the footage room's. -->
+          <ImageViewer
+            bind:this={stills}
+            src={stillUrl}
+            alt={asset.name}
+            compareSrc={stillPrevUrl}
+            compareLabel={prevVersion ? `v${prevVersion.version_no}` : 'Previous version'}
+            {annotations}
+            allowDrawing
+            drawDefaultColor={annotationInkFor(auth.user?.id ?? null)}
+            ondrawingchange={(drawing) => { pendingDrawing = drawing; }}
+          />
+          {#if copyNotice}<p class="copy-note" role="status">{copyNotice}</p>{/if}
+        {:else if source}
           <Player
             bind:this={player}
+            kind={mediaKind === 'audio' ? 'audio' : 'video'}
+            {peaksUrl}
+            {spectrogramUrl}
             src={source}
             rate={rate ?? { num: 24, den: 1 }}
             {dropFrame}

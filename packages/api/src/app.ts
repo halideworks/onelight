@@ -5138,10 +5138,15 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     hdr_hevc: "video/mp4",
     hdr_av1: "video/mp4",
     watermarked: "video/mp4",
+    proxy_audio: "audio/mp4",
     poster: "image/png",
     sprite: "image/png",
     audio_peaks: "image/png",
+    spectrogram: "image/png",
     still_tiles: "image/png",
+    /* Peak data is a binary sidecar the player fetches and parses, not
+       anything a browser renders on its own. */
+    waveform_data: "application/octet-stream",
   };
 
   /* Last resort before application/octet-stream: the key's own extension. A
@@ -6442,7 +6447,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       : versions.slice(0, 1);
     const share = projection.share;
     const watermarked = shareIsWatermarked(share);
-    const proxyKinds = ["proxy_540", "proxy_1080", "proxy_2160"];
+    /* proxy_audio rides the same list: for an audio asset it is the whole
+       ladder, and a room that can play a video source can play this one. */
+    const proxyKinds = ["proxy_540", "proxy_1080", "proxy_2160", "proxy_audio"];
     const items = [];
     for (const version of visibleVersions) {
       const versionRenditions = await env.db
@@ -6505,6 +6512,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       const peaksRendition = (
         versionRenditions as Array<typeof renditions.$inferSelect>
       ).find((rendition) => rendition.kind === "audio_peaks");
+      const waveformRendition = (
+        versionRenditions as Array<typeof renditions.$inferSelect>
+      ).find((rendition) => rendition.kind === "waveform_data");
+      const spectrogramRendition = (
+        versionRenditions as Array<typeof renditions.$inferSelect>
+      ).find((rendition) => rendition.kind === "spectrogram");
       const spriteMeta = spriteRendition
         ? parseJsonObject(spriteRendition.metaJson)
         : {};
@@ -6535,6 +6548,29 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
                   asset.id,
                   version.id,
                   peaksRendition.blobKey,
+                ),
+              }
+            : null,
+        waveform:
+          waveformRendition && env.blobStore
+            ? {
+                url: await publicMediaUrl(
+                  share,
+                  asset.id,
+                  version.id,
+                  waveformRendition.blobKey,
+                ),
+                meta: parseJsonObject(waveformRendition.metaJson),
+              }
+            : null,
+        spectrogram:
+          spectrogramRendition && env.blobStore
+            ? {
+                url: await publicMediaUrl(
+                  share,
+                  asset.id,
+                  version.id,
+                  spectrogramRendition.blobKey,
                 ),
               }
             : null,
@@ -7079,20 +7115,34 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     }
     /* Video serves the review proxy; a still has no proxy and serves its
        full-resolution tile instead — without this, image assets in a share
-       answered 404 forever. */
+       answered 404 forever. Audio serves its own proxy for the same reason:
+       the original may be a 24-bit WAV no browser will play. */
     const renditionRows = (await env.db
       .select()
       .from(renditions)
       .where(
         and(
           eq(renditions.versionId, asset.currentVersionId),
-          inArray(renditions.kind, ["proxy_1080", "still_tiles"]),
+          inArray(renditions.kind, [
+            "proxy_1080",
+            "proxy_audio",
+            "still_tiles",
+          ]),
           isNull(renditions.shareId),
         ),
       )
       .all()) as Array<typeof renditions.$inferSelect>;
+    /* Preference by asset kind, not by a fixed order: an audio asset must
+       never be handed a still, and a video whose peaks landed first must not
+       be handed anything but its proxy. */
+    const preferredKind =
+      asset.kind === "audio"
+        ? "proxy_audio"
+        : asset.kind === "image"
+          ? "still_tiles"
+          : "proxy_1080";
     const rendition =
-      renditionRows.find((row) => row.kind === "proxy_1080") ??
+      renditionRows.find((row) => row.kind === preferredKind) ??
       renditionRows[0];
     if (!rendition) throw errors.notFound("A review rendition is not ready.");
     return c.json({
@@ -7151,7 +7201,18 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         expires_at: expiresAt,
       });
     }
-    if (share.allowDownload === "proxy") {
+    /* A proxy-only share hands out the review file for anything that has
+       one. Stills and documents have no lesser form, so they hand out the
+       original -- the same rule the zip bundle keeps, which this endpoint
+       used not to: an image in a proxy share answered "not ready" forever
+       because it was looked up as a 1080 video proxy. */
+    const proxyKindForDownload =
+      asset.kind === "video"
+        ? "proxy_1080"
+        : asset.kind === "audio"
+          ? "proxy_audio"
+          : null;
+    if (share.allowDownload === "proxy" && proxyKindForDownload) {
       const proxy = (
         await env.db
           .select()
@@ -7159,7 +7220,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           .where(
             and(
               eq(renditions.versionId, version.id),
-              eq(renditions.kind, "proxy_1080"),
+              eq(renditions.kind, proxyKindForDownload),
               isNull(renditions.shareId),
             ),
           )
@@ -7173,7 +7234,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           asset.id,
           version.id,
           proxy.blobKey,
-          attachmentDisposition(`${baseName}-proxy.mp4`),
+          attachmentDisposition(
+            `${baseName}-proxy.${proxy.kind === "proxy_audio" ? "m4a" : "mp4"}`,
+          ),
         ),
         expires_at: expiresAt,
       });
@@ -8376,7 +8439,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             .where(
               and(
                 inArray(renditions.versionId, versionIds),
-                eq(renditions.kind, "proxy_1080"),
+                inArray(renditions.kind, ["proxy_1080", "proxy_audio"]),
                 isNull(renditions.shareId),
               ),
             )
@@ -8393,7 +8456,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         : undefined;
       if (!version) continue;
       let source: { size: number; blobKey: string; filename: string };
-      if (share.allowDownload === "proxy" && asset.kind === "video") {
+      /* Audio bundles its proxy for the same reason video does: a proxy
+         bundle that quietly shipped 24-bit WAV originals would hand out the
+         masters a "proxy only" share exists to withhold. */
+      if (
+        share.allowDownload === "proxy" &&
+        (asset.kind === "video" || asset.kind === "audio")
+      ) {
         const proxy = proxiesByVersion.get(version.id);
         /* A partial archive would read as complete; refuse instead. */
         if (!proxy)
@@ -8405,7 +8474,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         source = {
           size: proxy.size,
           blobKey: proxy.blobKey,
-          filename: `${baseName}-proxy.mp4`,
+          filename: `${baseName}-proxy.${proxy.kind === "proxy_audio" ? "m4a" : "mp4"}`,
         };
       } else {
         source = {
@@ -9355,23 +9424,31 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .where(
         and(
           eq(renditions.versionId, version.id),
-          inArray(renditions.kind, ["proxy_1080", "proxy_540", "proxy_2160"]),
+          inArray(renditions.kind, [
+            "proxy_1080",
+            "proxy_540",
+            "proxy_2160",
+            "proxy_audio",
+          ]),
           isNull(renditions.shareId),
         ),
       )
       .all()) as Array<typeof renditions.$inferSelect>;
-    const order = ["proxy_1080", "proxy_540", "proxy_2160"];
+    const order = ["proxy_1080", "proxy_540", "proxy_2160", "proxy_audio"];
     const proxy = proxyRows.sort(
       (a, b) => order.indexOf(a.kind) - order.indexOf(b.kind),
     )[0];
     if (!proxy) throw errors.notFound("A review rendition is not ready.");
     const baseName =
       version.originalFilename.replace(/\.[^.]+$/, "") || "download";
+    /* The suffix has to match what is actually inside: an audio proxy saved
+       as .mp4 opens in a video player and looks broken. */
+    const proxyExtension = proxy.kind === "proxy_audio" ? "m4a" : "mp4";
     return c.json({
       url: await privateMediaUrl(
         { versionId: version.id },
         proxy.blobKey,
-        attachmentDisposition(`${baseName}-proxy.mp4`),
+        attachmentDisposition(`${baseName}-proxy.${proxyExtension}`),
       ),
       expires_at: expiresAt,
     });

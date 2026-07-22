@@ -8162,6 +8162,15 @@ export interface paths {
                                     peaks: {
                                         url: string;
                                     } | null;
+                                    waveform: {
+                                        url: string;
+                                        meta: {
+                                            [key: string]: unknown;
+                                        };
+                                    } | null;
+                                    spectrogram: {
+                                        url: string;
+                                    } | null;
                                     captions: {
                                         language: string;
                                         label: string;

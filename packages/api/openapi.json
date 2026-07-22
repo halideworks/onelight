@@ -12994,6 +12994,49 @@
                                   }
                                 ]
                               },
+                              "waveform": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "meta": {
+                                        "type": "object",
+                                        "additionalProperties": {}
+                                      }
+                                    },
+                                    "required": [
+                                      "url",
+                                      "meta"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "spectrogram": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "url": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "url"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
                               "captions": {
                                 "type": "array",
                                 "items": {
@@ -13024,6 +13067,8 @@
                             "required": [
                               "sprite",
                               "peaks",
+                              "waveform",
+                              "spectrogram",
                               "captions"
                             ],
                             "additionalProperties": false

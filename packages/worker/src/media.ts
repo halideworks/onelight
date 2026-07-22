@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { encodePeaks } from "@onelight/core";
 import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
 
 export interface ProbeDocument {
@@ -17,7 +18,17 @@ export interface NormalizedMediaInfo extends MediaInfo {
   dropFrame?: boolean;
   frameRateClamped?: boolean;
   probedFrameRate?: string;
+  nominalRate?: boolean;
 }
+
+/* Sound has no frames, and every position in this system is an integer frame
+   plus a rational rate: a note on a mix has to land somewhere countable. Audio
+   versions are therefore given a nominal timebase, and 60 is the finest rate
+   the timecode code supports with an exact integer denominator -- 16.67 ms
+   per frame, which is close enough to a fader move that nobody argues about
+   which word the note was on. The flag rides along so the UI can say the
+   timecode is nominal rather than pretending the file carried one. */
+export const NOMINAL_AUDIO_RATE = { num: 60, den: 1 };
 
 export interface PlannedRendition {
   kind: string;
@@ -183,6 +194,21 @@ export const normalizeProbe = (
       : undefined;
   const duration = video ? frameCount(video, format, rate) : undefined;
   if (duration !== undefined) normalized.durationFrames = duration;
+  if (
+    !video &&
+    streams.some((stream) => stream.codec_type === "audio") &&
+    normalized.frameRateNum === undefined
+  ) {
+    normalized.frameRateNum = NOMINAL_AUDIO_RATE.num;
+    normalized.frameRateDen = NOMINAL_AUDIO_RATE.den;
+    normalized.nominalRate = true;
+    const seconds = Number(format["duration"]);
+    if (Number.isFinite(seconds) && seconds > 0)
+      normalized.durationFrames = Math.max(
+        1,
+        Math.round((seconds * NOMINAL_AUDIO_RATE.num) / NOMINAL_AUDIO_RATE.den),
+      );
+  }
   return normalized;
 };
 
@@ -440,6 +466,61 @@ export const posterSeekSeconds = (mediaInfo: MediaInfo): number => {
 
 export const POSTER_THUMBNAIL_WINDOW = 100;
 
+/* A source with no picture in it. Sidecars that mean "a frame of the footage"
+   have to mean something else for these: an audio file's poster is a drawing
+   of its sound. */
+export const isAudioOnly = (mediaInfo: MediaInfo): boolean =>
+  !videoStream(mediaInfo) &&
+  mediaInfo.streams.some((stream) => stream.codec_type === "audio");
+
+/* The waveform ink is sumimai's straw (--sumimai-b), the same colour the
+   player draws peak data in, so the card in a grid and the hero on the review
+   page are recognisably the same waveform. */
+const WAVEFORM_INK = "#f7e1a0";
+
+/* Sound as a picture, for the places a picture is what fits: the grid tile,
+   the share room card, the unfurl. showwavespic draws on transparency, so the
+   waveform is laid over an ink ground rather than left to flatten to whatever
+   black the PNG encoder picks. Audio assets had no poster at all before this
+   and showed as an empty tile.
+
+   Two lanes and a square-root amplitude scale, because this is a thumbnail:
+   at 130 pixels wide, a linear drawing of ordinary programme material (mean
+   level around -20 dBFS) is a hairline that says nothing. The hero waveform
+   on the review page is drawn from real peak data and is not scaled this
+   way. */
+export const AUDIO_POSTER_WIDTH = 640;
+export const AUDIO_POSTER_HEIGHT = 360;
+const AUDIO_POSTER_FILTER = [
+  `color=c=0x101c28:s=${AUDIO_POSTER_WIDTH}x${AUDIO_POSTER_HEIGHT}[bg]`,
+  `[0:a]showwavespic=s=${AUDIO_POSTER_WIDTH}x${AUDIO_POSTER_HEIGHT}:colors=${WAVEFORM_INK}:split_channels=1:scale=sqrt[wave]`,
+  "[bg][wave]overlay=format=auto[poster]",
+].join(";");
+
+/* The spectrogram is rendered as luminance, not in one of ffmpeg's colour
+   maps, and the player maps it through a palette in the browser. Two reasons:
+   the room it lands in decides the colour (the review instrument and a client
+   presentation are different worlds), and a colour map baked into a PNG can
+   never be undone. magma is the ramp chosen for that luminance because it is
+   monotonic in lightness by construction, so format=gray leaves a picture
+   where brighter still means louder; a rainbow map does not survive the
+   conversion (its reds and blues collapse onto the same grey).
+
+   Log frequency and log amplitude, because that is how hearing works: a
+   linear frequency axis spends four fifths of its height on the top two
+   octaves, where dialogue and music mostly are not.
+
+   The resample to 48 kHz is what makes the frequency axis knowable. The
+   filter's log curve is not a plain logarithm and its shape depends on the
+   Nyquist frequency, so without a fixed input rate a 44.1 kHz file and a 96
+   kHz file would put 1 kHz at different heights and no axis could be drawn
+   over either. The player's SPECTROGRAM_AXIS table is measured against this
+   exact string; changing it means re-measuring (qa/spectrogram-axis). */
+export const SPECTROGRAM_WIDTH = 2048;
+export const SPECTROGRAM_HEIGHT = 512;
+export const SPECTROGRAM_RATE = 48000;
+const SPECTROGRAM_FILTER = `aresample=${SPECTROGRAM_RATE},showspectrumpic=s=${SPECTROGRAM_WIDTH}x${SPECTROGRAM_HEIGHT}:mode=combined:legend=0:scale=log:fscale=log:color=magma,format=gray`;
+
 export const sidecarArgs = (
   job: TranscodeJob,
   outputPath: string,
@@ -452,6 +533,20 @@ export const sidecarArgs = (
   const decodeArgs = canUseVaapi(job.mediaInfo, vaapiDevice)
     ? vaapiDecodeArgs(vaapiDevice as string)
     : [];
+  if (kind === "poster" && isAudioOnly(job.mediaInfo))
+    return [
+      "-hide_banner",
+      "-y",
+      "-i",
+      job.sourceKey,
+      "-filter_complex",
+      AUDIO_POSTER_FILTER,
+      "-map",
+      "[poster]",
+      "-frames:v",
+      "1",
+      outputPath,
+    ];
   if (kind === "poster")
     return [
       "-hide_banner",
@@ -489,6 +584,44 @@ export const sidecarArgs = (
       outputPath,
     ];
   }
+  /* The playable audio. Sources arrive as WAV, AIFF, FLAC, 24-bit, 96 kHz,
+     eight channels of stems: none of that is what a browser should stream, and
+     several of those a browser will not decode at all. AAC at 192k stereo is
+     the same bargain the video ladder makes -- good enough to judge the mix,
+     small enough to scrub -- and the original is one click away for anyone who
+     needs the real thing. -vn drops cover art, which would otherwise be muxed
+     in as a video stream and make the file look like a one-frame movie. */
+  if (kind === "proxy_audio")
+    return [
+      "-hide_banner",
+      "-y",
+      "-i",
+      job.sourceKey,
+      "-vn",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-ac",
+      "2",
+      "-movflags",
+      "+faststart",
+      outputPath,
+    ];
+  if (kind === "spectrogram")
+    return [
+      "-hide_banner",
+      "-y",
+      "-i",
+      job.sourceKey,
+      "-filter_complex",
+      `[0:a]${SPECTROGRAM_FILTER}[spec]`,
+      "-map",
+      "[spec]",
+      "-frames:v",
+      "1",
+      outputPath,
+    ];
   if (kind === "audio_peaks")
     return [
       "-hide_banner",
@@ -1044,11 +1177,16 @@ export const buildOutputArgs = (
       : buildSdrProxyArgs(job, outputPath, height);
 
 // Rendition plan per asset kind. Primary readiness is per kind: video needs
-// proxy_1080, audio needs audio_peaks, image needs still_tiles or poster,
-// pdf needs pdf_pages.
+// proxy_1080, audio needs something to play, image needs still_tiles or
+// poster, pdf needs pdf_pages.
+//
+// Audio's primary is the proxy, not the waveform: a version whose spectrogram
+// or peak sidecar failed is still a version you can play and comment on, and
+// audio_peaks stays in the list so a version transcoded before proxy_audio
+// existed is not retroactively unready.
 export const primaryRenditionKinds = (assetKind: string): string[] =>
   assetKind === "audio"
-    ? ["audio_peaks"]
+    ? ["proxy_audio", "audio_peaks"]
     : assetKind === "image"
       ? ["still_tiles", "poster"]
       : assetKind === "pdf"
@@ -1059,8 +1197,16 @@ export const planRenditions = (
   assetKind: string,
   mediaInfo: MediaInfo,
 ): PlannedRendition[] => {
+  /* An audio asset gets everything its page is made of: the proxy it plays,
+     the peak data the waveform is drawn from, the spectrogram under it, and a
+     poster so the file is not a blank tile everywhere it is listed. */
   if (assetKind === "audio")
-    return [{ kind: "audio_peaks", filename: "audio_peaks.png" }];
+    return [
+      { kind: "proxy_audio", filename: "proxy_audio.m4a" },
+      { kind: "waveform_data", filename: "waveform.dat" },
+      { kind: "spectrogram", filename: "spectrogram.png" },
+      { kind: "poster", filename: "poster.png" },
+    ];
   if (assetKind === "image")
     return [
       { kind: "still_tiles", filename: "still_tiles.png" },
@@ -1098,7 +1244,9 @@ export const planRenditions = (
     { kind: "poster", filename: "poster.png" },
     { kind: "sprite", filename: "sprite.png" },
   );
-  if (audio) planned.push({ kind: "audio_peaks", filename: "audio_peaks.png" });
+  /* Peak data rather than the old showwavespic PNG: the timeline's waveform
+     lane is drawn from it now, at whatever width the lane happens to be. */
+  if (audio) planned.push({ kind: "waveform_data", filename: "waveform.dat" });
   return planned;
 };
 
@@ -1206,6 +1354,16 @@ export const runTranscode = async (
         });
         continue;
       }
+      // Peak data is the one output no ffmpeg invocation can write on its
+      // own: ffmpeg decodes, this process reduces. Same reuse and rename
+      // contract as every other output (writePeaks keeps it).
+      if (output.kind === "waveform_data") {
+        const meta = (await fileReady(output.path))
+          ? { content_type: "application/octet-stream" }
+          : await writePeaks(job.sourceKey, output.path, job.mediaInfo, ffmpeg);
+        renditions.push({ kind: output.kind, key: output.path, meta });
+        continue;
+      }
       // A finished output from an earlier attempt is reused, so retries do
       // not re-encode. Encodes land in a temp name and rename on success,
       // so a crash never leaves a truncated file at the final path.
@@ -1246,6 +1404,228 @@ export const runTranscode = async (
 // encode lands in a temp name in the same directory, and the rename happens
 // only on success, so a crash never leaves a truncated file at the final
 // path. The temp prefix keeps the extension so ffmpeg still infers the muxer.
+/* ---- waveform peak data ----
+ *
+ * ffmpeg decodes the source to raw PCM on stdout and this reads it as it
+ * comes, keeping one running min/max per bucket. Nothing is staged on disk:
+ * an hour of stereo 48 kHz PCM is 690 MB, which the container disk limit does
+ * not have room for, and the sidecar it reduces to is under a megabyte.
+ */
+
+/* One decode rate for every source, so the same file always produces the same
+   sidecar. 48 kHz is above anything that matters to a waveform drawing; the
+   resample only discards content that was never going to be visible. */
+export const PEAKS_SAMPLE_RATE = 48000;
+/* Roughly a point every 5 ms: fine enough that a drum hit is a spike rather
+   than a smudge at any width a screen has. */
+export const PEAKS_POINTS_PER_SECOND = 200;
+/* ...but a long file is capped, so a 90 minute podcast makes a 1.7 MB sidecar
+   instead of a 26 MB one. Past the cap the resolution degrades gracefully:
+   still ~22 points per second at three hours. */
+export const PEAKS_MAX_POINTS = 120_000;
+
+const audioStream = (
+  mediaInfo: MediaInfo,
+): Record<string, unknown> | undefined =>
+  mediaInfo.streams.find((stream) => stream.codec_type === "audio");
+
+/* Stereo or mono, never more: a surround stem is folded down for the drawing.
+   Anyone judging a 5.1 mix needs the original, not a picture of it. */
+export const peaksChannels = (mediaInfo: MediaInfo): number =>
+  Number(audioStream(mediaInfo)?.channels ?? 2) >= 2 ? 2 : 1;
+
+/* Seconds of media, from whatever the probe knew. Audio has no frame count,
+   so the format duration is the only source. */
+export const sourceDurationSeconds = (mediaInfo: MediaInfo): number => {
+  const framed = durationSeconds(mediaInfo);
+  if (framed > 0) return framed;
+  const value = Number(mediaInfo.format["duration"]);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+};
+
+export const peaksSamplesPerPixel = (
+  sampleRate: number,
+  duration: number,
+): number => {
+  const perPoint = Math.max(
+    1,
+    Math.round(sampleRate / PEAKS_POINTS_PER_SECOND),
+  );
+  if (duration <= 0) return perPoint;
+  const points = (duration * sampleRate) / perPoint;
+  if (points <= PEAKS_MAX_POINTS) return perPoint;
+  return Math.ceil((duration * sampleRate) / PEAKS_MAX_POINTS);
+};
+
+export const peaksPcmArgs = (
+  source: string,
+  channels: number,
+  sampleRate = PEAKS_SAMPLE_RATE,
+): string[] => [
+  "-hide_banner",
+  "-v",
+  "error",
+  "-i",
+  source,
+  "-vn",
+  "-ac",
+  String(channels),
+  "-ar",
+  String(sampleRate),
+  "-f",
+  "s16le",
+  "-acodec",
+  "pcm_s16le",
+  "pipe:1",
+];
+
+/* Fold interleaved s16 PCM into min/max pairs, a chunk at a time. The decoder
+   is read as it runs rather than collected first: the PCM is two orders of
+   magnitude larger than the sidecar it reduces to, and holding an hour of it
+   (690 MB) in memory to summarise it would be the same mistake as staging it
+   on disk. */
+export const createPeakCollector = (
+  channels: number,
+  samplesPerPixel: number,
+): {
+  push: (chunk: Uint8Array) => void;
+  finish: () => { samples: Float32Array; length: number };
+} => {
+  const mins = new Float32Array(channels).fill(0);
+  const maxes = new Float32Array(channels).fill(0);
+  const points: number[] = [];
+  let inBucket = 0;
+  /* A sample frame is channels * 2 bytes and a chunk boundary lands wherever
+     the pipe felt like it, so a partial frame is carried into the next one. */
+  const carry = new Uint8Array(channels * 2);
+  let carried = 0;
+  const flush = (): void => {
+    for (let channel = 0; channel < channels; channel += 1) {
+      points.push(mins[channel] ?? 0, maxes[channel] ?? 0);
+      mins[channel] = 0;
+      maxes[channel] = 0;
+    }
+    inBucket = 0;
+  };
+  const takeFrame = (view: DataView, at: number): void => {
+    for (let channel = 0; channel < channels; channel += 1) {
+      const value = view.getInt16(at + channel * 2, true) / 32768;
+      if (value < (mins[channel] ?? 0)) mins[channel] = value;
+      if (value > (maxes[channel] ?? 0)) maxes[channel] = value;
+    }
+    inBucket += 1;
+    if (inBucket >= samplesPerPixel) flush();
+  };
+  const push = (chunk: Uint8Array): void => {
+    let offset = 0;
+    if (carried > 0) {
+      const needed = Math.min(carry.length - carried, chunk.length);
+      carry.set(chunk.subarray(0, needed), carried);
+      carried += needed;
+      offset = needed;
+      if (carried < carry.length) return;
+      takeFrame(new DataView(carry.buffer, carry.byteOffset, carry.length), 0);
+      carried = 0;
+    }
+    const view = new DataView(
+      chunk.buffer,
+      chunk.byteOffset + offset,
+      chunk.length - offset,
+    );
+    const frameBytes = channels * 2;
+    const whole = Math.floor(view.byteLength / frameBytes);
+    for (let frame = 0; frame < whole; frame += 1)
+      takeFrame(view, frame * frameBytes);
+    const rest = view.byteLength - whole * frameBytes;
+    if (rest > 0) {
+      carry.set(chunk.subarray(chunk.length - rest), 0);
+      carried = rest;
+    }
+  };
+  const finish = (): { samples: Float32Array; length: number } => {
+    /* A partly filled last bucket is still sound that happened. */
+    if (inBucket > 0) flush();
+    return {
+      samples: Float32Array.from(points),
+      length: points.length / (channels * 2),
+    };
+  };
+  return { push, finish };
+};
+
+const streamProcess = (
+  command: string,
+  args: string[],
+  onChunk: (chunk: Uint8Array) => void,
+): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => onChunk(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) resolve();
+      else
+        reject(
+          new Error(
+            `${command} exited with ${code}: ${Buffer.concat(stderr)
+              .toString("utf8")
+              .slice(-4000)}`,
+          ),
+        );
+    });
+  });
+
+/** Decode the source and write its peak sidecar. Returns the meta the
+    rendition row carries, which is what the player needs to draw without
+    parsing the file header first. */
+export const writePeaks = async (
+  source: string,
+  outputPath: string,
+  mediaInfo: MediaInfo,
+  ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg",
+): Promise<Record<string, unknown>> => {
+  const channels = peaksChannels(mediaInfo);
+  const samplesPerPixel = peaksSamplesPerPixel(
+    PEAKS_SAMPLE_RATE,
+    sourceDurationSeconds(mediaInfo),
+  );
+  const collector = createPeakCollector(channels, samplesPerPixel);
+  await streamProcess(
+    ffmpeg,
+    peaksPcmArgs(source, channels, PEAKS_SAMPLE_RATE),
+    collector.push,
+  );
+  const { samples, length } = collector.finish();
+  if (length === 0) throw new Error("The source decoded to no audio.");
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  const tempPath = path.join(
+    path.dirname(outputPath),
+    `.tmp-${path.basename(outputPath)}`,
+  );
+  await writeFile(
+    tempPath,
+    encodePeaks({
+      sampleRate: PEAKS_SAMPLE_RATE,
+      samplesPerPixel,
+      channels,
+      length,
+      samples,
+    }),
+  );
+  await rename(tempPath, outputPath);
+  return {
+    content_type: "application/octet-stream",
+    peaks_format: "audiowaveform_v2",
+    sample_rate: PEAKS_SAMPLE_RATE,
+    samples_per_pixel: samplesPerPixel,
+    channels,
+    points: length,
+    duration_seconds: (length * samplesPerPixel) / PEAKS_SAMPLE_RATE,
+  };
+};
+
 const runFfmpegToFile = async (
   argsFor: (tempPath: string) => string[],
   outputPath: string,

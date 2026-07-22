@@ -883,7 +883,15 @@ const shareSidecars = z.object({
   sprite: z
     .object({ url: z.string(), vtt_url: z.string().nullable() })
     .nullable(),
+  /* The pre-rendered waveform PNG, for versions transcoded before peak data
+     existed. Clients prefer `waveform` and fall back to this. */
   peaks: z.object({ url: z.string() }).nullable(),
+  /* Peak data (audiowaveform .dat, version 2) plus the meta the player needs
+     to size the drawing without reading the header first. */
+  waveform: z.object({ url: z.string(), meta: jsonRecord }).nullable(),
+  /* Log-frequency spectrogram, rendered as luminance for the client to
+     colour. */
+  spectrogram: z.object({ url: z.string() }).nullable(),
   captions: z.array(captionTrack),
 });
 

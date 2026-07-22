@@ -1450,6 +1450,166 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
         );
       },
     );
+
+    /* Signed media URLs come back absolute; the harness speaks paths. */
+    const followUrl = async (h: ContractHarness, url: string) => {
+      const parsed = wireUrl(url);
+      return req(h, parsed.pathname + parsed.search);
+    };
+
+    /* Audio and stills are first-class media in a share room, not links to
+       files. Each has its own review rendition, and every place that used to
+       ask for "the 1080 proxy" has to ask for the right one instead. */
+    ctx.itBlob(
+      "serves an audio asset its own proxy and both audio sidecars",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const project = await createProject(h, seed.admin);
+        const media = await seedAssetVersion(h, {
+          workspaceId: seed.workspaceId,
+          projectId: project.id,
+          userId: seed.admin.id,
+          kind: "audio",
+        });
+        const created = await req(h, "/api/v1/shares", {
+          cookie: seed.admin.cookie,
+          json: {
+            project_id: project.id,
+            title: unique("Mix review"),
+            asset_ids: [media.assetId],
+          },
+        });
+        const { share } = await json<{ share: { slug: string } }>(created);
+        await seedRendition(h, {
+          versionId: media.versionId,
+          kind: "proxy_audio",
+          content: "aac-proxy",
+        });
+        await seedRendition(h, {
+          versionId: media.versionId,
+          kind: "waveform_data",
+          meta: { channels: 2, points: 1200 },
+          content: "peak-data",
+        });
+        await seedRendition(h, {
+          versionId: media.versionId,
+          kind: "spectrogram",
+          content: "spectrogram-png",
+        });
+        const viewer = await accessShare(h, share.slug);
+        const detail = await json<{
+          versions: Array<{
+            sources: Array<{ kind: string; url: string }>;
+            sidecars: {
+              waveform: { url: string; meta: Record<string, unknown> } | null;
+              spectrogram: { url: string } | null;
+            };
+          }>;
+        }>(
+          await req(h, `/api/v1/s/${share.slug}/assets/${media.assetId}`, {
+            cookie: viewer.cookie,
+          }),
+        );
+        const version = detail.versions[0];
+        expect(version?.sources.map((source) => source.kind)).toEqual([
+          "proxy_audio",
+        ]);
+        expect(version?.sidecars.waveform?.meta).toMatchObject({
+          channels: 2,
+          points: 1200,
+        });
+        const peaks = await followUrl(h, version?.sidecars.waveform?.url ?? "");
+        expect(await peaks.text()).toBe("peak-data");
+        const spectrogram = await followUrl(
+          h,
+          version?.sidecars.spectrogram?.url ?? "",
+        );
+        expect(await spectrogram.text()).toBe("spectrogram-png");
+        /* The media endpoint the room actually plays from: an audio asset
+           must never be handed a still, and must not 404 for want of a
+           video proxy. */
+        const played = await json<{ url: string }>(
+          await req(
+            h,
+            `/api/v1/s/${share.slug}/assets/${media.assetId}/media`,
+            { cookie: viewer.cookie },
+          ),
+        );
+        const playedBytes = await followUrl(h, played.url);
+        expect(await playedBytes.text()).toBe("aac-proxy");
+      },
+    );
+
+    ctx.itBlob(
+      "downloads the audio proxy as m4a and a still as its original",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const project = await createProject(h, seed.admin);
+        const song = await seedAssetVersion(h, {
+          workspaceId: seed.workspaceId,
+          projectId: project.id,
+          userId: seed.admin.id,
+          kind: "audio",
+        });
+        const still = await seedAssetVersion(h, {
+          workspaceId: seed.workspaceId,
+          projectId: project.id,
+          userId: seed.admin.id,
+          kind: "image",
+        });
+        const stillBody = new Response(
+          new TextEncoder().encode("the-still-itself").buffer,
+        ).body;
+        if (stillBody && h.blobStore)
+          await h.blobStore.putStream(still.blobKey, stillBody, {});
+        const created = await req(h, "/api/v1/shares", {
+          cookie: seed.admin.cookie,
+          json: {
+            project_id: project.id,
+            title: unique("Proxy only"),
+            asset_ids: [song.assetId, still.assetId],
+            allow_download: "proxy",
+          },
+        });
+        const { share } = await json<{ share: { slug: string } }>(created);
+        await seedRendition(h, {
+          versionId: song.versionId,
+          kind: "proxy_audio",
+          content: "aac-proxy",
+        });
+        const viewer = await accessShare(h, share.slug);
+        const audio = await json<{ url: string }>(
+          await req(
+            h,
+            `/api/v1/s/${share.slug}/assets/${song.assetId}/download`,
+            { cookie: viewer.cookie },
+          ),
+        );
+        const audioFile = await followUrl(h, audio.url);
+        expect(await audioFile.text()).toBe("aac-proxy");
+        /* An audio proxy saved as .mp4 opens in a video player and looks
+           broken; the suffix has to match what is inside. */
+        expect(audioFile.headers.get("content-disposition")).toContain(
+          "-proxy.m4a",
+        );
+        /* A still has no lesser form, so a proxy-only share hands out the
+           original rather than answering "not ready" forever. */
+        const image = await req(
+          h,
+          `/api/v1/s/${share.slug}/assets/${still.assetId}/download`,
+          { cookie: viewer.cookie },
+        );
+        expect(image.status).toBe(200);
+        const imageFile = await followUrl(
+          h,
+          (await json<{ url: string }>(image)).url,
+        );
+        expect(imageFile.status).toBe(200);
+        expect(await imageFile.text()).toBe("the-still-itself");
+      },
+    );
   });
 
   describe("exports", () => {
