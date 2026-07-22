@@ -148,6 +148,7 @@ export const bodies = {
     /* A picture already uploaded to this project (GET /projects/:id/covers).
        Mutually exclusive with cover_asset_id. */
     cover_upload_id: z.string().optional(),
+    record_transfer_ips: z.boolean().optional(),
   }),
   memberPut: z.object({ role: projectRole }),
   folderCreate: z.object({
@@ -425,6 +426,10 @@ const project = z.object({
      the generated palette cover in all three cases. */
   cover_url: z.string().nullable(),
   restricted: z.boolean(),
+  /* Whether the addresses of people who open this project's transfer links are
+     kept. Off by default: a client-facing link should not log IPs because the
+     software felt like it, and a self-hoster who needs the trail says so. */
+  record_transfer_ips: z.boolean(),
   created_by: z.string(),
   created_at: timestamp,
   updated_at: timestamp,
@@ -636,6 +641,32 @@ const transferReceiptItem = z.object({
     "aborted",
   ]),
   asset_id: z.string().nullable(),
+  created_at: timestamp,
+});
+
+/* Who used the link, for the owner. The grant key never appears here: it is
+   the visitor's credential, exactly as a share viewer's key is. The address is
+   null unless the project records addresses. */
+const transferVisitItem = z.object({
+  id: z.string(),
+  name: z.string(),
+  first_seen_at: timestamp,
+  last_seen_at: timestamp,
+  user_agent: z.string().nullable(),
+  ip: z.string().nullable(),
+  download_count: z.number().int(),
+});
+
+const transferDownloadItem = z.object({
+  id: z.string(),
+  visit_id: z.string().nullable(),
+  name: z.string(),
+  asset_id: z.string().nullable(),
+  filename: z.string(),
+  kind: z.enum(["file", "zip"]),
+  bytes: z.number().int(),
+  user_agent: z.string().nullable(),
+  ip: z.string().nullable(),
   created_at: timestamp,
 });
 
@@ -1405,6 +1436,16 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: { "200": ok(transfer) },
   },
   "DELETE /transfers/:id": { responses: { "204": noContent } },
+  "GET /transfers/:id/visits": {
+    summary:
+      "Who has opened this transfer (project manager, or the link's creator). The grant key is never on the wire; the address is null unless the project records addresses.",
+    responses: { "200": ok(list(transferVisitItem)) },
+  },
+  "GET /transfers/:id/downloads": {
+    summary:
+      "What has left through this transfer, newest first (project manager, or the link's creator).",
+    responses: { "200": ok(list(transferDownloadItem)) },
+  },
   "POST /transfers/:id/items": {
     request: bodies.transferItemsAdd,
     responses: { "200": ok(z.object({ transfer, added: z.number().int() })) },

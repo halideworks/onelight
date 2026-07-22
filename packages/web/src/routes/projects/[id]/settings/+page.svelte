@@ -20,6 +20,7 @@
     palette: string;
     status: string;
     restricted: boolean;
+    record_transfer_ips: boolean;
     cover_asset_id?: string | null;
     cover_kind?: 'upload' | 'asset' | 'generated';
     cover_url?: string | null;
@@ -396,6 +397,18 @@
         <span>
           <strong>Archived</strong>
           <small>Read-only: no uploads, no new notes. Nothing is deleted.</small>
+        </span>
+      </label>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={project.record_transfer_ips}
+          disabled={!isManager}
+          onchange={(event) => void patch({ record_transfer_ips: event.currentTarget.checked }, 'Saved')}
+        />
+        <span>
+          <strong>Record addresses on transfer links</strong>
+          <small>Keeps the IP address of everyone who opens or downloads from a transfer link in this project, alongside the name they gave. Off by default: a link handed to a client should not log addresses unless you need the trail. Names, times and devices are recorded either way.</small>
         </span>
       </label>
     </section>

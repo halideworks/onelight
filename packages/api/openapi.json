@@ -4128,6 +4128,9 @@
                           "restricted": {
                             "type": "boolean"
                           },
+                          "record_transfer_ips": {
+                            "type": "boolean"
+                          },
                           "created_by": {
                             "type": "string"
                           },
@@ -4160,6 +4163,7 @@
                           "cover_kind",
                           "cover_url",
                           "restricted",
+                          "record_transfer_ips",
                           "created_by",
                           "created_at",
                           "updated_at",
@@ -4324,6 +4328,9 @@
                     "restricted": {
                       "type": "boolean"
                     },
+                    "record_transfer_ips": {
+                      "type": "boolean"
+                    },
                     "created_by": {
                       "type": "string"
                     },
@@ -4356,6 +4363,7 @@
                     "cover_kind",
                     "cover_url",
                     "restricted",
+                    "record_transfer_ips",
                     "created_by",
                     "created_at",
                     "updated_at",
@@ -4471,6 +4479,9 @@
                     "restricted": {
                       "type": "boolean"
                     },
+                    "record_transfer_ips": {
+                      "type": "boolean"
+                    },
                     "created_by": {
                       "type": "string"
                     },
@@ -4503,6 +4514,7 @@
                     "cover_kind",
                     "cover_url",
                     "restricted",
+                    "record_transfer_ips",
                     "created_by",
                     "created_at",
                     "updated_at",
@@ -4618,6 +4630,9 @@
                   },
                   "cover_upload_id": {
                     "type": "string"
+                  },
+                  "record_transfer_ips": {
+                    "type": "boolean"
                   }
                 },
                 "additionalProperties": false
@@ -4675,6 +4690,9 @@
                     "restricted": {
                       "type": "boolean"
                     },
+                    "record_transfer_ips": {
+                      "type": "boolean"
+                    },
                     "created_by": {
                       "type": "string"
                     },
@@ -4707,6 +4725,7 @@
                     "cover_kind",
                     "cover_url",
                     "restricted",
+                    "record_transfer_ips",
                     "created_by",
                     "created_at",
                     "updated_at",
@@ -4966,6 +4985,9 @@
                     "restricted": {
                       "type": "boolean"
                     },
+                    "record_transfer_ips": {
+                      "type": "boolean"
+                    },
                     "created_by": {
                       "type": "string"
                     },
@@ -4998,6 +5020,7 @@
                     "cover_kind",
                     "cover_url",
                     "restricted",
+                    "record_transfer_ips",
                     "created_by",
                     "created_at",
                     "updated_at",
@@ -15857,6 +15880,264 @@
         "responses": {
           "204": {
             "description": "No content"
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/transfers/{id}/visits": {
+      "get": {
+        "summary": "Who has opened this transfer (project manager, or the link's creator). The grant key is never on the wire; the address is null unless the project records addresses.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "first_seen_at": {
+                            "type": "integer"
+                          },
+                          "last_seen_at": {
+                            "type": "integer"
+                          },
+                          "user_agent": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "ip": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "download_count": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "first_seen_at",
+                          "last_seen_at",
+                          "user_agent",
+                          "ip",
+                          "download_count"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/transfers/{id}/downloads": {
+      "get": {
+        "summary": "What has left through this transfer, newest first (project manager, or the link's creator).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "visit_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "asset_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "filename": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "file",
+                              "zip"
+                            ]
+                          },
+                          "bytes": {
+                            "type": "integer"
+                          },
+                          "user_agent": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "ip": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "created_at": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "visit_id",
+                          "name",
+                          "asset_id",
+                          "filename",
+                          "kind",
+                          "bytes",
+                          "user_agent",
+                          "ip",
+                          "created_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
           },
           "400": {
             "description": "Validation failure",

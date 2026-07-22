@@ -374,6 +374,17 @@ export const d1Migrations: D1Migration[] = [
       "CREATE UNIQUE INDEX renditions_share_uq ON renditions(version_id, kind, share_id) WHERE share_id IS NOT NULL",
     ],
   },
+  {
+    name: "0021_transfer_access.sql",
+    applied: (binding) => tableExists(binding, "transfer_visits"),
+    statements: [
+      "CREATE TABLE transfer_visits (\n  id TEXT PRIMARY KEY,\n  transfer_id TEXT NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,\n  grant_key TEXT NOT NULL,\n  name TEXT NOT NULL,\n  user_agent TEXT,\n  ip TEXT,\n  first_seen_at INTEGER NOT NULL,\n  last_seen_at INTEGER NOT NULL\n)",
+      "CREATE UNIQUE INDEX transfer_visits_grant_uq ON transfer_visits(transfer_id, grant_key)",
+      "CREATE INDEX transfer_visits_transfer_idx ON transfer_visits(transfer_id, id)",
+      "CREATE TABLE transfer_downloads (\n  id TEXT PRIMARY KEY,\n  transfer_id TEXT NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,\n  visit_id TEXT REFERENCES transfer_visits(id) ON DELETE SET NULL,\n  name TEXT NOT NULL,\n  asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,\n  filename TEXT NOT NULL DEFAULT '',\n  kind TEXT NOT NULL CHECK (kind IN ('file', 'zip')),\n  bytes INTEGER NOT NULL DEFAULT 0,\n  user_agent TEXT,\n  ip TEXT,\n  created_at INTEGER NOT NULL\n)",
+      "CREATE INDEX transfer_downloads_transfer_idx ON transfer_downloads(transfer_id, id)",
+    ],
+  },
 ];
 
 const migrate = async (binding: D1Database): Promise<void> => {

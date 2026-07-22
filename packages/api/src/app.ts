@@ -73,8 +73,10 @@ import {
   shareAssets,
   shareViewers,
   shares,
+  transferDownloads,
   transferItems,
   transferReceipts,
+  transferVisits,
   transfers,
   uploadParts,
   projectCoverUploads,
@@ -329,6 +331,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           : ("generated" as const),
       cover_url: await coverUrlFor(project),
       restricted: Boolean(project.restricted),
+      /* Whether transfer links in this project keep the addresses of the
+         people who open them. Off unless the project says otherwise. */
+      record_transfer_ips:
+        parseJsonObject(project.settingsJson).record_transfer_ips === true,
       created_by: project.createdBy,
       created_at: project.createdAt,
       /* When the project's own record was last edited: its name, palette,
@@ -3047,6 +3053,18 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           ? {}
           : { restricted: body.restricted }),
         ...(body.status ? { status: body.status } : {}),
+        /* Merged into whatever else the settings blob holds rather than
+           replacing it: this is one switch among however many the project
+           grows, and a write that clobbered its neighbours would be a bug
+           waiting for the second setting to exist. */
+        ...(body.record_transfer_ips === undefined
+          ? {}
+          : {
+              settingsJson: JSON.stringify({
+                ...parseJsonObject(project.settingsJson),
+                record_transfer_ips: body.record_transfer_ips,
+              }),
+            }),
         updatedAt: env.clock.now(),
       })
       .where(eq(projects.id, project.id))
@@ -7620,6 +7638,77 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.body(null, 204);
   });
 
+  /* The access record is the owner's, not the room's: a viewer on the project
+     can see that a transfer exists, but who opened it and what they took is
+     for whoever is answerable for the link. */
+  const requireTransferAudit = async (
+    c: Context<{ Variables: Variables }>,
+    id: string,
+  ): Promise<typeof transfers.$inferSelect> => {
+    const actor = userFromContext(c);
+    const transfer = await transferById(id);
+    await requireProject(
+      transfer.projectId,
+      actor,
+      transferRoleFor(transfer.kind),
+    );
+    return transfer;
+  };
+
+  api.get("/transfers/:id/visits", requireAuth, async (c) => {
+    const transfer = await requireTransferAudit(c, c.req.param("id"));
+    const visitRows = await env.db
+      .select()
+      .from(transferVisits)
+      .where(eq(transferVisits.transferId, transfer.id))
+      .orderBy(desc(transferVisits.id))
+      .all();
+    const downloadRows = await env.db
+      .select({ visitId: transferDownloads.visitId })
+      .from(transferDownloads)
+      .where(eq(transferDownloads.transferId, transfer.id))
+      .all();
+    const takenBy = new Map<string, number>();
+    for (const row of downloadRows)
+      if (row.visitId)
+        takenBy.set(row.visitId, (takenBy.get(row.visitId) ?? 0) + 1);
+    return c.json({
+      items: visitRows.map((visit) => ({
+        id: visit.id,
+        name: visit.name,
+        first_seen_at: visit.firstSeenAt,
+        last_seen_at: visit.lastSeenAt,
+        user_agent: visit.userAgent,
+        ip: visit.ip,
+        download_count: takenBy.get(visit.id) ?? 0,
+      })),
+    });
+  });
+
+  api.get("/transfers/:id/downloads", requireAuth, async (c) => {
+    const transfer = await requireTransferAudit(c, c.req.param("id"));
+    const rows = await env.db
+      .select()
+      .from(transferDownloads)
+      .where(eq(transferDownloads.transferId, transfer.id))
+      .orderBy(desc(transferDownloads.id))
+      .all();
+    return c.json({
+      items: rows.map((row) => ({
+        id: row.id,
+        visit_id: row.visitId,
+        name: row.name,
+        asset_id: row.assetId,
+        filename: row.filename,
+        kind: row.kind,
+        bytes: row.bytes,
+        user_agent: row.userAgent,
+        ip: row.ip,
+        created_at: row.createdAt,
+      })),
+    });
+  });
+
   api.post("/transfers/:id/items", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const transfer = await transferById(c.req.param("id"));
@@ -7712,12 +7801,54 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const transferCookie = (transferId: string): string =>
     `ol_transfer_${transferId}`;
 
+  /**
+   * Whether this transfer's project records the addresses of the people who
+   * use its links. Off unless the project turns it on: a link handed to a
+   * client should not start logging IPs because the software felt like it.
+   */
+  const projectRecordsIps = async (projectId: string): Promise<boolean> => {
+    const project = (
+      await env.db
+        .select({ settingsJson: projects.settingsJson })
+        .from(projects)
+        .where(eq(projects.id, projectId))
+        .limit(1)
+        .all()
+    )[0];
+    return parseJsonObject(project?.settingsJson).record_transfer_ips === true;
+  };
+
   const issueTransferGrant = async (
     c: Context<{ Variables: Variables }>,
     transfer: typeof transfers.$inferSelect,
     name: string,
   ): Promise<void> => {
-    const signed = await new SignJWT({ transfer_id: transfer.id, name })
+    /* The grant carries an unguessable key rather than only a name, so the
+       visit it belongs to can be found again on every later request. The name
+       stays in the token too: an old cookie issued before this table existed
+       still identifies its holder, it just has no visit to update. */
+    const grantKey = base64UrlEncode(randomBytes(18));
+    const now = env.clock.now();
+    await env.db
+      .insert(transferVisits)
+      .values({
+        id: env.ids.ulid(),
+        transferId: transfer.id,
+        grantKey,
+        name,
+        userAgent: c.req.header("user-agent") ?? null,
+        ip: (await projectRecordsIps(transfer.projectId))
+          ? clientIp(c, env)
+          : null,
+        firstSeenAt: now,
+        lastSeenAt: now,
+      })
+      .run();
+    const signed = await new SignJWT({
+      transfer_id: transfer.id,
+      name,
+      grant_key: grantKey,
+    })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
       .setExpirationTime("24h")
@@ -7734,7 +7865,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const transferGrantFor = async (
     c: Context<{ Variables: Variables }>,
     transfer: typeof transfers.$inferSelect,
-  ): Promise<{ name: string } | undefined> => {
+  ): Promise<{ name: string; visitId: string | null } | undefined> => {
     const signed = getCookie(c, transferCookie(transfer.id));
     if (!signed) return undefined;
     try {
@@ -7747,7 +7878,31 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         typeof verified.payload.name !== "string"
       )
         return undefined;
-      return { name: verified.payload.name };
+      const grantKey =
+        typeof verified.payload.grant_key === "string"
+          ? verified.payload.grant_key
+          : null;
+      if (!grantKey) return { name: verified.payload.name, visitId: null };
+      const visit = (
+        await env.db
+          .select()
+          .from(transferVisits)
+          .where(
+            and(
+              eq(transferVisits.transferId, transfer.id),
+              eq(transferVisits.grantKey, grantKey),
+            ),
+          )
+          .limit(1)
+          .all()
+      )[0];
+      if (!visit) return { name: verified.payload.name, visitId: null };
+      await env.db
+        .update(transferVisits)
+        .set({ lastSeenAt: env.clock.now() })
+        .where(eq(transferVisits.id, visit.id))
+        .run();
+      return { name: visit.name, visitId: visit.id };
     } catch {
       return undefined;
     }
@@ -7756,10 +7911,45 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const requireTransferGrant = async (
     c: Context<{ Variables: Variables }>,
     transfer: typeof transfers.$inferSelect,
-  ): Promise<{ name: string }> => {
+  ): Promise<{ name: string; visitId: string | null }> => {
     const grant = await transferGrantFor(c, transfer);
     if (!grant) throw errors.unauthorized();
     return grant;
+  };
+
+  /**
+   * Record a file or an archive leaving. The filename is copied in rather than
+   * joined out later: the record has to outlive the asset it names.
+   */
+  const recordTransferDownload = async (
+    c: Context<{ Variables: Variables }>,
+    transfer: typeof transfers.$inferSelect,
+    grant: { name: string; visitId: string | null },
+    entry: {
+      kind: "file" | "zip";
+      assetId?: string | null;
+      filename?: string | null;
+      bytes?: number;
+    },
+  ): Promise<void> => {
+    await env.db
+      .insert(transferDownloads)
+      .values({
+        id: env.ids.ulid(),
+        transferId: transfer.id,
+        visitId: grant.visitId,
+        name: grant.name,
+        assetId: entry.assetId ?? null,
+        filename: entry.filename ?? "",
+        kind: entry.kind,
+        bytes: entry.bytes ?? 0,
+        userAgent: c.req.header("user-agent") ?? null,
+        ip: (await projectRecordsIps(transfer.projectId))
+          ? clientIp(c, env)
+          : null,
+        createdAt: env.clock.now(),
+      })
+      .run();
   };
 
   const receivedBytesFor = async (transferId: string): Promise<number> =>
@@ -7918,6 +8108,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .setExpirationTime(DOWNLOAD_TOKEN_TTL)
       .sign(new TextEncoder().encode(env.config.SECRET_KEY));
     await notifyTransferDownloaded(transfer, grant.name, file.name);
+    await recordTransferDownload(c, transfer, grant, {
+      kind: "file",
+      assetId: file.asset_id,
+      filename: file.name,
+      bytes: file.version.size,
+    });
     return c.json({
       url: `/api/v1/t/${transfer.slug}/file?token=${encodeURIComponent(token)}`,
       expires_at: env.clock.now() + DOWNLOAD_TOKEN_TTL_MS,
@@ -7982,8 +8178,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     }
     if (!entries.length) throw errors.notFound("The package has no files.");
     /* A Range request is the same download resuming, not a second one. */
-    if (!c.req.header("range"))
+    if (!c.req.header("range")) {
       await notifyTransferDownloaded(transfer, grant.name, null);
+      await recordTransferDownload(c, transfer, grant, {
+        kind: "zip",
+        filename: `${transfer.title} (${String(entries.length)} ${entries.length === 1 ? "file" : "files"})`,
+        bytes: entries.reduce((total, entry) => total + entry.size, 0),
+      });
+    }
     const zipName = `${
       transfer.title
         .replace(/[^\w.-]+/g, "_")

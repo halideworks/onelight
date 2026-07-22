@@ -845,6 +845,68 @@ export const transferReceipts = sqliteTable(
   }),
 );
 
+/** One row per person who passes a transfer's gate. The identity is the
+    unguessable key carried in the signed grant cookie, exactly as a share
+    viewer works; it never goes on the wire. The IP is written only when the
+    project records addresses. */
+export const transferVisits = sqliteTable(
+  "transfer_visits",
+  {
+    id: text("id").primaryKey(),
+    transferId: text("transfer_id")
+      .notNull()
+      .references(() => transfers.id, { onDelete: "cascade" }),
+    grantKey: text("grant_key").notNull(),
+    name: text("name").notNull(),
+    userAgent: text("user_agent"),
+    ip: text("ip"),
+    firstSeenAt: integer("first_seen_at").notNull(),
+    lastSeenAt: integer("last_seen_at").notNull(),
+  },
+  (table) => ({
+    grantUnique: uniqueIndex("transfer_visits_grant_uq").on(
+      table.transferId,
+      table.grantKey,
+    ),
+    transferIndex: index("transfer_visits_transfer_idx").on(
+      table.transferId,
+      table.id,
+    ),
+  }),
+);
+
+/** One row per file or archive that left. The filename is copied in rather
+    than joined out: the record has to outlive the asset it describes, which is
+    the whole reason for keeping it. */
+export const transferDownloads = sqliteTable(
+  "transfer_downloads",
+  {
+    id: text("id").primaryKey(),
+    transferId: text("transfer_id")
+      .notNull()
+      .references(() => transfers.id, { onDelete: "cascade" }),
+    visitId: text("visit_id").references(() => transferVisits.id, {
+      onDelete: "set null",
+    }),
+    name: text("name").notNull(),
+    assetId: text("asset_id").references(() => assets.id, {
+      onDelete: "set null",
+    }),
+    filename: text("filename").notNull().default(""),
+    kind: text("kind", { enum: ["file", "zip"] }).notNull(),
+    bytes: integer("bytes").notNull().default(0),
+    userAgent: text("user_agent"),
+    ip: text("ip"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => ({
+    transferIndex: index("transfer_downloads_transfer_idx").on(
+      table.transferId,
+      table.id,
+    ),
+  }),
+);
+
 export const webhooks = sqliteTable("webhooks", {
   id: text("id").primaryKey(),
   workspaceId: text("workspace_id")

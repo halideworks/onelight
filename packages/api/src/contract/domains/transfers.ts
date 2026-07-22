@@ -11,7 +11,13 @@ import {
 import { cookieFrom, forbiddenKeysIn, json, req, travel } from "../harness.js";
 import type { ContractHarness } from "../harness.js";
 import type { SeedState } from "../seed.js";
-import { createProject, seedAssetVersion, unique, uniqueIp } from "../seed.js";
+import {
+  createProject,
+  grantRole,
+  seedAssetVersion,
+  unique,
+  uniqueIp,
+} from "../seed.js";
 import type { SuiteContext } from "../context.js";
 
 const encoder = new TextEncoder();
@@ -608,6 +614,152 @@ export const registerTransfersDomain = (ctx: SuiteContext): void => {
         cookie: access.cookie,
       });
       expect(crossZip.status).toBe(401);
+    });
+
+    ctx.itBlob(
+      "keeps a record of who opened the link and what left through it",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const fixture = await makePackage(h, seed);
+        const content = encoder.encode("0123456789");
+        if (!h.blobStore || !fixture.blobKey) throw new Error("no blob store");
+        await h.blobStore.putStream(
+          fixture.blobKey,
+          new Response(content).body as ReadableStream,
+          {},
+        );
+        const before = await json<{ items: unknown[] }>(
+          await req(h, `/api/v1/transfers/${fixture.transferId}/visits`, {
+            cookie: seed.admin.cookie,
+          }),
+        );
+        expect(before.items).toEqual([]);
+
+        const access = await accessTransfer(h, fixture.slug, {
+          name: "Recorded Robin",
+        });
+        expect(access.response.status).toBe(200);
+        const signed = await req(
+          h,
+          `/api/v1/t/${fixture.slug}/files/${fixture.assetId}/download`,
+          { method: "POST", cookie: access.cookie, json: {} },
+        );
+        expect(signed.status).toBe(200);
+        const zipped = await req(h, `/api/v1/t/${fixture.slug}/zip`, {
+          cookie: access.cookie,
+        });
+        expect(zipped.status).toBe(200);
+        await zipped.arrayBuffer();
+
+        const visits = await json<{
+          items: Array<Record<string, unknown>>;
+        }>(
+          await req(h, `/api/v1/transfers/${fixture.transferId}/visits`, {
+            cookie: seed.admin.cookie,
+          }),
+        );
+        expect(visits.items).toHaveLength(1);
+        expect(visits.items[0]?.name).toBe("Recorded Robin");
+        /* Both the single file and the archive count as things that left. */
+        expect(visits.items[0]?.download_count).toBe(2);
+        /* Off by default: the project has not asked for addresses. */
+        expect(visits.items[0]?.ip).toBeNull();
+        /* The credential the visitor holds never comes back out. */
+        expect(Object.keys(visits.items[0] ?? {})).not.toContain("grant_key");
+
+        const downloads = await json<{
+          items: Array<Record<string, unknown>>;
+        }>(
+          await req(h, `/api/v1/transfers/${fixture.transferId}/downloads`, {
+            cookie: seed.admin.cookie,
+          }),
+        );
+        expect(downloads.items).toHaveLength(2);
+        expect(downloads.items.map((row) => row.kind).sort()).toEqual([
+          "file",
+          "zip",
+        ]);
+        for (const row of downloads.items) {
+          expect(row.name).toBe("Recorded Robin");
+          expect(row.visit_id).toBe(visits.items[0]?.id);
+          expect(row.ip).toBeNull();
+          expect(typeof row.filename).toBe("string");
+        }
+        const fileRow = downloads.items.find((row) => row.kind === "file");
+        expect(fileRow?.asset_id).toBe(fixture.assetId);
+        expect(fileRow?.bytes).toBe(10);
+      },
+    );
+
+    it("records addresses only when the project asks for them", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const fixture = await makePackage(h, seed);
+      /* One visit before the switch, one after: the record must reflect the
+         setting at the time of the visit, not at the time of reading. */
+      await accessTransfer(h, fixture.slug, { name: "Before" });
+      const project = await json<{ record_transfer_ips: boolean }>(
+        await req(h, `/api/v1/projects/${fixture.projectId}`, {
+          cookie: seed.admin.cookie,
+        }),
+      );
+      expect(project.record_transfer_ips).toBe(false);
+      const patched = await req(h, `/api/v1/projects/${fixture.projectId}`, {
+        method: "PATCH",
+        cookie: seed.admin.cookie,
+        json: { record_transfer_ips: true },
+      });
+      expect(patched.status).toBe(200);
+      expect(
+        (await json<{ record_transfer_ips: boolean }>(patched))
+          .record_transfer_ips,
+      ).toBe(true);
+      await accessTransfer(h, fixture.slug, { name: "After" });
+
+      const visits = await json<{ items: Array<Record<string, unknown>> }>(
+        await req(h, `/api/v1/transfers/${fixture.transferId}/visits`, {
+          cookie: seed.admin.cookie,
+        }),
+      );
+      expect(visits.items).toHaveLength(2);
+      const byName = new Map(
+        visits.items.map((row) => [row.name as string, row]),
+      );
+      expect(byName.get("Before")?.ip).toBeNull();
+      expect(byName.get("After")?.ip).not.toBeNull();
+    });
+
+    it("the access record belongs to whoever is answerable for the link", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const fixture = await makePackage(h, seed);
+      /* A package is manager territory; a viewer on the project can see the
+         transfer exists and still must not see who opened it. */
+      await grantRole(
+        h,
+        seed.admin,
+        fixture.projectId,
+        seed.viewer.id,
+        "viewer",
+      );
+      const asViewer = await req(
+        h,
+        `/api/v1/transfers/${fixture.transferId}/visits`,
+        { cookie: seed.viewer.cookie },
+      );
+      expect(asViewer.status).toBe(403);
+      const downloadsAsViewer = await req(
+        h,
+        `/api/v1/transfers/${fixture.transferId}/downloads`,
+        { cookie: seed.viewer.cookie },
+      );
+      expect(downloadsAsViewer.status).toBe(403);
+      const anonymous = await req(
+        h,
+        `/api/v1/transfers/${fixture.transferId}/visits`,
+      );
+      expect(anonymous.status).toBe(401);
     });
   });
 };

@@ -297,6 +297,7 @@
                 <span class="chip warn">Expired</span>
               {/if}
               <span class="grow"></span>
+              <a class="btnlink" href={`/projects/${projectPath}/transfers/${transfer.id}`}>Open</a>
               <button type="button" class="quiet small" onclick={() => void patch(transfer, { revoked: transfer.revoked_at === null })}>
                 {transfer.revoked_at === null ? 'Revoke' : 'Reopen'}
               </button>
@@ -490,6 +491,9 @@
   button.quiet { background: var(--ink-200); color: var(--ink-text); font-weight: 500; }
   button.quiet:hover { background: var(--ink-300); }
   button.small { padding: 6px 12px; }
+  /* The way in. A link, not a button, because it goes somewhere. */
+  .btnlink { border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 6px 12px; font-size: var(--text-13); font-weight: 500; text-decoration: none; }
+  .btnlink:hover { background: var(--ink-300); }
   .empty { margin: 0; color: var(--ink-text-dim); }
   .error { margin: 0; color: var(--warn); }
   .page-error { padding: var(--pad-3) var(--pad-4); }

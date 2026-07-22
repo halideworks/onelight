@@ -2952,6 +2952,7 @@ export interface paths {
                                 cover_kind: "upload" | "asset" | "generated";
                                 cover_url: string | null;
                                 restricted: boolean;
+                                record_transfer_ips: boolean;
                                 created_by: string;
                                 created_at: number;
                                 updated_at: number;
@@ -3039,6 +3040,7 @@ export interface paths {
                             cover_kind: "upload" | "asset" | "generated";
                             cover_url: string | null;
                             restricted: boolean;
+                            record_transfer_ips: boolean;
                             created_by: string;
                             created_at: number;
                             updated_at: number;
@@ -3128,6 +3130,7 @@ export interface paths {
                             cover_kind: "upload" | "asset" | "generated";
                             cover_url: string | null;
                             restricted: boolean;
+                            record_transfer_ips: boolean;
                             created_by: string;
                             created_at: number;
                             updated_at: number;
@@ -3255,6 +3258,7 @@ export interface paths {
                         status?: "active" | "archived";
                         cover_asset_id?: string | null;
                         cover_upload_id?: string;
+                        record_transfer_ips?: boolean;
                     };
                 };
             };
@@ -3277,6 +3281,7 @@ export interface paths {
                             cover_kind: "upload" | "asset" | "generated";
                             cover_url: string | null;
                             restricted: boolean;
+                            record_transfer_ips: boolean;
                             created_by: string;
                             created_at: number;
                             updated_at: number;
@@ -3444,6 +3449,7 @@ export interface paths {
                             cover_kind: "upload" | "asset" | "generated";
                             cover_url: string | null;
                             restricted: boolean;
+                            record_transfer_ips: boolean;
                             created_by: string;
                             created_at: number;
                             updated_at: number;
@@ -9651,6 +9657,178 @@ export interface paths {
                 };
             };
         };
+        trace?: never;
+    };
+    "/api/v1/transfers/{id}/visits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Who has opened this transfer (project manager, or the link's creator). The grant key is never on the wire; the address is null unless the project records addresses. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                id: string;
+                                name: string;
+                                first_seen_at: number;
+                                last_seen_at: number;
+                                user_agent: string | null;
+                                ip: string | null;
+                                download_count: number;
+                            }[];
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transfers/{id}/downloads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What has left through this transfer, newest first (project manager, or the link's creator). */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                id: string;
+                                visit_id: string | null;
+                                name: string;
+                                asset_id: string | null;
+                                filename: string;
+                                /** @enum {string} */
+                                kind: "file" | "zip";
+                                bytes: number;
+                                user_agent: string | null;
+                                ip: string | null;
+                                created_at: number;
+                            }[];
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/transfers/{id}/items": {
