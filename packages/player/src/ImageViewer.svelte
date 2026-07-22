@@ -167,6 +167,11 @@
 
   const handlePointerDown = (event: PointerEvent): void => {
     if (drawMode || !event.isPrimary) return;
+    /* Without this the browser starts its own drag-select on the way past:
+       the picture and the controls around it turn selection-blue under the
+       pointer, which is exactly what you cannot see through while you are
+       inspecting a picture. */
+    event.preventDefault();
     const at = pointerInBox(event);
     grab = { pointerId: event.pointerId, x: at.x - view.x, y: at.y - view.y };
     panning = true;
@@ -562,6 +567,11 @@
     background: var(--n-000, #0a0a0a);
     cursor: grab;
     touch-action: none;
+    /* A pan is a drag, and a drag over anything selectable paints it blue.
+       Nothing on the stage is text anyone reads: the readouts live in the
+       control row below it. */
+    user-select: none;
+    -webkit-user-select: none;
     /* A checkered ground would say "transparency"; a flat near-black says
        nothing, which is what a surround should say. */
   }

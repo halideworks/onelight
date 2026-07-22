@@ -253,6 +253,8 @@
 
   const handleDown = (event: PointerEvent): void => {
     if (!event.isPrimary || durationFrames <= 0) return;
+    /* Scrubbing is a drag; a drag that starts a text selection paints the
+       stage and its neighbours blue. */
     event.preventDefault();
     try {
       host?.setPointerCapture(event.pointerId);
@@ -366,6 +368,8 @@
     background: var(--n-050, #101010);
     cursor: pointer;
     touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
     contain: layout paint style;
   }
   .audiostage.washed { background: var(--ink-000, #0d1117); }

@@ -749,8 +749,19 @@
     });
   };
 
+  /* Where a drawing on the audio stage anchors: the earliest moment it
+     touches. Circling a transient at 00:12 should make a note about 00:12,
+     not about wherever the playhead happened to be parked when the pen came
+     out -- the x axis of that picture IS the time axis. */
+  const frameUnderStroke = (stroke: AnnotationStroke): number | null => {
+    if (!isAudio || !durationFrames || durationFrames <= 0) return null;
+    const left = Math.min(...stroke.points.map((point) => point[0]));
+    if (!Number.isFinite(left)) return null;
+    return Math.min(durationFrames - 1, Math.max(0, Math.round(left * (durationFrames - 1))));
+  };
+
   const commitStroke = (stroke: AnnotationStroke): void => {
-    if (pendingStrokes.length === 0) drawingFrame = frame;
+    if (pendingStrokes.length === 0) drawingFrame = frameUnderStroke(stroke) ?? frame;
     pendingStrokes = [...pendingStrokes, stroke];
     emitDrawing();
   };
@@ -784,13 +795,18 @@
      almost every frame has no strokes. Returning the previous array when
      nothing changed keeps the identity stable, so the overlay's draw effect
      and the each-block do not run 24 times a second over empty lists. */
+  /* Footage shows a drawing on the frame it was made on, because that frame
+     is what it points at. The audio stage is one static picture of the whole
+     track, so a drawing there points at a place ON that picture and belongs
+     on screen whenever the picture is: filtering by frame would hide every
+     note except at the instant its own timecode came up. */
   let lastCanvasStrokes: AnnotationStroke[] = [];
   const canvasStrokes = $derived.by(() => {
     const next = [
       ...annotations
-        .filter((annotation) => annotation.frame === frame)
+        .filter((annotation) => isAudio || annotation.frame === frame)
         .flatMap((annotation) => annotation.strokes),
-      ...(drawingFrame === frame
+      ...(isAudio || drawingFrame === frame
         ? pendingStrokes.filter((stroke) => stroke.tool !== 'text')
         : [])
     ];
@@ -805,7 +821,7 @@
   let lastPendingTexts: Array<{ stroke: AnnotationStroke; index: number }> = [];
   const pendingTexts = $derived.by(() => {
     const next =
-      drawingFrame === frame
+      isAudio || drawingFrame === frame
         ? pendingStrokes
             .map((stroke, index) => ({ stroke, index }))
             .filter((entry) => entry.stroke.tool === 'text')
@@ -1253,6 +1269,23 @@
     return () => cancelAnimationFrame(raf);
   });
 
+  /* The drawing surface for audio. The video element measures itself for
+     footage; the audio stage is whatever the frame box is, so it is measured
+     here and the annotation overlay (inset:0 on that box) lands on exactly
+     the picture a stroke was drawn over. */
+  let boxSize = $state({ width: 0, height: 0 });
+  $effect(() => {
+    if (!frameBox) return;
+    const element = frameBox;
+    const measure = (): void => {
+      boxSize = { width: element.clientWidth, height: element.clientHeight };
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  });
+
   /* Window resize does not fire the video element's resize event (that event
      is for intrinsic size changes), so track layout size with a ResizeObserver. */
   $effect(() => {
@@ -1336,11 +1369,10 @@
         <track kind="captions" srclang="en" label="English captions" src={captionsSrc ?? 'data:text/vtt;charset=utf-8,WEBVTT'} />
       </video>
       {/if}
-      {#if !isAudio}
       <AnnotationOverlay
         strokes={canvasStrokes}
-        width={videoWidth}
-        height={videoHeight}
+        width={isAudio ? boxSize.width : videoWidth}
+        height={isAudio ? boxSize.height : videoHeight}
         interactive={drawMode}
         tool={drawTool}
         color={drawColor}
@@ -1367,7 +1399,7 @@
         {#if textEdit && textEdit.index === entry.index}
           <input
             class="textdraft"
-            style={`left: ${(entry.stroke.points[0]?.[0] ?? 0) * 100}%; top: ${(entry.stroke.points[0]?.[1] ?? 0) * 100}%; color: ${entry.stroke.color ?? drawColor}; font-size: ${Math.max(12, (entry.stroke.width ?? 0.035) * Math.hypot(videoWidth, videoHeight))}px;`}
+            style={`left: ${(entry.stroke.points[0]?.[0] ?? 0) * 100}%; top: ${(entry.stroke.points[0]?.[1] ?? 0) * 100}%; color: ${entry.stroke.color ?? drawColor}; font-size: ${Math.max(12, (entry.stroke.width ?? 0.035) * Math.hypot(isAudio ? boxSize.width : videoWidth, isAudio ? boxSize.height : videoHeight))}px;`}
             bind:value={textEdit.value}
             maxlength="120"
             use:focusDraft
@@ -1384,7 +1416,7 @@
             class="textitem"
             class:live={drawMode}
             class:selected={selectedTextAt === entry.index}
-            style={`left: ${(entry.stroke.points[0]?.[0] ?? 0) * 100}%; top: ${(entry.stroke.points[0]?.[1] ?? 0) * 100}%; color: ${entry.stroke.color ?? drawColor}; font-size: ${Math.max(12, (entry.stroke.width ?? 0.035) * Math.hypot(videoWidth, videoHeight))}px;`}
+            style={`left: ${(entry.stroke.points[0]?.[0] ?? 0) * 100}%; top: ${(entry.stroke.points[0]?.[1] ?? 0) * 100}%; color: ${entry.stroke.color ?? drawColor}; font-size: ${Math.max(12, (entry.stroke.width ?? 0.035) * Math.hypot(isAudio ? boxSize.width : videoWidth, isAudio ? boxSize.height : videoHeight))}px;`}
             onpointerdown={(event) => textItemDown(entry.index, event)}
             onpointermove={textItemMove}
             onpointerup={() => textItemUp(entry.index)}
@@ -1407,14 +1439,13 @@
           </div>
         {/if}
       {/each}
-      {/if}
-      {#if textDraft && !isAudio}
+      {#if textDraft}
         <!-- The caret lives in the DOM; the committed stroke lives on the
              canvas. Enter commits, Escape lets it go, and clicking elsewhere
              in text mode simply moves the draft. -->
         <input
           class="textdraft"
-          style={`left: ${textDraft.point[0] * 100}%; top: ${textDraft.point[1] * 100}%; color: ${drawColor}; font-size: ${Math.max(12, 0.035 * Math.hypot(videoWidth, videoHeight))}px;`}
+          style={`left: ${textDraft.point[0] * 100}%; top: ${textDraft.point[1] * 100}%; color: ${drawColor}; font-size: ${Math.max(12, 0.035 * Math.hypot(isAudio ? boxSize.width : videoWidth, isAudio ? boxSize.height : videoHeight))}px;`}
           bind:value={textDraft.value}
           placeholder="Say it here"
           maxlength="120"
@@ -1626,7 +1657,7 @@
          draw controls in the page (the notes rail), so the row never shows. -->
     {#if chrome === 'full'}
     <div class="transport-row settings">
-      {#if allowDrawing && !isAudio}
+      {#if allowDrawing}
         <button type="button" aria-pressed={drawMode} onclick={toggleDraw}>Draw</button>
         {#if drawMode}
           <div class="seg" role="group" aria-label="Drawing tool">

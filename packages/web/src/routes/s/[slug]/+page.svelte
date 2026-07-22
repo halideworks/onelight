@@ -1346,12 +1346,12 @@
                 {/each}
               </span>
             {/if}
-            {#if showtime && (stillActive || (playerActive && selected?.kind !== 'audio'))}
+            {#if showtime && (playerActive || stillActive)}
               <!-- The player's own draw controls belong to the full
-                   instrument; here the rail hosts them. There is nothing to
-                   draw on in an audio room: a stroke over a waveform points
-                   at a moment, which is what the timecode on the note
-                   already says. -->
+                   instrument; here the rail hosts them. Audio draws on its
+                   own stage: a circle round a transient on the waveform is a
+                   note about that transient, and the note anchors to the
+                   moment the ink lands on. -->
               <div class="drawrow" role="group" aria-label="Drawing">
                 <button type="button" class="quiet" aria-pressed={drawOn} onclick={() => setDraw(!drawOn)}>
                   {drawOn ? 'Stop drawing' : 'Draw on the frame'}
