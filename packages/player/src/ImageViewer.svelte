@@ -293,7 +293,34 @@
 
   /* ---- drawing (the player's contract, on a still) ---- */
   const INK_ACCENT = '#a5605a';
-  const DRAW_WIDTH = 0.004;
+  /* Thickness as a fraction of the picture's diagonal (see Player.svelte:
+     the same setting, the same storage key, so a reviewer's line weight
+     follows them between a frame and a still). */
+  const DRAW_WIDTH_MIN = 0.001;
+  const DRAW_WIDTH_MAX = 0.009;
+  const DRAW_WIDTH_DEFAULT = 0.0022;
+  const DRAW_WIDTH_KEY = 'onelight.draw.width';
+  let drawWidth = $state(DRAW_WIDTH_DEFAULT);
+  $effect(() => {
+    try {
+      const stored = Number(localStorage.getItem(DRAW_WIDTH_KEY));
+      if (Number.isFinite(stored) && stored >= DRAW_WIDTH_MIN && stored <= DRAW_WIDTH_MAX)
+        drawWidth = stored;
+    } catch {
+      /* Storage can be unavailable; the default thickness stands. */
+    }
+  });
+  export function setDrawWidth(width: number): void {
+    drawWidth = Math.min(DRAW_WIDTH_MAX, Math.max(DRAW_WIDTH_MIN, width));
+    try {
+      localStorage.setItem(DRAW_WIDTH_KEY, String(drawWidth));
+    } catch {
+      /* Non-persistent thickness still applies for the session. */
+    }
+  }
+  const drawWidthPx = $derived(
+    Math.max(1, Math.round(drawWidth * Math.hypot(shown.width, shown.height)))
+  );
   let drawMode = $state(false);
   let drawTool = $state<'pen' | 'arrow' | 'rect' | 'text'>('pen');
   let drawColor = $state('');
@@ -454,7 +481,7 @@
         interactive={drawMode}
         tool={drawTool}
         color={drawColor}
-        strokeWidth={DRAW_WIDTH}
+        strokeWidth={drawWidth}
         onstroke={commitStroke}
         ontextplace={(point) => {
           if (textDraft?.value.trim()) {
@@ -547,6 +574,24 @@
             ></button>
           {/each}
         </div>
+        <!-- The nib and the slider are one control and wrap as one:
+             split across two lines they read as two settings. -->
+        <span class="thickrow">
+          <span class="nibbox" aria-hidden="true">
+            <span class="nib" style={`width: ${Math.min(18, drawWidthPx)}px; height: ${Math.min(18, drawWidthPx)}px; background: ${drawColor};`}></span>
+          </span>
+          <input
+            class="thick"
+            type="range"
+            min={DRAW_WIDTH_MIN}
+            max={DRAW_WIDTH_MAX}
+            step="0.0002"
+            value={drawWidth}
+            oninput={(event) => setDrawWidth(Number(event.currentTarget.value))}
+            aria-label="Line thickness"
+            title="Line thickness"
+          />
+        </span>
         <button type="button" onclick={undoStroke} disabled={pendingStrokes.length === 0}>Undo</button>
         <button type="button" onclick={clearStrokes} disabled={pendingStrokes.length === 0}>Clear</button>
       {/if}
@@ -645,6 +690,10 @@
   .seg button:first-child { border-radius: 2px 0 0 2px; }
   .seg button:last-child { border-radius: 0 2px 2px 0; }
   .inkrow { display: flex; align-items: center; gap: 5px; }
+  .nibbox { display: grid; place-items: center; flex: none; width: 18px; height: 18px; }
+  .nib { display: block; border-radius: 50%; }
+  .thickrow { display: flex; align-items: center; gap: 6px; flex: none; }
+  .thick { width: 88px; }
   .ink { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; opacity: 0.75; }
   .ink:hover { opacity: 1; }
   .ink[aria-pressed='true'] { opacity: 1; box-shadow: 0 0 0 2px var(--n-050, #101010), 0 0 0 3.5px var(--n-800, #c4c4c4); }

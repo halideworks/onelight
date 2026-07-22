@@ -168,6 +168,23 @@
     observer.observe(element);
     return () => observer.disconnect();
   });
+  /* The drawing surface for audio. The video element measures itself for
+     footage; the audio stage is whatever the frame box is, so it is measured
+     here and the annotation overlay (inset:0 on that box) lands on exactly
+     the picture a stroke was drawn over. */
+  let boxSize = $state({ width: 0, height: 0 });
+  $effect(() => {
+    if (!frameBox) return;
+    const element = frameBox;
+    const measure = (): void => {
+      boxSize = { width: element.clientWidth, height: element.clientHeight };
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  });
+
   let muted = $state(false);
   let volume = $state(1);
   /* Touch: the inline slider is hidden (no room under a thumb), so the sound
@@ -679,7 +696,47 @@
   /* An uncommitted text placement: the input floats at its anchor until
      Enter commits it as a text stroke or Escape lets it go. */
   let textDraft = $state<{ point: AnnotationPoint; value: string } | null>(null);
-  const DRAW_WIDTH = 0.004; /* normalized fraction of the frame diagonal */
+  /* Line thickness, as a fraction of the picture's diagonal, so a stroke
+     keeps its weight at any window size and burns the same on any export.
+     The old fixed 0.004 was one setting for every job and it was heavy: on a
+     1080 stage it draws a seven pixel line, which buries the detail it is
+     pointing at. The default is finer now and the reviewer sets it. */
+  const DRAW_WIDTH_MIN = 0.001;
+  const DRAW_WIDTH_MAX = 0.009;
+  const DRAW_WIDTH_DEFAULT = 0.0022;
+  const DRAW_WIDTH_KEY = 'onelight.draw.width';
+  let drawWidth = $state(DRAW_WIDTH_DEFAULT);
+  $effect(() => {
+    try {
+      const stored = Number(localStorage.getItem(DRAW_WIDTH_KEY));
+      if (Number.isFinite(stored) && stored >= DRAW_WIDTH_MIN && stored <= DRAW_WIDTH_MAX)
+        drawWidth = stored;
+    } catch {
+      /* Storage can be unavailable; the default thickness stands. */
+    }
+  });
+  export function setDrawWidth(width: number): void {
+    drawWidth = Math.min(DRAW_WIDTH_MAX, Math.max(DRAW_WIDTH_MIN, width));
+    try {
+      localStorage.setItem(DRAW_WIDTH_KEY, String(drawWidth));
+    } catch {
+      /* Non-persistent thickness still applies for the session. */
+    }
+  }
+  /* What that fraction is in pixels on this screen right now, which is the
+     only number a person can judge. */
+  const drawWidthPx = $derived(
+    Math.max(
+      1,
+      Math.round(
+        drawWidth *
+          Math.hypot(
+            isAudio ? boxSize.width : videoWidth,
+            isAudio ? boxSize.height : videoHeight
+          )
+      )
+    )
+  );
   let drawMode = $state(false);
   let drawTool = $state<'pen' | 'arrow' | 'rect' | 'text'>('pen');
   let drawColor = $state('');
@@ -1269,23 +1326,6 @@
     return () => cancelAnimationFrame(raf);
   });
 
-  /* The drawing surface for audio. The video element measures itself for
-     footage; the audio stage is whatever the frame box is, so it is measured
-     here and the annotation overlay (inset:0 on that box) lands on exactly
-     the picture a stroke was drawn over. */
-  let boxSize = $state({ width: 0, height: 0 });
-  $effect(() => {
-    if (!frameBox) return;
-    const element = frameBox;
-    const measure = (): void => {
-      boxSize = { width: element.clientWidth, height: element.clientHeight };
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
-  });
-
   /* Window resize does not fire the video element's resize event (that event
      is for intrinsic size changes), so track layout size with a ResizeObserver. */
   $effect(() => {
@@ -1376,7 +1416,7 @@
         interactive={drawMode}
         tool={drawTool}
         color={drawColor}
-        strokeWidth={DRAW_WIDTH}
+        strokeWidth={drawWidth}
         onstroke={commitStroke}
         ontextplace={(point) => {
           /* Clicking the frame with words already in a box applies them; it
@@ -1678,6 +1718,26 @@
               ></button>
             {/each}
           </div>
+          <!-- Thickness, with the nib next to it: the dot is the line you are
+               about to draw, at the size it will be. -->
+          <!-- The nib and the slider are one control and wrap as one:
+               split across two lines they read as two settings. -->
+          <span class="thickrow">
+            <span class="nibbox" aria-hidden="true">
+              <span class="nib" style={`width: ${drawWidthPx}px; height: ${drawWidthPx}px; background: ${drawColor};`}></span>
+            </span>
+            <input
+              class="thick"
+              type="range"
+              min={DRAW_WIDTH_MIN}
+              max={DRAW_WIDTH_MAX}
+              step="0.0002"
+              value={drawWidth}
+              oninput={(event) => setDrawWidth(Number(event.currentTarget.value))}
+              aria-label="Line thickness"
+              title="Line thickness"
+            />
+          </span>
           <button type="button" onclick={undoStroke} disabled={pendingStrokes.length === 0}>Undo</button>
           <button type="button" onclick={clearStrokes} disabled={pendingStrokes.length === 0}>Clear</button>
           {#if seekLocked}
@@ -1863,6 +1923,12 @@
   .texttools button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 2px; background: none; color: var(--n-800, #c4c4c4); cursor: pointer; }
   .texttools button:hover { background: var(--n-300, #2e2e2e); color: #fff; }
   .inkrow { display: flex; align-items: center; gap: 5px; }
+  /* The nib sits in a box of the largest size it can take, so the row does
+     not shuffle sideways as the slider moves. */
+  .nibbox { display: grid; place-items: center; flex: none; width: 18px; height: 18px; margin-left: 6px; }
+  .nib { display: block; border-radius: 50%; max-width: 18px; max-height: 18px; }
+  .thickrow { display: flex; align-items: center; gap: 6px; flex: none; }
+  .thick { width: 88px; }
   .ink { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; opacity: 0.75; }
   .ink:hover { opacity: 1; }
   .ink[aria-pressed='true'] { opacity: 1; box-shadow: 0 0 0 2px var(--n-050, #101010), 0 0 0 3.5px var(--n-800, #c4c4c4); }

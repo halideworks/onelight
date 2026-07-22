@@ -867,6 +867,26 @@
     stills?.setDrawColor(ink);
   };
 
+  /* Line thickness lives with the instrument (it persists there, and both
+     instruments read the same key); the rail only moves it. */
+  const DRAW_WIDTH_MIN = 0.001;
+  const DRAW_WIDTH_MAX = 0.009;
+  let drawWidth = $state(0.0022);
+  $effect(() => {
+    try {
+      const stored = Number(localStorage.getItem('onelight.draw.width'));
+      if (Number.isFinite(stored) && stored >= DRAW_WIDTH_MIN && stored <= DRAW_WIDTH_MAX)
+        drawWidth = stored;
+    } catch {
+      /* Storage can be unavailable; the default thickness stands. */
+    }
+  });
+  const pickWidth = (width: number): void => {
+    drawWidth = width;
+    player?.setDrawWidth(width);
+    stills?.setDrawWidth(width);
+  };
+
   /* A note can cover a stretch of time. The range lives in the composer
      (simple chrome has no marks), reads as plain from/to, and nudges by
      single frames. */
@@ -1375,6 +1395,18 @@
                       ></button>
                     {/each}
                   </div>
+                  <label class="thickrow">
+                    <span class="lbl">Thickness</span>
+                    <input
+                      type="range"
+                      min={DRAW_WIDTH_MIN}
+                      max={DRAW_WIDTH_MAX}
+                      step="0.0002"
+                      value={drawWidth}
+                      oninput={(event) => pickWidth(Number(event.currentTarget.value))}
+                      aria-label="Line thickness"
+                    />
+                  </label>
                 {/if}
               </div>
             {/if}
@@ -1792,6 +1824,10 @@
   .attachinput { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
   .drawrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .inkrow { display: flex; align-items: center; gap: 5px; }
+  .thickrow { display: flex; align-items: center; gap: 8px; }
+  .thickrow input { width: 110px; }
+  .thickrow .lbl { color: var(--n-600); font-size: var(--text-12); }
+  .showtime .thickrow .lbl { color: var(--ink-text-dim); }
   .inkdot { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; opacity: 0.7; }
   .inkdot:hover { opacity: 1; }
   .inkdot[aria-pressed='true'] { opacity: 1; box-shadow: 0 0 0 2px var(--n-050), 0 0 0 3.5px var(--n-800); }
