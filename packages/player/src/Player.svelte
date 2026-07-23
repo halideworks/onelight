@@ -31,7 +31,13 @@
   import { markerInkFor } from './timeline.js';
   import type { TimelineMarker } from './timeline.js';
   import type { SpriteCue } from './filmstrip.js';
-  import type { PlayerRendition, SurroundMode, WatermarkOverlay } from './options.js';
+  import type {
+    PlayerRendition,
+    ShuttleAudioDiagnostic,
+    ShuttleAudioSources,
+    SurroundMode,
+    WatermarkOverlay
+  } from './options.js';
 
   let {
     src,
@@ -42,6 +48,7 @@
     durationFrames = null,
     markers = [],
     renditions = [],
+    shuttleAudio = null,
     allowDrawing = false,
     drawDefaultColor = undefined,
     chrome = 'full',
@@ -59,7 +66,8 @@
     onplaystate = undefined,
     onshare = undefined,
     onrangechange = undefined,
-    oncopytimecode = undefined
+    oncopytimecode = undefined,
+    onshuttleaudiodiagnostic = undefined
   }: {
     src: string;
     rate?: { num: number; den: number };
@@ -69,6 +77,7 @@
     durationFrames?: number | null;
     markers?: TimelineMarker[];
     renditions?: PlayerRendition[];
+    shuttleAudio?: ShuttleAudioSources | null;
     allowDrawing?: boolean;
     /* The author's own ink (annotationInkFor them): the default drawing and
        text colour until they pick another. */
@@ -114,7 +123,13 @@
        non-secure origin needs -- so the player hands over the text and shows
        what the page reports back. */
     oncopytimecode?: ((text: string) => Promise<boolean>) | undefined;
+    /* The host reports this to its own authenticated diagnostic endpoint. */
+    onshuttleaudiodiagnostic?:
+      | ((diagnostic: ShuttleAudioDiagnostic) => void)
+      | undefined;
   } = $props();
+  const markerInitial = (marker: TimelineMarker): string =>
+    [...(marker.author?.trim() || 'Reviewer')][0]?.toUpperCase() ?? '?';
 
   /* The element that plays. A video for footage, an audio element for a mix:
      everything the transport does (play, pause, currentTime, playbackRate,
@@ -229,6 +244,17 @@
 
   let muted = $state(false);
   let volume = $state(1);
+  /* At accelerated forward rates the picture and sound use separate elements.
+     The sidecar itself is already time-compressed and therefore plays at 1x,
+     outside the browser pitch-preserving playback-rate path that can go silent
+     on otherwise healthy Chrome and Firefox installations. */
+  let shuttleTrack: HTMLAudioElement | undefined = $state();
+  let shuttleAudioActive = $state(false);
+  let shuttleAudioRate: 2 | 4 | 0 = 0;
+  let shuttleAudioGeneration = 0;
+  let shuttleAudioUrl = '';
+  let shuttleHealthTimer: ReturnType<typeof setTimeout> | null = null;
+  const reportedShuttleFailures = new Set<string>();
   /* Touch: the inline slider is hidden (no room under a thumb), so the sound
      button opens a small vertical slider instead of toggling mute. Queried at
      click time, not at mount: a convertible can change personality mid-session. */
@@ -1131,8 +1157,15 @@
      (a duration that disagrees with the file by a frame, a rendition that ends
      early), the element ends and the loop would silently stop. */
   const handleEnded = (): void => {
-    if (!loop || !video || forwardSpeed === 0) return;
+    if (!video || forwardSpeed === 0) return;
+    if (!loop) {
+      forwardSpeed = 0;
+      stopShuttleAudio();
+      restoreRate();
+      return;
+    }
     video.currentTime = mediaTimeInsideFrame(loopStart, rate);
+    syncShuttleAudio(true);
     void video.play();
   };
 
@@ -1141,6 +1174,7 @@
      currentTime. */
   const rvfcLoop = (_now: number, metadata: VideoFrameCallbackMetadata): void => {
     setFrame(frameAtMediaTime(metadata.mediaTime, rate));
+    syncShuttleAudio();
     pictureElement()?.requestVideoFrameCallback(rvfcLoop);
   };
 
@@ -1148,6 +1182,7 @@
   const handleTimeUpdate = (): void => {
     if (!video) return;
     setFrame(frameAtCurrentTime(video.currentTime, rate));
+    syncShuttleAudio();
   };
 
   const handleLoadedMetadata = (): void => {
@@ -1335,6 +1370,183 @@
     if (video) configurePlaybackRate(video, 1, true);
   };
 
+  const shuttleUrlFor = (nextRate: 2 | 4): string | null =>
+    nextRate === 2 ? (shuttleAudio?.x2 ?? null) : (shuttleAudio?.x4 ?? null);
+
+  const shuttleDiagnostic = (
+    reason: string,
+    failure?: unknown,
+  ): ShuttleAudioDiagnostic => ({
+    reason,
+    rate: shuttleAudioRate,
+    main_ready_state: video?.readyState ?? null,
+    main_network_state: video?.networkState ?? null,
+    main_playback_rate: video?.playbackRate ?? null,
+    main_current_time: video?.currentTime ?? null,
+    main_paused: video?.paused ?? null,
+    main_muted: video?.muted ?? null,
+    main_volume: video?.volume ?? null,
+    sidecar_ready_state: shuttleTrack?.readyState ?? null,
+    sidecar_network_state: shuttleTrack?.networkState ?? null,
+    sidecar_current_time: shuttleTrack?.currentTime ?? null,
+    sidecar_duration:
+      shuttleTrack && Number.isFinite(shuttleTrack.duration)
+        ? shuttleTrack.duration
+        : null,
+    sidecar_paused: shuttleTrack?.paused ?? null,
+    sidecar_muted: shuttleTrack?.muted ?? null,
+    sidecar_volume: shuttleTrack?.volume ?? null,
+    sidecar_source_present:
+      shuttleAudioRate === 2 || shuttleAudioRate === 4
+        ? shuttleUrlFor(shuttleAudioRate) !== null
+        : false,
+    sidecar_media_error: shuttleTrack?.error?.code ?? null,
+    document_visibility:
+      typeof document === 'undefined' ? null : document.visibilityState,
+    online: typeof navigator === 'undefined' ? null : navigator.onLine,
+    failure:
+      failure instanceof Error
+        ? failure.message.slice(0, 1000)
+        : failure
+          ? String(failure).slice(0, 1000)
+          : null,
+  });
+
+  const reportShuttleDiagnostic = (reason: string, failure?: unknown): void => {
+    const diagnostic = shuttleDiagnostic(reason, failure);
+    const reportKey = `${reason}:${String(diagnostic.rate)}:${shuttleAudioUrl}`;
+    if (reportedShuttleFailures.has(reportKey)) return;
+    reportedShuttleFailures.add(reportKey);
+    onshuttleaudiodiagnostic?.(diagnostic);
+    if (typeof window !== 'undefined')
+      window.dispatchEvent(
+        new CustomEvent('onelight:shuttle-audio-diagnostic', {
+          detail: diagnostic,
+        }),
+      );
+  };
+
+  const stopShuttleAudio = (): void => {
+    shuttleAudioGeneration += 1;
+    if (shuttleHealthTimer !== null) {
+      clearTimeout(shuttleHealthTimer);
+      shuttleHealthTimer = null;
+    }
+    shuttleAudioActive = false;
+    shuttleAudioRate = 0;
+    shuttleTrack?.pause();
+    if (video) video.muted = muted;
+  };
+
+  const fallbackShuttleAudio = (reason: string, failure?: unknown): void => {
+    if (!shuttleAudioActive && shuttleAudioRate === 0) return;
+    const diagnostic = shuttleDiagnostic(reason, failure);
+    reportShuttleDiagnostic(reason, failure);
+    stopShuttleAudio();
+    /* Keep the proven audible fallback: direct varispeed on the main element.
+       The pitch rises, but a failed sidecar must never recreate silent JKL. */
+    console.warn(
+      'onelight player: pitch-corrected shuttle audio unavailable; using audible varispeed fallback',
+      diagnostic,
+    );
+  };
+
+  const syncShuttleAudio = (force = false): void => {
+    if (
+      !shuttleAudioActive ||
+      !video ||
+      !shuttleTrack ||
+      shuttleAudioRate === 0
+    )
+      return;
+    const expected = video.currentTime / shuttleAudioRate;
+    if (
+      Number.isFinite(expected) &&
+      (force || Math.abs(shuttleTrack.currentTime - expected) > 0.075)
+    ) {
+      try {
+        shuttleTrack.currentTime = expected;
+      } catch {
+        /* Metadata may still be arriving. The next presented frame retries. */
+      }
+    }
+  };
+
+  const startShuttleAudio = (nextRate: 2 | 4): void => {
+    const track = shuttleTrack;
+    const media = video;
+    const url = shuttleUrlFor(nextRate);
+    if (!track || !media || !url) {
+      shuttleAudioRate = nextRate;
+      fallbackShuttleAudio(
+        !url ? 'source_missing' : !track ? 'sidecar_element_missing' : 'main_element_missing',
+      );
+      return;
+    }
+    if (
+      shuttleAudioActive &&
+      shuttleAudioRate === nextRate &&
+      shuttleAudioUrl === url
+    ) {
+      syncShuttleAudio(true);
+      return;
+    }
+    const generation = ++shuttleAudioGeneration;
+    shuttleAudioActive = false;
+    shuttleAudioRate = nextRate;
+    track.pause();
+    if (shuttleAudioUrl !== url) {
+      shuttleAudioUrl = url;
+      track.src = url;
+      track.load();
+    }
+    track.playbackRate = 1;
+    track.volume = volume;
+    track.muted = muted;
+    try {
+      track.currentTime = media.currentTime / nextRate;
+    } catch {
+      /* The loadedmetadata handler below performs the first sync. */
+    }
+    /* Call play before yielding from the keyboard event so browser autoplay
+       policy sees the same user gesture that started the picture. */
+    void track.play().then(
+      () => {
+        if (
+          generation !== shuttleAudioGeneration ||
+          forwardSpeed !== nextRate ||
+          !video
+        ) {
+          track.pause();
+          return;
+        }
+        shuttleAudioActive = true;
+        video.muted = true;
+        syncShuttleAudio(true);
+        reportShuttleDiagnostic('sidecar_started');
+        const startedAt = track.currentTime;
+        shuttleHealthTimer = setTimeout(() => {
+          shuttleHealthTimer = null;
+          if (
+            generation !== shuttleAudioGeneration ||
+            !shuttleAudioActive ||
+            forwardSpeed !== nextRate ||
+            !video ||
+            video.paused
+          )
+            return;
+          if (track.currentTime <= startedAt + 0.1)
+            fallbackShuttleAudio('sidecar_clock_stalled');
+          else reportShuttleDiagnostic('sidecar_clock_advancing');
+        }, 1200);
+      },
+      (failure: unknown) => {
+        if (generation === shuttleAudioGeneration)
+          fallbackShuttleAudio('play_rejected', failure);
+      },
+    );
+  };
+
   /* Any explicit transport action cancels a rendition-switch restore in
      flight: the reviewer's intent supersedes the frame/play state captured
      before the swap, and letting the restore run would fight it (for example
@@ -1350,6 +1562,7 @@
     cancelPendingRestore();
     stopReverse();
     forwardSpeed = 0;
+    stopShuttleAudio();
     video?.pause();
     restoreRate();
     seekFrame(targetFrame);
@@ -1379,6 +1592,7 @@
     cancelPendingRestore();
     stopReverse();
     forwardSpeed = 0;
+    stopShuttleAudio();
     video.pause();
     restoreRate();
   };
@@ -1398,8 +1612,12 @@
        pitch-preserving time-stretch processor, the only audio path that
        differs from audible 1x playback. */
     configurePlaybackRate(video, forwardSpeed, !shuttle);
+    if (shuttle && (forwardSpeed === 2 || forwardSpeed === 4))
+      startShuttleAudio(forwardSpeed);
+    else stopShuttleAudio();
     video.play().catch((refusal: unknown) => {
       forwardSpeed = 0;
+      stopShuttleAudio();
       restoreRate();
       playRefused = true;
       console.warn('onelight player: play() was refused', refusal);
@@ -1415,6 +1633,7 @@
     cancelPendingRestore();
     video.pause();
     forwardSpeed = 0;
+    stopShuttleAudio();
     restoreRate();
     reverseSpeed = reverseSpeed > 0 ? Math.min(4, reverseSpeed * 2) : 1;
     if (reverseTimer === null) {
@@ -1591,8 +1810,24 @@
   });
 
   $effect(() => {
+    if (!shuttleTrack) return;
+    shuttleTrack.volume = volume;
+    shuttleTrack.muted = muted;
+  });
+
+  $effect(() => {
+    void shuttleAudio;
+    if (
+      shuttleAudioRate !== 0 &&
+      !shuttleUrlFor(shuttleAudioRate)
+    )
+      fallbackShuttleAudio('source_removed');
+  });
+
+  $effect(() => {
     return () => {
       if (reverseTimer !== null) clearInterval(reverseTimer);
+      shuttleTrack?.pause();
     };
   });
 </script>
@@ -1620,7 +1855,7 @@
         <audio
           bind:this={video}
           src={currentSrc || src}
-          bind:muted
+          muted={muted || shuttleAudioActive}
           bind:volume
           ontimeupdate={handleTimeUpdate}
           onloadedmetadata={handleLoadedMetadata}
@@ -1651,7 +1886,7 @@
         class:arrived={pictureIn || posterUrl !== null}
         src={currentSrc || src}
         poster={posterUrl ?? undefined}
-        bind:muted
+        muted={muted || shuttleAudioActive}
         bind:volume
         playsinline
         ontimeupdate={hasRvfc ? undefined : handleTimeUpdate}
@@ -1671,6 +1906,24 @@
         <track kind="captions" srclang="en" label="English captions" src={captionsSrc ?? 'data:text/vtt;charset=utf-8,WEBVTT'} />
       </video>
       {/if}
+      <audio
+        class="shuttle-audio"
+        bind:this={shuttleTrack}
+        preload="auto"
+        aria-hidden="true"
+        onloadedmetadata={() => syncShuttleAudio(true)}
+        onerror={() => {
+          if (shuttleAudioRate !== 0)
+            fallbackShuttleAudio(
+              'media_error',
+              shuttleTrack?.error?.message ?? shuttleTrack?.error?.code,
+            );
+        }}
+        onended={() => {
+          if (shuttleAudioActive && video && !video.ended)
+            fallbackShuttleAudio('sidecar_ended_early');
+        }}
+      ></audio>
       <AnnotationOverlay
         strokes={canvasStrokes}
         width={isAudio ? boxSize.width : videoWidth}
@@ -2174,7 +2427,15 @@
                     aria-label={`Note from ${marker.author ?? 'a reviewer'}`}
                     onpointerdown={(event) => event.stopPropagation()}
                     onclick={(event) => { event.stopPropagation(); handleMarkerSelect(marker.id, marker.frameIn); }}
-                  ></button>
+                  >
+                    <span class="scrub-face" aria-hidden="true">
+                      {#if marker.avatarUrl}
+                        <img src={marker.avatarUrl} alt="" loading="lazy" decoding="async" draggable="false" />
+                      {:else}
+                        <span>{markerInitial(marker)}</span>
+                      {/if}
+                    </span>
+                  </button>
                 {:else}
                   <button
                     type="button"
@@ -2183,7 +2444,13 @@
                     aria-label={`Note from ${marker.author ?? 'a reviewer'}`}
                     onpointerdown={(event) => event.stopPropagation()}
                     onclick={(event) => { event.stopPropagation(); handleMarkerSelect(marker.id, marker.frameIn); }}
-                  ></button>
+                  >
+                    {#if marker.avatarUrl}
+                      <img src={marker.avatarUrl} alt="" loading="lazy" decoding="async" draggable="false" />
+                    {:else}
+                      <span>{markerInitial(marker)}</span>
+                    {/if}
+                  </button>
                 {/if}
               {/each}
             {/if}
@@ -2304,8 +2571,10 @@
      scale, so a themed room recolours it with everything else. */
   .scrub { padding: 12px 0 8px; cursor: pointer; touch-action: none; outline: none; }
   .scrub-track { position: relative; height: 5px; border-radius: 3px; background: var(--n-150, #1c1c1c); transition: height 140ms ease; }
-  .scrub-mark { position: absolute; top: -3px; bottom: -3px; width: 3px; padding: 0; border: 0; border-radius: 1px; background: var(--ink); transform: translateX(-50%); cursor: pointer; opacity: 0.9; }
-  .scrub-mark.span { transform: none; min-width: 3px; opacity: 0.5; border-radius: 2px; }
+  .scrub-mark { position: absolute; top: -4px; width: 12px; height: 12px; padding: 0; border: 0; border-radius: 50%; overflow: hidden; background: var(--ink); color: var(--n-050, #101010); transform: translateX(-50%); cursor: pointer; opacity: 0.95; font-size: 7px; font-weight: 700; line-height: 12px; text-align: center; }
+  .scrub-mark > img, .scrub-face img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .scrub-mark.span { top: 1px; height: 4px; transform: none; min-width: 3px; overflow: visible; opacity: 0.55; border-radius: 2px; }
+  .scrub-face { position: absolute; left: 0; top: 50%; display: grid; place-items: center; width: 12px; height: 12px; border-radius: 50%; overflow: hidden; transform: translate(-50%, -50%); background: var(--ink); color: var(--n-050, #101010); font-size: 7px; font-weight: 700; line-height: 1; }
   .scrub-mark:hover { opacity: 1; }
   .scrub:hover .scrub-track, .scrub.scrubbing .scrub-track, .scrub:focus-visible .scrub-track { height: 7px; }
   /* A real focus ring, not just a 2px thickening of a hairline that a keyboard

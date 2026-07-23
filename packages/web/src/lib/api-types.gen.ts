@@ -4324,6 +4324,7 @@ export interface paths {
                                 author_user_id: string | null;
                                 author_name: string | null;
                                 author_email: string | null;
+                                author_avatar_url: string | null;
                                 frame_in: number | null;
                                 frame_out: number | null;
                                 body_text: string;
@@ -4431,6 +4432,7 @@ export interface paths {
                             author_user_id: string | null;
                             author_name: string | null;
                             author_email: string | null;
+                            author_avatar_url: string | null;
                             frame_in: number | null;
                             frame_out: number | null;
                             body_text: string;
@@ -4694,6 +4696,7 @@ export interface paths {
                             author_user_id: string | null;
                             author_name: string | null;
                             author_email: string | null;
+                            author_avatar_url: string | null;
                             frame_in: number | null;
                             frame_out: number | null;
                             body_text: string;
@@ -5021,6 +5024,7 @@ export interface paths {
                             author_user_id: string | null;
                             author_name: string | null;
                             author_email: string | null;
+                            author_avatar_url: string | null;
                             frame_in: number | null;
                             frame_out: number | null;
                             body_text: string;
@@ -5126,6 +5130,7 @@ export interface paths {
                             author_user_id: string | null;
                             author_name: string | null;
                             author_email: string | null;
+                            author_avatar_url: string | null;
                             frame_in: number | null;
                             frame_out: number | null;
                             body_text: string;
@@ -5216,6 +5221,7 @@ export interface paths {
                             author_user_id: string | null;
                             author_name: string | null;
                             author_email: string | null;
+                            author_avatar_url: string | null;
                             frame_in: number | null;
                             frame_out: number | null;
                             body_text: string;
@@ -8263,6 +8269,10 @@ export interface paths {
                                     spectrogram: {
                                         url: string;
                                     } | null;
+                                    shuttle_audio: {
+                                        x2: string | null;
+                                        x4: string | null;
+                                    };
                                     captions: {
                                         language: string;
                                         label: string;
@@ -8351,6 +8361,7 @@ export interface paths {
                                 version_id: string;
                                 parent_id: string | null;
                                 author_name: string | null;
+                                author_avatar_url: string | null;
                                 frame_in: number | null;
                                 frame_out: number | null;
                                 body_text: string;
@@ -8451,6 +8462,7 @@ export interface paths {
                             version_id: string;
                             parent_id: string | null;
                             author_name: string | null;
+                            author_avatar_url: string | null;
                             frame_in: number | null;
                             frame_out: number | null;
                             body_text: string;
@@ -8478,6 +8490,181 @@ export interface paths {
                             mine?: boolean;
                         };
                     };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s/{slug}/comments/{commentId}/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    slug: string;
+                    commentId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Binary payload */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/png": string;
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s/{slug}/assets/{assetId}/playback-diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record an automatic JKL shuttle-audio fallback diagnostic for an authorized share viewer. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    slug: string;
+                    assetId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        reason: "source_missing" | "sidecar_element_missing" | "main_element_missing" | "play_rejected" | "media_error" | "sidecar_ended_early" | "sidecar_clock_stalled" | "source_removed" | "sidecar_started" | "sidecar_clock_advancing";
+                        /** @enum {number} */
+                        rate: 0 | 2 | 4;
+                        main_ready_state: number | null;
+                        main_network_state: number | null;
+                        main_playback_rate: number | null;
+                        main_current_time: number | null;
+                        main_paused: boolean | null;
+                        main_muted: boolean | null;
+                        main_volume?: number | null;
+                        sidecar_ready_state: number | null;
+                        sidecar_network_state: number | null;
+                        sidecar_current_time: number | null;
+                        sidecar_duration?: number | null;
+                        sidecar_paused: boolean | null;
+                        sidecar_muted?: boolean | null;
+                        sidecar_volume?: number | null;
+                        sidecar_source_present?: boolean;
+                        sidecar_media_error: number | null;
+                        document_visibility?: ("hidden" | "visible" | "prerender") | null;
+                        online?: boolean | null;
+                        failure: string | null;
+                    };
+                };
+            };
+            responses: {
+                /** @description No content */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
                 };
                 /** @description Validation failure */
                 400: {
@@ -8622,6 +8809,7 @@ export interface paths {
                             version_id: string;
                             parent_id: string | null;
                             author_name: string | null;
+                            author_avatar_url: string | null;
                             frame_in: number | null;
                             frame_out: number | null;
                             body_text: string;
@@ -8950,6 +9138,7 @@ export interface paths {
                             version_id: string;
                             parent_id: string | null;
                             author_name: string | null;
+                            author_avatar_url: string | null;
                             frame_in: number | null;
                             frame_out: number | null;
                             body_text: string;
@@ -12965,6 +13154,106 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/versions/{id}/playback-diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record an automatic JKL shuttle-audio fallback diagnostic for a project member. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        reason: "source_missing" | "sidecar_element_missing" | "main_element_missing" | "play_rejected" | "media_error" | "sidecar_ended_early" | "sidecar_clock_stalled" | "source_removed" | "sidecar_started" | "sidecar_clock_advancing";
+                        /** @enum {number} */
+                        rate: 0 | 2 | 4;
+                        main_ready_state: number | null;
+                        main_network_state: number | null;
+                        main_playback_rate: number | null;
+                        main_current_time: number | null;
+                        main_paused: boolean | null;
+                        main_muted: boolean | null;
+                        main_volume?: number | null;
+                        sidecar_ready_state: number | null;
+                        sidecar_network_state: number | null;
+                        sidecar_current_time: number | null;
+                        sidecar_duration?: number | null;
+                        sidecar_paused: boolean | null;
+                        sidecar_muted?: boolean | null;
+                        sidecar_volume?: number | null;
+                        sidecar_source_present?: boolean;
+                        sidecar_media_error: number | null;
+                        document_visibility?: ("hidden" | "visible" | "prerender") | null;
+                        online?: boolean | null;
+                        failure: string | null;
+                    };
+                };
+            };
+            responses: {
+                /** @description No content */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;

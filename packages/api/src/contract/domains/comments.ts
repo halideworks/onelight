@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   assetVersions,
@@ -163,7 +163,7 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       expect(nested.status).toBe(400);
     });
 
-    it("enforces edit and delete ownership with manager moderation", async () => {
+    it("limits edits to authors and lets managers delete for moderation", async () => {
       const h = ctx.h();
       const seed = ctx.seed();
       const author = await createUser(h, {
@@ -198,7 +198,7 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
         cookie: seed.manager.cookie,
         json: { body_text: "moderated" },
       });
-      expect(managerEdit.status).toBe(200);
+      expect(managerEdit.status).toBe(403);
       const strangerDelete = await req(h, `/api/v1/comments/${created.id}`, {
         method: "DELETE",
         cookie: seed.commenter.cookie,
@@ -221,6 +221,86 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
         cookie: author.cookie,
       });
       expect(deleted.status).toBe(204);
+    });
+
+    it("accepts automatic playback diagnostics only with version access", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const diagnostic = {
+        reason: "source_missing",
+        rate: 2,
+        main_ready_state: 4,
+        main_network_state: 1,
+        main_playback_rate: 2,
+        main_current_time: 12.5,
+        main_paused: false,
+        main_muted: false,
+        main_volume: 0.75,
+        sidecar_ready_state: 0,
+        sidecar_network_state: 0,
+        sidecar_current_time: 0,
+        sidecar_duration: null,
+        sidecar_paused: true,
+        sidecar_muted: false,
+        sidecar_volume: 0.75,
+        sidecar_source_present: false,
+        sidecar_media_error: null,
+        document_visibility: "visible",
+        online: true,
+        failure: null,
+      };
+      try {
+        const anonymous = await req(
+          h,
+          `/api/v1/versions/${seed.media.versionId}/playback-diagnostics`,
+          { method: "POST", json: diagnostic, origin: false },
+        );
+        expect(anonymous.status).toBe(401);
+        const accepted = await req(
+          h,
+          `/api/v1/versions/${seed.media.versionId}/playback-diagnostics`,
+          {
+            method: "POST",
+            cookie: seed.commenter.cookie,
+            json: diagnostic,
+            headers: { "user-agent": "Contract Browser" },
+          },
+        );
+        expect(accepted.status).toBe(204);
+        expect(warning).toHaveBeenCalledWith(
+          expect.stringContaining("[onelight-playback-diagnostic]"),
+        );
+        expect(warning).toHaveBeenCalledWith(
+          expect.stringContaining("Contract Browser"),
+        );
+        const record = JSON.parse(
+          String(warning.mock.calls[0]?.[0]).slice(
+            "[onelight-playback-diagnostic] ".length,
+          ),
+        ) as Record<string, unknown>;
+        expect(record).toMatchObject({
+          scope: "project",
+          actor_id: seed.commenter.id,
+          version_id: seed.media.versionId,
+          reason: "source_missing",
+          main_volume: 0.75,
+          document_visibility: "visible",
+        });
+        expect(record.request_id).toEqual(expect.any(String));
+        const invalid = await req(
+          h,
+          `/api/v1/versions/${seed.media.versionId}/playback-diagnostics`,
+          {
+            method: "POST",
+            cookie: seed.commenter.cookie,
+            json: { ...diagnostic, rate: 3 },
+          },
+        );
+        expect(invalid.status).toBe(400);
+      } finally {
+        warning.mockRestore();
+      }
     });
 
     it("completes comments and records the completing user", async () => {

@@ -186,10 +186,11 @@ const probeShuttleAudio = async (
   const audioContext = new AudioContext();
   const source = audioContext.createMediaElementSource(media);
   const analyser = audioContext.createAnalyser();
-  analyser.fftSize = 2048;
+  analyser.fftSize = 8192;
   source.connect(analyser);
   analyser.connect(audioContext.destination);
   const samples = new Float32Array(analyser.fftSize);
+  const frequencyBins = new Float32Array(analyser.frequencyBinCount);
 
   try {
     const canPlay = waitForEvent(media, "canplay", 15_000);
@@ -198,19 +199,31 @@ const probeShuttleAudio = async (
     await Promise.all([canPlay, audioContext.resume(), media.play()]);
 
     let rms = 0;
+    let dominantHz = 0;
+    let dominantDb = Number.NEGATIVE_INFINITY;
     for (let sample = 0; sample < 8; sample += 1) {
       await wait(50);
       analyser.getFloatTimeDomainData(samples);
       let sumSquares = 0;
       for (const value of samples) sumSquares += value * value;
       rms = Math.max(rms, Math.sqrt(sumSquares / samples.length));
+      analyser.getFloatFrequencyData(frequencyBins);
+      for (let bin = 1; bin < frequencyBins.length; bin += 1) {
+        const db = frequencyBins[bin] ?? Number.NEGATIVE_INFINITY;
+        if (db > dominantDb) {
+          dominantDb = db;
+          dominantHz = (bin * audioContext.sampleRate) / analyser.fftSize;
+        }
+      }
     }
 
     return {
       currentTime: media.currentTime,
+      duration: media.duration,
       playbackRate: media.playbackRate,
       preservesPitch: media.preservesPitch,
       rms,
+      dominantHz,
     };
   } finally {
     media.pause();

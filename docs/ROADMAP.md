@@ -645,11 +645,24 @@ produce, and notes posted from both instruments.
 
 L shuttle could advance picture at the correct 1x, 2x and 4x rates while
 producing no sound for one reviewer across Chrome and Firefox on macOS and
-Windows. Space playback remained audible. The differing path was the browser's
-pitch-preserving time stretcher, not key handling or autoplay. Forward shuttle
-now uses direct varispeed resampling, while normal playback restores pitch
-preservation. The QA corpus includes an AAC tone proxy, and Playwright measures
-the decoded media-element signal at every shuttle rate in Chromium and Firefox.
+Windows. Space playback remained audible. Direct varispeed on the main media
+element did not fix that reviewer's deployed result, so the browser's
+rate-changed audio path is no longer the primary accelerated path.
+
+Transcode now creates time-compressed AAC sidecars for 2x and 4x forward
+shuttle. The picture keeps its exact accelerated rate while the matching
+sidecar plays at 1x, preserving pitch without depending on a browser's
+rate-change implementation. These navigation-only files use broadly compatible
+AAC-LC at 64 kbps stereo and strip source metadata, about 360 KB combined per
+minute of source footage. Existing ready assets are backfilled automatically.
+If a sidecar is missing, rejected, fails to decode, ends early, or its clock
+stalls, the player immediately unmutes the main media element and keeps direct
+varispeed as the audible fallback.
+
+The player also posts automatic diagnostics for project review and share
+review. Structured stdout records show the browser, platform, requested rate,
+media readiness, clock, volume and mute state, and last successful sidecar
+stage. The reviewer does not need developer tools or a log-gathering step.
 
 ## Full application hardening audit (2026-07-23)
 

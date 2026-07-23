@@ -118,6 +118,24 @@ export const registerProjectsDomain = (ctx: SuiteContext): void => {
         })
         .run();
       keys.push(await put(posterKey), await put(vttKey));
+      for (const rate of [2, 4] as const) {
+        const sidecarKey = `renditions/${media.versionId}/shuttle_audio_${String(rate)}x.m4a`;
+        await h.db
+          .insert(renditions)
+          .values({
+            id: h.ids.ulid(),
+            versionId: media.versionId,
+            kind: rate === 2 ? "shuttle_audio_2x" : "shuttle_audio_4x",
+            blobKey: sidecarKey,
+            metaJson: JSON.stringify({ shuttle_rate: rate }),
+            size: 1,
+            checksumSha256: "",
+            shareId: null,
+            createdAt: now,
+          })
+          .run();
+        keys.push(await put(sidecarKey));
+      }
 
       const commentId = h.ids.ulid();
       await h.db

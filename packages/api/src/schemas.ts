@@ -183,6 +183,45 @@ export const bodies = {
     annotation: z.unknown().optional(),
     pin_xy: z.unknown().optional(),
   }),
+  playbackDiagnostic: z
+    .object({
+      reason: z.enum([
+        "source_missing",
+        "sidecar_element_missing",
+        "main_element_missing",
+        "play_rejected",
+        "media_error",
+        "sidecar_ended_early",
+        "sidecar_clock_stalled",
+        "source_removed",
+        "sidecar_started",
+        "sidecar_clock_advancing",
+      ]),
+      rate: z.union([z.literal(0), z.literal(2), z.literal(4)]),
+      main_ready_state: z.number().int().min(0).max(4).nullable(),
+      main_network_state: z.number().int().min(0).max(3).nullable(),
+      main_playback_rate: z.number().min(0).max(16).nullable(),
+      main_current_time: z.number().min(0).nullable(),
+      main_paused: z.boolean().nullable(),
+      main_muted: z.boolean().nullable(),
+      main_volume: z.number().min(0).max(1).nullable().optional(),
+      sidecar_ready_state: z.number().int().min(0).max(4).nullable(),
+      sidecar_network_state: z.number().int().min(0).max(3).nullable(),
+      sidecar_current_time: z.number().min(0).nullable(),
+      sidecar_duration: z.number().min(0).nullable().optional(),
+      sidecar_paused: z.boolean().nullable(),
+      sidecar_muted: z.boolean().nullable().optional(),
+      sidecar_volume: z.number().min(0).max(1).nullable().optional(),
+      sidecar_source_present: z.boolean().optional(),
+      sidecar_media_error: z.number().int().min(1).max(4).nullable(),
+      document_visibility: z
+        .enum(["hidden", "visible", "prerender"])
+        .nullable()
+        .optional(),
+      online: z.boolean().nullable().optional(),
+      failure: z.string().max(1000).nullable(),
+    })
+    .strict(),
   replyCreate: commentBody.extend({ mentions: mentionList }),
   reactionCreate: z.object({ code: z.string().regex(/^[a-z0-9_]{1,32}$/) }),
   carryForward: z.object({ from_version_id: z.string() }),
@@ -480,6 +519,7 @@ const comment = z.object({
   author_user_id: z.string().nullable(),
   author_name: z.string().nullable(),
   author_email: z.string().nullable(),
+  author_avatar_url: z.string().nullable(),
   frame_in: z.number().int().nullable(),
   frame_out: z.number().int().nullable(),
   body_text: z.string(),
@@ -954,6 +994,11 @@ const shareSidecars = z.object({
   /* Log-frequency spectrogram, rendered as luminance for the client to
      colour. */
   spectrogram: z.object({ url: z.string() }).nullable(),
+  /* Pitch-corrected, time-compressed audio for 2x and 4x JKL playback. */
+  shuttle_audio: z.object({
+    x2: z.string().nullable(),
+    x4: z.string().nullable(),
+  }),
   captions: z.array(captionTrack),
 });
 
@@ -1619,8 +1664,17 @@ export const routeDocs: Record<string, RouteDoc> = {
   "GET /s/:slug/assets/:assetId": {
     responses: { "200": ok(publicShareAssetDetail) },
   },
+  "POST /s/:slug/assets/:assetId/playback-diagnostics": {
+    summary:
+      "Record an automatic JKL shuttle-audio fallback diagnostic for an authorized share viewer.",
+    request: bodies.playbackDiagnostic,
+    responses: { "204": noContent },
+  },
   "GET /s/:slug/assets/:assetId/comments": {
     responses: { "200": ok(list(publicComment)) },
+  },
+  "GET /s/:slug/comments/:commentId/avatar": {
+    responses: { "200": binary("image/png") },
   },
   "POST /s/:slug/assets/:assetId/comments": {
     request: bodies.shareCommentCreate,
@@ -1805,6 +1859,12 @@ export const routeDocs: Record<string, RouteDoc> = {
   "POST /assets/:id/trash": { responses: { "204": noContent } },
   "POST /assets/:id/restore": { responses: { "200": ok(asset) } },
   "GET /versions/:id": { responses: { "200": ok(version) } },
+  "POST /versions/:id/playback-diagnostics": {
+    summary:
+      "Record an automatic JKL shuttle-audio fallback diagnostic for a project member.",
+    request: bodies.playbackDiagnostic,
+    responses: { "204": noContent },
+  },
   "GET /versions/:id/renditions": {
     responses: {
       "200": ok(

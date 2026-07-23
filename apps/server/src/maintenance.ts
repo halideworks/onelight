@@ -550,7 +550,7 @@ const deleteUploadSessionsById = async (
     .run();
 };
 
-const purgeTrashedAssets = async (
+export const purgeTrashedAssets = async (
   db: AppDb,
   store: BlobStore,
   now: number,
@@ -575,9 +575,10 @@ const purgeTrashedAssets = async (
        them cascade away with the asset, so they must be read first -- but they
        are freed only AFTER the row is confirmed gone (below), never before, so
        a restore that spares the row never loses its media. */
-    const blobKeys: string[] = [];
+    const blobKeys = new Set<string>();
     for (const version of versions)
-      for (const key of await versionBlobKeys(db, version)) blobKeys.push(key);
+      for (const key of await versionBlobKeys(db, version)) blobKeys.add(key);
+    if (row.asset.thumbnailBlobKey) blobKeys.add(row.asset.thumbnailBlobKey);
     // Nulling inbound carry links must precede the cascade (comments carry a
     // no-cascade self reference). A restore after this loses only the "carried
     // from" linkage, not the asset -- an acceptable cost for the rare race.
@@ -656,7 +657,7 @@ const purgeTrashedAssets = async (
   }
 };
 
-const purgeTrashedVersions = async (
+export const purgeTrashedVersions = async (
   db: AppDb,
   store: BlobStore,
   now: number,

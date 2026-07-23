@@ -76,6 +76,8 @@
     const line = (text ?? '').split('\n')[0]?.trim() ?? '';
     return line.length > 90 ? `${line.slice(0, 90)}...` : line;
   };
+  const markerInitial = (marker: TimelineMarker): string =>
+    [...(marker.author?.trim() || 'Reviewer')][0]?.toUpperCase() ?? '?';
   const ioSpan = $derived(
     inFrame !== null && outFrame !== null && outFrame >= inFrame
       ? spanForRange(inFrame, outFrame, durationFrames)
@@ -387,7 +389,15 @@
             onpointerleave={() => hideTip(marker)}
             onfocus={() => showTip(marker)}
             onblur={() => hideTip(marker)}
-          ></button>
+          >
+            <span class="marker-face" aria-hidden="true">
+              {#if marker.avatarUrl}
+                <img src={marker.avatarUrl} alt="" loading="lazy" decoding="async" draggable="false" />
+              {:else}
+                <span>{markerInitial(marker)}</span>
+              {/if}
+            </span>
+          </button>
         {:else}
           <button
             type="button"
@@ -402,7 +412,13 @@
             onpointerleave={() => hideTip(marker)}
             onfocus={() => showTip(marker)}
             onblur={() => hideTip(marker)}
-          ></button>
+          >
+            {#if marker.avatarUrl}
+              <img src={marker.avatarUrl} alt="" loading="lazy" decoding="async" draggable="false" />
+            {:else}
+              <span>{markerInitial(marker)}</span>
+            {/if}
+          </button>
         {/if}
       {/each}
     </div>
@@ -543,18 +559,43 @@
     background: var(--n-700, #9a9a9a);
   }
   .mark {
-    top: 5px;
-    width: 7px;
-    height: 7px;
-    margin-left: -3.5px;
-    transform: rotate(45deg);
+    top: 2px;
+    width: 12px;
+    height: 12px;
+    margin-left: -6px;
+    border-radius: 50%;
+    overflow: hidden;
+    color: var(--n-050, #101010);
+    font-size: 7px;
+    font-weight: 700;
+    line-height: 12px;
+    text-align: center;
   }
-  .mark:hover { background: var(--ink, var(--n-900, #e9e9e9)); filter: brightness(1.35); }
+  .mark img, .marker-face img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .mark:hover { filter: brightness(1.15); }
   .span {
-    top: 5px;
-    height: 7px;
+    top: 6px;
+    height: 5px;
     border-radius: 2px;
     background: var(--ink, var(--n-600, #767676));
+    overflow: visible;
+  }
+  .marker-face {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    display: grid;
+    place-items: center;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    overflow: hidden;
+    transform: translate(-50%, -50%);
+    background: var(--ink, var(--n-600, #767676));
+    color: var(--n-050, #101010);
+    font-size: 7px;
+    font-weight: 700;
+    line-height: 1;
   }
   .span:hover { filter: brightness(1.35); }
   /* Whose note it is, in the ink assigned to that person. The design doc bans
@@ -569,6 +610,7 @@
   .lane button.completed { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink, var(--n-500, #565656)); opacity: 0.65; }
   .lane button.completed:hover { opacity: 1; background: transparent; filter: none; }
   .span.completed { background: transparent; }
+  .span.completed .marker-face { box-shadow: inset 0 0 0 1.5px var(--ink, var(--n-500, #565656)); }
   .lane button:focus-visible { outline: 1px solid var(--n-800, #c4c4c4); outline-offset: 2px; }
   .tip {
     position: absolute;

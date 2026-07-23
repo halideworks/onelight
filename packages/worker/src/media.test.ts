@@ -841,6 +841,8 @@ describe("rendition planning per asset kind", () => {
       "poster",
       "sprite",
       "waveform_data",
+      "shuttle_audio_2x",
+      "shuttle_audio_4x",
     ]);
     const hd = mediaInfoOf({
       streams: [{ codec_type: "video", width: 1920 }],
@@ -882,6 +884,8 @@ describe("rendition planning per asset kind", () => {
   it("plans audio, image, and pdf assets without a video map", () => {
     expect(planRenditions("audio", mediaInfoOf())).toEqual([
       { kind: "proxy_audio", filename: "proxy_audio.m4a" },
+      { kind: "shuttle_audio_2x", filename: "shuttle_audio_2x.m4a" },
+      { kind: "shuttle_audio_4x", filename: "shuttle_audio_4x.m4a" },
       { kind: "waveform_data", filename: "waveform.dat" },
       { kind: "spectrogram", filename: "spectrogram.png" },
       { kind: "poster", filename: "poster.png" },
@@ -969,6 +973,31 @@ describe("audio sidecars", () => {
     expect(flag(args ?? [], "-b:a")).toBe("192k");
     expect(flag(args ?? [], "-ac")).toBe("2");
     expect(args?.[args.length - 1]).toBe("/out/proxy_audio.m4a");
+  });
+
+  it("encodes pitch-corrected 2x and 4x shuttle sidecars", () => {
+    const twice = sidecarArgs(
+      jobOf(audioInfo()),
+      "/out/shuttle_audio_2x.m4a",
+      "shuttle_audio_2x",
+    );
+    const fourTimes = sidecarArgs(
+      jobOf(audioInfo()),
+      "/out/shuttle_audio_4x.m4a",
+      "shuttle_audio_4x",
+    );
+    expect(flag(twice ?? [], "-filter:a")).toBe("atempo=2");
+    expect(flag(fourTimes ?? [], "-filter:a")).toBe("atempo=2,atempo=2");
+    for (const args of [twice, fourTimes]) {
+      expect(args).toContain("-vn");
+      expect(flag(args ?? [], "-c:a")).toBe("aac");
+      expect(flag(args ?? [], "-profile:a")).toBe("aac_low");
+      expect(flag(args ?? [], "-b:a")).toBe("64k");
+      expect(flag(args ?? [], "-ac")).toBe("2");
+      expect(flag(args ?? [], "-ar")).toBe("48000");
+      expect(flag(args ?? [], "-map_metadata")).toBe("-1");
+      expect(flag(args ?? [], "-map_chapters")).toBe("-1");
+    }
   });
 
   it("renders the spectrogram as luminance on log axes", () => {

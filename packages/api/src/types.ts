@@ -6,7 +6,7 @@ import type {
   Mailer,
   PasswordHasher,
 } from "@onelight/core";
-import type { AppDb } from "@onelight/db";
+import type { AppDb, SearchBackend } from "@onelight/db";
 import type { User } from "@onelight/db";
 import type { WorkspaceRole } from "@onelight/core";
 
@@ -17,6 +17,9 @@ export interface AppEnv {
   ids: IdGen;
   config: AppConfig;
   version: string;
+  /* Node enables its native FTS5 index after portable migrations. D1 omits
+     this and keeps the visibility-safe LIKE implementation. */
+  searchBackend?: SearchBackend;
   blobStore?: BlobStore;
   mailer?: Mailer;
   /* Capacity of whatever holds the blobs, where the host can know it: the

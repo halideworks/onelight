@@ -6232,6 +6232,12 @@
                               "null"
                             ]
                           },
+                          "author_avatar_url": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "frame_in": {
                             "anyOf": [
                               {
@@ -6379,6 +6385,7 @@
                           "author_user_id",
                           "author_name",
                           "author_email",
+                          "author_avatar_url",
                           "frame_in",
                           "frame_out",
                           "body_text",
@@ -6550,6 +6557,12 @@
                         "null"
                       ]
                     },
+                    "author_avatar_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "frame_in": {
                       "anyOf": [
                         {
@@ -6697,6 +6710,7 @@
                     "author_user_id",
                     "author_name",
                     "author_email",
+                    "author_avatar_url",
                     "frame_in",
                     "frame_out",
                     "body_text",
@@ -6954,6 +6968,12 @@
                         "null"
                       ]
                     },
+                    "author_avatar_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "frame_in": {
                       "anyOf": [
                         {
@@ -7101,6 +7121,7 @@
                     "author_user_id",
                     "author_name",
                     "author_email",
+                    "author_avatar_url",
                     "frame_in",
                     "frame_out",
                     "body_text",
@@ -7558,6 +7579,12 @@
                         "null"
                       ]
                     },
+                    "author_avatar_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "frame_in": {
                       "anyOf": [
                         {
@@ -7705,6 +7732,7 @@
                     "author_user_id",
                     "author_name",
                     "author_email",
+                    "author_avatar_url",
                     "frame_in",
                     "frame_out",
                     "body_text",
@@ -7818,6 +7846,12 @@
                         "null"
                       ]
                     },
+                    "author_avatar_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "frame_in": {
                       "anyOf": [
                         {
@@ -7965,6 +7999,7 @@
                     "author_user_id",
                     "author_name",
                     "author_email",
+                    "author_avatar_url",
                     "frame_in",
                     "frame_out",
                     "body_text",
@@ -8076,6 +8111,12 @@
                         "null"
                       ]
                     },
+                    "author_avatar_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "frame_in": {
                       "anyOf": [
                         {
@@ -8223,6 +8264,7 @@
                     "author_user_id",
                     "author_name",
                     "author_email",
+                    "author_avatar_url",
                     "frame_in",
                     "frame_out",
                     "body_text",
@@ -13149,6 +13191,28 @@
                                   }
                                 ]
                               },
+                              "shuttle_audio": {
+                                "type": "object",
+                                "properties": {
+                                  "x2": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "x4": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "x2",
+                                  "x4"
+                                ],
+                                "additionalProperties": false
+                              },
                               "captions": {
                                 "type": "array",
                                 "items": {
@@ -13181,6 +13245,7 @@
                               "peaks",
                               "waveform",
                               "spectrogram",
+                              "shuttle_audio",
                               "captions"
                             ],
                             "additionalProperties": false
@@ -13312,6 +13377,12 @@
                             ]
                           },
                           "author_name": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "author_avatar_url": {
                             "type": [
                               "string",
                               "null"
@@ -13462,6 +13533,7 @@
                           "version_id",
                           "parent_id",
                           "author_name",
+                          "author_avatar_url",
                           "frame_in",
                           "frame_out",
                           "body_text",
@@ -13606,6 +13678,12 @@
                         "null"
                       ]
                     },
+                    "author_avatar_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "frame_in": {
                       "anyOf": [
                         {
@@ -13751,6 +13829,7 @@
                     "version_id",
                     "parent_id",
                     "author_name",
+                    "author_avatar_url",
                     "frame_in",
                     "frame_out",
                     "body_text",
@@ -13770,6 +13849,389 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/s/{slug}/comments/{commentId}/avatar": {
+      "get": {
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "commentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Binary payload",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/s/{slug}/assets/{assetId}/playback-diagnostics": {
+      "post": {
+        "summary": "Record an automatic JKL shuttle-audio fallback diagnostic for an authorized share viewer.",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "assetId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "source_missing",
+                      "sidecar_element_missing",
+                      "main_element_missing",
+                      "play_rejected",
+                      "media_error",
+                      "sidecar_ended_early",
+                      "sidecar_clock_stalled",
+                      "source_removed",
+                      "sidecar_started",
+                      "sidecar_clock_advancing"
+                    ]
+                  },
+                  "rate": {
+                    "type": "number",
+                    "enum": [
+                      0,
+                      2,
+                      4
+                    ]
+                  },
+                  "main_ready_state": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "main_network_state": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "main_playback_rate": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 16
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "main_current_time": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "main_paused": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "main_muted": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "main_volume": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sidecar_ready_state": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sidecar_network_state": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sidecar_current_time": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sidecar_duration": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sidecar_paused": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "sidecar_muted": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "sidecar_volume": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sidecar_source_present": {
+                    "type": "boolean"
+                  },
+                  "sidecar_media_error": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 4
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "document_visibility": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "hidden",
+                          "visible",
+                          "prerender"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "online": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "failure": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 1000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "reason",
+                  "rate",
+                  "main_ready_state",
+                  "main_network_state",
+                  "main_playback_rate",
+                  "main_current_time",
+                  "main_paused",
+                  "main_muted",
+                  "sidecar_ready_state",
+                  "sidecar_network_state",
+                  "sidecar_current_time",
+                  "sidecar_paused",
+                  "sidecar_media_error",
+                  "failure"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No content"
           },
           "400": {
             "description": "Validation failure",
@@ -13882,6 +14344,12 @@
                         "null"
                       ]
                     },
+                    "author_avatar_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "frame_in": {
                       "anyOf": [
                         {
@@ -14027,6 +14495,7 @@
                     "version_id",
                     "parent_id",
                     "author_name",
+                    "author_avatar_url",
                     "frame_in",
                     "frame_out",
                     "body_text",
@@ -14505,6 +14974,12 @@
                         "null"
                       ]
                     },
+                    "author_avatar_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "frame_in": {
                       "anyOf": [
                         {
@@ -14650,6 +15125,7 @@
                     "version_id",
                     "parent_id",
                     "author_name",
+                    "author_avatar_url",
                     "frame_in",
                     "frame_out",
                     "body_text",
@@ -21214,6 +21690,306 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/versions/{id}/playback-diagnostics": {
+      "post": {
+        "summary": "Record an automatic JKL shuttle-audio fallback diagnostic for a project member.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "source_missing",
+                      "sidecar_element_missing",
+                      "main_element_missing",
+                      "play_rejected",
+                      "media_error",
+                      "sidecar_ended_early",
+                      "sidecar_clock_stalled",
+                      "source_removed",
+                      "sidecar_started",
+                      "sidecar_clock_advancing"
+                    ]
+                  },
+                  "rate": {
+                    "type": "number",
+                    "enum": [
+                      0,
+                      2,
+                      4
+                    ]
+                  },
+                  "main_ready_state": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "main_network_state": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "main_playback_rate": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 16
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "main_current_time": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "main_paused": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "main_muted": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "main_volume": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sidecar_ready_state": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sidecar_network_state": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sidecar_current_time": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sidecar_duration": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sidecar_paused": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "sidecar_muted": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "sidecar_volume": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sidecar_source_present": {
+                    "type": "boolean"
+                  },
+                  "sidecar_media_error": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 4
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "document_visibility": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "hidden",
+                          "visible",
+                          "prerender"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "online": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "failure": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 1000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "reason",
+                  "rate",
+                  "main_ready_state",
+                  "main_network_state",
+                  "main_playback_rate",
+                  "main_current_time",
+                  "main_paused",
+                  "main_muted",
+                  "sidecar_ready_state",
+                  "sidecar_network_state",
+                  "sidecar_current_time",
+                  "sidecar_paused",
+                  "sidecar_media_error",
+                  "failure"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No content"
           },
           "400": {
             "description": "Validation failure",

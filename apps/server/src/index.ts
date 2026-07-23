@@ -23,6 +23,7 @@ import type { Mailer, SmtpConfig, StoredMailSettings } from "@onelight/core";
 import { eq } from "drizzle-orm";
 import {
   applyNodeMigrations,
+  configureNodeSearch,
   createNodeDb,
   pendingMigrations,
   users,
@@ -65,6 +66,7 @@ if (backupConfig && pending.length > 0 && fs.existsSync(config.DATABASE_PATH)) {
   }
 }
 applyNodeMigrations(sqlite);
+const searchBackend = configureNodeSearch(sqlite);
 
 const ensureHeadlessAdmin = async (): Promise<void> => {
   if (!config.ONELIGHT_ADMIN_EMAIL || !config.ONELIGHT_ADMIN_PASSWORD) return;
@@ -281,6 +283,7 @@ const start = async (): Promise<void> => {
     ids: new UlidGenerator(),
     config,
     version: process.env.ONELIGHT_VERSION ?? "0.1.0-dev",
+    searchBackend,
     blobStore,
     diskInfo,
     systemInfo,

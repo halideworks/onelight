@@ -41,9 +41,11 @@ export interface PatchReading {
 
 export interface ShuttleAudioReading {
   currentTime: number;
+  duration: number;
   playbackRate: number;
   preservesPitch: boolean;
   rms: number;
+  dominantHz: number;
 }
 
 export interface QaHarness {

@@ -1454,6 +1454,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     author_user_id: comment.authorUserId,
     author_name: comment.authorName,
     author_email: comment.authorEmail,
+    author_avatar_url: comment.authorUserId
+      ? `/api/v1/users/${comment.authorUserId}/avatar`
+      : null,
     frame_in: comment.frameIn,
     frame_out: comment.frameOut,
     body_text: comment.bodyText,
@@ -1502,8 +1505,16 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   // Public (share viewer) projection of a comment: drops author_email and
   // author_user_id so external viewers never learn the registered identity
   // behind a comment. author_name is the only author field exposed.
-  const publicCommentWire = (comment: typeof comments.$inferSelect) => {
-    const wire: Record<string, unknown> = { ...commentWire(comment) };
+  const publicCommentWire = (
+    comment: typeof comments.$inferSelect,
+    shareSlug: string,
+  ) => {
+    const wire: Record<string, unknown> = {
+      ...commentWire(comment),
+      author_avatar_url: comment.authorUserId
+        ? `/api/v1/s/${shareSlug}/comments/${comment.id}/avatar`
+        : null,
+    };
     delete wire.author_user_id;
     delete wire.author_email;
     return wire;
@@ -2498,23 +2509,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.body(null, 204);
   });
 
-  api.get("/users/:id/avatar", requireAuth, async (c) => {
-    const actor = userFromContext(c);
+  const userAvatarResponse = async (
+    target: typeof users.$inferSelect,
+    cacheControl = "private, max-age=86400",
+  ): Promise<Response> => {
     if (!env.blobStore) throw errors.notFound();
-    const target = (
-      await env.db
-        .select()
-        .from(users)
-        .where(
-          and(
-            eq(users.id, c.req.param("id")),
-            eq(users.workspaceId, actor.workspaceId),
-          ),
-        )
-        .limit(1)
-        .all()
-    )[0];
-    if (!target?.avatarKey) throw errors.notFound();
+    if (!target.avatarKey) throw errors.notFound();
     const extension = target.avatarKey.split(".").pop() ?? "png";
     const contentType =
       Object.entries(AVATAR_TYPES).find(([, ext]) => ext === extension)?.[0] ??
@@ -2537,9 +2537,28 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return new Response(stream, {
       headers: {
         "Content-Type": contentType,
-        "Cache-Control": "private, max-age=86400",
+        "Cache-Control": cacheControl,
       },
     });
+  };
+
+  api.get("/users/:id/avatar", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const target = (
+      await env.db
+        .select()
+        .from(users)
+        .where(
+          and(
+            eq(users.id, c.req.param("id")),
+            eq(users.workspaceId, actor.workspaceId),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (!target) throw errors.notFound();
+    return userAvatarResponse(target);
   });
 
   api.get("/users", requireAuth, async (c) => {
@@ -4380,9 +4399,17 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return comment;
   };
 
-  // Authors may edit and delete their own comments; project managers can
-  // moderate any comment in their project (phase-2 section 2). Admins hold
-  // manager implicitly inside requireProject.
+  const requireCommentAuthor = (
+    comment: typeof comments.$inferSelect,
+    actor: ActorUser,
+  ): void => {
+    if (comment.authorUserId !== actor.id)
+      throw errors.forbidden("Only the author can edit this comment.");
+  };
+
+  // Authors may delete their own comments; project managers can remove any
+  // comment in their project. Admins hold manager implicitly in requireProject.
+  // Moderation never grants authorship and therefore never grants editing.
   const requireCommentAuthorOrModerator = async (
     comment: typeof comments.$inferSelect,
     actor: ActorUser,
@@ -4536,7 +4563,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       actor,
       "commenter",
     );
-    await requireCommentAuthorOrModerator(comment, actor);
+    requireCommentAuthor(comment, actor);
     const body = await jsonBody(c, bodies.commentPatch);
     validateCommentAnchor(body);
     /* A PATCH writes frame_in and frame_out independently, so the body-only
@@ -4637,7 +4664,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       actor,
       "commenter",
     );
-    await requireCommentAuthorOrModerator(comment, actor);
+    requireCommentAuthor(comment, actor);
     return c.json(
       await storeCommentAttachment(
         comment,
@@ -4685,7 +4712,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         actor,
         "commenter",
       );
-      await requireCommentAuthorOrModerator(comment, actor);
+      requireCommentAuthor(comment, actor);
       const attachment = (
         await env.db
           .select()
@@ -5212,6 +5239,30 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     // before they count.
     const tagQuery = q.startsWith("#") ? q.slice(1).toLowerCase() : undefined;
     const commentPattern = tagQuery ? `%#${escapeLike(tagQuery)}%` : pattern;
+    /* FTS5's trigram tokenizer preserves the existing substring behavior.
+       LIKE remains the final literal check, so FTS only narrows candidates and
+       can never widen a query. Two-character searches take the LIKE path
+       because a trigram index has no token for them. */
+    const ftsQuery =
+      env.searchBackend === "fts5" && Array.from(q).length >= 3
+        ? `"${q.replace(/"/g, '""')}"`
+        : null;
+    const searchMatch = (
+      kind: SearchStream,
+      id: unknown,
+      likeCondition: ReturnType<typeof sql>,
+    ) =>
+      ftsQuery
+        ? and(
+            likeCondition,
+            sql`EXISTS (
+              SELECT 1 FROM onelight_search
+              WHERE kind = ${kind}
+                AND entity_id = ${id}
+                AND onelight_search MATCH ${ftsQuery}
+            )`,
+          )
+        : likeCondition;
     const items: Array<Record<string, unknown>> = [];
     let nextCursor: string | null = null;
 
@@ -5249,7 +5300,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           .where(
             and(
               eq(projects.workspaceId, actor.workspaceId),
-              sql`${projects.name} LIKE ${pattern} ESCAPE '\\'`,
+              searchMatch(
+                "project",
+                projects.id,
+                sql`${projects.name} LIKE ${pattern} ESCAPE '\\'`,
+              ),
               scanCursor ? lt(projects.id, scanCursor) : undefined,
             ),
           )
@@ -5280,7 +5335,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             and(
               eq(projects.workspaceId, actor.workspaceId),
               isNull(shares.revokedAt),
-              sql`${shares.title} LIKE ${pattern} ESCAPE '\\'`,
+              searchMatch(
+                "share",
+                shares.id,
+                sql`${shares.title} LIKE ${pattern} ESCAPE '\\'`,
+              ),
               scanCursor ? lt(shares.id, scanCursor) : undefined,
             ),
           )
@@ -5314,7 +5373,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             and(
               eq(projects.workspaceId, actor.workspaceId),
               isNull(assets.deletedAt),
-              sql`${assets.name} LIKE ${pattern} ESCAPE '\\'`,
+              searchMatch(
+                "asset",
+                assets.id,
+                sql`${assets.name} LIKE ${pattern} ESCAPE '\\'`,
+              ),
               scanCursor ? lt(assets.id, scanCursor) : undefined,
             ),
           )
@@ -5340,7 +5403,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           and(
             eq(projects.workspaceId, actor.workspaceId),
             isNull(comments.deletedAt),
-            sql`${comments.bodyText} LIKE ${commentPattern} ESCAPE '\\'`,
+            searchMatch(
+              "comment",
+              comments.id,
+              sql`${comments.bodyText} LIKE ${commentPattern} ESCAPE '\\'`,
+            ),
             after ? lt(comments.id, after) : undefined,
           ),
         )
@@ -5458,7 +5525,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
                   and(
                     eq(users.workspaceId, actor.workspaceId),
                     isNull(users.disabledAt),
-                    sql`(${users.name} LIKE ${pattern} ESCAPE '\\' OR ${users.email} LIKE ${pattern} ESCAPE '\\')`,
+                    searchMatch(
+                      "person",
+                      users.id,
+                      sql`(${users.name} LIKE ${pattern} ESCAPE '\\' OR ${users.email} LIKE ${pattern} ESCAPE '\\')`,
+                    ),
                     after ? lt(users.id, after) : undefined,
                   ),
                 )
@@ -5774,6 +5845,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     hdr_av1: "video/mp4",
     watermarked: "video/mp4",
     proxy_audio: "audio/mp4",
+    shuttle_audio_2x: "audio/mp4",
+    shuttle_audio_4x: "audio/mp4",
     poster: "image/png",
     sprite: "image/png",
     audio_peaks: "image/png",
@@ -7149,6 +7222,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       const spectrogramRendition = (
         versionRenditions as Array<typeof renditions.$inferSelect>
       ).find((rendition) => rendition.kind === "spectrogram");
+      const shuttle2xRendition = (
+        versionRenditions as Array<typeof renditions.$inferSelect>
+      ).find((rendition) => rendition.kind === "shuttle_audio_2x");
+      const shuttle4xRendition = (
+        versionRenditions as Array<typeof renditions.$inferSelect>
+      ).find((rendition) => rendition.kind === "shuttle_audio_4x");
       const spriteMeta = spriteRendition
         ? parseJsonObject(spriteRendition.metaJson)
         : {};
@@ -7205,6 +7284,26 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
                 ),
               }
             : null,
+        shuttle_audio: {
+          x2:
+            shuttle2xRendition && env.blobStore
+              ? await publicMediaUrl(
+                  share,
+                  asset.id,
+                  version.id,
+                  shuttle2xRendition.blobKey,
+                )
+              : null,
+          x4:
+            shuttle4xRendition && env.blobStore
+              ? await publicMediaUrl(
+                  share,
+                  asset.id,
+                  version.id,
+                  shuttle4xRendition.blobKey,
+                )
+              : null,
+        },
         captions: env.blobStore
           ? await Promise.all(
               (
@@ -7284,7 +7383,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     );
     return c.json({
       items: rows.map((comment: typeof comments.$inferSelect) => ({
-        ...publicCommentWire(comment),
+        ...publicCommentWire(comment, projection.share.slug),
         attachments: attached.get(comment.id) ?? [],
         /* Whether this viewer wrote it: the room shows Edit and Delete only
            where the server would allow them. The key itself never leaves. */
@@ -7293,6 +7392,83 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           comment.viewerKey === projection.viewer?.viewerKey,
       })),
     });
+  });
+
+  api.get("/s/:slug/comments/:commentId/avatar", async (c) => {
+    const projection = await publicShare(
+      c,
+      await shareBySlug(c.req.param("slug")),
+    );
+    if (!projection.viewer) throw errors.unauthorized();
+    const comment = (
+      await env.db
+        .select()
+        .from(comments)
+        .where(
+          and(
+            eq(comments.id, c.req.param("commentId")),
+            eq(comments.internal, false),
+            isNull(comments.deletedAt),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (
+      !comment?.authorUserId ||
+      !projection.assets.some(
+        (asset: typeof assets.$inferSelect & { sort_order: number }) =>
+          asset.currentVersionId === comment.versionId,
+      )
+    )
+      throw errors.notFound();
+    const author = (
+      await env.db
+        .select()
+        .from(users)
+        .where(eq(users.id, comment.authorUserId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!author) throw errors.notFound();
+    /* A share URL carries no stable user id and is scoped through the comment.
+       Keep the cache short so an avatar change reaches an open client review. */
+    return userAvatarResponse(author, "private, max-age=300");
+  });
+
+  api.post("/s/:slug/assets/:assetId/playback-diagnostics", async (c) => {
+    const projection = await publicShare(
+      c,
+      await shareBySlug(c.req.param("slug")),
+    );
+    if (!projection.viewer) throw errors.unauthorized();
+    const asset = projection.assets.find(
+      (candidate: typeof assets.$inferSelect & { sort_order: number }) =>
+        candidate.id === c.req.param("assetId"),
+    );
+    if (!asset?.currentVersionId) throw errors.notFound();
+    await hitRateLimit(
+      `share_playback_diagnostic:${projection.share.id}:${projection.viewer.viewerKey}`,
+      12,
+      5 * 60 * 1000,
+    );
+    const diagnostic = await jsonBody(c, bodies.playbackDiagnostic);
+    console.warn(
+      `[onelight-playback-diagnostic] ${JSON.stringify({
+        scope: "share",
+        request_id: c.get("requestId"),
+        share_id: projection.share.id,
+        asset_id: asset.id,
+        version_id: asset.currentVersionId,
+        viewer_id: projection.viewer.id,
+        user_agent: c.req.header("user-agent") ?? null,
+        client_platform: c.req.header("sec-ch-ua-platform") ?? null,
+        client_brands: c.req.header("sec-ch-ua") ?? null,
+        recorded_at: env.clock.now(),
+        ...diagnostic,
+      })}`,
+    );
+    return c.body(null, 204);
   });
 
   api.post("/s/:slug/assets/:assetId/comments", async (c) => {
@@ -7386,7 +7562,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       version_id: asset.currentVersionId,
       frame_in: comment.frameIn,
     });
-    return c.json(publicCommentWire(comment), 201);
+    return c.json(publicCommentWire(comment, share.slug), 201);
   });
 
   const shareCommentForViewer = async (
@@ -7445,7 +7621,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       version_id: updated.versionId,
       frame_in: updated.frameIn,
     });
-    return c.json(publicCommentWire(updated));
+    return c.json(publicCommentWire(updated, share.slug));
   });
 
   api.delete("/s/:slug/comments/:commentId", async (c) => {
@@ -7690,7 +7866,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       frame_in: parent.frameIn,
       parent_id: parent.id,
     });
-    return c.json(publicCommentWire(reply), 201);
+    return c.json(publicCommentWire(reply, share.slug), 201);
   });
 
   api.patch("/s/:slug/approval", async (c) => {
@@ -10360,6 +10536,32 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (!version) throw errors.notFound();
     await assetForActor(version.assetId, actor);
     return c.json(versionWire(version));
+  });
+
+  api.post("/versions/:id/playback-diagnostics", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const version = await versionForActor(c.req.param("id"), actor);
+    await hitRateLimit(
+      `playback_diagnostic:${actor.id}:${version.id}`,
+      12,
+      5 * 60 * 1000,
+    );
+    const diagnostic = await jsonBody(c, bodies.playbackDiagnostic);
+    console.warn(
+      `[onelight-playback-diagnostic] ${JSON.stringify({
+        scope: "project",
+        request_id: c.get("requestId"),
+        workspace_id: actor.workspaceId,
+        actor_id: actor.id,
+        version_id: version.id,
+        user_agent: c.req.header("user-agent") ?? null,
+        client_platform: c.req.header("sec-ch-ua-platform") ?? null,
+        client_brands: c.req.header("sec-ch-ua") ?? null,
+        recorded_at: env.clock.now(),
+        ...diagnostic,
+      })}`,
+    );
+    return c.body(null, 204);
   });
 
   api.get("/versions/:id/renditions", requireAuth, async (c) => {

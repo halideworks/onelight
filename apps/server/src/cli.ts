@@ -11,6 +11,7 @@ import {
 } from "@onelight/core";
 import {
   applyNodeMigrations,
+  configureNodeSearch,
   createNodeDb,
   pendingMigrations,
   assetVersions,
@@ -67,6 +68,7 @@ if (
   }
 }
 applyNodeMigrations(sqlite);
+configureNodeSearch(sqlite);
 
 const flag = (name: string): string | undefined => {
   const index = argv.indexOf(`--${name}`);

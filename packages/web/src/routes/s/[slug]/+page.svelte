@@ -8,6 +8,8 @@
     FrameAnnotation,
     PendingDrawing,
     PlayerRendition,
+    ShuttleAudioDiagnostic,
+    ShuttleAudioSources,
     SpriteCue,
     TimelineMarker,
     WatermarkOverlay
@@ -71,6 +73,7 @@
         peaks?: { url: string } | null;
         waveform?: { url: string; meta?: Record<string, unknown> } | null;
         spectrogram?: { url: string } | null;
+        shuttle_audio?: { x2: string | null; x4: string | null };
         captions?: Array<{ language: string; label: string; url: string | null }>;
       } | null;
       watermark: 'ready' | 'processing' | null;
@@ -85,6 +88,7 @@
   let previewDropFrame = $state(false);
   let previewDurationFrames = $state<number | null>(null);
   let previewRenditions = $state<PlayerRendition[]>([]);
+  let previewShuttleAudio = $state<ShuttleAudioSources | null>(null);
   let previewFilmstrip = $state<{ url: string; cues: SpriteCue[] } | null>(null);
   let previewWaveformUrl = $state<string | null>(null);
   /* The audio stage's two sidecars: peak data and the spectrogram. */
@@ -511,6 +515,7 @@
     previewDropFrame = false;
     previewDurationFrames = null;
     previewRenditions = [];
+    previewShuttleAudio = null;
     previewFilmstrip = null;
     previewWaveformUrl = null;
     previewPeaksUrl = null;
@@ -548,6 +553,7 @@
       if (token === mediaPollToken) {
         previewPeaksUrl = sidecars?.waveform?.url ?? null;
         previewSpectrogramUrl = sidecars?.spectrogram?.url ?? null;
+        previewShuttleAudio = sidecars?.shuttle_audio ?? null;
       }
       if (token === mediaPollToken)
         previewCaptionsUrl = sidecars?.captions?.find((track) => track.url)?.url ?? null;
@@ -612,6 +618,7 @@
     previewRate = null;
     previewDurationFrames = null;
     previewRenditions = [];
+    previewShuttleAudio = null;
     previewFilmstrip = null;
     previewWaveformUrl = null;
     previewPeaksUrl = null;
@@ -1234,6 +1241,7 @@
           durationFrames={previewDurationFrames}
           {markers}
           renditions={previewRenditions}
+          shuttleAudio={previewShuttleAudio}
           filmstrip={previewFilmstrip}
           waveformUrl={previewWaveformUrl}
           captionsSrc={previewCaptionsUrl ?? undefined}
@@ -1264,6 +1272,15 @@
                 ? { in: range.in, out: range.out }
                 : null;
             if (noteRange) rangeArming = false;
+          }}
+          onshuttleaudiodiagnostic={(diagnostic: ShuttleAudioDiagnostic) => {
+            const assetId = selected?.id;
+            if (assetId)
+              void apiPost<void>(
+                `/api/v1/s/${slug}/assets/${assetId}/playback-diagnostics`,
+                diagnostic,
+                { redirectOn401: false, keepalive: true }
+              ).catch(() => undefined);
           }}
         />
       {:else if stillActive}
@@ -1346,7 +1363,7 @@
         {#each visibleComments as comment (comment.id)}
           <article id={`share-note-${comment.id}`} class:highlighted={highlightedId === comment.id}>
             <span class="c-head">
-              <Avatar name={comment.author_name ?? 'Viewer'} size={22} />
+              <Avatar name={comment.author_name ?? 'Viewer'} url={comment.author_avatar_url ?? null} size={22} />
               <strong>{comment.author_name ?? 'Viewer'}</strong>
               <span class="noteink" style={`background: ${markerInkFor(comment.author_name)};`} aria-hidden="true"></span>
               {#if comment.frame_in !== null}

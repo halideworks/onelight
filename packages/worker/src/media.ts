@@ -649,6 +649,42 @@ export const sidecarArgs = (
       "+faststart",
       outputPath,
     ];
+  /* The browser's pitch-preserving playback-rate path is not dependable
+     enough for JKL. These files contain the same program audio compressed in
+     time by ffmpeg's tempo filter, which preserves pitch. The player runs the
+     sidecar at ordinary 1x beside the 2x or 4x picture, keeping the audio
+     decoder out of the rate-changed media element entirely. Chaining atempo
+     for 4x avoids the lower-quality sample-skipping path used by large tempo
+     factors in older ffmpeg builds. */
+  if (kind === "shuttle_audio_2x" || kind === "shuttle_audio_4x")
+    return [
+      "-hide_banner",
+      "-y",
+      "-i",
+      job.sourceKey,
+      "-vn",
+      "-sn",
+      "-dn",
+      "-filter:a",
+      kind === "shuttle_audio_4x" ? "atempo=2,atempo=2" : "atempo=2",
+      "-c:a",
+      "aac",
+      "-profile:a",
+      "aac_low",
+      "-b:a",
+      "64k",
+      "-ac",
+      "2",
+      "-ar",
+      "48000",
+      "-map_metadata",
+      "-1",
+      "-map_chapters",
+      "-1",
+      "-movflags",
+      "+faststart",
+      outputPath,
+    ];
   if (kind === "spectrogram")
     return [
       "-hide_banner",
@@ -1244,6 +1280,8 @@ export const planRenditions = (
   if (assetKind === "audio")
     return [
       { kind: "proxy_audio", filename: "proxy_audio.m4a" },
+      { kind: "shuttle_audio_2x", filename: "shuttle_audio_2x.m4a" },
+      { kind: "shuttle_audio_4x", filename: "shuttle_audio_4x.m4a" },
       { kind: "waveform_data", filename: "waveform.dat" },
       { kind: "spectrogram", filename: "spectrogram.png" },
       { kind: "poster", filename: "poster.png" },
@@ -1287,7 +1325,12 @@ export const planRenditions = (
   );
   /* Peak data rather than the old showwavespic PNG: the timeline's waveform
      lane is drawn from it now, at whatever width the lane happens to be. */
-  if (audio) planned.push({ kind: "waveform_data", filename: "waveform.dat" });
+  if (audio)
+    planned.push(
+      { kind: "waveform_data", filename: "waveform.dat" },
+      { kind: "shuttle_audio_2x", filename: "shuttle_audio_2x.m4a" },
+      { kind: "shuttle_audio_4x", filename: "shuttle_audio_4x.m4a" },
+    );
   return planned;
 };
 
@@ -1426,6 +1469,8 @@ export const runTranscode = async (
       if (output.height !== undefined) meta.height = output.height;
       if (output.kind === "sprite")
         meta.vtt_path = await writeSpriteVtt(job, output.path);
+      if (output.kind === "shuttle_audio_2x") meta.shuttle_rate = 2;
+      if (output.kind === "shuttle_audio_4x") meta.shuttle_rate = 4;
       renditions.push({ kind: output.kind, key: output.path, meta });
     } catch (error) {
       const message =

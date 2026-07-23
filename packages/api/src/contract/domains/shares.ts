@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   assetVersions,
@@ -836,6 +836,152 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
       expect(aliceDelete.status).toBe(204);
     });
 
+    ctx.itBlob(
+      "serves registered comment avatars through the share without exposing user ids",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const fixture = await makeShare(h, seed);
+        const avatar = await req(h, "/api/v1/users/me/avatar", {
+          method: "PUT",
+          cookie: seed.admin.cookie,
+          body: "registered-avatar-bytes",
+          headers: { "content-type": "image/png" },
+        });
+        expect(avatar.status).toBe(200);
+        const created = await req(
+          h,
+          `/api/v1/versions/${fixture.versionId}/comments`,
+          {
+            cookie: seed.admin.cookie,
+            json: { body_text: "registered reviewer", internal: false },
+          },
+        );
+        expect(created.status).toBe(201);
+        const comment = await json<{ id: string }>(created);
+        const viewer = await accessShare(h, fixture.slug);
+        const listed = await json<{
+          items: Array<{
+            id: string;
+            author_avatar_url: string | null;
+            author_user_id?: string;
+            author_email?: string;
+          }>;
+        }>(
+          await req(
+            h,
+            `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/comments`,
+            { cookie: viewer.cookie },
+          ),
+        );
+        const publicComment = listed.items.find(
+          (candidate) => candidate.id === comment.id,
+        );
+        expect(publicComment?.author_avatar_url).toBe(
+          `/api/v1/s/${fixture.slug}/comments/${comment.id}/avatar`,
+        );
+        expect(publicComment?.author_user_id).toBeUndefined();
+        expect(publicComment?.author_email).toBeUndefined();
+        const anonymous = await req(h, publicComment?.author_avatar_url ?? "");
+        expect(anonymous.status).toBe(401);
+        const fetched = await req(h, publicComment?.author_avatar_url ?? "", {
+          cookie: viewer.cookie,
+        });
+        expect(fetched.status).toBe(200);
+        expect(fetched.headers.get("content-type")).toBe("image/png");
+        expect(await fetched.text()).toBe("registered-avatar-bytes");
+      },
+    );
+
+    it("records share playback diagnostics without asking the viewer for logs", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const fixture = await makeShare(h, seed);
+      const viewer = await accessShare(h, fixture.slug);
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const response = await req(
+          h,
+          `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/playback-diagnostics`,
+          {
+            method: "POST",
+            cookie: viewer.cookie,
+            origin: true,
+            headers: { "user-agent": "Remote Reviewer Browser" },
+            json: {
+              reason: "play_rejected",
+              rate: 4,
+              main_ready_state: 4,
+              main_network_state: 1,
+              main_playback_rate: 4,
+              main_current_time: 20,
+              main_paused: false,
+              main_muted: false,
+              main_volume: 1,
+              sidecar_ready_state: 0,
+              sidecar_network_state: 3,
+              sidecar_current_time: 0,
+              sidecar_duration: null,
+              sidecar_paused: true,
+              sidecar_muted: false,
+              sidecar_volume: 1,
+              sidecar_source_present: true,
+              sidecar_media_error: 4,
+              document_visibility: "visible",
+              online: true,
+              failure: "MEDIA_ERR_SRC_NOT_SUPPORTED",
+            },
+          },
+        );
+        expect(response.status).toBe(204);
+        expect(warning).toHaveBeenCalledWith(
+          expect.stringContaining("Remote Reviewer Browser"),
+        );
+        const record = JSON.parse(
+          String(warning.mock.calls[0]?.[0]).slice(
+            "[onelight-playback-diagnostic] ".length,
+          ),
+        ) as Record<string, unknown>;
+        expect(record).toMatchObject({
+          scope: "share",
+          share_id: fixture.shareId,
+          asset_id: fixture.assetId,
+          reason: "play_rejected",
+          sidecar_source_present: true,
+          failure: "MEDIA_ERR_SRC_NOT_SUPPORTED",
+        });
+        expect(record.request_id).toEqual(expect.any(String));
+        expect(JSON.stringify(record)).not.toContain(fixture.slug);
+        const anonymous = await req(
+          h,
+          `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/playback-diagnostics`,
+          {
+            method: "POST",
+            origin: true,
+            json: {
+              reason: "source_missing",
+              rate: 2,
+              main_ready_state: null,
+              main_network_state: null,
+              main_playback_rate: null,
+              main_current_time: null,
+              main_paused: null,
+              main_muted: null,
+              sidecar_ready_state: null,
+              sidecar_network_state: null,
+              sidecar_current_time: null,
+              sidecar_paused: null,
+              sidecar_media_error: null,
+              failure: null,
+            },
+          },
+        );
+        expect(anonymous.status).toBe(401);
+      } finally {
+        warning.mockRestore();
+      }
+    });
+
     it("blocks share-cookie mutations from a foreign origin", async () => {
       const h = ctx.h();
       const seed = ctx.seed();
@@ -1560,6 +1706,16 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
           kind: "spectrogram",
           content: "spectrogram-png",
         });
+        await seedRendition(h, {
+          versionId: media.versionId,
+          kind: "shuttle_audio_2x",
+          content: "twice-speed-audio",
+        });
+        await seedRendition(h, {
+          versionId: media.versionId,
+          kind: "shuttle_audio_4x",
+          content: "four-times-audio",
+        });
         const viewer = await accessShare(h, share.slug);
         const detail = await json<{
           versions: Array<{
@@ -1567,6 +1723,7 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
             sidecars: {
               waveform: { url: string; meta: Record<string, unknown> } | null;
               spectrogram: { url: string } | null;
+              shuttle_audio: { x2: string | null; x4: string | null };
             };
           }>;
         }>(
@@ -1589,6 +1746,16 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
           version?.sidecars.spectrogram?.url ?? "",
         );
         expect(await spectrogram.text()).toBe("spectrogram-png");
+        const twice = await followUrl(
+          h,
+          version?.sidecars.shuttle_audio.x2 ?? "",
+        );
+        expect(await twice.text()).toBe("twice-speed-audio");
+        const fourTimes = await followUrl(
+          h,
+          version?.sidecars.shuttle_audio.x4 ?? "",
+        );
+        expect(await fourTimes.text()).toBe("four-times-audio");
         /* The media endpoint the room actually plays from: an audio asset
            must never be handed a still, and must not 404 for want of a
            video proxy. */

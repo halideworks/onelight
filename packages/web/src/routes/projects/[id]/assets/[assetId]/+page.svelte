@@ -9,6 +9,8 @@
     FrameAnnotation,
     PendingDrawing,
     PlayerRendition,
+    ShuttleAudioDiagnostic,
+    ShuttleAudioSources,
     SpriteCue,
     TimelineMarker
   } from '@onelight/player';
@@ -22,6 +24,7 @@
   import { projectEvents } from '$lib/sse.svelte.js';
   import AttachmentImage from '$lib/AttachmentImage.svelte';
   import { auth } from '$lib/auth.svelte.js';
+  import { askConfirm } from '$lib/confirm.svelte.js';
   import Avatar from '$lib/Avatar.svelte';
   import Lightbox from '$lib/Lightbox.svelte';
   import { canonicalizePath } from '$lib/canonical.js';
@@ -80,6 +83,7 @@
   let selectedVersionId = $state<string | null>(null);
   let source = $state('');
   let renditionOptions = $state<PlayerRendition[]>([]);
+  let shuttleAudio = $state<ShuttleAudioSources | null>(null);
   /* The version's generated poster: the player shows it while the first
      frame decodes, so opening an asset is never a black box. */
   let posterUrl = $state<string | null>(null);
@@ -383,6 +387,10 @@
   const markers = $derived<TimelineMarker[]>(
     markersFrom(comments.filter((comment) => !comment.parent_id))
   );
+  const canEditComment = (comment: Comment): boolean =>
+    Boolean(auth.user && comment.author_user_id === auth.user.id);
+  const canDeleteComment = (comment: Comment): boolean =>
+    canEditComment(comment) || auth.user?.role === 'admin' || projectRole === 'manager';
 
   const tagsOf = (comment: Comment): string[] =>
     Array.isArray(comment.tags) ? comment.tags : hashtagsIn(comment.body_text);
@@ -539,6 +547,12 @@
           const url = urlForRendition(candidate);
           return url ? [{ kind: candidate.kind, url }] : [];
         });
+      const shuttle2x = items.find((candidate) => candidate.kind === 'shuttle_audio_2x');
+      const shuttle4x = items.find((candidate) => candidate.kind === 'shuttle_audio_4x');
+      shuttleAudio = {
+        x2: shuttle2x ? urlForRendition(shuttle2x) : null,
+        x4: shuttle4x ? urlForRendition(shuttle4x) : null
+      };
       /* The playable file, per kind: the 1080 proxy for footage, the AAC
          proxy for a mix. A still has neither and is shown, not played. */
       const rendition =
@@ -710,6 +724,7 @@
     selectedVersionId = versionId;
     source = '';
     renditionOptions = [];
+    shuttleAudio = null;
     filmstrip = null;
     posterUrl = null;
     captionsUrl = null;
@@ -739,7 +754,7 @@
 
   const load = async (id: string): Promise<void> => {
     versionToken += 1;
-    asset = null; versions = []; selectedVersionId = null; source = ''; renditionOptions = [];
+    asset = null; versions = []; selectedVersionId = null; source = ''; renditionOptions = []; shuttleAudio = null;
     filmstrip = null; waveformUrl = null; peaksUrl = null; spectrogramUrl = null; posterUrl = null;
     stillUrl = null; stillPrevUrl = null; rate = null; dropFrame = false; durationFrames = null;
     error = ''; comments = []; commentError = ''; highlightedId = null; pendingDrawing = null;
@@ -1371,6 +1386,60 @@
     }
   };
 
+  let editingNoteId = $state<string | null>(null);
+  let editingNoteText = $state('');
+  let editingNoteBusy = false;
+
+  const beginCommentEdit = (comment: Comment): void => {
+    editingNoteId = comment.id;
+    editingNoteText = comment.body_text;
+  };
+
+  const saveCommentEdit = async (comment: Comment): Promise<void> => {
+    if (editingNoteBusy || editingNoteId !== comment.id) return;
+    const body = editingNoteText.trim();
+    if (!body || body === comment.body_text) {
+      editingNoteId = null;
+      return;
+    }
+    editingNoteBusy = true;
+    try {
+      const updated = await apiPatch<Comment>(`/api/v1/comments/${comment.id}`, {
+        body_text: body
+      });
+      comments = comments.map((entry) =>
+        entry.id === comment.id ? { ...entry, ...updated } : entry
+      );
+      editingNoteId = null;
+      commentError = '';
+    } catch (caught) {
+      commentError = messageFrom(caught, 'The note could not be changed.');
+    } finally {
+      editingNoteBusy = false;
+    }
+  };
+
+  const deleteComment = async (comment: Comment): Promise<void> => {
+    const own = canEditComment(comment);
+    const confirmed = await askConfirm({
+      title: own ? 'Remove your note?' : `Remove ${comment.author_name ?? 'this reviewer'}'s note?`,
+      body: own
+        ? 'The note and its attachments disappear from this review.'
+        : 'Moderation removes the note for everyone. Its author remains unchanged in the audit trail.',
+      confirmLabel: 'Remove',
+      danger: true
+    });
+    if (!confirmed) return;
+    try {
+      await apiDelete(`/api/v1/comments/${comment.id}`);
+      comments = comments.filter((entry) => entry.id !== comment.id);
+      if (editingNoteId === comment.id) editingNoteId = null;
+      commentError = '';
+    } catch (caught) {
+      commentError = messageFrom(caught, 'The note could not be removed.');
+    }
+  };
+
   const updateApproval = async (status: string): Promise<void> => {
     if (!asset) return;
     try {
@@ -1656,6 +1725,7 @@
             {durationFrames}
             {markers}
             renditions={renditionOptions}
+            {shuttleAudio}
             {filmstrip}
             {waveformUrl}
             captionsSrc={captionsUrl ?? undefined}
@@ -1673,6 +1743,15 @@
             ondrawingchange={(drawing) => { pendingDrawing = drawing; }}
             onrangechange={(range) => { playerRange = range; }}
             oncopytimecode={copyText}
+            onshuttleaudiodiagnostic={(diagnostic: ShuttleAudioDiagnostic) => {
+              const versionId = selectedVersionId;
+              if (versionId)
+                void apiPost<void>(
+                  `/api/v1/versions/${versionId}/playback-diagnostics`,
+                  diagnostic,
+                  { keepalive: true }
+                ).catch(() => undefined);
+            }}
           onshare={() => void copyFrameLink()}
           />
           <!-- The frame readout used to be repeated here under the player, next
@@ -1816,17 +1895,35 @@
                   {#if comment.annotation}<span class="drawn">Drawing</span>{/if}
                   {#if carriedLabel(comment)}<span class="carried">{carriedLabel(comment)}</span>{/if}
                 </span>
-                <p>
-                  {#each segmentCommentBody(comment.body_text, memberNames) as segment, index (index)}
-                    {#if segment.kind === 'mention'}
-                      <span class="mention">{segment.text}</span>
-                    {:else if segment.kind === 'tag' && segment.tag}
-                      <button type="button" class="tag" onclick={() => { activeTag = segment.tag ?? null; }} aria-label={`Filter notes by ${segment.text}`}>{segment.text}</button>
-                    {:else}
-                      {segment.text}
-                    {/if}
-                  {/each}
-                </p>
+                {#if editingNoteId === comment.id}
+                  <textarea
+                    class="noteedit"
+                    aria-label="Edit note"
+                    bind:value={editingNoteText}
+                    maxlength="10000"
+                    onkeydown={(event) => {
+                      if (event.key === 'Enter' && !event.shiftKey) {
+                        event.preventDefault();
+                        void saveCommentEdit(comment);
+                      } else if (event.key === 'Escape') {
+                        editingNoteId = null;
+                      }
+                    }}
+                    onblur={() => void saveCommentEdit(comment)}
+                  ></textarea>
+                {:else}
+                  <p>
+                    {#each segmentCommentBody(comment.body_text, memberNames) as segment, index (index)}
+                      {#if segment.kind === 'mention'}
+                        <span class="mention">{segment.text}</span>
+                      {:else if segment.kind === 'tag' && segment.tag}
+                        <button type="button" class="tag" onclick={() => { activeTag = segment.tag ?? null; }} aria-label={`Filter notes by ${segment.text}`}>{segment.text}</button>
+                      {:else}
+                        {segment.text}
+                      {/if}
+                    {/each}
+                  </p>
+                {/if}
                 {#if comment.attachments?.length}
                   <span class="files">
                     {#each comment.attachments as attachment (attachment.id)}
@@ -1853,6 +1950,12 @@
                 <span class="note-actions">
                   {#if !isReply}
                     <button type="button" class="linky" onclick={() => { replyTo = comment; composerEl?.focus(); }}>Reply</button>
+                  {/if}
+                  {#if canEditComment(comment) && editingNoteId !== comment.id}
+                    <button type="button" class="linky" onclick={() => beginCommentEdit(comment)}>Edit</button>
+                  {/if}
+                  {#if canDeleteComment(comment)}
+                    <button type="button" class="linky danger" onclick={() => void deleteComment(comment)}>Remove</button>
                   {/if}
                   {#if !comment.completed_at}
                     <button type="button" class="linky" onclick={() => completeComment(comment.id)}>Resolve</button>
@@ -2255,6 +2358,9 @@
   .notes article.seekable { cursor: pointer; }
   .note-body { flex: 1; min-width: 0; }
   .note-actions { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
+  .noteedit { width: 100%; min-height: 72px; resize: vertical; border: 0; border-radius: 2px; padding: 8px; background: var(--n-200); color: var(--n-900); font: inherit; line-height: 1.45; }
+  .noteedit:focus { outline: 0; background: var(--n-300); }
+  .note-actions .danger { color: var(--danger, #d58b8b); }
   .notes-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 0 0 12px; }
   .notes h2 { grid-column: 1; grid-row: 1; margin: 0; font-size: var(--text-13); font-weight: 600; color: var(--n-900); }
   .filters { grid-column: 1 / -1; grid-row: 2; display: flex; gap: 2px; background: var(--n-150); border-radius: var(--radius); padding: 2px; }

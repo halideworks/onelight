@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import {
   applyNodeMigrations,
@@ -8,6 +9,7 @@ import {
   assetVersions,
   createNodeDb,
   projects,
+  renditions,
   shares,
   uploadSessions,
   users,
@@ -25,6 +27,7 @@ import {
   referencedBlobKeys,
   notificationDeepLink,
   planEmailSweep,
+  purgeTrashedAssets,
   reapUploadSessions,
   subjectForKind,
   walkBlobObjects,
@@ -376,6 +379,146 @@ describe("upload session reaping", () => {
         "multipart-stale-pending",
         "multipart-stale-quarantined",
       ]);
+    } finally {
+      sqlite.close();
+    }
+  });
+});
+
+describe("trash purge", () => {
+  it("wipes a purged asset's original, thumbnail, and shuttle sidecars", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    const now = 40 * DAY;
+    const deleted: string[] = [];
+    const store = {
+      delete(key: string) {
+        deleted.push(key);
+        return Promise.resolve();
+      },
+    } as unknown as BlobStore;
+    try {
+      await db
+        .insert(workspaces)
+        .values({ id: "ws-1", name: "Studio", createdAt: 1_000 })
+        .run();
+      await db
+        .insert(users)
+        .values({
+          id: "user-1",
+          workspaceId: "ws-1",
+          email: "a@example.com",
+          name: "A",
+          role: "admin",
+          createdAt: 1_000,
+          updatedAt: 1_000,
+        })
+        .run();
+      await db
+        .insert(projects)
+        .values({
+          id: "proj-1",
+          workspaceId: "ws-1",
+          name: "Film",
+          palette: "kuro",
+          storageBytes: 100,
+          createdBy: "user-1",
+          createdAt: 1_000,
+          updatedAt: 1_000,
+        })
+        .run();
+      await db
+        .insert(uploadSessions)
+        .values({
+          id: "upload-1",
+          workspaceId: "ws-1",
+          projectId: "proj-1",
+          createdBy: "user-1",
+          clientFilename: "shot.mov",
+          relativePath: "",
+          size: 100,
+          checksumCrc32c: null,
+          blobKey: "originals/shot.mov",
+          uploadId: null,
+          partSize: 8,
+          status: "completed",
+          createdAt: 1_000,
+          completedAt: 1_000,
+        })
+        .run();
+      await db
+        .insert(assets)
+        .values({
+          id: "asset-1",
+          projectId: "proj-1",
+          name: "Shot",
+          kind: "video",
+          thumbnailBlobKey: "thumbnails/asset-1.png",
+          deletedAt: 1_000,
+          createdAt: 1_000,
+          updatedAt: 1_000,
+        })
+        .run();
+      await db
+        .insert(assetVersions)
+        .values({
+          id: "version-1",
+          assetId: "asset-1",
+          uploadSessionId: "upload-1",
+          versionNo: 1,
+          originalBlobKey: "originals/shot.mov",
+          originalFilename: "shot.mov",
+          size: 100,
+          checksumCrc32c: "",
+          uploadedBy: "user-1",
+          createdAt: 1_000,
+        })
+        .run();
+      await db
+        .update(assets)
+        .set({ currentVersionId: "version-1" })
+        .where(eq(assets.id, "asset-1"))
+        .run();
+      await db
+        .insert(renditions)
+        .values([
+          {
+            id: "sidecar-2",
+            versionId: "version-1",
+            kind: "shuttle_audio_2x",
+            blobKey: "renditions/version-1/shuttle_audio_2x.m4a",
+            metaJson: JSON.stringify({ shuttle_rate: 2 }),
+            size: 10,
+            checksumSha256: "",
+            shareId: null,
+            createdAt: 1_000,
+          },
+          {
+            id: "sidecar-4",
+            versionId: "version-1",
+            kind: "shuttle_audio_4x",
+            blobKey: "renditions/version-1/shuttle_audio_4x.m4a",
+            metaJson: JSON.stringify({ shuttle_rate: 4 }),
+            size: 10,
+            checksumSha256: "",
+            shareId: null,
+            createdAt: 1_000,
+          },
+        ])
+        .run();
+
+      await purgeTrashedAssets(db, store, now, DAY);
+
+      expect(deleted.sort()).toEqual([
+        "originals/shot.mov",
+        "renditions/version-1/shuttle_audio_2x.m4a",
+        "renditions/version-1/shuttle_audio_4x.m4a",
+        "thumbnails/asset-1.png",
+      ]);
+      expect(await db.select().from(assets).all()).toEqual([]);
+      expect(await db.select().from(assetVersions).all()).toEqual([]);
+      expect(await db.select().from(renditions).all()).toEqual([]);
+      expect((await db.select().from(projects).all())[0]?.storageBytes).toBe(0);
     } finally {
       sqlite.close();
     }

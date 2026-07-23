@@ -625,6 +625,117 @@ const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
   }
 };
 
+/* Versions transcoded before pitch-corrected shuttle audio existed need the
+   two new sidecars without an operator re-uploading or manually reprocessing
+   them. A low-priority, bounded reconciliation job reuses every finished
+   output already on disk, so ffmpeg only writes the missing audio files. */
+const SHUTTLE_AUDIO_SWEEP_INTERVAL_MS = 30_000;
+const SHUTTLE_AUDIO_SWEEP_LIMIT = 4;
+
+export const sweepShuttleAudioJobs = async (db: AppDb): Promise<number> => {
+  const candidates = await db
+    .select({
+      version: assetVersions,
+      asset: assets,
+      workspaceId: projects.workspaceId,
+    })
+    .from(assetVersions)
+    .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+    .innerJoin(projects, eq(assets.projectId, projects.id))
+    .where(
+      and(
+        inArray(assets.kind, ["video", "audio"]),
+        eq(assetVersions.transcodeStatus, "ready"),
+        isNull(assetVersions.deletedAt),
+        isNull(assets.deletedAt),
+      ),
+    )
+    .orderBy(asc(assetVersions.createdAt))
+    .limit(100)
+    .all();
+  let enqueued = 0;
+  for (const row of candidates) {
+    if (enqueued >= SHUTTLE_AUDIO_SWEEP_LIMIT) break;
+    const mediaInfo = parseObject(row.version.mediaInfoJson);
+    const streams = Array.isArray(mediaInfo.streams) ? mediaInfo.streams : [];
+    if (
+      !streams.some(
+        (stream) =>
+          typeof stream === "object" &&
+          stream !== null &&
+          (stream as Record<string, unknown>).codec_type === "audio",
+      )
+    )
+      continue;
+    const existingKinds = new Set(
+      (
+        await db
+          .select({ kind: renditions.kind })
+          .from(renditions)
+          .where(
+            and(
+              eq(renditions.versionId, row.version.id),
+              isNull(renditions.shareId),
+              inArray(renditions.kind, [
+                "shuttle_audio_2x",
+                "shuttle_audio_4x",
+              ]),
+            ),
+          )
+          .all()
+      ).map((rendition) => rendition.kind),
+    );
+    if (
+      existingKinds.has("shuttle_audio_2x") &&
+      existingKinds.has("shuttle_audio_4x")
+    )
+      continue;
+    const idempotencyKey = `shuttle-audio:v1:${row.version.id}`;
+    const existingJob = (
+      await db
+        .select({ id: jobs.id, status: jobs.status })
+        .from(jobs)
+        .where(eq(jobs.idempotencyKey, idempotencyKey))
+        .limit(1)
+        .all()
+    )[0];
+    if (existingJob) continue;
+    const now = Date.now();
+    await db
+      .insert(jobs)
+      .values({
+        id: new UlidGenerator().ulid(),
+        kind: "transcode",
+        payloadJson: JSON.stringify({
+          blob_key: row.version.originalBlobKey,
+          version_id: row.version.id,
+          asset_id: row.asset.id,
+          project_id: row.asset.projectId,
+          workspace_id: row.workspaceId,
+          secondary_only: "shuttle_audio",
+        }),
+        idempotencyKey,
+        status: "queued",
+        priority: -10,
+        capabilityJson: "{}",
+        maxAttempts: 5,
+        attempts: 0,
+        runAfter: now,
+        createdAt: now,
+        startedAt: null,
+        heartbeatAt: null,
+        leaseExpiresAt: null,
+        finishedAt: null,
+        error: null,
+        workerId: null,
+      })
+      .onConflictDoNothing()
+      .run();
+    enqueued += 1;
+  }
+  return enqueued;
+};
+
 const processJob = async (
   db: AppDb,
   job: typeof jobs.$inferSelect,
@@ -861,6 +972,19 @@ const processJob = async (
   const produced = new Set(
     state.result.renditions.map((rendition) => rendition.kind),
   );
+  if (
+    payload.secondary_only === "shuttle_audio" &&
+    (!produced.has("shuttle_audio_2x") || !produced.has("shuttle_audio_4x"))
+  ) {
+    const shuttleFailure = failures.find((failure) =>
+      failure.kind.startsWith("shuttle_audio_"),
+    );
+    throw new Error(
+      shuttleFailure
+        ? `Shuttle audio ${shuttleFailure.kind} failed: ${shuttleFailure.error}`
+        : "Pitch-corrected shuttle audio was not produced.",
+    );
+  }
   const primaries = primaryRenditionKinds(assetKind);
   if (!primaries.some((kind) => produced.has(kind))) {
     const primaryFailure = failures.find((failure) =>
@@ -905,6 +1029,7 @@ const recordDeadMediaJob = async (
     )[0];
     if (state?.status !== "dead") return;
     const payload = parsePayload(job.payloadJson);
+    if (payload.secondary_only) return;
     const versionId = payload.version_id;
     if (!versionId) return;
     await db
@@ -1326,6 +1451,7 @@ export const startWorkerPump = (
   const workerId = new UlidGenerator().ulid();
   let active = false;
   let lastWatermarkSweep = 0;
+  let lastShuttleAudioSweep = 0;
   let reclaimedOnStart = false;
   const tick = async () => {
     if (active) return;
@@ -1361,6 +1487,21 @@ export const startWorkerPump = (
         } catch (error) {
           console.warn(
             `[onelight] watermark sweep failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      if (
+        mediaEnabled &&
+        now - lastShuttleAudioSweep >= SHUTTLE_AUDIO_SWEEP_INTERVAL_MS
+      ) {
+        lastShuttleAudioSweep = now;
+        try {
+          await sweepShuttleAudioJobs(db);
+        } catch (error) {
+          console.warn(
+            `[onelight] shuttle audio sweep failed: ${
               error instanceof Error ? error.message : String(error)
             }`,
           );

@@ -3,7 +3,11 @@ import {
   UlidGenerator,
   loadConfig,
 } from "@onelight/core";
-import { applyNodeMigrations, createNodeDb } from "@onelight/db";
+import {
+  applyNodeMigrations,
+  configureNodeSearch,
+  createNodeDb,
+} from "@onelight/db";
 import { createApp } from "./app.js";
 import type { ContractHarness } from "./contract/index.js";
 import {
@@ -22,6 +26,7 @@ import {
 const makeEnv = (): Promise<ContractHarness> => {
   const { db, sqlite } = createNodeDb(":memory:");
   applyNodeMigrations(sqlite);
+  const searchBackend = configureNodeSearch(sqlite);
   const clock = new FakeClock();
   const ids = new UlidGenerator();
   const hasher = new Pbkdf2PasswordHasher();
@@ -38,6 +43,7 @@ const makeEnv = (): Promise<ContractHarness> => {
     ids,
     config,
     version: "contract-node",
+    searchBackend,
     blobStore,
     mailer,
   });

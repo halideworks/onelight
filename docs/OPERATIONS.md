@@ -11,6 +11,15 @@
   `GET /api/v1/admin/system` for scripts.
 - **Logs** go to stdout: backups, blob GC reports, worker pump failures, and
   webhook delivery problems are all one `docker logs` away.
+- **Playback diagnostics** are automatic. Search stdout for
+  `[onelight-playback-diagnostic]` when a reviewer reports silent L shuttle.
+  Each JSON record identifies the project version or share asset, browser and
+  platform, requested rate, main and sidecar media states, volume and mute
+  state, page visibility, and the exact fallback reason. Both successful
+  sidecar startup and clock advance are recorded, so the last successful stage
+  is visible remotely. Comment text, email addresses, cookies, and signed media
+  URLs are never included. Reports are limited to 12 per reviewer and media
+  item per five minutes.
 
 ## What it needs to run whole
 

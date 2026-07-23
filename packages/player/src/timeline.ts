@@ -12,6 +12,8 @@ export type TimelineMarker = {
   author?: string | null;
   /* Stable identity for colouring: names collide and change, ids do not. */
   authorId?: string | null;
+  /* A share-scoped or authenticated image URL. Missing images use initials. */
+  avatarUrl?: string | null;
   text?: string | null;
   completed?: boolean;
 };

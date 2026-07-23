@@ -113,6 +113,17 @@ const renditionsHaveAudioKinds = async (
   return Boolean(row?.sql?.includes("waveform_data"));
 };
 
+const renditionsHaveShuttleAudioKinds = async (
+  binding: D1Database,
+): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='renditions'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("shuttle_audio_4x"));
+};
+
 const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -427,6 +438,18 @@ export const d1Migrations: D1Migration[] = [
       "CREATE TRIGGER transfer_receipts_limit_before_insert\nBEFORE INSERT ON transfer_receipts\nWHEN (\n  SELECT byte_cap\n  FROM transfers\n  WHERE id = NEW.transfer_id\n) IS NOT NULL\nBEGIN\n  SELECT CASE\n    WHEN COALESCE((\n      SELECT SUM(upload_sessions.size)\n      FROM transfer_receipts\n      JOIN upload_sessions\n        ON upload_sessions.id = transfer_receipts.upload_session_id\n      WHERE transfer_receipts.transfer_id = NEW.transfer_id\n        AND upload_sessions.status NOT IN ('aborted', 'quarantined')\n    ), 0) + COALESCE((\n      SELECT size\n      FROM upload_sessions\n      WHERE id = NEW.upload_session_id\n    ), 0) > (\n      SELECT byte_cap\n      FROM transfers\n      WHERE id = NEW.transfer_id\n    ) THEN RAISE(ABORT, 'transfer byte limit reached')\n  END;\nEND",
       "UPDATE projects\nSET storage_bytes = storage_bytes + COALESCE((\n  SELECT SUM(comment_attachments.size)\n  FROM comment_attachments\n  JOIN comments ON comments.id = comment_attachments.comment_id\n  JOIN asset_versions ON asset_versions.id = comments.version_id\n  JOIN assets ON assets.id = asset_versions.asset_id\n  WHERE assets.project_id = projects.id\n), 0)",
       "UPDATE transfers\nSET byte_cap = 1099511627776\nWHERE kind = 'request' AND byte_cap IS NULL",
+    ],
+  },
+  {
+    name: "0024_shuttle_audio.sql",
+    applied: renditionsHaveShuttleAudioKinds,
+    statements: [
+      "CREATE TABLE renditions_new (\n  id TEXT PRIMARY KEY,\n  version_id TEXT NOT NULL REFERENCES asset_versions(id) ON DELETE CASCADE,\n  kind TEXT NOT NULL CHECK (kind IN ('proxy_2160','proxy_1080','proxy_540','hdr_hevc','hdr_av1','proxy_audio','shuttle_audio_2x','shuttle_audio_4x','audio_peaks','waveform_data','spectrogram','sprite','poster','pdf_pages','still_tiles','watermarked')),\n  blob_key TEXT NOT NULL,\n  meta_json TEXT NOT NULL DEFAULT '{}',\n  size INTEGER NOT NULL DEFAULT 0,\n  checksum_sha256 TEXT NOT NULL DEFAULT '',\n  share_id TEXT,\n  created_at INTEGER NOT NULL\n)",
+      "INSERT INTO renditions_new (id, version_id, kind, blob_key, meta_json, size, checksum_sha256, share_id, created_at)\nSELECT id, version_id, kind, blob_key, meta_json, size, checksum_sha256, share_id, created_at FROM renditions",
+      "DROP TABLE renditions",
+      "ALTER TABLE renditions_new RENAME TO renditions",
+      "CREATE UNIQUE INDEX renditions_base_uq ON renditions(version_id, kind) WHERE share_id IS NULL",
+      "CREATE UNIQUE INDEX renditions_share_uq ON renditions(version_id, kind, share_id) WHERE share_id IS NOT NULL",
     ],
   },
 ];

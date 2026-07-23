@@ -15,6 +15,8 @@ import {
   isHdrSource,
   probeFile,
   runProcess,
+  sidecarArgs,
+  sourceDurationSeconds,
   SUPPORTED_MEDIA_RATES,
 } from "../../packages/worker/src/media.js";
 import { fixturesDir, manifestPath } from "./capabilities.js";
@@ -50,7 +52,7 @@ export interface ColorPatch {
 }
 
 /* Bump to invalidate corpora produced by older synthesis code. */
-export const CORPUS_VERSION = 3;
+export const CORPUS_VERSION = 4;
 
 export interface FixtureManifest {
   version: number;
@@ -58,7 +60,16 @@ export interface FixtureManifest {
   fontFile: string | null;
   rateClips: RateClipFixture[];
   dropFrame: { file: string; timecode: string; rate: QaRate };
-  shuttleAudio: { file: string; durationSeconds: number };
+  shuttleAudio: {
+    file: string;
+    durationSeconds: number;
+    toneHz: number;
+    sidecars: Array<{
+      file: string;
+      rate: 2 | 4;
+      durationSeconds: number;
+    }>;
+  };
   bars: {
     file: string;
     width: number;
@@ -73,6 +84,7 @@ const HEIGHT = 720;
 const COUNTER_SECONDS = 10;
 const BARS_SECONDS = 5;
 const SHUTTLE_AUDIO_SECONDS = 6;
+const SHUTTLE_AUDIO_TONE_HZ = 997;
 export const DF_START_TIMECODE = "00:59:55;00";
 export const DF_RATE: QaRate = { num: 30000, den: 1001 };
 const BARS_RATE: QaRate = { num: 25, den: 1 };
@@ -178,7 +190,7 @@ export const shuttleAudioClipArgs = (outputPath: string): string[] => [
   "-f",
   "lavfi",
   "-i",
-  `sine=frequency=997:sample_rate=48000:duration=${SHUTTLE_AUDIO_SECONDS}`,
+  `sine=frequency=${SHUTTLE_AUDIO_TONE_HZ}:sample_rate=48000:duration=${SHUTTLE_AUDIO_SECONDS}`,
   "-map",
   "0:v:0",
   "-map",
@@ -445,6 +457,7 @@ const manifestUpToDate = async (): Promise<FixtureManifest | null> => {
       ...manifest.rateClips.map((clip) => clip.file),
       manifest.dropFrame.file,
       manifest.shuttleAudio.file,
+      ...manifest.shuttleAudio.sidecars.map((sidecar) => sidecar.file),
       manifest.bars.file,
       manifest.bars.patchesFile,
     ];
@@ -519,6 +532,32 @@ export const synthesizeFixtures = async (
     ffmpegBin(),
     shuttleAudioClipArgs(path.join(fixturesDir, shuttleAudioFile)),
   );
+  const shuttleAudioPath = path.join(fixturesDir, shuttleAudioFile);
+  const shuttleMediaInfo = await probeFile(shuttleAudioPath);
+  const shuttleSidecars: FixtureManifest["shuttleAudio"]["sidecars"] = [];
+  for (const rate of [2, 4] as const) {
+    const file = `shuttle-audio-${String(rate)}x.m4a`;
+    const outputPath = path.join(fixturesDir, file);
+    const args = sidecarArgs(
+      {
+        id: `qa-shuttle-${String(rate)}x`,
+        sourceKey: shuttleAudioPath,
+        outputs: [],
+        mediaInfo: shuttleMediaInfo,
+      },
+      outputPath,
+      rate === 2 ? "shuttle_audio_2x" : "shuttle_audio_4x",
+    );
+    if (!args)
+      throw new Error(`No production sidecar recipe for ${String(rate)}x.`);
+    log(`[qa] fixtures: synthesizing ${file}`);
+    await runProcess(ffmpegBin(), args);
+    shuttleSidecars.push({
+      file,
+      rate,
+      durationSeconds: sourceDurationSeconds(await probeFile(outputPath)),
+    });
+  }
 
   const manifest: FixtureManifest = {
     version: CORPUS_VERSION,
@@ -529,6 +568,8 @@ export const synthesizeFixtures = async (
     shuttleAudio: {
       file: shuttleAudioFile,
       durationSeconds: SHUTTLE_AUDIO_SECONDS,
+      toneHz: SHUTTLE_AUDIO_TONE_HZ,
+      sidecars: shuttleSidecars,
     },
     bars: {
       file: barsFile,

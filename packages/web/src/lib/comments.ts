@@ -18,6 +18,7 @@ export type ReviewComment = {
   id: string;
   author_name: string | null;
   author_user_id?: string | null;
+  author_avatar_url?: string | null;
   body_text: string;
   frame_in: number | null;
   frame_out: number | null;
@@ -69,6 +70,7 @@ export const markersFrom = (comments: ReviewComment[]): TimelineMarker[] =>
       /* Colour keys to the author's id; share viewers have no id on the
          public wire, so their name stands in and stays stable per viewer. */
       authorId: comment.author_user_id ?? comment.author_name ?? null,
+      avatarUrl: comment.author_avatar_url ?? null,
       text: comment.body_text,
       completed: comment.completed_at !== null,
     }));
