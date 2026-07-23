@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import {
   applyNodeMigrations,
   createNodeDb,
+  projects,
+  shares,
   users,
   workspaces,
 } from "@onelight/db";
@@ -312,6 +314,63 @@ describe("blob gc diff", () => {
         .run();
       const keys = await referencedBlobKeys(db);
       expect(keys.has("avatars/user-1.jpg")).toBe(true);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  /* A share logo's only reference is shares.brand_json.logo_key -- no column of
+     its own. Same failure mode as avatars: omit it and the GC deletes a live
+     logo. This test fails the moment that pass is dropped. */
+  it("counts share logos (brand_json.logo_key) as referenced", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await db
+        .insert(workspaces)
+        .values({ id: "ws-1", name: "Studio", createdAt: 1_000 })
+        .run();
+      await db
+        .insert(users)
+        .values({
+          id: "user-1",
+          workspaceId: "ws-1",
+          email: "a@example.com",
+          name: "A",
+          role: "admin",
+          createdAt: 1_000,
+          updatedAt: 1_000,
+        })
+        .run();
+      await db
+        .insert(projects)
+        .values({
+          id: "proj-1",
+          workspaceId: "ws-1",
+          name: "Film",
+          palette: "kuro",
+          createdBy: "user-1",
+          createdAt: 1_000,
+          updatedAt: 1_000,
+        })
+        .run();
+      await db
+        .insert(shares)
+        .values({
+          id: "share-1",
+          projectId: "proj-1",
+          slug: "s-abc",
+          kind: "review",
+          title: "Client review",
+          layout: "grid",
+          allowDownload: "none",
+          brandJson: JSON.stringify({ logo_key: "ws-1/sharelogos/share-1-x.svg" }),
+          createdBy: "user-1",
+          createdAt: 1_000,
+        })
+        .run();
+      const keys = await referencedBlobKeys(db);
+      expect(keys.has("ws-1/sharelogos/share-1-x.svg")).toBe(true);
     } finally {
       sqlite.close();
     }

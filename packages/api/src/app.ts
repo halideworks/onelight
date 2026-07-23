@@ -1004,10 +1004,20 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       throw errors.rateLimited(
         Math.ceil((windowMs - (now - current.windowStart)) / 1000),
       );
+    /* Increment in SQL, not read-modify-write: concurrent requests in one
+       window would otherwise each read the same count and write count+1, losing
+       updates and admitting more than `limit`. The WHERE re-checks the window
+       so a row that rolled over between the read and here is not bumped as if it
+       were still the old window. */
     await env.db
       .update(rateLimits)
-      .set({ count: current.count + 1 })
-      .where(eq(rateLimits.key, key))
+      .set({ count: sql`${rateLimits.count} + 1` })
+      .where(
+        and(
+          eq(rateLimits.key, key),
+          eq(rateLimits.windowStart, current.windowStart),
+        ),
+      )
       .run();
   };
 
@@ -3468,33 +3478,55 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       )
       .limit(1)
       .all();
-    if (existing[0]?.role === "manager" && body.role !== "manager") {
-      const managers = await env.db
-        .select({ userId: projectMembers.userId })
+    /* Demoting the current manager: guard atomically inside the UPDATE (see the
+       member-remove path) so two concurrent demotes cannot both pass a separate
+       count check and strip the project of every manager. A workspace admin
+       bypasses it. Any other transition (a plain add, or a promotion) takes the
+       normal upsert. */
+    const guardDemote =
+      existing[0]?.role === "manager" &&
+      body.role !== "manager" &&
+      actor.role !== "admin";
+    if (guardDemote) {
+      await env.db
+        .update(projectMembers)
+        .set({ role: body.role })
+        .where(
+          and(
+            eq(projectMembers.projectId, c.req.param("id")),
+            eq(projectMembers.userId, target.id),
+            sql`(select count(*) from ${projectMembers} where ${projectMembers.projectId} = ${c.req.param("id")} and ${projectMembers.role} = 'manager') > 1`,
+          ),
+        )
+        .run();
+      const stillManager = await env.db
+        .select({ role: projectMembers.role })
         .from(projectMembers)
         .where(
           and(
             eq(projectMembers.projectId, c.req.param("id")),
-            eq(projectMembers.role, "manager"),
+            eq(projectMembers.userId, target.id),
           ),
         )
+        .limit(1)
         .all();
-      if (managers.length <= 1 && actor.role !== "admin")
+      if (stillManager[0]?.role === "manager")
         throw errors.conflict("The last project manager cannot be demoted.");
+    } else {
+      await env.db
+        .insert(projectMembers)
+        .values({
+          projectId: c.req.param("id"),
+          userId: target.id,
+          role: body.role,
+          createdAt: env.clock.now(),
+        })
+        .onConflictDoUpdate({
+          target: [projectMembers.projectId, projectMembers.userId],
+          set: { role: body.role },
+        })
+        .run();
     }
-    await env.db
-      .insert(projectMembers)
-      .values({
-        projectId: c.req.param("id"),
-        userId: target.id,
-        role: body.role,
-        createdAt: env.clock.now(),
-      })
-      .onConflictDoUpdate({
-        target: [projectMembers.projectId, projectMembers.userId],
-        set: { role: body.role },
-      })
-      .run();
     await audit(
       actor.workspaceId,
       actor.id,
@@ -3522,29 +3554,41 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!existing) throw errors.notFound();
-    if (existing.role === "manager") {
-      const managers = await env.db
-        .select({ userId: projectMembers.userId })
-        .from(projectMembers)
-        .where(
-          and(
-            eq(projectMembers.projectId, existing.projectId),
-            eq(projectMembers.role, "manager"),
-          ),
-        )
-        .all();
-      if (managers.length <= 1 && actor.role !== "admin")
-        throw errors.conflict("The last project manager cannot be removed.");
-    }
+    /* The last-manager guard lives inside the DELETE, not in a separate SELECT
+       before it: SQLite serializes writes and re-evaluates the correlated count
+       per statement, so two concurrent removals of the two remaining managers
+       cannot both pass a check-then-act and leave the project with zero. A
+       workspace admin bypasses the guard. */
+    const guardManager = existing.role === "manager" && actor.role !== "admin";
     await env.db
       .delete(projectMembers)
       .where(
         and(
           eq(projectMembers.projectId, existing.projectId),
           eq(projectMembers.userId, existing.userId),
+          guardManager
+            ? sql`(select count(*) from ${projectMembers} where ${projectMembers.projectId} = ${existing.projectId} and ${projectMembers.role} = 'manager') > 1`
+            : undefined,
         ),
       )
       .run();
+    if (guardManager) {
+      const survivor = await env.db
+        .select({ userId: projectMembers.userId })
+        .from(projectMembers)
+        .where(
+          and(
+            eq(projectMembers.projectId, existing.projectId),
+            eq(projectMembers.userId, existing.userId),
+          ),
+        )
+        .limit(1)
+        .all();
+      // The guard blocked the delete: the row is still there, so this was the
+      // last manager.
+      if (survivor.length)
+        throw errors.conflict("The last project manager cannot be removed.");
+    }
     await audit(
       actor.workspaceId,
       actor.id,
@@ -4139,6 +4183,36 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     await requireCommentAuthorOrModerator(comment, actor);
     const body = await jsonBody(c, bodies.commentPatch);
     validateCommentAnchor(body);
+    /* A PATCH writes frame_in and frame_out independently, so the body-only
+       guard above misses an inversion made against the STORED other end: a
+       comment at [100,200] patched with just {frame_out:50} would persist an
+       inverted range. Validate the effective range -- the merge of the body
+       over what is already there -- including the version-bound check the
+       create path does. */
+    const effIn = body.frame_in === undefined ? comment.frameIn : body.frame_in;
+    const effOut =
+      body.frame_out === undefined ? comment.frameOut : body.frame_out;
+    if (effIn !== null && effIn < 0)
+      throw errors.validation("Frame anchors must be non-negative.");
+    if (effIn !== null && effOut !== null && effOut < effIn)
+      throw errors.validation(
+        "frame_out must be greater than or equal to frame_in.",
+      );
+    if (effIn !== null && (body.frame_in !== undefined || body.frame_out !== undefined)) {
+      const versionRow = (
+        await env.db
+          .select({ durationFrames: assetVersions.durationFrames })
+          .from(assetVersions)
+          .where(eq(assetVersions.id, comment.versionId))
+          .limit(1)
+          .all()
+      )[0];
+      if (
+        versionRow?.durationFrames != null &&
+        effIn >= versionRow.durationFrames
+      )
+        throw errors.validation("Frame anchor is outside the version.");
+    }
     await env.db
       .update(comments)
       .set({
@@ -9273,6 +9347,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .all();
     if (existingVersion.length)
       throw errors.conflict("This upload is already attached to an asset.");
+    /* The new asset must be filed in an assets folder of this project. */
+    if (body.folder_id != null)
+      await requireDestinationFolder(c.req.param("id"), body.folder_id);
     const landed = await landUploadAsAsset(upload, {
       name: body.name,
       folderId: body.folder_id ?? null,
@@ -9511,6 +9588,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const actor = userFromContext(c);
     const asset = await assetForActor(c.req.param("id"), actor, "editor");
     const body = await jsonBody(c, bodies.assetPatch);
+    /* A folder move must land in an assets folder of THIS project. Without the
+       check a stray id filed the asset under another project's tree (or a
+       shares folder), where every folder listing -- all scoped by project --
+       stopped showing it: orphaned in the UI with no way back. */
+    if (body.folder_id != null)
+      await requireDestinationFolder(asset.projectId, body.folder_id);
     await env.db
       .update(assets)
       .set({

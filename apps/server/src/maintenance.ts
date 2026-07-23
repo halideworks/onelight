@@ -17,6 +17,7 @@ import {
   projectCoverUploads,
   projects,
   renditions,
+  shares,
   uploadParts,
   uploadSessions,
   users,
@@ -533,18 +534,49 @@ const purgeTrashedAssets = async (
       .from(assetVersions)
       .where(eq(assetVersions.assetId, row.asset.id))
       .all();
-    // Blobs first: a crash between blob and row deletion leaves rows the
-    // next sweep retries against idempotent deletes.
+    /* Collect every blob key BEFORE the delete: the rendition rows that name
+       them cascade away with the asset, so they must be read first -- but they
+       are freed only AFTER the row is confirmed gone (below), never before, so
+       a restore that spares the row never loses its media. */
+    const blobKeys: string[] = [];
     for (const version of versions)
-      for (const key of await versionBlobKeys(db, version))
-        await deleteBlobQuietly(store, key);
+      for (const key of await versionBlobKeys(db, version)) blobKeys.push(key);
+    // Nulling inbound carry links must precede the cascade (comments carry a
+    // no-cascade self reference). A restore after this loses only the "carried
+    // from" linkage, not the asset -- an acceptable cost for the rare race.
     await clearCarriedLinksForVersions(
       db,
       versions.map((version) => version.id),
     );
-    // The asset row goes last so one delete cascades versions, renditions,
-    // comments, attachments, reads, reactions, and share_assets.
-    await db.delete(assets).where(eq(assets.id, row.asset.id)).run();
+    /* The delete re-asserts deletedAt < cutoff, so a restore between the scan
+       above and here (which sets deletedAt = null) leaves the row untouched:
+       the purge declines to destroy a resurrected asset. One delete cascades
+       versions, renditions, comments, attachments, reads, reactions, and
+       share_assets. */
+    await db
+      .delete(assets)
+      .where(
+        and(
+          eq(assets.id, row.asset.id),
+          isNotNull(assets.deletedAt),
+          lt(assets.deletedAt, cutoff),
+        ),
+      )
+      .run();
+    const survived = await db
+      .select({ id: assets.id })
+      .from(assets)
+      .where(eq(assets.id, row.asset.id))
+      .limit(1)
+      .all();
+    if (survived.length) {
+      log(
+        `trash purge: asset ${row.asset.id} was restored mid-sweep; spared (media intact).`,
+      );
+      continue;
+    }
+    // The row is gone: now it is safe to free the media and the sessions.
+    for (const key of blobKeys) await deleteBlobQuietly(store, key);
     await deleteUploadSessionsById(
       db,
       versions.map((version) => version.uploadSessionId),
@@ -743,6 +775,23 @@ export const referencedBlobKeys = async (db: AppDb): Promise<Set<string>> => {
     .where(isNotNull(users.avatarKey))
     .all())
     if (row.key) keys.add(row.key);
+  /* Share logos. The blob's ONLY reference is shares.brand_json.logo_key -- no
+     column, no session -- so leaving it out is not a missed cleanup but the
+     avatar incident again: the GC walks the sharelogos/ objects, finds no
+     reference, and deletes a live logo a day after upload. */
+  for (const row of await db
+    .select({ brandJson: shares.brandJson })
+    .from(shares)
+    .where(isNotNull(shares.brandJson))
+    .all()) {
+    if (!row.brandJson) continue;
+    try {
+      const brand = JSON.parse(row.brandJson) as { logo_key?: unknown };
+      if (typeof brand.logo_key === "string") keys.add(brand.logo_key);
+    } catch {
+      /* A malformed brand blob names no logo; nothing to protect. */
+    }
+  }
   return keys;
 };
 

@@ -412,8 +412,17 @@ const start = async (): Promise<void> => {
       return { send: mail.send };
     },
   );
+  /* One sweep at a time. A delivery can take up to 15s, so a sweep of several
+     slow endpoints easily outruns the 5s tick; without this guard the next
+     tick starts a second concurrent sweep that races the first on the same due
+     rows and double-delivers. */
+  let webhookSweeping = false;
   const webhookTimer = setInterval(() => {
-    void deliverDueWebhookDeliveries(db, Date.now());
+    if (webhookSweeping) return;
+    webhookSweeping = true;
+    void deliverDueWebhookDeliveries(db, Date.now()).finally(() => {
+      webhookSweeping = false;
+    });
   }, 5_000);
   cleanups.push(
     () => clearInterval(webhookTimer),
