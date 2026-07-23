@@ -131,6 +131,25 @@ import {
 type UserRow = typeof users.$inferSelect;
 type ActorUser = SessionUser | UserRow;
 
+/* The keyset-pagination tail every list endpoint repeated: take `limit` of the
+   `limit + 1` rows read, map them to the wire, and hand back a cursor only when
+   there was an extra row. One place so the "did we over-read" check and the
+   cursor cannot drift between endpoints. */
+const pageResult = <T extends { id: string }, W>(
+  rows: T[],
+  limit: number,
+  map: (row: T) => W,
+): { items: W[]; next_cursor: string | null } => {
+  const page = rows.slice(0, limit);
+  return {
+    items: page.map(map),
+    next_cursor:
+      rows.length > limit
+        ? encodeCursor(page[page.length - 1]?.id ?? "")
+        : null,
+  };
+};
+
 const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const root = new Hono<{ Variables: Variables }>();
   const api = new Hono<{ Variables: Variables }>();
@@ -321,6 +340,17 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return privateMediaUrl({ versionId: row.versionId }, row.blobKey);
   };
 
+  /* Best-effort blob delete: the row is the truth, and a blob that outlives it
+     is the GC's problem, so a store error never fails the request. One helper
+     so the nine delete sites cannot drift into nine spellings (one of which had
+     no catch at all and would 500 the request on a store hiccup). */
+  const deleteBlobQuietly = async (
+    key: string | null | undefined,
+  ): Promise<void> => {
+    if (!key || !env.blobStore) return;
+    await env.blobStore.delete(key).catch(() => undefined);
+  };
+
   /* pdf_pages registers its first page as blob_key and lists the rest of the
      page basenames in meta.pages, relative to the blob_key's directory. Mirror
      of maintenance.ts renditionBlobKeys so the two never disagree on what a
@@ -426,10 +456,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const deleteProjectBlobs = async (
     project: typeof projects.$inferSelect,
   ): Promise<void> => {
-    if (!env.blobStore) return;
-    const store = env.blobStore;
     for (const key of await collectProjectBlobKeys(project))
-      await store.delete(key).catch(() => undefined);
+      await deleteBlobQuietly(key);
   };
 
   /* Per-project facts the wire needs that each cost a query: the caller's
@@ -2405,13 +2433,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   api.delete("/users/me/avatar", requireAuth, async (c) => {
     const user = userFromContext(c);
-    if (user.avatarKey && env.blobStore) {
-      try {
-        await env.blobStore.delete(user.avatarKey);
-      } catch {
-        // The pointer is the truth; a stranded blob is the GC's problem.
-      }
-    }
+    await deleteBlobQuietly(user.avatarKey);
     await env.db
       .update(users)
       .set({ avatarKey: null, updatedAt: env.clock.now() })
@@ -2481,14 +2503,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .orderBy(desc(users.id))
       .limit(limit + 1)
       .all();
-    const page = rows.slice(0, limit);
-    return c.json({
-      items: page.map(userWire),
-      next_cursor:
-        rows.length > limit
-          ? encodeCursor(page[page.length - 1]?.id ?? "")
-          : null,
-    });
+    return c.json(pageResult(rows, limit, userWire));
   });
 
   api.get("/users/me", requireAuth, (c) =>
@@ -2766,8 +2781,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       );
     /* Free the avatar before the row goes: the avatar-delete route frees it,
        but user delete did not, leaking one blob per deleted user. */
-    if (target.avatarKey && env.blobStore)
-      await env.blobStore.delete(target.avatarKey).catch(() => undefined);
+    await deleteBlobQuietly(target.avatarKey);
     await env.db.delete(users).where(eq(users.id, target.id)).run();
     await audit(
       actor.workspaceId,
@@ -2915,9 +2929,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .orderBy(desc(invites.id))
       .limit(limit + 1)
       .all();
-    const page = rows.slice(0, limit);
-    return c.json({
-      items: page.map((invite: typeof invites.$inferSelect) => ({
+    return c.json(
+      pageResult(rows, limit, (invite: typeof invites.$inferSelect) => ({
         id: invite.id,
         email: invite.email,
         role: invite.guest ? "guest" : invite.role,
@@ -2926,11 +2939,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         created_at: invite.createdAt,
         expires_at: invite.expiresAt,
       })),
-      next_cursor:
-        rows.length > limit
-          ? encodeCursor(page[page.length - 1]?.id ?? "")
-          : null,
-    });
+    );
   });
 
   api.delete("/invites/:id", requireAuth, async (c) => {
@@ -4525,7 +4534,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           .all()
       )[0];
       if (!attachment) throw errors.notFound();
-      if (env.blobStore) await env.blobStore.delete(attachment.blobKey);
+      await deleteBlobQuietly(attachment.blobKey);
       await env.db
         .delete(commentAttachments)
         .where(eq(commentAttachments.id, attachment.id))
@@ -4891,20 +4900,19 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .orderBy(desc(notifications.id))
       .limit(limit + 1)
       .all();
-    const page = rows.slice(0, limit);
-    return c.json({
-      items: page.map((notification: typeof notifications.$inferSelect) => ({
-        id: notification.id,
-        kind: notification.kind,
-        payload: parseJsonObject(notification.payloadJson),
-        read_at: notification.readAt,
-        created_at: notification.createdAt,
-      })),
-      next_cursor:
-        rows.length > limit
-          ? encodeCursor(page[page.length - 1]?.id ?? "")
-          : null,
-    });
+    return c.json(
+      pageResult(
+        rows,
+        limit,
+        (notification: typeof notifications.$inferSelect) => ({
+          id: notification.id,
+          kind: notification.kind,
+          payload: parseJsonObject(notification.payloadJson),
+          read_at: notification.readAt,
+          created_at: notification.createdAt,
+        }),
+      ),
+    );
   });
 
   api.post("/notifications/read", requireAuth, async (c) => {
@@ -6309,13 +6317,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .set({ brandJson: JSON.stringify({ ...brand, logo_key: key }) })
       .where(eq(shares.id, share.id))
       .run();
-    if (previous) {
-      try {
-        await env.blobStore.delete(previous);
-      } catch {
-        // Stranded blobs are the GC reconciliation's problem.
-      }
-    }
+    await deleteBlobQuietly(previous);
     return c.json({ logo_url: `/api/v1/s/${share.slug}/logo` });
   });
 
@@ -6331,14 +6333,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     )[0];
     if (!share) throw errors.notFound();
     await requireProject(share.projectId, actor, "manager");
-    const previous = logoKeyOf(share);
-    if (previous && env.blobStore) {
-      try {
-        await env.blobStore.delete(previous);
-      } catch {
-        // The pointer is the truth.
-      }
-    }
+    await deleteBlobQuietly(logoKeyOf(share));
     const brand = share.brandJson ? parseJsonObject(share.brandJson) : {};
     delete brand.logo_key;
     await env.db
@@ -10383,11 +10378,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .set({ label, blobKey: key, createdBy: actor.id, createdAt: now })
         .where(eq(captionTracks.id, existing.id))
         .run();
-      try {
-        await env.blobStore.delete(existing.blobKey);
-      } catch {
-        // The row is the truth; a stranded blob is the GC's problem.
-      }
+      await deleteBlobQuietly(existing.blobKey);
     } else {
       await env.db
         .insert(captionTracks)
@@ -10434,13 +10425,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .delete(captionTracks)
       .where(eq(captionTracks.id, existing.id))
       .run();
-    if (env.blobStore) {
-      try {
-        await env.blobStore.delete(existing.blobKey);
-      } catch {
-        // See above: GC reconciles.
-      }
-    }
+    await deleteBlobQuietly(existing.blobKey);
     return c.body(null, 204);
   });
 
@@ -10535,14 +10520,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .orderBy(desc(jobs.id))
       .limit(limit + 1)
       .all();
-    const page = rows.slice(0, limit);
-    return c.json({
-      items: page.map((job: typeof jobs.$inferSelect) => jobWire(job)),
-      next_cursor:
-        rows.length > limit
-          ? encodeCursor(page[page.length - 1]?.id ?? "")
-          : null,
-    });
+    return c.json(
+      pageResult(rows, limit, (job: typeof jobs.$inferSelect) => jobWire(job)),
+    );
   });
 
   api.get("/media/*", requireAuth, async (c) => {
@@ -10631,9 +10611,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .orderBy(desc(auditLog.id))
       .limit(limit + 1)
       .all();
-    const page = rows.slice(0, limit);
-    return c.json({
-      items: page.map((entry: typeof auditLog.$inferSelect) => ({
+    return c.json(
+      pageResult(rows, limit, (entry: typeof auditLog.$inferSelect) => ({
         id: entry.id,
         actor_user_id: entry.actorUserId,
         action: entry.action,
@@ -10641,11 +10620,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         meta: parseJsonObject(entry.metaJson),
         at: entry.at,
       })),
-      next_cursor:
-        rows.length > limit
-          ? encodeCursor(page[page.length - 1]?.id ?? "")
-          : null,
-    });
+    );
   });
 
   const oidcEnabled = () => {
