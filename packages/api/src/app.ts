@@ -304,12 +304,27 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return privateMediaUrl({ versionId: row.versionId }, row.blobKey);
   };
 
+  /* Per-project facts the wire needs that each cost a query: the caller's
+     grant, the cover URL, and the last-activity timestamp. Resolving them one
+     project at a time is three queries per row; the list endpoint precomputes
+     them for a whole page in three queries total (see projectListContext) and
+     passes the entry in here. Single-project callers omit it and pay the three
+     small reads inline. */
+  type ProjectFacts = {
+    grant: (typeof projectMembers.$inferSelect)["role"] | undefined;
+    coverUrl: string | null;
+    lastActivityAt: number | null;
+  };
+
   const projectWire = async (
     project: typeof projects.$inferSelect,
     userId: string,
     workspaceRole: WorkspaceRole,
+    precomputed?: ProjectFacts,
   ) => {
-    const grant = await grantFor(project.id, userId);
+    const grant = precomputed
+      ? precomputed.grant
+      : await grantFor(project.id, userId);
     const myRole = implicitProjectRole(
       workspaceRole,
       Boolean(project.restricted),
@@ -329,7 +344,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         : project.coverAssetId
           ? ("asset" as const)
           : ("generated" as const),
-      cover_url: await coverUrlFor(project),
+      cover_url: precomputed ? precomputed.coverUrl : await coverUrlFor(project),
       restricted: Boolean(project.restricted),
       /* Whether transfer links in this project keep the addresses of the
          people who open them. Off unless the project says otherwise. */
@@ -346,17 +361,121 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
          order is time order. This is what "recently edited" means to someone
          looking at a list of projects. */
       last_activity_at:
-        (
-          await env.db
-            .select({ createdAt: projectEvents.createdAt })
-            .from(projectEvents)
-            .where(eq(projectEvents.projectId, project.id))
-            .orderBy(desc(projectEvents.id))
-            .limit(1)
-            .all()
-        )[0]?.createdAt ?? project.updatedAt,
+        (precomputed
+          ? precomputed.lastActivityAt
+          : (
+              await env.db
+                .select({ createdAt: projectEvents.createdAt })
+                .from(projectEvents)
+                .where(eq(projectEvents.projectId, project.id))
+                .orderBy(desc(projectEvents.id))
+                .limit(1)
+                .all()
+            )[0]?.createdAt) ?? project.updatedAt,
       my_role: myRole,
     };
+  };
+
+  /* Resolve ProjectFacts for a page of projects in three queries instead of
+     three per project: one grant lookup, one grouped last-activity, one cover
+     join. ULID ids are time-ordered, so MAX(created_at) per project is the
+     newest event -- the same value the per-project newest-by-id read returns.
+     Cover URLs are signed in memory (no query) from the batched rows. */
+  const projectListContext = async (
+    rows: Array<typeof projects.$inferSelect>,
+    userId: string,
+  ): Promise<Map<string, ProjectFacts>> => {
+    const facts = new Map<string, ProjectFacts>();
+    if (rows.length === 0) return facts;
+    const ids = rows.map((project) => project.id);
+
+    const grantRows = await env.db
+      .select()
+      .from(projectMembers)
+      .where(
+        and(
+          eq(projectMembers.userId, userId),
+          inArray(projectMembers.projectId, ids),
+        ),
+      )
+      .all();
+    const grantByProject = new Map(
+      grantRows.map((row) => [row.projectId, row.role]),
+    );
+
+    const activityRows = await env.db
+      .select({
+        projectId: projectEvents.projectId,
+        at: sql<number>`max(${projectEvents.createdAt})`,
+      })
+      .from(projectEvents)
+      .where(inArray(projectEvents.projectId, ids))
+      .groupBy(projectEvents.projectId)
+      .all();
+    const activityByProject = new Map(
+      activityRows.map((row) => [row.projectId, row.at]),
+    );
+
+    /* Asset-backed covers (an uploaded cover is its own blob, no join). The
+       cover asset must live in its own project, so the map is keyed by asset
+       id and the projectId is matched below. */
+    const coverAssetIds = rows
+      .filter((project) => !project.coverBlobKey && project.coverAssetId)
+      .map((project) => project.coverAssetId as string);
+    const coverRows = coverAssetIds.length
+      ? await env.db
+          .select({
+            assetId: assets.id,
+            projectId: assets.projectId,
+            versionId: renditions.versionId,
+            blobKey: renditions.blobKey,
+          })
+          .from(assets)
+          .innerJoin(
+            assetVersions,
+            eq(assetVersions.id, assets.currentVersionId),
+          )
+          .innerJoin(
+            renditions,
+            and(
+              eq(renditions.versionId, assetVersions.id),
+              eq(renditions.kind, "poster"),
+              isNull(renditions.shareId),
+            ),
+          )
+          .where(
+            and(
+              inArray(assets.id, coverAssetIds),
+              isNull(assets.deletedAt),
+              isNull(assetVersions.deletedAt),
+            ),
+          )
+          .all()
+      : [];
+    const coverByAsset = new Map(coverRows.map((row) => [row.assetId, row]));
+
+    for (const project of rows) {
+      let coverUrl: string | null = null;
+      if (project.coverBlobKey)
+        coverUrl = await privateMediaUrl(
+          { projectId: project.id },
+          project.coverBlobKey,
+        );
+      else if (project.coverAssetId) {
+        const cover = coverByAsset.get(project.coverAssetId);
+        if (cover && cover.projectId === project.id)
+          coverUrl = await privateMediaUrl(
+            { versionId: cover.versionId },
+            cover.blobKey,
+          );
+      }
+      facts.set(project.id, {
+        grant: grantByProject.get(project.id),
+        coverUrl,
+        lastActivityAt: activityByProject.get(project.id) ?? null,
+      });
+    }
+    return facts;
   };
 
   const requireProject = async (
@@ -1033,6 +1152,39 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     transcode_status: version.transcodeStatus,
     created_at: version.createdAt,
   });
+
+  /* The same shape as versionWire, but stripped of the two heavy JSON blobs a
+     browsing card never reads. A card's Format cell needs only the video
+     stream's codec and dimensions, so media_info collapses to that one stream
+     summary; the full ffprobe output (every stream, format tags, bitrates --
+     multiple KB per asset) and the colour-grading metadata stay in the review
+     room's own version fetch. Field names and types are unchanged, so the wire
+     contract and the client type are untouched. */
+  const listCardVersion = (version: typeof assetVersions.$inferSelect) => {
+    const full = versionWire(version);
+    const info = full.media_info;
+    const streams = Array.isArray(info.streams)
+      ? (info.streams as Array<Record<string, unknown>>)
+      : [];
+    const video =
+      streams.find((stream) => stream.codec_type === "video") ?? streams[0];
+    return {
+      ...full,
+      media_info: video
+        ? {
+            streams: [
+              {
+                codec_type: video.codec_type,
+                codec_name: video.codec_name,
+                width: video.width,
+                height: video.height,
+              },
+            ],
+          }
+        : {},
+      color: {},
+    };
+  };
 
   const jobWire = (job: typeof jobs.$inferSelect) => {
     const payload = parseJsonObject(job.payloadJson);
@@ -2852,8 +3004,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all();
       const more = rows.length > limit;
       const batch = rows.slice(0, limit);
+      const facts = await projectListContext(batch, user.id);
       for (const [index, project] of batch.entries()) {
-        const wire = await projectWire(project, user.id, user.role);
+        const wire = await projectWire(
+          project,
+          user.id,
+          user.role,
+          facts.get(project.id),
+        );
         if (!wire.my_role) continue;
         items.push(wire);
         if (items.length === limit) {
@@ -9300,7 +9458,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         env.blobStore ? await privateMediaUrl({ versionId }, blobKey) : null;
       return {
         version_count: (versionsByAsset.get(asset.id) ?? []).length,
-        current_version: current ? versionWire(current) : null,
+        current_version: current ? listCardVersion(current) : null,
         poster_url:
           poster && current ? await signed(current.id, poster.blobKey) : null,
         sprite_url:
