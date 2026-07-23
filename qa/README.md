@@ -49,6 +49,10 @@ Plus:
 
 - `dropframe-2997.mp4`: 30000/1001 with `-timecode 00:59:55;00
   -write_tmcd on`, exactly as the proxy recipe re-embeds source timecode.
+- `shuttle-audio.mp4`: 6 seconds of 997 Hz AAC stereo tone. The
+  shuttle-audio suite measures decoded media-element output through Web
+  Audio at 1x, 2x, and 4x in Chromium and Firefox, and verifies that shuttle
+  playback uses direct varispeed resampling instead of pitch preservation.
 - `hdr-pq.mp4` and `hdr-hlg.mp4` (synthesized lazily by the HDR suite, not
   part of the main manifest): 10-bit uniform 25 percent grey tagged
   smpte2084 and arib-std-b67 over bt2020. Tag-only synthesis, so an ffmpeg

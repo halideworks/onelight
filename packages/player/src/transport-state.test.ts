@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyMark,
+  configurePlaybackRate,
   ignoresAutoRepeat,
   isRangeDrag,
   isVerifyStale,
@@ -83,6 +84,42 @@ describe("mark ordering", () => {
   it("re-marking on the valid side leaves the other mark alone", () => {
     expect(applyMark("in", 5, 10, 50)).toEqual({ in: 5, out: 50 });
     expect(applyMark("out", 90, 10, 50)).toEqual({ in: 10, out: 90 });
+  });
+});
+
+describe("media playback-rate mode", () => {
+  it("uses direct resampling for audible shuttle playback", () => {
+    const writes: string[] = [];
+    let rate = 1;
+    let preservesPitch = true;
+    const media = {
+      get playbackRate(): number {
+        return rate;
+      },
+      set playbackRate(value: number) {
+        writes.push(`rate:${String(value)}`);
+        rate = value;
+      },
+      get preservesPitch(): boolean {
+        return preservesPitch;
+      },
+      set preservesPitch(value: boolean) {
+        writes.push(`pitch:${String(value)}`);
+        preservesPitch = value;
+      },
+    };
+
+    configurePlaybackRate(media, 2, false);
+
+    expect(media.playbackRate).toBe(2);
+    expect(media.preservesPitch).toBe(false);
+    expect(writes).toEqual(["pitch:false", "rate:2"]);
+  });
+
+  it("restores pitch preservation before normal playback", () => {
+    const media = { playbackRate: 4, preservesPitch: false };
+    configurePlaybackRate(media, 1, true);
+    expect(media).toEqual({ playbackRate: 1, preservesPitch: true });
   });
 });
 

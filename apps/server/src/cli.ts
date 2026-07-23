@@ -53,13 +53,10 @@ if (
   fs.existsSync(config.DATABASE_PATH)
 ) {
   try {
-    const snapshot = await backupOnce(
-      sqlite,
-      db,
-      cliBackupConfig,
-      new Date(),
-      { label: "premigrate", keep: 10 },
-    );
+    const snapshot = await backupOnce(sqlite, db, cliBackupConfig, new Date(), {
+      label: "premigrate",
+      keep: 10,
+    });
     console.log(
       `[onelight] pre-migration snapshot for ${String(cliPending.length)} pending migration(s): ${snapshot}`,
     );

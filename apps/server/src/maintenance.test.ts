@@ -4,12 +4,16 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   applyNodeMigrations,
+  assets,
+  assetVersions,
   createNodeDb,
   projects,
   shares,
+  uploadSessions,
   users,
   workspaces,
 } from "@onelight/db";
+import type { BlobStore } from "@onelight/core";
 import type { MailMessage, Mailer } from "./mailer.js";
 import {
   DEFAULT_GC_INTERVAL_MS,
@@ -21,6 +25,7 @@ import {
   referencedBlobKeys,
   notificationDeepLink,
   planEmailSweep,
+  reapUploadSessions,
   subjectForKind,
   walkBlobObjects,
 } from "./maintenance.js";
@@ -244,6 +249,139 @@ describe("maintenanceConfigFromEnv", () => {
   });
 });
 
+describe("upload session reaping", () => {
+  it("removes every stale terminal state but protects live versions", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    const now = 10 * DAY;
+    const staleAt = now - 2 * DAY;
+    const deleted: string[] = [];
+    const aborted: string[] = [];
+    const store = {
+      delete(key: string) {
+        deleted.push(key);
+        return Promise.resolve();
+      },
+      abortMultipart(uploadId: string) {
+        aborted.push(uploadId);
+        return Promise.resolve();
+      },
+    } as unknown as BlobStore;
+    try {
+      await db
+        .insert(workspaces)
+        .values({ id: "ws-1", name: "Studio", createdAt: 1_000 })
+        .run();
+      await db
+        .insert(users)
+        .values({
+          id: "user-1",
+          workspaceId: "ws-1",
+          email: "a@example.com",
+          name: "A",
+          role: "admin",
+          createdAt: 1_000,
+          updatedAt: 1_000,
+        })
+        .run();
+      await db
+        .insert(projects)
+        .values({
+          id: "proj-1",
+          workspaceId: "ws-1",
+          name: "Film",
+          palette: "kuro",
+          createdBy: "user-1",
+          createdAt: 1_000,
+          updatedAt: 1_000,
+        })
+        .run();
+      const session = (
+        id: string,
+        status:
+          "pending" | "uploading" | "completed" | "quarantined" | "aborted",
+        createdAt: number,
+        completedAt: number | null = null,
+      ) => ({
+        id,
+        workspaceId: "ws-1",
+        projectId: "proj-1",
+        createdBy: "user-1",
+        clientFilename: `${id}.bin`,
+        relativePath: "",
+        size: 4,
+        checksumCrc32c: null,
+        blobKey: `uploads/${id}.bin`,
+        uploadId: `multipart-${id}`,
+        partSize: 8,
+        status,
+        createdAt,
+        completedAt,
+      });
+      await db
+        .insert(uploadSessions)
+        .values([
+          session("stale-pending", "pending", staleAt),
+          session("stale-quarantined", "quarantined", staleAt),
+          session("stale-aborted", "aborted", staleAt),
+          session("stale-completed", "completed", staleAt, staleAt),
+          session("fresh-uploading", "uploading", now),
+          session("fresh-completed", "completed", staleAt, now),
+          session("referenced-completed", "completed", staleAt, staleAt),
+        ])
+        .run();
+      await db
+        .insert(assets)
+        .values({
+          id: "asset-1",
+          projectId: "proj-1",
+          name: "Kept",
+          kind: "video",
+          createdAt: 1_000,
+          updatedAt: 1_000,
+        })
+        .run();
+      await db
+        .insert(assetVersions)
+        .values({
+          id: "version-1",
+          assetId: "asset-1",
+          uploadSessionId: "referenced-completed",
+          versionNo: 1,
+          originalBlobKey: "uploads/referenced-completed.bin",
+          originalFilename: "kept.bin",
+          size: 4,
+          checksumCrc32c: "",
+          uploadedBy: "user-1",
+          createdAt: 1_000,
+        })
+        .run();
+
+      await reapUploadSessions(db, store, now, DAY);
+
+      expect(
+        (await db.select({ id: uploadSessions.id }).from(uploadSessions).all())
+          .map((row) => row.id)
+          .sort(),
+      ).toEqual(["fresh-completed", "fresh-uploading", "referenced-completed"]);
+      expect(deleted.sort()).toEqual([
+        "uploads/stale-aborted.bin",
+        "uploads/stale-completed.bin",
+        "uploads/stale-pending.bin",
+        "uploads/stale-quarantined.bin",
+      ]);
+      expect(aborted.sort()).toEqual([
+        "multipart-stale-aborted",
+        "multipart-stale-completed",
+        "multipart-stale-pending",
+        "multipart-stale-quarantined",
+      ]);
+    } finally {
+      sqlite.close();
+    }
+  });
+});
+
 describe("blob gc diff", () => {
   it("walks a blob root and diffs object keys against referenced keys", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "onelight-gc-"));
@@ -393,7 +531,9 @@ describe("blob gc diff", () => {
           title: "Client review",
           layout: "grid",
           allowDownload: "none",
-          brandJson: JSON.stringify({ logo_key: "ws-1/sharelogos/share-1-x.svg" }),
+          brandJson: JSON.stringify({
+            logo_key: "ws-1/sharelogos/share-1-x.svg",
+          }),
           createdBy: "user-1",
           createdAt: 1_000,
         })

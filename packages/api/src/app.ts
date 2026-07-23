@@ -120,6 +120,16 @@ import type { SearchStream } from "./helpers.js";
 import { bodies, errorEnvelope, routeDocs } from "./schemas.js";
 import type { RouteDoc } from "./schemas.js";
 import type { AppEnv, SessionUser, Variables } from "./types.js";
+import { redactBearerPath } from "./request-log.js";
+import {
+  DEFAULT_TRANSFER_REQUEST_BYTE_CAP,
+  MAX_COMMENT_ATTACHMENT_BYTES,
+  MAX_COMMENT_ATTACHMENTS,
+  MAX_COMMENT_ATTACHMENT_TOTAL_BYTES,
+  MAX_MULTIPART_PART_BYTES,
+  MAX_MULTIPART_PARTS,
+  PRESENCE_WRITE_INTERVAL_MS,
+} from "./limits.js";
 import {
   assertWebhookUrlAllowed,
   scheduleWebhookDeliveries,
@@ -245,7 +255,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const status = c.res.status;
     if (status >= 400 || ms > 1000)
       console.log(
-        `[onelight] ${c.req.method} ${path} ${String(status)} ${String(ms)}ms req=${c.get("requestId") ?? "-"}`,
+        `[onelight] ${c.req.method} ${redactBearerPath(path)} ${String(status)} ${String(ms)}ms req=${c.get("requestId") ?? "-"}`,
       );
   });
 
@@ -500,7 +510,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         : project.coverAssetId
           ? ("asset" as const)
           : ("generated" as const),
-      cover_url: precomputed ? precomputed.coverUrl : await coverUrlFor(project),
+      cover_url: precomputed
+        ? precomputed.coverUrl
+        : await coverUrlFor(project),
       restricted: Boolean(project.restricted),
       /* Whether transfer links in this project keep the addresses of the
          people who open them. Off unless the project says otherwise. */
@@ -788,6 +800,49 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .run();
   };
 
+  const projectEventWaiters = new Map<string, Set<() => void>>();
+  const projectEventEpoch = new Map<string, number>();
+
+  const wakeProjectEventStreams = (projectId: string): void => {
+    projectEventEpoch.set(
+      projectId,
+      (projectEventEpoch.get(projectId) ?? 0) + 1,
+    );
+    const waiters = projectEventWaiters.get(projectId);
+    if (!waiters) return;
+    projectEventWaiters.delete(projectId);
+    for (const wake of waiters) wake();
+  };
+
+  const waitForProjectEvent = (
+    projectId: string,
+    observedEpoch: number,
+    signal: AbortSignal,
+  ): Promise<void> =>
+    new Promise((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        signal.removeEventListener("abort", finish);
+        const waiters = projectEventWaiters.get(projectId);
+        waiters?.delete(finish);
+        if (waiters?.size === 0) projectEventWaiters.delete(projectId);
+        resolve();
+      };
+      const waiters = projectEventWaiters.get(projectId) ?? new Set();
+      waiters.add(finish);
+      projectEventWaiters.set(projectId, waiters);
+      const timeout = setTimeout(finish, 15_000);
+      signal.addEventListener("abort", finish, { once: true });
+      if (
+        signal.aborted ||
+        (projectEventEpoch.get(projectId) ?? 0) !== observedEpoch
+      )
+        finish();
+    });
+
   /**
    * Append a live-update event to the project stream (SSE replay via
    * GET /projects/:id/events) and schedule webhook deliveries for it.
@@ -828,6 +883,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         createdAt: now,
       })
       .run();
+    wakeProjectEventStreams(projectId);
     if (project)
       await scheduleWebhookDeliveries(
         env.db,
@@ -3274,46 +3330,67 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
      next rather than being pinned to an id that never arrives. */
   api.get("/projects/:id/events", requireAuth, async (c) => {
     const actor = userFromContext(c);
-    await requireProject(c.req.param("id"), actor, "viewer");
+    const projectId = c.req.param("id");
+    await requireProject(projectId, actor, "viewer");
     const lastEventId = c.req.header("last-event-id");
-    const rows = lastEventId
-      ? await env.db
-          .select()
-          .from(projectEvents)
-          .where(
-            and(
-              eq(projectEvents.projectId, c.req.param("id")),
-              gt(projectEvents.id, lastEventId),
-            ),
-          )
-          .orderBy(asc(projectEvents.id))
-          .limit(500)
-          .all()
-      : [];
+    const eventsAfter = (cursor: string) =>
+      env.db
+        .select()
+        .from(projectEvents)
+        .where(
+          and(
+            eq(projectEvents.projectId, projectId),
+            gt(projectEvents.id, cursor),
+          ),
+        )
+        .orderBy(asc(projectEvents.id))
+        .limit(500)
+        .all();
+    const rows = lastEventId ? await eventsAfter(lastEventId) : [];
     const cursor = lastEventId
       ? null
       : ((
           await env.db
             .select({ id: projectEvents.id })
             .from(projectEvents)
-            .where(eq(projectEvents.projectId, c.req.param("id")))
+            .where(eq(projectEvents.projectId, projectId))
             .orderBy(desc(projectEvents.id))
             .limit(1)
             .all()
         )[0]?.id ?? "0");
+    const live = c.req.header("accept")?.includes("text/event-stream") ?? false;
     return streamSSE(c, async (stream) => {
+      let sentCursor = lastEventId ?? cursor ?? "0";
       if (cursor !== null)
         await stream.writeSSE({
           id: cursor,
           event: "stream.cursor",
           data: "{}",
         });
-      for (const event of rows)
+      for (const event of rows) {
         await stream.writeSSE({
           id: event.id,
           event: event.type,
           data: event.payloadJson,
         });
+        sentCursor = event.id;
+      }
+      if (!live) return;
+      while (!stream.closed && !c.req.raw.signal.aborted) {
+        const observedEpoch = projectEventEpoch.get(projectId) ?? 0;
+        const nextRows = await eventsAfter(sentCursor);
+        for (const event of nextRows) {
+          await stream.writeSSE({
+            id: event.id,
+            event: event.type,
+            data: event.payloadJson,
+          });
+          sentCursor = event.id;
+        }
+        if (nextRows.length === 500) continue;
+        await stream.write(": keepalive\n\n");
+        await waitForProjectEvent(projectId, observedEpoch, c.req.raw.signal);
+      }
     });
   });
 
@@ -4332,6 +4409,126 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     await requireProject(asset.projectId, actor, "manager");
   };
 
+  const attachmentFileFrom = async (
+    c: Context<{ Variables: Variables }>,
+  ): Promise<File> => {
+    if (!env.blobStore || !c.req.raw.body)
+      throw errors.internal("Blob storage is not configured.");
+    const declaredLength = c.req.header("content-length");
+    if (!declaredLength)
+      throw errors.validation(
+        "Attachment uploads require a content-length header.",
+      );
+    const length = Number(declaredLength);
+    if (
+      !Number.isSafeInteger(length) ||
+      length < 1 ||
+      length > MAX_COMMENT_ATTACHMENT_BYTES + 1_048_576
+    )
+      throw errors.payloadTooLarge();
+    const form = await c.req.parseBody();
+    const candidate = form.file;
+    if (!candidate || typeof candidate === "string")
+      throw errors.validation("A file field is required.");
+    const file = candidate as File;
+    if (file.size < 1 || file.size > MAX_COMMENT_ATTACHMENT_BYTES)
+      throw errors.payloadTooLarge();
+    return file;
+  };
+
+  const assertAttachmentCapacity = async (
+    commentId: string,
+    incomingBytes: number,
+  ): Promise<void> => {
+    const usage = (
+      await env.db
+        .select({
+          count: sql<number>`count(*)`,
+          bytes: sql<number>`coalesce(sum(${commentAttachments.size}), 0)`,
+        })
+        .from(commentAttachments)
+        .where(eq(commentAttachments.commentId, commentId))
+        .all()
+    )[0];
+    if (Number(usage?.count ?? 0) >= MAX_COMMENT_ATTACHMENTS)
+      throw errors.conflict(
+        `A comment can have at most ${String(MAX_COMMENT_ATTACHMENTS)} attachments.`,
+      );
+    if (
+      Number(usage?.bytes ?? 0) + incomingBytes >
+      MAX_COMMENT_ATTACHMENT_TOTAL_BYTES
+    )
+      throw errors.payloadTooLarge();
+  };
+
+  const storeCommentAttachment = async (
+    comment: typeof comments.$inferSelect,
+    workspaceId: string,
+    file: File,
+  ) => {
+    if (!env.blobStore)
+      throw errors.internal("Blob storage is not configured.");
+    await assertAttachmentCapacity(comment.id, file.size);
+    const attachmentId = env.ids.ulid();
+    const filename =
+      file.name.replace(/[\\/]/g, "_").slice(0, 500) || "attachment";
+    const blobKey = `${workspaceId}/comments/${comment.id}/${attachmentId}-${filename}`;
+    const stream = new Response(file.stream()).body;
+    if (!stream)
+      throw errors.internal("Attachment stream could not be opened.");
+    await env.blobStore.putStream(blobKey, stream, {
+      contentType: file.type || "application/octet-stream",
+      size: file.size,
+    });
+    try {
+      await env.db
+        .insert(commentAttachments)
+        .values({
+          id: attachmentId,
+          commentId: comment.id,
+          blobKey,
+          filename,
+          size: file.size,
+          contentType: file.type || "application/octet-stream",
+          checksumSha256: "",
+        })
+        .run();
+    } catch (error) {
+      await deleteBlobQuietly(blobKey);
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("comment attachment count limit"))
+        throw errors.conflict(
+          `A comment can have at most ${String(MAX_COMMENT_ATTACHMENTS)} attachments.`,
+        );
+      if (
+        message.includes("comment attachment byte limit") ||
+        message.includes("comment attachment size is invalid")
+      )
+        throw errors.payloadTooLarge();
+      throw error;
+    }
+    return {
+      id: attachmentId,
+      comment_id: comment.id,
+      filename,
+      size: file.size,
+    };
+  };
+
+  const deleteAttachmentsForComment = async (commentId: string) => {
+    const rows = await env.db
+      .select()
+      .from(commentAttachments)
+      .where(eq(commentAttachments.commentId, commentId))
+      .all();
+    for (const attachment of rows) await deleteBlobQuietly(attachment.blobKey);
+    if (rows.length)
+      await env.db
+        .delete(commentAttachments)
+        .where(eq(commentAttachments.commentId, commentId))
+        .run();
+  };
+
   api.patch("/comments/:id", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const comment = await commentForActor(
@@ -4357,7 +4554,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       throw errors.validation(
         "frame_out must be greater than or equal to frame_in.",
       );
-    if (effIn !== null && (body.frame_in !== undefined || body.frame_out !== undefined)) {
+    if (
+      effIn !== null &&
+      (body.frame_in !== undefined || body.frame_out !== undefined)
+    ) {
       const versionRow = (
         await env.db
           .select({ durationFrames: assetVersions.durationFrames })
@@ -4415,6 +4615,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       "commenter",
     );
     await requireCommentAuthorOrModerator(comment, actor);
+    await deleteAttachmentsForComment(comment.id);
     await env.db
       .update(comments)
       .set({ deletedAt: env.clock.now() })
@@ -4436,49 +4637,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       actor,
       "commenter",
     );
-    if (!env.blobStore || !c.req.raw.body)
-      throw errors.internal("Blob storage is not configured.");
-    // Validate before buffering: attachments are capped at 25 MiB, and a
-    // chunked body without content-length is rejected on this route.
-    const maxAttachmentBytes = 25 * 1024 * 1024;
-    const declaredLength = c.req.header("content-length");
-    if (!declaredLength)
-      throw errors.validation(
-        "Attachment uploads require a content-length header.",
-      );
-    if (Number(declaredLength) > maxAttachmentBytes + 1_048_576)
-      throw errors.payloadTooLarge();
-    const form = await c.req.parseBody();
-    const candidate = form.file;
-    if (!candidate || typeof candidate === "string")
-      throw errors.validation("A file field is required.");
-    const file = candidate as File;
-    if (file.size > maxAttachmentBytes) throw errors.payloadTooLarge();
-    const attachmentId = env.ids.ulid();
-    const filename =
-      file.name.replace(/[\\/]/g, "_").slice(0, 500) || "attachment";
-    const blobKey = `${actor.workspaceId}/comments/${comment.id}/${attachmentId}-${filename}`;
-    const stream = new Response(file.stream()).body;
-    if (!stream)
-      throw errors.internal("Attachment stream could not be opened.");
-    await env.blobStore.putStream(blobKey, stream, {
-      contentType: file.type || "application/octet-stream",
-      size: file.size,
-    });
-    await env.db
-      .insert(commentAttachments)
-      .values({
-        id: attachmentId,
-        commentId: comment.id,
-        blobKey,
-        filename,
-        size: file.size,
-        contentType: file.type || "application/octet-stream",
-        checksumSha256: "",
-      })
-      .run();
+    await requireCommentAuthorOrModerator(comment, actor);
     return c.json(
-      { id: attachmentId, comment_id: comment.id, filename, size: file.size },
+      await storeCommentAttachment(
+        comment,
+        actor.workspaceId,
+        await attachmentFileFrom(c),
+      ),
       201,
     );
   });
@@ -4520,6 +4685,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         actor,
         "commenter",
       );
+      await requireCommentAuthorOrModerator(comment, actor);
       const attachment = (
         await env.db
           .select()
@@ -5197,8 +5363,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         const batch = await fetchCommentRows(cursor, batchSize);
         for (const row of batch) {
           const tagOk =
-            !tagQuery || extractHashtags(row.comments.bodyText).includes(tagQuery);
-          if (tagOk && (await visibleProject(row.projects))) collected.push(row);
+            !tagQuery ||
+            extractHashtags(row.comments.bodyText).includes(tagQuery);
+          if (tagOk && (await visibleProject(row.projects)))
+            collected.push(row);
           if (collected.length === take) return collected;
         }
         if (batch.length < batchSize) return collected;
@@ -5448,11 +5616,17 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           .limit(1)
           .all()
       )[0];
-      if (viewer)
+      const now = env.clock.now();
+      if (viewer && viewer.lastSeenAt <= now - PRESENCE_WRITE_INTERVAL_MS)
         await env.db
           .update(shareViewers)
-          .set({ lastSeenAt: env.clock.now() })
-          .where(eq(shareViewers.id, viewer.id))
+          .set({ lastSeenAt: now })
+          .where(
+            and(
+              eq(shareViewers.id, viewer.id),
+              lt(shareViewers.lastSeenAt, now - PRESENCE_WRITE_INTERVAL_MS + 1),
+            ),
+          )
           .run();
       return viewer;
     } catch {
@@ -6774,7 +6948,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
            directive (no allow-scripts) neutralises that on direct navigation
            while leaving <img> rendering, where SVG never executes, untouched.
            nosniff stops a mislabelled blob from being sniffed into HTML. */
-        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        "Content-Security-Policy":
+          "default-src 'none'; style-src 'unsafe-inline'; sandbox",
         "X-Content-Type-Options": "nosniff",
       },
     });
@@ -7279,6 +7454,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       c.req.param("slug"),
       c.req.param("commentId"),
     );
+    await deleteAttachmentsForComment(comment.id);
     await env.db
       .update(comments)
       .set({ deletedAt: env.clock.now() })
@@ -7294,29 +7470,18 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   /* A viewer's files on their own note: same ownership rule as editing it,
      same cap and shape as the internal attachment route. */
   api.post("/s/:slug/comments/:commentId/attachments", async (c) => {
-    const { share, comment } = await shareCommentForViewer(
+    const { share, projection, comment } = await shareCommentForViewer(
       c,
       c.req.param("slug"),
       c.req.param("commentId"),
     );
     if (!share.allowComments)
       throw errors.forbidden("Comments are disabled for this share.");
-    if (!env.blobStore || !c.req.raw.body)
-      throw errors.internal("Blob storage is not configured.");
-    const maxAttachmentBytes = 25 * 1024 * 1024;
-    const declaredLength = c.req.header("content-length");
-    if (!declaredLength)
-      throw errors.validation(
-        "Attachment uploads require a content-length header.",
-      );
-    if (Number(declaredLength) > maxAttachmentBytes + 1_048_576)
-      throw errors.payloadTooLarge();
-    const form = await c.req.parseBody();
-    const candidate = form.file;
-    if (!candidate || typeof candidate === "string")
-      throw errors.validation("A file field is required.");
-    const file = candidate as File;
-    if (file.size > maxAttachmentBytes) throw errors.payloadTooLarge();
+    await hitRateLimit(
+      `share_attachment:${share.id}:${projection.viewer?.viewerKey ?? clientIp(c, env)}`,
+      20,
+      60 * 60 * 1000,
+    );
     const project = (
       await env.db
         .select({ workspaceId: projects.workspaceId })
@@ -7326,31 +7491,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!project) throw errors.notFound();
-    const attachmentId = env.ids.ulid();
-    const filename =
-      file.name.replace(/[\\/]/g, "_").slice(0, 500) || "attachment";
-    const blobKey = `${project.workspaceId}/comments/${comment.id}/${attachmentId}-${filename}`;
-    const stream = new Response(file.stream()).body;
-    if (!stream)
-      throw errors.internal("Attachment stream could not be opened.");
-    await env.blobStore.putStream(blobKey, stream, {
-      contentType: file.type || "application/octet-stream",
-      size: file.size,
-    });
-    await env.db
-      .insert(commentAttachments)
-      .values({
-        id: attachmentId,
-        commentId: comment.id,
-        blobKey,
-        filename,
-        size: file.size,
-        contentType: file.type || "application/octet-stream",
-        checksumSha256: "",
-      })
-      .run();
     return c.json(
-      { id: attachmentId, comment_id: comment.id, filename, size: file.size },
+      await storeCommentAttachment(
+        comment,
+        project.workspaceId,
+        await attachmentFileFrom(c),
+      ),
       201,
     );
   });
@@ -7413,12 +7559,48 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     },
   );
 
+  api.delete(
+    "/s/:slug/comments/:commentId/attachments/:attachmentId",
+    async (c) => {
+      const { comment } = await shareCommentForViewer(
+        c,
+        c.req.param("slug"),
+        c.req.param("commentId"),
+      );
+      const attachment = (
+        await env.db
+          .select()
+          .from(commentAttachments)
+          .where(
+            and(
+              eq(commentAttachments.id, c.req.param("attachmentId")),
+              eq(commentAttachments.commentId, comment.id),
+            ),
+          )
+          .limit(1)
+          .all()
+      )[0];
+      if (!attachment) throw errors.notFound();
+      await deleteBlobQuietly(attachment.blobKey);
+      await env.db
+        .delete(commentAttachments)
+        .where(eq(commentAttachments.id, attachment.id))
+        .run();
+      return c.body(null, 204);
+    },
+  );
+
   api.post("/s/:slug/comments/:commentId/replies", async (c) => {
     const share = await shareBySlug(c.req.param("slug"));
     if (!share.allowComments)
       throw errors.forbidden("Comments are disabled for this share.");
     const projection = await publicShare(c, share);
     if (!projection.viewer) throw errors.unauthorized();
+    await hitRateLimit(
+      `share_comment:${share.id}:${clientIp(c, env)}`,
+      30,
+      5 * 60 * 1000,
+    );
     const parent = (
       await env.db
         .select()
@@ -7517,16 +7699,24 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       throw errors.forbidden("This share does not take approval decisions.");
     const projection = await publicShare(c, share);
     if (!projection.viewer) throw errors.unauthorized();
+    await hitRateLimit(
+      `share_approval:${share.id}:${clientIp(c, env)}`,
+      30,
+      5 * 60 * 1000,
+    );
     const body = await jsonBody(c, bodies.shareApprovalPatch);
     const asset = projection.assets.find(
       (candidate: PublicShareAsset) => candidate.id === body.asset_id,
     );
     if (!asset) throw errors.notFound();
-    await env.db
+    const changed = await env.db
       .update(assets)
       .set({ status: body.status, updatedAt: env.clock.now() })
-      .where(eq(assets.id, asset.id))
-      .run();
+      .where(and(eq(assets.id, asset.id), ne(assets.status, body.status)))
+      .returning({ id: assets.id })
+      .all();
+    if (!changed.length)
+      return c.json({ asset_id: asset.id, status: body.status });
     await notifyApprovalChange({
       asset,
       status: body.status,
@@ -7901,7 +8091,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           ? await env.hasher.hash(body.passphrase)
           : null,
         expiresAt: body.expires_at ?? null,
-        byteCap: body.kind === "request" ? (body.byte_cap ?? null) : null,
+        byteCap:
+          body.kind === "request"
+            ? (body.byte_cap ?? DEFAULT_TRANSFER_REQUEST_BYTE_CAP)
+            : null,
         folderId: body.kind === "request" ? (body.folder_id ?? null) : null,
         createdBy: actor.id,
         revokedAt: null,
@@ -8048,7 +8241,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           ? { expiresAt: body.expires_at }
           : {}),
         ...(body.byte_cap !== undefined && transfer.kind === "request"
-          ? { byteCap: body.byte_cap }
+          ? {
+              byteCap: body.byte_cap ?? DEFAULT_TRANSFER_REQUEST_BYTE_CAP,
+            }
           : {}),
         ...(body.folder_id !== undefined && transfer.kind === "request"
           ? { folderId: body.folder_id }
@@ -8335,11 +8530,21 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           .all()
       )[0];
       if (!visit) return { name: verified.payload.name, visitId: null };
-      await env.db
-        .update(transferVisits)
-        .set({ lastSeenAt: env.clock.now() })
-        .where(eq(transferVisits.id, visit.id))
-        .run();
+      const now = env.clock.now();
+      if (visit.lastSeenAt <= now - PRESENCE_WRITE_INTERVAL_MS)
+        await env.db
+          .update(transferVisits)
+          .set({ lastSeenAt: now })
+          .where(
+            and(
+              eq(transferVisits.id, visit.id),
+              lt(
+                transferVisits.lastSeenAt,
+                now - PRESENCE_WRITE_INTERVAL_MS + 1,
+              ),
+            ),
+          )
+          .run();
       return { name: visit.name, visitId: visit.id };
     } catch {
       return undefined;
@@ -8727,17 +8932,28 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         completedAt: null,
       })
       .run();
-    await env.db
-      .insert(transferReceipts)
-      .values({
-        id: env.ids.ulid(),
-        transferId: transfer.id,
-        uploadSessionId: uploadId,
-        senderName: grant.name,
-        assetId: null,
-        createdAt: now,
-      })
-      .run();
+    try {
+      await env.db
+        .insert(transferReceipts)
+        .values({
+          id: env.ids.ulid(),
+          transferId: transfer.id,
+          uploadSessionId: uploadId,
+          senderName: grant.name,
+          assetId: null,
+          createdAt: now,
+        })
+        .run();
+    } catch (error) {
+      await env.db
+        .delete(uploadSessions)
+        .where(eq(uploadSessions.id, uploadId))
+        .run();
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("transfer byte limit reached"))
+        throw errors.payloadTooLarge();
+      throw error;
+    }
     const upload = (
       await env.db
         .select()
@@ -9019,6 +9235,17 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return c.json(multipartResponse(await startMultipart(upload)));
   });
 
+  const multipartPartLimit = (
+    upload: typeof uploadSessions.$inferSelect,
+    partNo: number,
+  ): number => {
+    if (!upload.uploadId || !upload.partSize)
+      throw errors.validation("Multipart upload is not initialized.");
+    if (!Number.isInteger(partNo) || partNo < 1 || partNo > MAX_MULTIPART_PARTS)
+      throw errors.validation("Part number is outside this upload.");
+    return Math.min(upload.size, MAX_MULTIPART_PART_BYTES);
+  };
+
   const listPartsResponse = async (
     upload: typeof uploadSessions.$inferSelect,
   ) => {
@@ -9156,8 +9383,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const actor = userFromContext(c);
     const upload = await findUpload(c.req.param("id"), actor);
     const partNo = Number(c.req.param("partNo"));
-    if (!upload.uploadId || !Number.isInteger(partNo) || partNo < 1)
-      throw errors.validation("Part number is invalid.");
+    multipartPartLimit(upload, partNo);
     return c.json({ url: `/api/v1/uploads/${upload.id}/parts/${partNo}` });
   });
 
@@ -9169,21 +9395,29 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (!upload.uploadId || !c.req.raw.body)
       throw errors.validation("Multipart upload is not initialized.");
     const partNo = Number(c.req.param("partNo"));
-    if (!Number.isInteger(partNo) || partNo < 1)
-      throw errors.validation("Part number is invalid.");
-    // Part bodies are capped at the session part size plus 1 MiB of slack.
-    const maxPartBytes = (upload.partSize ?? 16 * 1024 * 1024) + 1_048_576;
+    const partByteLimit = multipartPartLimit(upload, partNo);
     const declaredPartLength = Number(c.req.header("content-length") ?? 0);
-    if (declaredPartLength > maxPartBytes) throw errors.payloadTooLarge();
+    if (
+      declaredPartLength > 0 &&
+      (!Number.isSafeInteger(declaredPartLength) ||
+        declaredPartLength > partByteLimit)
+    )
+      throw errors.validation(
+        "Part length exceeds this upload's multipart part size.",
+      );
     const result = await store.putPart(
       upload.uploadId,
       partNo,
-      limitStream(c.req.raw.body, maxPartBytes),
+      limitStream(c.req.raw.body, partByteLimit),
       // A trusted Content-Length lets the R2 adapter stream a fixed-length
       // body instead of buffering the whole part; omit it when absent so the
       // adapter falls back to buffering rather than truncating to zero.
       declaredPartLength > 0 ? declaredPartLength : undefined,
     );
+    if (result.size < 1 || result.size > partByteLimit)
+      throw errors.validation(
+        "Part length is outside this upload's multipart plan.",
+      );
     await env.db
       .insert(uploadParts)
       .values({
@@ -9229,6 +9463,29 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const store = requireBlobStore();
     if (!upload.uploadId)
       throw errors.validation("Multipart upload is not initialized.");
+    if (!upload.partSize)
+      throw errors.validation("Multipart upload is not initialized.");
+    if (!body.parts.length)
+      throw errors.validation(
+        "Upload completion must include at least one part.",
+      );
+    const requestedPartNumbers = new Set(
+      body.parts.map((part) => part.part_no),
+    );
+    const orderedParts = [...body.parts].sort(
+      (left, right) => left.part_no - right.part_no,
+    );
+    if (
+      requestedPartNumbers.size !== body.parts.length ||
+      orderedParts.some(
+        (part, index) =>
+          part.part_no !== index + 1 ||
+          multipartPartLimit(upload, part.part_no) < 1,
+      )
+    )
+      throw errors.validation(
+        "Upload completion must include contiguous parts exactly once.",
+      );
     const persistedParts = await env.db
       .select()
       .from(uploadParts)
@@ -9240,17 +9497,40 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         part,
       ]),
     );
-    for (const part of body.parts) {
+    let persistedBytes = 0;
+    for (const part of orderedParts) {
       const persisted = persistedByNumber.get(part.part_no);
-      if (!persisted || persisted.etag !== part.etag)
+      const persistedSize = persisted?.size;
+      if (
+        !persisted ||
+        persisted.etag !== part.etag ||
+        typeof persistedSize !== "number" ||
+        persistedSize < 1 ||
+        persistedSize > multipartPartLimit(upload, part.part_no)
+      )
         throw errors.validation(
           "Every completed part must match an uploaded part.",
         );
+      persistedBytes += persistedSize;
+    }
+    if (persistedBytes !== upload.size) {
+      await env.db
+        .update(uploadSessions)
+        .set({ status: "quarantined" })
+        .where(eq(uploadSessions.id, upload.id))
+        .run();
+      throw errors.validation("Upload size does not match the declared size.", {
+        expected: upload.size,
+        actual: persistedBytes,
+      });
     }
     await store.completeMultipart(
       upload.blobKey,
       upload.uploadId,
-      body.parts.map((part) => ({ partNo: part.part_no, etag: part.etag })),
+      orderedParts.map((part) => ({
+        partNo: part.part_no,
+        etag: part.etag,
+      })),
     );
     if (typeof store.head === "function") {
       let assembled: { size: number };
@@ -9633,7 +9913,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       list.sort((a, b) => (a.id < b.id ? 1 : -1));
     const currentOf = (
       asset: typeof assets.$inferSelect,
-    ): (typeof assetVersions.$inferSelect) | null => {
+    ): typeof assetVersions.$inferSelect | null => {
       const list = versionsByAsset.get(asset.id) ?? [];
       return (
         list.find((version) => version.id === asset.currentVersionId) ??
@@ -10750,6 +11030,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     )[0];
     let user = identity?.user;
     const emailVerified = claims.email_verified === true;
+    if (!user && !emailVerified)
+      throw errors.forbidden(
+        "OIDC email must be verified before this account can be authorized.",
+      );
     if (!user && emailVerified)
       user = (
         await env.db

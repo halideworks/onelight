@@ -77,7 +77,6 @@
     if (page.url.pathname === '/search') searchText = page.url.searchParams.get('q') ?? '';
   });
 
-  let searchDebounce: ReturnType<typeof setTimeout> | null = null;
   const runSearch = (replace: boolean): void => {
     const query = searchText.trim();
     if (!query) {
@@ -86,15 +85,8 @@
     }
     void goto(`/search?q=${encodeURIComponent(query)}`, { replaceState: replace, keepFocus: true });
   };
-  /* Typing navigates, but only once you have paused: a keystroke per history
-     entry would make Back useless. Already on /search, each update replaces. */
-  const searchAsYouType = (): void => {
-    if (searchDebounce !== null) clearTimeout(searchDebounce);
-    searchDebounce = setTimeout(() => runSearch(page.url.pathname === '/search'), 260);
-  };
   const submitSearch = (event: SubmitEvent): void => {
     event.preventDefault();
-    if (searchDebounce !== null) clearTimeout(searchDebounce);
     runSearch(false);
   };
 
@@ -150,10 +142,8 @@
       <a href="/" aria-current={current('/')}>Projects</a>
       <a href="/settings" aria-current={current('/settings')}>Settings</a>
     </nav>
-    <!-- Search is a field, not a link to a field. Typing here goes to /search
-         with the query already in the URL, so the results page is a real
-         address you can share or reload rather than somewhere you land empty
-         and start again. -->
+    <!-- Search runs on submit. A broad LIKE query is deliberate work, not
+         something every paused keystroke should repeat. -->
     <form class="navsearch" role="search" onsubmit={submitSearch}>
       <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5">
         <circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" stroke-linecap="round" />
@@ -164,7 +154,6 @@
         type="search"
         placeholder="Search"
         aria-label="Search assets and comments"
-        oninput={searchAsYouType}
       />
     </form>
     <!-- The right cluster is one unit: equal boxes, one rhythm. On phones the

@@ -70,9 +70,9 @@ describe.skipIf(!hasFfmpeg)("media integration (real ffmpeg)", () => {
     // a 5s sleep is SIGKILLed after 200ms and the promise rejects, rather than
     // the test waiting the full five seconds.
     const started = Date.now();
-    await expect(
-      runProcess("sleep", ["5"], undefined, 200),
-    ).rejects.toThrow(/hung/);
+    await expect(runProcess("sleep", ["5"], undefined, 200)).rejects.toThrow(
+      /hung/,
+    );
     expect(Date.now() - started).toBeLessThan(2000);
   });
 

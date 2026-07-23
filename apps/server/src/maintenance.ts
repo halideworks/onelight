@@ -1,7 +1,17 @@
 import fsSync from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { and, asc, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  or,
+  sql,
+} from "drizzle-orm";
 import { UlidGenerator } from "@onelight/core";
 import type { BlobStore, MultipartBlobStore } from "@onelight/core";
 import { LocalBlobStore } from "@onelight/worker";
@@ -372,7 +382,7 @@ const deleteBlobQuietly = async (
   }
 };
 
-const reapUploadSessions = async (
+export const reapUploadSessions = async (
   db: AppDb,
   store: BlobStore,
   now: number,
@@ -383,9 +393,20 @@ const reapUploadSessions = async (
     .select()
     .from(uploadSessions)
     .where(
-      and(
-        inArray(uploadSessions.status, ["pending", "uploading"]),
-        lt(uploadSessions.createdAt, cutoff),
+      or(
+        and(
+          inArray(uploadSessions.status, [
+            "pending",
+            "uploading",
+            "quarantined",
+            "aborted",
+          ]),
+          lt(uploadSessions.createdAt, cutoff),
+        ),
+        and(
+          eq(uploadSessions.status, "completed"),
+          lt(uploadSessions.completedAt, cutoff),
+        ),
       ),
     )
     .orderBy(asc(uploadSessions.createdAt))
@@ -744,6 +765,9 @@ export const referencedBlobKeys = async (db: AppDb): Promise<Set<string>> => {
   for (const row of await db
     .select({ key: uploadSessions.blobKey })
     .from(uploadSessions)
+    .where(
+      inArray(uploadSessions.status, ["pending", "uploading", "completed"]),
+    )
     .all())
     keys.add(row.key);
   for (const row of await db

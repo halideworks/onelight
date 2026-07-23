@@ -1638,7 +1638,9 @@ const streamProcess = (
     child.once("close", (code) => {
       clearTimeout(idle);
       if (timedOut) {
-        reject(new Error(`${command} was killed after a stall (treated as hung).`));
+        reject(
+          new Error(`${command} was killed after a stall (treated as hung).`),
+        );
         return;
       }
       if (code === 0) resolve();
@@ -1683,13 +1685,13 @@ export const writePeaks = async (
   try {
     await writeFile(
       tempPath,
-    encodePeaks({
-      sampleRate: PEAKS_SAMPLE_RATE,
-      samplesPerPixel,
-      channels,
-      length,
-      samples,
-    }),
+      encodePeaks({
+        sampleRate: PEAKS_SAMPLE_RATE,
+        samplesPerPixel,
+        channels,
+        length,
+        samples,
+      }),
     );
     await rename(tempPath, outputPath);
   } catch (error) {

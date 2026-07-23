@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  MAX_MULTIPART_PARTS,
+  MAX_TRANSFER_REQUEST_BYTE_CAP,
+  MAX_UPLOAD_BYTES,
+} from "./limits.js";
 import { PALETTES } from "@onelight/core";
 
 /*
@@ -275,7 +280,13 @@ export const bodies = {
     message: z.string().max(2000).default(""),
     passphrase: z.string().min(1).optional(),
     expires_at: z.number().int().positive().nullable().optional(),
-    byte_cap: z.number().int().positive().nullable().optional(),
+    byte_cap: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_TRANSFER_REQUEST_BYTE_CAP)
+      .nullable()
+      .optional(),
     folder_id: z.string().nullable().optional(),
     asset_ids: z.array(z.string()).max(1000).default([]),
   }),
@@ -284,7 +295,13 @@ export const bodies = {
     message: z.string().max(2000).optional(),
     passphrase: z.string().min(1).nullable().optional(),
     expires_at: z.number().int().positive().nullable().optional(),
-    byte_cap: z.number().int().positive().nullable().optional(),
+    byte_cap: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_TRANSFER_REQUEST_BYTE_CAP)
+      .nullable()
+      .optional(),
     folder_id: z.string().nullable().optional(),
     revoked: z.boolean().optional(),
   }),
@@ -298,7 +315,7 @@ export const bodies = {
   transferUploadCreate: z.object({
     filename: z.string().min(1).max(500),
     relative_path: z.string().max(2000).default(""),
-    size: z.number().int().positive(),
+    size: z.number().int().positive().max(MAX_UPLOAD_BYTES),
     checksum_crc32c: z
       .string()
       .regex(/^[A-Za-z0-9+/=_-]+$/)
@@ -308,7 +325,7 @@ export const bodies = {
     project_id: z.string(),
     filename: z.string().min(1).max(500),
     relative_path: z.string().max(2000).default(""),
-    size: z.number().int().positive(),
+    size: z.number().int().positive().max(MAX_UPLOAD_BYTES),
     checksum_crc32c: z
       .string()
       .regex(/^[A-Za-z0-9+/=_-]+$/)
@@ -320,6 +337,7 @@ export const bodies = {
         z.object({ part_no: z.number().int().positive(), etag: z.string() }),
       )
       .min(1)
+      .max(MAX_MULTIPART_PARTS)
       .max(10000),
     checksum_crc32c: z.string().optional(),
   }),
@@ -1628,6 +1646,9 @@ export const routeDocs: Record<string, RouteDoc> = {
   },
   "GET /s/:slug/comments/:commentId/attachments/:attachmentId": {
     responses: { "200": ok(signedUrl) },
+  },
+  "DELETE /s/:slug/comments/:commentId/attachments/:attachmentId": {
+    responses: { "204": noContent },
   },
   "POST /s/:slug/comments/:commentId/replies": {
     request: bodies.shareReplyCreate,

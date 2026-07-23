@@ -37,6 +37,17 @@ const indexExists = async (
       .first(),
   );
 
+const triggerExists = async (
+  binding: D1Database,
+  name: string,
+): Promise<boolean> =>
+  Boolean(
+    await binding
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name = ?")
+      .bind(name)
+      .first(),
+  );
+
 const commentsHaveSelfFks = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -400,6 +411,23 @@ export const d1Migrations: D1Migration[] = [
     name: "0022_shares_project_index.sql",
     applied: (binding) => indexExists(binding, "shares_project_idx"),
     statements: ["CREATE INDEX shares_project_idx ON shares(project_id, id)"],
+  },
+  {
+    name: "0023_public_write_limits.sql",
+    applied: async (binding) =>
+      (await triggerExists(
+        binding,
+        "comment_attachments_limit_before_insert",
+      )) &&
+      (await triggerExists(binding, "transfer_receipts_limit_before_insert")),
+    statements: [
+      "CREATE TRIGGER comment_attachments_limit_before_insert\nBEFORE INSERT ON comment_attachments\nBEGIN\n  SELECT CASE\n    WHEN NEW.size < 0 THEN RAISE(ABORT, 'comment attachment size is invalid')\n    WHEN (\n      SELECT COUNT(*)\n      FROM comment_attachments\n      WHERE comment_id = NEW.comment_id\n    ) >= 10 THEN RAISE(ABORT, 'comment attachment count limit reached')\n    WHEN COALESCE((\n      SELECT SUM(size)\n      FROM comment_attachments\n      WHERE comment_id = NEW.comment_id\n    ), 0) + NEW.size > 104857600\n      THEN RAISE(ABORT, 'comment attachment byte limit reached')\n  END;\nEND",
+      "CREATE TRIGGER comment_attachments_account_after_insert\nAFTER INSERT ON comment_attachments\nBEGIN\n  UPDATE projects\n  SET storage_bytes = storage_bytes + NEW.size\n  WHERE id = (\n    SELECT assets.project_id\n    FROM comments\n    JOIN asset_versions ON asset_versions.id = comments.version_id\n    JOIN assets ON assets.id = asset_versions.asset_id\n    WHERE comments.id = NEW.comment_id\n  );\nEND",
+      "CREATE TRIGGER comment_attachments_account_after_delete\nAFTER DELETE ON comment_attachments\nBEGIN\n  UPDATE projects\n  SET storage_bytes = MAX(0, storage_bytes - OLD.size)\n  WHERE id = (\n    SELECT assets.project_id\n    FROM comments\n    JOIN asset_versions ON asset_versions.id = comments.version_id\n    JOIN assets ON assets.id = asset_versions.asset_id\n    WHERE comments.id = OLD.comment_id\n  );\nEND",
+      "CREATE TRIGGER transfer_receipts_limit_before_insert\nBEFORE INSERT ON transfer_receipts\nWHEN (\n  SELECT byte_cap\n  FROM transfers\n  WHERE id = NEW.transfer_id\n) IS NOT NULL\nBEGIN\n  SELECT CASE\n    WHEN COALESCE((\n      SELECT SUM(upload_sessions.size)\n      FROM transfer_receipts\n      JOIN upload_sessions\n        ON upload_sessions.id = transfer_receipts.upload_session_id\n      WHERE transfer_receipts.transfer_id = NEW.transfer_id\n        AND upload_sessions.status NOT IN ('aborted', 'quarantined')\n    ), 0) + COALESCE((\n      SELECT size\n      FROM upload_sessions\n      WHERE id = NEW.upload_session_id\n    ), 0) > (\n      SELECT byte_cap\n      FROM transfers\n      WHERE id = NEW.transfer_id\n    ) THEN RAISE(ABORT, 'transfer byte limit reached')\n  END;\nEND",
+      "UPDATE projects\nSET storage_bytes = storage_bytes + COALESCE((\n  SELECT SUM(comment_attachments.size)\n  FROM comment_attachments\n  JOIN comments ON comments.id = comment_attachments.comment_id\n  JOIN asset_versions ON asset_versions.id = comments.version_id\n  JOIN assets ON assets.id = asset_versions.asset_id\n  WHERE assets.project_id = projects.id\n), 0)",
+      "UPDATE transfers\nSET byte_cap = 1099511627776\nWHERE kind = 'request' AND byte_cap IS NULL",
+    ],
   },
 ];
 

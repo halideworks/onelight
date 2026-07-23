@@ -17,6 +17,7 @@
   import WaveformStage from './WaveformStage.svelte';
   import {
     applyMark,
+    configurePlaybackRate,
     ignoresAutoRepeat,
     isRangeDrag,
     isVerifyStale,
@@ -526,7 +527,12 @@
   );
   let quality = $state('auto');
   let currentSrc = $state('');
-  let pendingRestore: { frame: number; playing: boolean; playbackRate: number } | null = null;
+  let pendingRestore: {
+    frame: number;
+    playing: boolean;
+    playbackRate: number;
+    preservesPitch: boolean;
+  } | null = null;
   /* Whether the first frame of the current source has arrived; simple chrome
      fades the picture in on it. A new source starts unseen again. */
   let pictureIn = $state(false);
@@ -699,7 +705,12 @@
     /* Preserve the first capture across back-to-back switches: a second switch
        effect must not re-read the already-paused state and lose the fact that
        playback was running before the first swap. */
-    pendingRestore ??= { frame, playing: !video.paused, playbackRate: video.playbackRate };
+    pendingRestore ??= {
+      frame,
+      playing: !video.paused,
+      playbackRate: video.playbackRate,
+      preservesPitch: video.preservesPitch
+    };
     video.pause();
     currentSrc = next;
   });
@@ -1168,7 +1179,7 @@
       stopReverse();
       seekFrame(restore.frame);
       if (restore.playing) {
-        video.playbackRate = restore.playbackRate;
+        configurePlaybackRate(video, restore.playbackRate, restore.preservesPitch);
         void video.play();
       }
     } else if (pendingSeekFrame !== null) {
@@ -1321,7 +1332,7 @@
      showing and the sound unusable. The element should not carry a speed that
      no longer describes what the transport is doing. */
   const restoreRate = (): void => {
-    if (video && video.playbackRate !== 1) video.playbackRate = 1;
+    if (video) configurePlaybackRate(video, 1, true);
   };
 
   /* Any explicit transport action cancels a rendition-switch restore in
@@ -1372,22 +1383,21 @@
     restoreRate();
   };
 
-  /* A play() the browser refused. Strict autoplay settings can decline a
-     KEYBOARD-initiated play while accepting a clicked one -- and those
-     settings sync across a person's browsers and machines, which is exactly
-     the bug report that "follows the reporter everywhere": J shuttles
-     (reverse is seek-stepping, no play()), the play button plays, and L does
-     nothing while the transport claims otherwise. Refusal must not leave a
-     playing UI over a frozen frame: reset to the truth and say what happened. */
+  /* A refused play must not leave a playing UI over a frozen frame. This is
+     distinct from a silent rate-changed element, whose play promise resolves
+     and whose picture advances. */
   let playRefused = $state(false);
 
-  const playForward = (): void => {
+  const startForward = (shuttle: boolean): void => {
     if (!video) return;
     cancelPendingRestore();
     const wasPlayingForward = !video.paused && forwardSpeed > 0 && reverseTimer === null;
     stopReverse();
-    forwardSpeed = wasPlayingForward ? Math.min(4, forwardSpeed * 2) : 1;
-    video.playbackRate = forwardSpeed;
+    forwardSpeed = shuttle && wasPlayingForward ? Math.min(4, forwardSpeed * 2) : 1;
+    /* Shuttle is varispeed. Direct resampling avoids the browser's
+       pitch-preserving time-stretch processor, the only audio path that
+       differs from audible 1x playback. */
+    configurePlaybackRate(video, forwardSpeed, !shuttle);
     video.play().catch((refusal: unknown) => {
       forwardSpeed = 0;
       restoreRate();
@@ -1395,6 +1405,8 @@
       console.warn('onelight player: play() was refused', refusal);
     });
   };
+  const playForward = (): void => startForward(false);
+  const playShuttleForward = (): void => startForward(true);
 
   /* HTMLMediaElement cannot play backward: reverse shuttle is emulated by a
      stepping timer that seeks back speed frames per frame-duration tick. */
@@ -1521,7 +1533,7 @@
     }
     if (key === 'j') { event.preventDefault(); playReverse(); }
     if (key === 'k') { event.preventDefault(); pausePlayback(); }
-    if (key === 'l') { event.preventDefault(); playForward(); }
+    if (key === 'l') { event.preventDefault(); playShuttleForward(); }
     /* The marking keys travel with the marking UI. Left live under a simple
        chrome they would set an in point nothing draws and start a loop nothing
        explains, from keys a client has no reason to know they pressed. */
@@ -2217,7 +2229,7 @@
      the player makes; it does not get moved around for a panel). Auto-placement
      handles the ordinary case: stage, then scopes if they are on, then the
      transport. */
-  .player { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(120px, 1fr) auto auto; min-height: 0; height: 100%; background: var(--n-050, #101010); color: var(--n-800, #c4c4c4); padding: 16px; }
+  .player { container: onelight-player / inline-size; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(120px, 1fr) auto auto; min-height: 0; height: 100%; background: var(--n-050, #101010); color: var(--n-800, #c4c4c4); padding: 16px; }
   /* Tall picture: the trace takes the room to the right of it, and the picture
      keeps the height. */
   .player.flank { grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(120px, 1fr) auto; column-gap: 16px; }
@@ -2464,7 +2476,7 @@
   /* Fullscreen controls: over the picture, and gone when they are not wanted.
      They only fade while playing -- a still frame with no controls is a stuck
      window, not a clean one. */
-  .fs-controls { position: absolute; left: 0; right: 0; bottom: 0; z-index: 4; padding: 64px 24px 16px; background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.55) 45%, rgba(0, 0, 0, 0.92) 100%); opacity: 0; transition: opacity 220ms ease; pointer-events: none; }
+  .fs-controls { position: absolute; left: 0; right: 0; bottom: 0; z-index: 4; padding: 18px 24px 16px; background: rgba(10, 10, 10, 0.88); opacity: 0; transition: opacity 220ms ease; pointer-events: none; }
   .fs-controls.awake { opacity: 1; pointer-events: auto; }
   /* Over footage the chrome cannot borrow contrast from a grey page: the
      scrim carries the buttons, and the readout goes full white with a shadow
@@ -2518,6 +2530,38 @@
   .seg { display: flex; gap: 2px; background: var(--n-150, #1c1c1c); border-radius: 3px; padding: 2px; }
   .seg button { background: none; padding: 5px 10px; }
   .seg button[aria-pressed='true'] { background: var(--n-400, #3d3d3d); color: var(--n-900, #e9e9e9); }
+
+  /* The host can make the player narrow while the viewport stays wide, as it
+     does beside a notes rail. Compact the instrument by its own width. */
+  @container onelight-player (max-width: 820px) {
+    .transport-row.main { display: flex; flex-wrap: wrap; align-items: center; row-gap: 6px; column-gap: 8px; }
+    .deck { display: contents; }
+    .readout { order: 1; min-width: 0; text-align: left; }
+    .tc-main, .tc-main.copyable { font-size: 14px; }
+    .cluster { order: 2; flex: 1 1 auto; justify-content: center; }
+    .marks { order: 3; }
+    .readout-sub, .shuttle { display: none; }
+    .side { order: 4; }
+    .marks-readout { order: 5; }
+    .side.right { order: 6; margin-left: auto; }
+    .cluster > .icon:first-child { display: none; }
+    .clearmarks { display: none; }
+    .marks .lbl, .linky .lbl { display: none; }
+    .marks button, .linky { width: 42px; justify-content: center; padding: 0; }
+    .marks svg, .linky svg { opacity: 1; }
+    .transport-row.settings {
+      flex-wrap: nowrap;
+      justify-content: flex-start;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+    }
+    .transport-row.settings > * { flex: none; }
+    .transport-row.settings .seg button { padding-inline: 8px; }
+    .transport-row.settings .grow { display: none; }
+    .ctl-label { white-space: nowrap; }
+  }
 
   /* Phone. The desktop deck is a ~460px three-column instrument; at 390 its
      side columns collapsed to zero and the marks slid under the volume
@@ -2583,7 +2627,6 @@
       overflow-x: auto;
       scrollbar-width: none;
       -webkit-overflow-scrolling: touch;
-      mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
     }
     .transport-row.settings > * { flex: none; }
     .transport-row.settings .grow { display: none; }

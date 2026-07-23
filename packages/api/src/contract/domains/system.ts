@@ -189,18 +189,20 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
           .all();
         expect(afterReschedule).toHaveLength(1);
         await withFetchStub(200, async (calls) => {
-          const delivered = await deliverDueWebhookDeliveries(
-            h.db,
-            h.clock.now(),
-          );
-          expect(delivered).toBe(1);
+          const delivered = await Promise.all([
+            deliverDueWebhookDeliveries(h.db, h.clock.now()),
+            deliverDueWebhookDeliveries(h.db, h.clock.now()),
+          ]);
+          expect(delivered[0] + delivered[1]).toBe(1);
           expect(calls).toHaveLength(1);
           const call = calls[0];
           expect(call?.url).toBe("https://hooks.example.com/deliver");
           expect(call?.headers["x-onelight-event-id"]).toBe(delivery?.eventId);
+          const timestamp = call?.headers["x-onelight-timestamp"] ?? "";
+          expect(timestamp).toBe(String(Math.floor(h.clock.now() / 1000)));
           const expectedSignature = await hmacSha256Hex(
             hook.secret,
-            call?.body ?? "",
+            `${timestamp}.${call?.body ?? ""}`,
           );
           expect(call?.headers["x-onelight-signature"]).toBe(expectedSignature);
           const parsed = JSON.parse(call?.body ?? "{}") as {

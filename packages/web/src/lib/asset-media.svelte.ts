@@ -2,13 +2,9 @@ import { api, listRenditions } from "./api.js";
 import type { Version } from "./api.js";
 
 /* Per-asset media details for browsing surfaces (thumbnails, hover scrub,
-   version counts, transcode chips).
-
-   GET /projects/:id/assets returns only the asset row, so posters and
-   version counts need two follow-up reads per asset (versions, then the
-   current version's renditions). The cache loads them lazily: an element
-   action marks a card visible via IntersectionObserver, and a small queue
-   caps concurrent fetches so a long grid does not stampede the API. */
+   version counts, transcode chips). Project asset lists carry this data
+   inline. The lazy two-read path remains only for older or id-only payloads,
+   with bounded concurrency so those surfaces cannot stampede the API. */
 
 export interface AssetMedia {
   versionCount: number;
@@ -130,7 +126,8 @@ export const createMediaCache = (): MediaCache => {
         media: {
           versionCount: asset.media.version_count,
           currentVersion: asset.media.current_version,
-          transcodeStatus: asset.media.current_version?.transcode_status ?? null,
+          transcodeStatus:
+            asset.media.current_version?.transcode_status ?? null,
           posterUrl: asset.has_thumbnail
             ? `/api/v1/assets/${asset.id}/thumbnail?v=${String(asset.updated_at ?? 0)}`
             : asset.media.poster_url,

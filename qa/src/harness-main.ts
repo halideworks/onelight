@@ -8,6 +8,7 @@ import {
   frameAtMediaTime,
   mediaTimeInsideFrame,
 } from "../../packages/player/src/frame-clock.js";
+import { configurePlaybackRate } from "../../packages/player/src/transport-state.js";
 import { decodeStripe } from "./stripe.js";
 import type {
   HarnessRate,
@@ -15,6 +16,7 @@ import type {
   PatchRect,
   QaHarness,
   SeekReading,
+  ShuttleAudioReading,
   WebCodecsReading,
 } from "./harness-types.js";
 
@@ -151,10 +153,79 @@ const readPatches = (rects: PatchRect[]): Promise<PatchReading[]> => {
   return Promise.resolve(readings);
 };
 
+const waitForEvent = (
+  target: EventTarget,
+  event: string,
+  timeoutMs: number,
+): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      target.removeEventListener(event, onEvent);
+      reject(new Error(`${event} did not fire within ${timeoutMs} ms`));
+    }, timeoutMs);
+    const onEvent = (): void => {
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    target.addEventListener(event, onEvent, { once: true });
+  });
+
+const wait = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+const probeShuttleAudio = async (
+  url: string,
+  playbackRate: number,
+): Promise<ShuttleAudioReading> => {
+  const media = document.createElement("video");
+  media.crossOrigin = "anonymous";
+  media.src = url;
+  media.preload = "auto";
+  document.body.append(media);
+
+  const audioContext = new AudioContext();
+  const source = audioContext.createMediaElementSource(media);
+  const analyser = audioContext.createAnalyser();
+  analyser.fftSize = 2048;
+  source.connect(analyser);
+  analyser.connect(audioContext.destination);
+  const samples = new Float32Array(analyser.fftSize);
+
+  try {
+    const canPlay = waitForEvent(media, "canplay", 15_000);
+    media.load();
+    configurePlaybackRate(media, playbackRate, false);
+    await Promise.all([canPlay, audioContext.resume(), media.play()]);
+
+    let rms = 0;
+    for (let sample = 0; sample < 8; sample += 1) {
+      await wait(50);
+      analyser.getFloatTimeDomainData(samples);
+      let sumSquares = 0;
+      for (const value of samples) sumSquares += value * value;
+      rms = Math.max(rms, Math.sqrt(sumSquares / samples.length));
+    }
+
+    return {
+      currentTime: media.currentTime,
+      playbackRate: media.playbackRate,
+      preservesPitch: media.preservesPitch,
+      rms,
+    };
+  } finally {
+    media.pause();
+    media.remove();
+    source.disconnect();
+    analyser.disconnect();
+    await audioContext.close();
+  }
+};
+
 const harness: QaHarness = {
   loadClip,
   seekAndRead,
   webcodecsRead,
   readPatches,
+  probeShuttleAudio,
 };
 window.qa = harness;

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   assetVersions,
+  commentAttachments,
   commentReactions,
   notifications,
+  projects,
 } from "@onelight/db/schema";
 import {
   assertSnakeCaseKeys,
@@ -464,6 +466,17 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
     ctx.itBlob("uploads, serves, and deletes comment attachments", async () => {
       const h = ctx.h();
       const seed = ctx.seed();
+      const otherAuthor = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      await grantRole(
+        h,
+        seed.admin,
+        seed.project.id,
+        otherAuthor.id,
+        "commenter",
+      );
       const createdResponse = await postComment(
         h,
         seed.commenter.cookie,
@@ -485,6 +498,27 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       // Node's fetch supplies content-length for string bodies, so this
       // request succeeds; the explicit path below asserts the happy flow.
       expect([201, 400]).toContain(missingLength.status);
+      const storageBefore = (
+        await h.db
+          .select({ bytes: projects.storageBytes })
+          .from(projects)
+          .where(eq(projects.id, seed.project.id))
+          .all()
+      )[0]?.bytes;
+      const deniedUpload = await req(
+        h,
+        `/api/v1/comments/${created.id}/attachments`,
+        {
+          method: "POST",
+          cookie: otherAuthor.cookie,
+          body: payload.body,
+          headers: {
+            "content-type": payload.contentType,
+            "content-length": String(payload.length),
+          },
+        },
+      );
+      expect(deniedUpload.status).toBe(403);
       const attach = await req(
         h,
         `/api/v1/comments/${created.id}/attachments`,
@@ -501,6 +535,17 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       expect(attach.status).toBe(201);
       const attachment = await json<{ id: string; filename: string }>(attach);
       expect(attachment.filename).toBe("note.txt");
+      const contentBytes = new TextEncoder().encode(
+        "attachment-payload",
+      ).byteLength;
+      const storageAfterUpload = (
+        await h.db
+          .select({ bytes: projects.storageBytes })
+          .from(projects)
+          .where(eq(projects.id, seed.project.id))
+          .all()
+      )[0]?.bytes;
+      expect(storageAfterUpload).toBe((storageBefore ?? 0) + contentBytes);
       const urlResponse = await req(
         h,
         `/api/v1/comments/${created.id}/attachments/${attachment.id}`,
@@ -517,6 +562,12 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       expect(fetched.headers.get("content-disposition")).toBe(
         'attachment; filename="note.txt"',
       );
+      const deniedDelete = await req(
+        h,
+        `/api/v1/comments/${created.id}/attachments/${attachment.id}`,
+        { method: "DELETE", cookie: otherAuthor.cookie },
+      );
+      expect(deniedDelete.status).toBe(403);
       const removed = await req(
         h,
         `/api/v1/comments/${created.id}/attachments/${attachment.id}`,
@@ -529,6 +580,60 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
         { cookie: seed.viewer.cookie },
       );
       expect(gone.status).toBe(404);
+      const storageAfterDelete = (
+        await h.db
+          .select({ bytes: projects.storageBytes })
+          .from(projects)
+          .where(eq(projects.id, seed.project.id))
+          .all()
+      )[0]?.bytes;
+      expect(storageAfterDelete).toBe(storageBefore);
+    });
+
+    it("enforces comment attachment limits in the database", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const createdResponse = await postComment(
+        h,
+        seed.commenter.cookie,
+        seed.media.versionId,
+        { body_text: "bounded attachments" },
+      );
+      const created = await json<{ id: string }>(createdResponse);
+      await h.db
+        .insert(commentAttachments)
+        .values(
+          Array.from({ length: 10 }, (_, index) => ({
+            id: h.ids.ulid(),
+            commentId: created.id,
+            blobKey: `contract/attachments/${String(index)}`,
+            filename: `${String(index)}.txt`,
+            size: 1,
+            contentType: "text/plain",
+            checksumSha256: "",
+          })),
+        )
+        .run();
+      await expect(async () => {
+        await h.db
+          .insert(commentAttachments)
+          .values({
+            id: h.ids.ulid(),
+            commentId: created.id,
+            blobKey: "contract/attachments/overflow",
+            filename: "overflow.txt",
+            size: 1,
+            contentType: "text/plain",
+            checksumSha256: "",
+          })
+          .run();
+      }).rejects.toThrow();
+      const rows = await h.db
+        .select()
+        .from(commentAttachments)
+        .where(eq(commentAttachments.commentId, created.id))
+        .all();
+      expect(rows).toHaveLength(10);
     });
   });
 

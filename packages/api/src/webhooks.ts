@@ -4,6 +4,33 @@ import { webhookDeliveries, webhooks } from "@onelight/db/schema";
 import type { AppDb } from "@onelight/db";
 
 const deliveryIds = new UlidGenerator();
+const WEBHOOK_TIMEOUT_MS = 15_000;
+const WEBHOOK_RESPONSE_BYTES = 4096;
+
+const responsePreview = async (response: Response): Promise<string> => {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let remaining = WEBHOOK_RESPONSE_BYTES;
+  let result = "";
+  try {
+    while (remaining > 0) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      const bytes = chunk.value.subarray(0, remaining);
+      result += decoder.decode(bytes, { stream: true });
+      remaining -= bytes.byteLength;
+      if (bytes.byteLength < chunk.value.byteLength || remaining === 0) {
+        await reader.cancel();
+        break;
+      }
+    }
+    result += decoder.decode();
+    return result;
+  } finally {
+    reader.releaseLock();
+  }
+};
 
 const privateIpv4 = (host: string): boolean => {
   const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
@@ -148,7 +175,7 @@ export const deliverDueWebhookDeliveries = async (
   }>) {
     const delivery = row.delivery;
     const attempt = delivery.attempt + 1;
-    await db
+    const claimed = await db
       .update(webhookDeliveries)
       .set({ status: "delivering", attempt })
       .where(
@@ -160,7 +187,9 @@ export const deliverDueWebhookDeliveries = async (
           ),
         ),
       )
-      .run();
+      .returning({ id: webhookDeliveries.id })
+      .all();
+    if (!claimed.length) continue;
     const body = JSON.stringify({
       id: delivery.eventId,
       type: delivery.eventType,
@@ -170,41 +199,48 @@ export const deliverDueWebhookDeliveries = async (
       const guardProblem = webhookUrlProblem(row.webhook.url);
       if (guardProblem) throw new Error(guardProblem);
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15_000);
-      const response = await fetch(row.webhook.url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-onelight-event-id": delivery.eventId,
-          "x-onelight-signature": await hmacSha256Hex(row.webhook.secret, body),
-        },
-        body,
-        signal: controller.signal,
-        /* Do not follow redirects. The SSRF guard above vets only the URL the
-           user registered; a 3xx to http://169.254.169.254/… or a private
-           address would sail past it and, since the response body is stored
-           and readable by the workspace, exfiltrate internal metadata. A
-           webhook endpoint is expected to answer 2xx directly. */
-        redirect: "manual",
-      });
-      clearTimeout(timeout);
-      if (response.status >= 300 && response.status < 400)
-        throw new Error(
-          "Webhook endpoint redirected; redirects are not followed.",
-        );
-      const responseBody = (await response.text()).slice(0, 4096);
-      if (!response.ok) throw new Error(`Webhook returned ${response.status}.`);
-      await db
-        .update(webhookDeliveries)
-        .set({
-          status: "delivered",
-          responseStatus: response.status,
-          responseBody,
-          deliveredAt: now,
-        })
-        .where(eq(webhookDeliveries.id, delivery.id))
-        .run();
-      delivered += 1;
+      const timeout = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
+      try {
+        const timestamp = String(Math.floor(now / 1000));
+        const response = await fetch(row.webhook.url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-onelight-event-id": delivery.eventId,
+            "x-onelight-timestamp": timestamp,
+            "x-onelight-signature": await hmacSha256Hex(
+              row.webhook.secret,
+              `${timestamp}.${body}`,
+            ),
+          },
+          body,
+          signal: controller.signal,
+          /* Do not follow redirects. The SSRF guard above vets only the URL the
+             user registered; a redirect to a private address would bypass
+             that decision. A webhook endpoint must answer directly. */
+          redirect: "manual",
+        });
+        if (response.status >= 300 && response.status < 400)
+          throw new Error(
+            "Webhook endpoint redirected; redirects are not followed.",
+          );
+        const responseBody = await responsePreview(response);
+        if (!response.ok)
+          throw new Error(`Webhook returned ${response.status}.`);
+        await db
+          .update(webhookDeliveries)
+          .set({
+            status: "delivered",
+            responseStatus: response.status,
+            responseBody,
+            deliveredAt: now,
+          })
+          .where(eq(webhookDeliveries.id, delivery.id))
+          .run();
+        delivered += 1;
+      } finally {
+        clearTimeout(timeout);
+      }
     } catch (error) {
       const dead = attempt >= 8;
       await db

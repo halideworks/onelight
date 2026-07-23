@@ -2042,8 +2042,8 @@
 <style>
   /* Review room world: strictly neutral, R=G=B, no gradients, no tinted
      chrome. Separation by value step, not borders. */
-  .review { min-height: 100vh; background: var(--n-050); color: var(--n-800); font-size: var(--text-13); }
-  .topbar { display: flex; align-items: center; gap: var(--pad-2); padding: 10px var(--pad-2); background: var(--n-100); flex-wrap: wrap; }
+  .review { display: flex; flex-direction: column; height: 100vh; min-height: 0; overflow: hidden; background: var(--n-050); color: var(--n-800); font-size: var(--text-13); }
+  .topbar { flex: none; display: flex; align-items: center; gap: var(--pad-2); padding: 10px var(--pad-2); background: var(--n-100); flex-wrap: wrap; }
   .topbar a { color: var(--n-600); font-size: var(--text-13); text-decoration: none; }
   .topbar a:hover { color: var(--n-800); }
   h1 { margin: 0; font-family: var(--font-ui); font-size: var(--text-16); font-weight: 500; color: var(--n-900); }
@@ -2088,7 +2088,7 @@
      clamped rather than fixed so it stays usable on a laptop, and it folds away
      when the picture wants the window. The grid animates, so the rail slides
      rather than blinking out. */
-  .content { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 420px); align-items: stretch; height: calc(100vh - 52px); transition: grid-template-columns 180ms ease; }
+  .content { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 420px); align-items: stretch; transition: grid-template-columns 180ms ease; }
   .content.notes-closed { grid-template-columns: minmax(0, 1fr) 0px; }
   .content.notes-closed .rail { overflow: hidden; }
   /* A column too, so the player has a definite height to divide. overflow
@@ -2114,6 +2114,7 @@
     .content { transition: none; }
   }
   @media (max-width: 900px) {
+    .review { height: auto; min-height: 100vh; overflow: visible; }
     .content, .content.notes-closed { grid-template-columns: minmax(0, 1fr); height: auto; }
     .railtoggle { display: none; }
   }
@@ -2254,12 +2255,13 @@
   .notes article.seekable { cursor: pointer; }
   .note-body { flex: 1; min-width: 0; }
   .note-actions { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
-  .notes-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
-  .notes h2 { margin: 0; font-size: var(--text-13); font-weight: 600; color: var(--n-900); }
-  .filters { display: flex; gap: 2px; background: var(--n-150); border-radius: var(--radius); padding: 2px; }
+  .notes-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 0 0 12px; }
+  .notes h2 { grid-column: 1; grid-row: 1; margin: 0; font-size: var(--text-13); font-weight: 600; color: var(--n-900); }
+  .filters { grid-column: 1 / -1; grid-row: 2; display: flex; gap: 2px; background: var(--n-150); border-radius: var(--radius); padding: 2px; }
+  .filters button { flex: 1; }
   .filters button { background: none; padding: 5px 10px; }
   .filters button[aria-pressed='true'] { background: var(--n-400); color: var(--n-900); }
-  .exchange { position: relative; }
+  .exchange { grid-column: 2; grid-row: 1; position: relative; }
   .exchange-trigger { display: inline-flex; align-items: center; gap: 6px; background: var(--n-150); padding: 6px 10px; border-radius: var(--radius); font-size: var(--text-13); }
   .exchange-trigger:hover, .exchange-trigger[aria-expanded='true'] { background: var(--n-300); color: var(--n-900); }
   .exchange-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: 264px; display: flex; flex-direction: column; gap: 10px; background: var(--n-100); border: 1px solid var(--n-300); border-radius: var(--radius); padding: 14px; }
@@ -2273,7 +2275,7 @@
   .exchange-hint { margin: 0; font-size: var(--text-12); color: var(--n-600); }
   .exchange-import { text-align: center; }
   .exchange-note { margin: 0; font-size: var(--text-12); color: var(--n-700); }
-  .tagfilter { margin-left: auto; background: var(--n-300); color: var(--n-900); font-weight: 600; padding: 4px 10px; }
+  .tagfilter { grid-column: 1 / -1; justify-self: start; background: var(--n-300); color: var(--n-900); font-weight: 600; padding: 4px 10px; }
   .tagfilter span { color: var(--n-600); font-weight: 400; margin-left: 6px; }
   /* The overflow menu: the asset's own verbs, one click from the bar. */
   .morewrap { position: relative; }

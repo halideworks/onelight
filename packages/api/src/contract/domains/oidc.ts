@@ -137,6 +137,7 @@ const runFlow = async (
     tamperState?: boolean;
     wrongNonce?: boolean;
     dropCookie?: boolean;
+    emailVerified?: boolean;
   },
 ): Promise<FlowResult> =>
   idp.run(async () => {
@@ -155,6 +156,9 @@ const runFlow = async (
         subject: options.subject,
         email: options.email,
         nonce: options.wrongNonce ? "not-the-real-nonce" : nonce,
+        ...(options.emailVerified === undefined
+          ? {}
+          : { emailVerified: options.emailVerified }),
       }),
     );
     const callbackState = options.tamperState ? "tampered-state" : state;
@@ -235,6 +239,19 @@ export const registerOidcDomain = (ctx: SuiteContext): void => {
         await req(h, "/api/v1/users/me", { cookie: result.sessionCookie }),
       );
       expect(me.id).toBe(existing.id);
+    });
+
+    it("rejects unverified email before linking or provisioning", async () => {
+      const h = ctx.h();
+      const idp = await makeIdp(h);
+      const email = uniqueEmail();
+      const result = await runFlow(idp, {
+        subject: `unverified-${email}`,
+        email,
+        emailVerified: false,
+      });
+      expect(result.status).toBe(403);
+      expect(result.sessionCookie).not.toContain("ol_session=");
     });
 
     it("rejects tampered state, wrong nonce, and missing cookie state", async () => {

@@ -27,18 +27,27 @@
     "seed": "tsx apps/server/src/seed.ts"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.8.19",
+    "@cloudflare/vitest-pool-workers": "^0.18.7",
     "@eslint/js": "^9.17.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.5",
-    "drizzle-kit": "^0.30.4",
+    "drizzle-kit": "^0.31.10",
     "eslint": "^9.17.0",
     "eslint-config-prettier": "^9.1.0",
     "prettier": "^3.4.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.19.1",
-    "vitest": "^3.0.5",
-    "wrangler": "^4.5.0"
+    "vitest": "^4.1.10",
+    "wrangler": "^4.113.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "cookie": "0.7.2",
+      "esbuild": "0.25.12",
+      "js-yaml": "4.3.0",
+      "sharp": "0.35.3",
+      "ws": "8.21.0"
+    }
   }
 }

@@ -641,11 +641,68 @@ screenshotted, the waveform and spectrogram canvases read back pixel by pixel
 (00:00:02:31 at 151 frames of 60), zoom and pan confirmed by the transform they
 produce, and notes posted from both instruments.
 
+## Audible forward shuttle (2026-07-23)
+
+L shuttle could advance picture at the correct 1x, 2x and 4x rates while
+producing no sound for one reviewer across Chrome and Firefox on macOS and
+Windows. Space playback remained audible. The differing path was the browser's
+pitch-preserving time stretcher, not key handling or autoplay. Forward shuttle
+now uses direct varispeed resampling, while normal playback restores pitch
+preservation. The QA corpus includes an AAC tone proxy, and Playwright measures
+the decoded media-element signal at every shuttle rate in Chromium and Firefox.
+
+## Full application hardening audit (2026-07-23)
+
+The v1 app was audited across authorization, public contracts, upload and
+transfer accounting, streaming behavior, persistence, maintenance, dependency
+health, integration fixtures and responsive review UI. The audit found and
+fixed defects that green happy-path tests did not exercise:
+
+- Attachment mutation now enforces author-or-moderator ownership on internal
+  routes. Share viewers can delete their own attachments. Comment deletion
+  removes attachment blobs, and storage accounting is updated on every
+  attachment insert and delete.
+- Attachment count and byte limits, transfer byte caps and storage increments
+  are enforced transactionally in SQLite and D1. Concurrent requests can no
+  longer race past a cap. Transfer requests default to a 1 TiB allowance and
+  reject values above 10 TiB.
+- Upload creation, multipart signing and completion share explicit backend
+  limits. Completion rejects duplicate, missing, oversized, out-of-range and
+  byte-mismatched parts. Local-disk parts and assembled uploads are hashed while
+  streaming, so large uploads are not read into memory for validation.
+- OIDC auto-linking rejects unverified email claims. Anonymous replies,
+  approvals and attachment uploads are rate limited. Repeating an approval is
+  idempotent and does not create duplicate notifications.
+- Webhook delivery claims are atomic, timestamps are signed with the body,
+  response previews are bounded and the timeout covers body consumption.
+  Request logs redact share and transfer slugs.
+- SSE connections remain live, wake on local publishes and heartbeat across
+  isolates. Viewer presence writes are throttled. Maintenance now reaps every
+  stale upload state against the correct timestamp and no longer protects dead
+  upload blobs from garbage collection.
+- The review room now sizes from the real header height, compacts transport by
+  player width rather than viewport width, keeps the notes header within its
+  rail and has no document overflow at desktop, tablet or phone sizes. Review
+  chrome remains neutral and gradient-free.
+- The production server resolves the bundled SPA from the server module instead
+  of the launch directory. The integration dry run expects the current
+  `waveform_data` rendition. Workers Vitest configuration and security-sensitive
+  dependencies were upgraded; the package audit reports no known
+  vulnerabilities.
+
+Contract coverage now includes cross-user attachment mutation, public
+attachment removal, database-enforced attachment quotas, concurrent transfer
+caps, OIDC verification, concurrent webhook claims, multipart ordering and
+boundaries, live SSE wake-up, approval idempotency and stale upload states. The
+Node suite passes 517 tests, the D1 workers suite passes 22, and the media QA
+suite passes 12 across Chromium and Firefox with the unavailable WebKit leg
+skipping cleanly.
+
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
 1. DONE 2026-07-17: first green run of the integration and media-qc CI jobs on Linux, exercising compose end to end, the HDR libplacebo tonemap on lavapipe, the zscale conversion, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Getting there surfaced and fixed: CI had never actually executed (a pnpm/action-setup version pin conflicted with packageManager and killed every run at setup); the node job was missing the web:check gate and the SPA build the workers pool needs; the qa HDR smoke run omitted the worker's VULKAN_HWDEVICE_ARGS so libplacebo refused lavapipe (the spec now mirrors the worker invocation exactly); and Playwright WebKit on Linux reads the 75 percent bars low (a GStreamer/GL decode artifact, not real Safari; the exact deviation is pinned per-engine-and-platform in the qa color spec so any decoder drift still fails, and the reference tolerances were never widened).
 2. Real NLE import round-trips of the marker exporters (Resolve EDL, Avid text, xmeml, FCPXML) against actual applications, recorded per the golden-file protocol in the design doc. Fixtures are byte-exact and fuzz-hardened; the NLEs are the judges.
-3. Full-app browser pass on the review room and share flows (keyboard map, focus order, drawing, watermark overlay, modal a11y) with screenshots checked against section 24 and the mockups.
+3. Share-flow browser pass (focus order, drawing, watermark overlay, modal a11y) with screenshots checked against section 24 and the mockups. The authenticated review room passed the 2026-07-23 desktop, tablet and phone layout audit.
 4. The curated real-camera corpus of design doc section 21 (ProRes/DNx/XAVC, VFR phone clip, 8ch MXF, broken files) as CI fixtures where licensing allows; synthetic PQ/HLG fixtures already run.
 
 ## Hardening backlog (post-v1.0, rough priority)
@@ -658,10 +715,9 @@ produce, and notes posted from both instruments.
 - Uppy-based uploader if the directory uploader proves insufficient for camera-card ingest at scale.
 - General Idempotency-Key response-replay store (the current implementation replays upload creation; see the phase-1 supersession note).
 - SQLite FTS5 search on Node with LIKE fallback on D1 (the spec supersession keeps LIKE everywhere until D1 FTS5 support is verified).
-- Webhook signed timestamp for replay bounding; DNS-rebinding-safe webhook delivery.
+- DNS-rebinding-safe webhook delivery.
 - A true tiled watermark grid (v1 approximates with three diagonal placements); watermarked sprite sidecars (the scrubber filmstrip on a watermarked share currently shows clean low-res frames).
 - Per-asset share view analytics: the viewer roster exists, but per-asset view events are not recorded server-side.
-- Viewer-side attachment deletion on share comments (viewers can post attachments but have no endpoint to remove one).
 - Phone polish in the share room beyond the wrap fix: transport density and proscenium padding at small widths.
 - WebAuthn keys and an admin-enforced 2FA policy (noted in the operational-security pass).
 - True Media Composer marker XML once a captured real MC export exists (avid_xml currently emits the MC text format; see the phase-3 supersession note).

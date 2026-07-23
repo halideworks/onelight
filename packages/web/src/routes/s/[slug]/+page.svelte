@@ -863,6 +863,30 @@
     }
   };
 
+  const deleteAttachment = async (
+    comment: Comment,
+    attachment: { id: string; filename: string }
+  ): Promise<void> => {
+    try {
+      await apiDelete(
+        `/api/v1/s/${slug}/comments/${comment.id}/attachments/${attachment.id}`
+      );
+      comments = comments.map((entry) =>
+        entry.id === comment.id
+          ? {
+              ...entry,
+              attachments: (entry.attachments ?? []).filter(
+                (candidate) => candidate.id !== attachment.id
+              )
+            }
+          : entry
+      );
+      error = '';
+    } catch (caught) {
+      error = messageFrom(caught, 'The attachment could not be removed.');
+    }
+  };
+
   /* The rail drives whichever instrument is on screen. A still and a frame
      take the same drawing, so the controls are the same controls. */
   const setDraw = (on: boolean, tool: 'pen' | 'arrow' | 'rect' | 'text' = drawTool): void => {
@@ -1333,6 +1357,7 @@
             {#if editingNoteId === comment.id}
               <textarea
                 class="noteedit"
+                aria-label="Edit note"
                 bind:value={editingText}
                 maxlength="10000"
                 onkeydown={(event) => {
@@ -1353,23 +1378,33 @@
             {#if comment.attachments?.length}
               <span class="files">
                 {#each comment.attachments as attachment (attachment.id)}
-                  {#if attachment.content_type.startsWith('image/')}
-                    <AttachmentImage
-                      {attachment}
-                      resolve={() => resolveAttachmentUrl(comment, attachment)}
-                      onopen={(url) => { lightbox = { url, name: attachment.filename }; }}
-                    />
-                  {:else}
-                    <button
-                      type="button"
-                      class="filechip"
-                      title={`${attachment.filename} (${prettySize(attachment.size)})`}
-                      onclick={() => void openAttachment(comment, attachment)}
-                    >
-                      <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L4 7.5" /></svg>
-                      <span class="filename">{attachment.filename}</span>
-                    </button>
-                  {/if}
+                  <span class="fileitem">
+                    {#if attachment.content_type.startsWith('image/')}
+                      <AttachmentImage
+                        {attachment}
+                        resolve={() => resolveAttachmentUrl(comment, attachment)}
+                        onopen={(url) => { lightbox = { url, name: attachment.filename }; }}
+                      />
+                    {:else}
+                      <button
+                        type="button"
+                        class="filechip"
+                        title={`${attachment.filename} (${prettySize(attachment.size)})`}
+                        onclick={() => void openAttachment(comment, attachment)}
+                      >
+                        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L4 7.5" /></svg>
+                        <span class="filename">{attachment.filename}</span>
+                      </button>
+                    {/if}
+                    {#if comment.mine}
+                      <button
+                        type="button"
+                        class="fileremove"
+                        aria-label={`Remove attachment ${attachment.filename}`}
+                        onclick={() => void deleteAttachment(comment, attachment)}
+                      >×</button>
+                    {/if}
+                  </span>
                 {/each}
               </span>
             {/if}
@@ -1929,9 +1964,12 @@
   .showtime .noteedit { background: rgba(250, 248, 244, 0.1); color: var(--ink-text); }
   .hidden { display: none; }
   .files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .fileitem { display: inline-flex; align-items: center; gap: 2px; min-width: 0; }
   .filechip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; border: 0; border-radius: 9px; background: var(--n-150); color: var(--n-800); padding: 3px 9px; font-size: var(--text-12); cursor: pointer; }
   .filechip:hover { background: var(--n-300); color: var(--n-900); }
   .filechip.pending { cursor: default; }
+  .fileremove { width: 24px; height: 24px; padding: 0; background: none; color: var(--n-600); }
+  .fileremove:hover { background: var(--n-200); color: var(--n-900); }
   .filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
   .filedrop { border: 0; background: none; color: var(--n-600); padding: 0 0 0 2px; font-size: 13px; line-height: 1; cursor: pointer; }
   .filedrop:hover { color: var(--n-900); }

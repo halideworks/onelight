@@ -47,6 +47,31 @@ export function applyMark(
   return { in: inFrame !== null && inFrame >= at ? null : inFrame, out: at };
 }
 
+/* ---- audible forward shuttle ----
+
+   Normal playback leaves pitch preservation on. Forward shuttle deliberately
+   does not: pitch-preserving time stretch is a separate browser audio path
+   from ordinary 1x playback, and it produced advancing picture with silent
+   audio for a reviewer in both Chromium and Firefox on macOS and Windows.
+   Direct resampling is the dependable path and gives the familiar pitched
+   shuttle sound an editor expects.
+
+   Set the processing mode before the rate. That keeps a rate change from
+   first starting the pitch-preserving processor and then replacing it. */
+export interface RateControlledMedia {
+  playbackRate: number;
+  preservesPitch: boolean;
+}
+
+export function configurePlaybackRate(
+  media: RateControlledMedia,
+  rate: number,
+  preservesPitch: boolean,
+): void {
+  media.preservesPitch = preservesPitch;
+  media.playbackRate = rate;
+}
+
 /* ---- keys the operating system must not press for you ----
 
    Holding a key makes the OS repeat it, tens of times a second, at a rate the

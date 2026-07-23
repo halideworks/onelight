@@ -222,7 +222,7 @@ const counterFilter = (fontFile) =>
       ];
 
 /* Drop-frame SDR fixture: 30000/1001, 5 s, frame counter, sine audio (so
- * the audio_peaks rendition is planned), start timecode 00:59:55;00 with a
+ * the waveform_data rendition is planned), start timecode 00:59:55;00 with a
  * tmcd track, exactly the shape the proxy recipe re-embeds. */
 export const sdrFixtureArgs = (outputPath, fontFile) => [
   "-hide_banner",
@@ -580,7 +580,7 @@ const sdrLeg = async (client, projectId, workDir, fontFile) => {
     await client("GET", `${API}/versions/${asset.version_id}/renditions`)
   ).json();
   const kinds = renditions.items.map((item) => item.kind);
-  for (const required of ["proxy_1080", "poster", "sprite", "audio_peaks"])
+  for (const required of ["proxy_1080", "poster", "sprite", "waveform_data"])
     assert(
       kinds.includes(required),
       `renditions include ${required} (got ${kinds.join(", ")})`,
@@ -839,7 +839,7 @@ const dryRun = () => {
     "plan: health check -> setup/login -> create project -> SDR DF upload " +
       "(multipart + crc32c) -> probe/transcode -> version wire asserts " +
       `(rate ${DF_RATE.num}/${DF_RATE.den}, drop_frame, start frame ${EXPECTED_START_FRAME}) -> ` +
-      "renditions (proxy_1080, poster, sprite, audio_peaks) -> proxy ffprobe " +
+      "renditions (proxy_1080, poster, sprite, waveform_data) -> proxy ffprobe " +
       "(bt709 + tmcd) -> range 206 -> comment -> passphrase share with " +
       "watermark -> viewer 202 then burned rendition differs -> resolve EDL " +
       "export -> HDR PQ upload -> tonemapped bt709 proxy",

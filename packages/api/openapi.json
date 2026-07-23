@@ -104,6 +104,95 @@
         }
       }
     },
+    "/api/v1/readyz": {
+      "get": {
+        "summary": "Readiness: 200 when the database is reachable, 503 when it is not. Liveness is /healthz.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "version"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The database is not reachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/bootstrap": {
       "get": {
         "summary": "Public pre-auth bootstrap: OIDC availability, setup state, and the workspace name (null before setup).",
@@ -14273,6 +14362,79 @@
             }
           }
         }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "commentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attachmentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No content"
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/s/{slug}/comments/{commentId}/replies": {
@@ -15013,7 +15175,8 @@
                     "anyOf": [
                       {
                         "type": "integer",
-                        "exclusiveMinimum": 0
+                        "exclusiveMinimum": 0,
+                        "maximum": 10995116277760
                       },
                       {
                         "type": "null"
@@ -15694,7 +15857,8 @@
                     "anyOf": [
                       {
                         "type": "integer",
-                        "exclusiveMinimum": 0
+                        "exclusiveMinimum": 0,
+                        "maximum": 10995116277760
                       },
                       {
                         "type": "null"
@@ -17102,7 +17266,8 @@
                   },
                   "size": {
                     "type": "integer",
-                    "exclusiveMinimum": 0
+                    "exclusiveMinimum": 0,
+                    "maximum": 137438953472
                   },
                   "checksum_crc32c": {
                     "type": "string",
@@ -17788,7 +17953,8 @@
                   },
                   "size": {
                     "type": "integer",
-                    "exclusiveMinimum": 0
+                    "exclusiveMinimum": 0,
+                    "maximum": 137438953472
                   },
                   "checksum_crc32c": {
                     "type": "string",
@@ -19058,6 +19224,163 @@
                           },
                           "updated_at": {
                             "type": "integer"
+                          },
+                          "media": {
+                            "type": "object",
+                            "properties": {
+                              "version_count": {
+                                "type": "integer"
+                              },
+                              "current_version": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "id": {
+                                        "type": "string"
+                                      },
+                                      "asset_id": {
+                                        "type": "string"
+                                      },
+                                      "version_no": {
+                                        "type": "integer"
+                                      },
+                                      "original_filename": {
+                                        "type": "string"
+                                      },
+                                      "size": {
+                                        "type": "integer"
+                                      },
+                                      "checksum_crc32c": {
+                                        "type": "string"
+                                      },
+                                      "uploaded_by": {
+                                        "type": "string"
+                                      },
+                                      "media_info": {
+                                        "type": "object",
+                                        "additionalProperties": {}
+                                      },
+                                      "source_timecode_start": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      },
+                                      "source_start_frame": {
+                                        "anyOf": [
+                                          {
+                                            "type": "integer"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "frame_rate_num": {
+                                        "anyOf": [
+                                          {
+                                            "type": "integer"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "frame_rate_den": {
+                                        "anyOf": [
+                                          {
+                                            "type": "integer"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "drop_frame": {
+                                        "type": "boolean"
+                                      },
+                                      "duration_frames": {
+                                        "anyOf": [
+                                          {
+                                            "type": "integer"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "color": {
+                                        "type": "object",
+                                        "additionalProperties": {}
+                                      },
+                                      "transcode_status": {
+                                        "type": "string",
+                                        "enum": [
+                                          "pending",
+                                          "processing",
+                                          "ready",
+                                          "failed",
+                                          "skipped"
+                                        ]
+                                      },
+                                      "created_at": {
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "asset_id",
+                                      "version_no",
+                                      "original_filename",
+                                      "size",
+                                      "checksum_crc32c",
+                                      "uploaded_by",
+                                      "media_info",
+                                      "source_timecode_start",
+                                      "source_start_frame",
+                                      "frame_rate_num",
+                                      "frame_rate_den",
+                                      "drop_frame",
+                                      "duration_frames",
+                                      "color",
+                                      "transcode_status",
+                                      "created_at"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "poster_url": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "sprite_url": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "sprite_vtt_url": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "version_count",
+                              "current_version",
+                              "poster_url",
+                              "sprite_url",
+                              "sprite_vtt_url"
+                            ],
+                            "additionalProperties": false
                           }
                         },
                         "required": [
@@ -19074,7 +19397,8 @@
                           "has_thumbnail",
                           "deleted_at",
                           "created_at",
-                          "updated_at"
+                          "updated_at",
+                          "media"
                         ],
                         "additionalProperties": false
                       }

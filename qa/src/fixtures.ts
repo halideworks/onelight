@@ -50,7 +50,7 @@ export interface ColorPatch {
 }
 
 /* Bump to invalidate corpora produced by older synthesis code. */
-export const CORPUS_VERSION = 2;
+export const CORPUS_VERSION = 3;
 
 export interface FixtureManifest {
   version: number;
@@ -58,6 +58,7 @@ export interface FixtureManifest {
   fontFile: string | null;
   rateClips: RateClipFixture[];
   dropFrame: { file: string; timecode: string; rate: QaRate };
+  shuttleAudio: { file: string; durationSeconds: number };
   bars: {
     file: string;
     width: number;
@@ -71,6 +72,7 @@ const WIDTH = 1280;
 const HEIGHT = 720;
 const COUNTER_SECONDS = 10;
 const BARS_SECONDS = 5;
+const SHUTTLE_AUDIO_SECONDS = 6;
 export const DF_START_TIMECODE = "00:59:55;00";
 export const DF_RATE: QaRate = { num: 30000, den: 1001 };
 const BARS_RATE: QaRate = { num: 25, den: 1 };
@@ -163,6 +165,36 @@ export const barsClipArgs = (outputPath: string): string[] => [
   "-vf",
   "format=yuv420p",
   ...proxyShapeArgs(BARS_RATE),
+  outputPath,
+];
+
+export const shuttleAudioClipArgs = (outputPath: string): string[] => [
+  "-hide_banner",
+  "-y",
+  "-f",
+  "lavfi",
+  "-i",
+  `color=c=0x2f2f2f:s=${WIDTH}x${HEIGHT}:r=24:d=${SHUTTLE_AUDIO_SECONDS}`,
+  "-f",
+  "lavfi",
+  "-i",
+  `sine=frequency=997:sample_rate=48000:duration=${SHUTTLE_AUDIO_SECONDS}`,
+  "-map",
+  "0:v:0",
+  "-map",
+  "1:a:0",
+  "-vf",
+  "format=yuv420p",
+  ...proxyShapeArgs({ num: 24, den: 1 }),
+  "-c:a",
+  "aac",
+  "-ac",
+  "2",
+  "-ar",
+  "48000",
+  "-b:a",
+  "192k",
+  "-shortest",
   outputPath,
 ];
 
@@ -412,6 +444,7 @@ const manifestUpToDate = async (): Promise<FixtureManifest | null> => {
     const files = [
       ...manifest.rateClips.map((clip) => clip.file),
       manifest.dropFrame.file,
+      manifest.shuttleAudio.file,
       manifest.bars.file,
       manifest.bars.patchesFile,
     ];
@@ -480,12 +513,23 @@ export const synthesizeFixtures = async (
     "utf8",
   );
 
+  const shuttleAudioFile = "shuttle-audio.mp4";
+  log(`[qa] fixtures: synthesizing ${shuttleAudioFile}`);
+  await runProcess(
+    ffmpegBin(),
+    shuttleAudioClipArgs(path.join(fixturesDir, shuttleAudioFile)),
+  );
+
   const manifest: FixtureManifest = {
     version: CORPUS_VERSION,
     generatedAt: new Date().toISOString(),
     fontFile,
     rateClips,
     dropFrame: { file: dfFile, timecode: DF_START_TIMECODE, rate: DF_RATE },
+    shuttleAudio: {
+      file: shuttleAudioFile,
+      durationSeconds: SHUTTLE_AUDIO_SECONDS,
+    },
     bars: {
       file: barsFile,
       width: WIDTH,

@@ -534,6 +534,24 @@ export const registerTransfersDomain = (ctx: SuiteContext): void => {
         json: { filename: "three.bin", size: 10 },
       });
       expect(third.status).toBe(201);
+
+      const concurrentFixture = await makeRequestLink(h, seed, {
+        byte_cap: 30,
+      });
+      const concurrentAccess = await accessTransfer(h, concurrentFixture.slug, {
+        name: "Concurrent cap",
+      });
+      const attempts = await Promise.all(
+        ["a.bin", "b.bin"].map((filename) =>
+          req(h, `/api/v1/t/${concurrentFixture.slug}/uploads`, {
+            cookie: concurrentAccess.cookie,
+            json: { filename, size: 20 },
+          }),
+        ),
+      );
+      expect(attempts.map((response) => response.status).sort()).toEqual([
+        201, 413,
+      ]);
     });
 
     ctx.itBlob("checksum mismatch quarantines and lands nothing", async () => {

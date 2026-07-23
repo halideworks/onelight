@@ -234,6 +234,17 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
           headers: { "content-type": "application/octet-stream" },
         });
         expect(badPartNo.status).toBe(400);
+        const excessivePartNo = await req(
+          h,
+          `/api/v1/uploads/${upload.id}/parts/8193`,
+          {
+            method: "PUT",
+            cookie: seed.editor.cookie,
+            body: "xx",
+            headers: { "content-type": "application/octet-stream" },
+          },
+        );
+        expect(excessivePartNo.status).toBe(400);
         const etag1 = await putPart(
           h,
           seed.editor.cookie,
@@ -435,8 +446,8 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
         cookie: seed.editor.cookie,
         json: {
           parts: [
-            { part_no: 1, etag: etag1 },
             { part_no: 2, etag: etag2 },
+            { part_no: 1, etag: etag1 },
           ],
           checksum_crc32c: crc32cBase64(encoder.encode(partA + partB)),
         },
@@ -1133,6 +1144,66 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
         ).text(),
       );
       expect(delivered.map((event) => event.id)).toEqual([laterId]);
+    });
+
+    it("keeps a live event stream open and wakes it without polling", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const opening = parseSse(
+        await (
+          await req(h, `/api/v1/projects/${seed.project.id}/events`, {
+            cookie: seed.commenter.cookie,
+          })
+        ).text(),
+      );
+      const cursor = opening[0]?.id ?? "0";
+      const abort = new AbortController();
+      const live = await h.app.request(
+        `/api/v1/projects/${seed.project.id}/events`,
+        {
+          headers: {
+            accept: "text/event-stream",
+            cookie: seed.commenter.cookie,
+            "last-event-id": cursor,
+          },
+          signal: abort.signal,
+        },
+      );
+      expect(live.status).toBe(200);
+      const reader = live.body?.getReader();
+      expect(reader).toBeTruthy();
+      if (!reader) throw new Error("The live event stream has no body.");
+
+      const posted = await req(
+        h,
+        `/api/v1/versions/${seed.media.versionId}/comments`,
+        {
+          cookie: seed.commenter.cookie,
+          json: { body_text: "wake the stream" },
+        },
+      );
+      expect(posted.status).toBe(201);
+      let received = "";
+      const decoder = new TextDecoder();
+      const deadline = Date.now() + 2_000;
+      while (!received.includes("event: comment.created")) {
+        if (Date.now() >= deadline)
+          throw new Error("The live event stream did not wake.");
+        const chunk = await Promise.race([
+          reader.read(),
+          new Promise<never>((_resolve, reject) => {
+            setTimeout(
+              () => reject(new Error("The live event stream stalled.")),
+              2_000,
+            );
+          }),
+        ]);
+        if (chunk.done) break;
+        received += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(received).toContain("event: comment.created");
+      abort.abort();
+      await reader.cancel();
     });
   });
 

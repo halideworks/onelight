@@ -39,6 +39,13 @@ export interface PatchReading {
   rgb: [number, number, number];
 }
 
+export interface ShuttleAudioReading {
+  currentTime: number;
+  playbackRate: number;
+  preservesPitch: boolean;
+  rms: number;
+}
+
 export interface QaHarness {
   loadClip(url: string, rate: HarnessRate): Promise<void>;
   seekAndRead(frame: number): Promise<SeekReading>;
@@ -48,10 +55,15 @@ export interface QaHarness {
     frame: number,
   ): Promise<WebCodecsReading>;
   readPatches(rects: PatchRect[]): Promise<PatchReading[]>;
+  probeShuttleAudio(
+    url: string,
+    playbackRate: number,
+  ): Promise<ShuttleAudioReading>;
 }
 
 declare global {
   interface Window {
     qa: QaHarness;
+    shuttleAudioProbe: Promise<ShuttleAudioReading> | undefined;
   }
 }

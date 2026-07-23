@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { assetVersions, exportJobs, shares } from "@onelight/db/schema";
+import {
+  assetVersions,
+  exportJobs,
+  notifications,
+  projects,
+  shares,
+} from "@onelight/db/schema";
 import {
   assertSnakeCaseKeys,
   cookieFrom,
@@ -428,6 +434,13 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
           `--${boundary}--`,
           "",
         ].join("\r\n");
+        const storageBefore = (
+          await h.db
+            .select({ bytes: projects.storageBytes })
+            .from(projects)
+            .where(eq(projects.id, fixture.projectId))
+            .all()
+        )[0]?.bytes;
         const uploaded = await req(
           h,
           `/api/v1/s/${fixture.slug}/comments/${posted.id}/attachments`,
@@ -446,6 +459,17 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
           uploaded,
         );
         expect(attachment.filename).toBe("grade notes.pdf");
+        const storageAfterUpload = (
+          await h.db
+            .select({ bytes: projects.storageBytes })
+            .from(projects)
+            .where(eq(projects.id, fixture.projectId))
+            .all()
+        )[0]?.bytes;
+        expect(storageAfterUpload).toBe(
+          (storageBefore ?? 0) +
+            new TextEncoder().encode("fake-pdf-bytes").byteLength,
+        );
         // The list carries it, for every viewer.
         const other = await accessShare(h, fixture.slug, { name: "Reader" });
         const listed = await json<{
@@ -502,6 +526,26 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
         expect(internalRow?.attachments?.map((entry) => entry.id)).toEqual([
           attachment.id,
         ]);
+        const deniedDelete = await req(
+          h,
+          `/api/v1/s/${fixture.slug}/comments/${posted.id}/attachments/${attachment.id}`,
+          { method: "DELETE", cookie: other.cookie },
+        );
+        expect(deniedDelete.status).toBe(403);
+        const removed = await req(
+          h,
+          `/api/v1/s/${fixture.slug}/comments/${posted.id}/attachments/${attachment.id}`,
+          { method: "DELETE", cookie: author.cookie },
+        );
+        expect(removed.status).toBe(204);
+        const storageAfterDelete = (
+          await h.db
+            .select({ bytes: projects.storageBytes })
+            .from(projects)
+            .where(eq(projects.id, fixture.projectId))
+            .all()
+        )[0]?.bytes;
+        expect(storageAfterDelete).toBe(storageBefore);
       },
     );
 
@@ -899,6 +943,25 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
         cookie: seed.admin.cookie,
       });
       expect((await json(assetState)).status).toBe("approved");
+      const approvalNotifications = await h.db
+        .select()
+        .from(notifications)
+        .where(eq(notifications.kind, "approval.updated"))
+        .all();
+      const repeated = await req(h, `/api/v1/s/${fixture.slug}/approval`, {
+        method: "PATCH",
+        cookie: viewer.cookie,
+        origin: true,
+        json: { asset_id: fixture.assetId, status: "approved" },
+      });
+      expect(repeated.status).toBe(200);
+      expect(
+        await h.db
+          .select()
+          .from(notifications)
+          .where(eq(notifications.kind, "approval.updated"))
+          .all(),
+      ).toHaveLength(approvalNotifications.length);
       const foreignAsset = await req(h, `/api/v1/s/${fixture.slug}/approval`, {
         method: "PATCH",
         cookie: viewer.cookie,

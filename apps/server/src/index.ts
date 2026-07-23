@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { readFile, stat, statfs } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
@@ -287,7 +288,12 @@ const start = async (): Promise<void> => {
     frameMatcher: spriteFrameMatcher(db, blobRoot),
     mail,
   });
-  const webRoot = process.env.WEB_ROOT ?? "packages/web/build";
+  const webRoot =
+    process.env.WEB_ROOT ??
+    path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../packages/web/build",
+    );
   const app = new Hono();
   const shell = serveStatic({ root: webRoot, path: "index.html" });
   // The built shell is read once; share requests get OG meta tags injected
@@ -307,10 +313,9 @@ const start = async (): Promise<void> => {
      stay inside the origin so share slugs never leak through outbound
      links. HSTS is sent only when the origin is https, since it cannot be
      honoured -- and would pin a broken state -- over plain http. */
-  const hstsValue =
-    config.PUBLIC_URL.startsWith("https://")
-      ? "max-age=31536000; includeSubDomains"
-      : null;
+  const hstsValue = config.PUBLIC_URL.startsWith("https://")
+    ? "max-age=31536000; includeSubDomains"
+    : null;
   /* Everything the app itself needs and nothing more: its own scripts, styles
      and fonts; data:/blob: pictures and media (posters, lightbox, the player);
      same-origin XHR/SSE. object-src none kills plugin embeds, frame-ancestors

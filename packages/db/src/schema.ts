@@ -692,51 +692,55 @@ export const notificationPreferences = sqliteTable("notification_preferences", {
   updatedAt: integer("updated_at").notNull(),
 });
 
-export const shares = sqliteTable("shares", {
-  id: text("id").primaryKey(),
-  /** Short random identity for the internal settings page URL; the public
+export const shares = sqliteTable(
+  "shares",
+  {
+    id: text("id").primaryKey(),
+    /** Short random identity for the internal settings page URL; the public
       room keeps its own secret slug. */
-  publicId: text("public_id").unique(),
-  projectId: text("project_id")
-    .notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
-  slug: text("slug").notNull().unique(),
-  kind: text("kind", { enum: ["review", "presentation"] }).notNull(),
-  title: text("title").notNull(),
-  layout: text("layout", { enum: ["grid", "list", "reel"] }).notNull(),
-  passphraseHash: text("passphrase_hash"),
-  expiresAt: integer("expires_at"),
-  allowDownload: text("allow_download", {
-    enum: ["none", "proxy", "original"],
-  }).notNull(),
-  allowComments: integer("allow_comments", { mode: "boolean" })
-    .notNull()
-    .default(true),
-  allowApprovals: integer("allow_approvals", { mode: "boolean" })
-    .notNull()
-    .default(true),
-  showAllVersions: integer("show_all_versions", { mode: "boolean" })
-    .notNull()
-    .default(false),
-  watermarkSpecJson: text("watermark_spec_json"),
-  watermarkSpecHash: text("watermark_spec_hash"),
-  brandJson: text("brand_json"),
-  createdBy: text("created_by")
-    .notNull()
-    .references(() => users.id),
-  /** The 'shares' folder this share is filed in; null means directly under
+    publicId: text("public_id").unique(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    slug: text("slug").notNull().unique(),
+    kind: text("kind", { enum: ["review", "presentation"] }).notNull(),
+    title: text("title").notNull(),
+    layout: text("layout", { enum: ["grid", "list", "reel"] }).notNull(),
+    passphraseHash: text("passphrase_hash"),
+    expiresAt: integer("expires_at"),
+    allowDownload: text("allow_download", {
+      enum: ["none", "proxy", "original"],
+    }).notNull(),
+    allowComments: integer("allow_comments", { mode: "boolean" })
+      .notNull()
+      .default(true),
+    allowApprovals: integer("allow_approvals", { mode: "boolean" })
+      .notNull()
+      .default(true),
+    showAllVersions: integer("show_all_versions", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    watermarkSpecJson: text("watermark_spec_json"),
+    watermarkSpecHash: text("watermark_spec_hash"),
+    brandJson: text("brand_json"),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id),
+    /** The 'shares' folder this share is filed in; null means directly under
       the Shares root. */
-  folderId: text("folder_id").references(() => folders.id, {
-    onDelete: "set null",
-  }),
-  revokedAt: integer("revoked_at"),
-  createdAt: integer("created_at").notNull(),
-}, (table) => ({
-  /* Shares are listed and joined by project (the shares index page, the
+    folderId: text("folder_id").references(() => folders.id, {
+      onDelete: "set null",
+    }),
+    revokedAt: integer("revoked_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => ({
+    /* Shares are listed and joined by project (the shares index page, the
      asset-list share filter); without this the lookups scan the table. The
      id tail keeps the keyset order the list pages by. */
-  projectIndex: index("shares_project_idx").on(table.projectId, table.id),
-}));
+    projectIndex: index("shares_project_idx").on(table.projectId, table.id),
+  }),
+);
 
 export const shareAssets = sqliteTable(
   "share_assets",
