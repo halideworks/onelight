@@ -58,3 +58,23 @@ export const annotationInkFor = (author: string | null | undefined): string => {
     hash = (hash * 31 + author.charCodeAt(index)) >>> 0;
   return ANNOTATION_INKS[hash % ANNOTATION_INKS.length] as string;
 };
+
+/* Human names for the ink swatches, so a screen-reader user picking a colour
+   hears "orange" rather than "#d8a069". Keyed to ANNOTATION_INKS in order. */
+const INK_NAMES = [
+  "blue",
+  "orange",
+  "green",
+  "pink",
+  "teal",
+  "gold",
+  "purple",
+  "coral",
+  "mint",
+  "khaki",
+];
+
+export const annotationInkName = (ink: string): string => {
+  const index = ANNOTATION_INKS.indexOf(ink);
+  return index >= 0 ? (INK_NAMES[index] as string) : "colour";
+};

@@ -102,6 +102,9 @@
   let bodyText = $state('');
   /* In-flight guard for the composer: one post at a time (see addComment). */
   let posting = $state(false);
+  /* Announced to assistive tech when a note lands, so a non-sighted reviewer
+     hears that their note posted rather than a silent append to the list. */
+  let noteAnnounce = $state('');
   let commentError = $state('');
   let currentFrame = $state(0);
   let player = $state<Player | null>(null);
@@ -1328,6 +1331,11 @@
       commentError = failedNames.length
         ? `Note posted, but ${failedNames.join(', ')} could not be attached.`
         : '';
+      noteAnnounce = failedNames.length
+        ? `Note posted; ${failedNames.join(', ')} could not be attached.`
+        : parent
+          ? 'Reply posted.'
+          : 'Note posted.';
       picked = [];
       mentionQuery = null;
       if (drawing) {
@@ -1683,6 +1691,7 @@
            player, so writing one meant scrolling the footage off screen. -->
       <aside class="rail">
         <section class="notes" aria-label="Review notes">
+          <p class="sr-only" role="status" aria-live="polite">{noteAnnounce}</p>
           <div class="notes-head">
             <h2>Notes</h2>
             {#if activeTag}

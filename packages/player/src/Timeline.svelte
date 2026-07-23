@@ -588,6 +588,6 @@
   }
   .tip-head { display: flex; gap: 10px; align-items: baseline; }
   .tip-head strong { color: var(--n-900, #e9e9e9); font-weight: 600; }
-  .tip .tc { font-variant-numeric: tabular-nums; color: var(--n-600, #767676); }
+  .tip .tc { font-variant-numeric: tabular-nums; color: var(--n-700, #9a9a9a); }
   .tip-body { overflow: hidden; text-overflow: ellipsis; }
 </style>

@@ -2796,7 +2796,9 @@
   .chip.s-in_review { color: var(--info); }
   .chip.s-changes_requested { color: var(--note); }
   .chip.t-pending, .chip.t-processing { color: var(--ink-text-dim); }
-  .chip.t-failed { color: var(--warn); }
+  /* A lighter red than --warn so this small-text chip clears 4.5:1 on the chip
+     background; the label carries the meaning too, so it is never colour-only. */
+  .chip.t-failed { color: #d18f88; }
 
   /* Ghost cards: the grid's own geometry, breathing (see tokens.css). */
   .ghosts .card { pointer-events: none; }

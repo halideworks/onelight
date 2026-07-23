@@ -25,7 +25,7 @@
     rangeIsSet,
     seeksLocked
   } from './transport-state.js';
-  import { ANNOTATION_INKS } from './annotations.js';
+  import { ANNOTATION_INKS, annotationInkName } from './annotations.js';
   import type { AnnotationPoint, AnnotationStroke, FrameAnnotation, PendingDrawing } from './annotations.js';
   import { markerInkFor } from './timeline.js';
   import type { TimelineMarker } from './timeline.js';
@@ -2020,7 +2020,7 @@
                 type="button"
                 class="ink"
                 aria-pressed={drawColor === ink}
-                aria-label={`Ink ${ink}`}
+                aria-label={`Ink: ${annotationInkName(ink)}`}
                 style={`background: ${ink};`}
                 onclick={() => setDrawColor(ink)}
               ></button>
@@ -2296,6 +2296,9 @@
   .scrub-mark.span { transform: none; min-width: 3px; opacity: 0.5; border-radius: 2px; }
   .scrub-mark:hover { opacity: 1; }
   .scrub:hover .scrub-track, .scrub.scrubbing .scrub-track, .scrub:focus-visible .scrub-track { height: 7px; }
+  /* A real focus ring, not just a 2px thickening of a hairline that a keyboard
+     viewer loses on a dark stage. */
+  .scrub:focus-visible { outline: 2px solid var(--n-800, #c4c4c4); outline-offset: 3px; border-radius: 3px; }
   .scrub-played { position: absolute; top: 0; bottom: 0; left: 0; width: 100%; border-radius: 3px; background: var(--n-900, #e9e9e9); transform-origin: left center; will-change: transform; }
   /* The stretch a note is being written about, drawn over the played run so it
      reads on both sides of the playhead. Sits under the note marks: existing
@@ -2414,7 +2417,7 @@
   .watermark:not(.tiled)[data-position='center'] { align-items: center; justify-content: center; }
   .scopes { flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0 0; }
   .scopes canvas { display: block; width: min(100%, 720px); height: 180px; background: var(--n-000, #0a0a0a); border: 1px solid var(--n-200, #232323); border-radius: var(--radius, 3px); }
-  .scopes-note { font-size: var(--text-12, 0.75rem); color: var(--n-500, #565656); }
+  .scopes-note { font-size: var(--text-12, 0.75rem); color: var(--n-700, #9a9a9a); }
   .transport { flex: none; padding-top: 12px; font-family: var(--font-ui, system-ui); }
   .transport-row { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
   /* One row, three tracks. The outer two are equal, so whatever they hold, the
@@ -2451,7 +2454,7 @@
   .side.volume .vol { margin-right: 10px; }
   /* Timecode reads as a number, not as prose: fixed width so it does not jitter. */
   .readout { display: flex; align-items: center; min-width: 108px; justify-content: flex-end; }
-  .readout-sub { display: flex; align-items: center; font-size: 11px; line-height: 1; color: var(--n-600, #767676); }
+  .readout-sub { display: flex; align-items: center; font-size: 11px; line-height: 1; color: var(--n-700, #9a9a9a); }
   /* Every button on the primary band is the same height, or "aligned" is a
      coincidence that breaks the first time a label changes. */
   .deck button { height: 30px; display: inline-flex; align-items: center; }
@@ -2505,8 +2508,8 @@
   .tc-main.copyable:hover { background: rgba(255, 255, 255, 0.08); }
   .tc-main.copyable:focus-visible { outline: 1px solid var(--accent-bright, #6ad6e0); outline-offset: 1px; }
   .tc-main.copied { color: var(--ok, #7fd1a8); }
-  .ctl-label { font-size: 13px; color: var(--n-600, #767676); }
-  .draw-hint { font-size: 13px; color: var(--n-600, #767676); }
+  .ctl-label { font-size: 13px; color: var(--n-700, #9a9a9a); }
+  .draw-hint { font-size: 13px; color: var(--n-700, #9a9a9a); }
   button { border: 0; border-radius: 3px; background: var(--n-200, #232323); color: var(--n-800, #c4c4c4); padding: 8px 12px; font-size: 13px; }
   button:hover { background: var(--n-300, #2e2e2e); color: var(--n-900, #e9e9e9); }
   button:disabled { color: var(--n-500, #565656); background: var(--n-150, #1c1c1c); }

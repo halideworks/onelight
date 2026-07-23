@@ -127,6 +127,7 @@
         {@const link = notificationLink(item)}
         <article class:unread={item.read_at === null}>
           <span class="dot" aria-hidden="true"></span>
+          {#if item.read_at === null}<span class="sr-only">Unread. </span>{/if}
           <div class="body">
             {#if link}
               <a href={link} onclick={() => void follow(item.id)}>{described.title}</a>
@@ -151,6 +152,7 @@
 </dialog>
 
 <style>
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   /* Right-hand drawer: full height, a slice of the width, over the page it was
      opened from. margin-inline-start:auto is what pins it right, since a modal
      dialog is otherwise centred. */

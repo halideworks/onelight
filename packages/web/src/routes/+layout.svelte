@@ -116,6 +116,23 @@
 <NavProgress neutral={inReviewRoom} />
 
 {#if chrome}
+  <!-- Bypass the masthead (wordmark, nav, search, bell, avatar) on every
+       navigation. Visually hidden until focused; on activation it focuses the
+       route's own <main> so the next Tab lands in content. Only the app chrome
+       has a masthead to skip -- the review room and public pages omit it. -->
+  <a
+    class="skip"
+    href="#main"
+    onclick={(event) => {
+      event.preventDefault();
+      const main = document.querySelector('main');
+      if (main) {
+        main.setAttribute('tabindex', '-1');
+        (main as HTMLElement).focus();
+        main.scrollIntoView();
+      }
+    }}
+  >Skip to content</a>
   <header class="topbar">
     <a class="wordmark" href="/">
       <!-- The chip, same mark as the favicon: tab and masthead are one
@@ -229,6 +246,27 @@
   :global(select:focus),
   :global(select:focus-visible) {
     outline: none;
+  }
+
+  /* Off-screen until it takes focus, then a real, visible target at the top. */
+  .skip {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    z-index: 300;
+    padding: 8px 14px;
+    background: var(--accent);
+    color: #fff;
+    border-radius: var(--radius);
+    text-decoration: none;
+    font-size: var(--text-13);
+    transform: translateY(-200%);
+  }
+  .skip:focus-visible,
+  .skip:focus {
+    transform: translateY(0);
+    outline: 2px solid #fff;
+    outline-offset: 2px;
   }
 
   /* Topbar: separation by value step, no border line. */

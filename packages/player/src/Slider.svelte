@@ -140,26 +140,30 @@
     const big = event.shiftKey ? 10 : 1;
     const back = vertical ? 'ArrowDown' : 'ArrowLeft';
     const forward = vertical ? 'ArrowUp' : 'ArrowRight';
+    /* A key this slider consumes must not ALSO reach the player's window-level
+       transport map: the volume and thickness sliders live inside the review
+       room, so without stopping propagation ArrowLeft would nudge the fader AND
+       step the video a frame, Home would zero the fader AND jump the playhead.
+       stopPropagation on the keys we handle keeps the two apart. */
+    const take = (fn: () => void): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      fn();
+    };
     /* Both axes answer both pairs: a vertical fader that ignores the left
        arrow is a puzzle, not a purity. */
     if (event.key === back || event.key === (vertical ? 'ArrowLeft' : 'ArrowDown')) {
-      event.preventDefault();
-      nudge(-big);
+      take(() => nudge(-big));
     } else if (event.key === forward || event.key === (vertical ? 'ArrowRight' : 'ArrowUp')) {
-      event.preventDefault();
-      nudge(big);
+      take(() => nudge(big));
     } else if (event.key === 'PageDown') {
-      event.preventDefault();
-      nudge(-10);
+      take(() => nudge(-10));
     } else if (event.key === 'PageUp') {
-      event.preventDefault();
-      nudge(10);
+      take(() => nudge(10));
     } else if (event.key === 'Home') {
-      event.preventDefault();
-      emit(min, true);
+      take(() => emit(min, true));
     } else if (event.key === 'End') {
-      event.preventDefault();
-      emit(max, true);
+      take(() => emit(max, true));
     }
   };
 </script>

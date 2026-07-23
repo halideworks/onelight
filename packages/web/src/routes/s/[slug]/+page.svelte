@@ -15,7 +15,7 @@
   import { page } from '$app/state';
   import { copyText } from '$lib/clipboard.js';
   import { replaceState } from '$app/navigation';
-  import { annotationInkFor, ANNOTATION_INKS } from '@onelight/player';
+  import { annotationInkFor, annotationInkName, ANNOTATION_INKS } from '@onelight/player';
   import AttachmentImage from '$lib/AttachmentImage.svelte';
   import Avatar from '$lib/Avatar.svelte';
   import Lightbox from '$lib/Lightbox.svelte';
@@ -105,6 +105,9 @@
   let bodyText = $state('');
   /* In-flight guard for the composer: one post at a time (see addComment). */
   let posting = $state(false);
+  /* Announced to assistive tech when a note lands -- the primary audience here
+     is a client leaving notes, often not looking at the list. */
+  let noteAnnounce = $state('');
   let locked = $state(false);
   let error = $state('');
   let currentFrame = $state(0);
@@ -983,6 +986,9 @@
       error = failedNames.length
         ? `Note posted, but ${failedNames.join(', ')} could not be attached.`
         : '';
+      noteAnnounce = failedNames.length
+        ? `Note posted; ${failedNames.join(', ')} could not be attached.`
+        : 'Note posted.';
       if (drawing) {
         player?.clearDrawing();
         stills?.clearDrawing();
@@ -1300,6 +1306,7 @@
       {#if railMounted}
       <aside class="rail" class:shut={!railOpen} aria-hidden={!railOpen || undefined} inert={!railOpen || undefined}>
       <section class="comments" aria-label="Comments">
+        <p class="sr-only" role="status" aria-live="polite">{noteAnnounce}</p>
         <div class="c-bar">
           <h3>Comments</h3>
           {#if activeTag}
@@ -1451,7 +1458,7 @@
                         type="button"
                         class="inkdot"
                         aria-pressed={(inkChoice ?? myInk) === ink}
-                        aria-label={`Ink ${ink}`}
+                        aria-label={`Ink: ${annotationInkName(ink)}`}
                         style={`background: ${ink};`}
                         onclick={() => pickInk(ink)}
                       ></button>
@@ -1868,6 +1875,7 @@
      gutters, and inside a scroll container that bleed became a horizontal
      scrollbar over the composer. */
   .notelist { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 12px; margin: 0 -12px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .c-bar { flex: none; display: flex; align-items: center; gap: 12px; margin: 0 0 10px; }
   .comments h3 { margin: 0; font-size: var(--text-13); font-weight: 600; color: var(--n-900); }
   .tagfilter { background: var(--n-300); color: var(--n-900); font-weight: 600; padding: 4px 10px; }
