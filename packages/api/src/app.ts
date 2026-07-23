@@ -212,6 +212,23 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     c.set("requestId", env.ids.ulid());
     await next();
   });
+  /* One structured line for the requests worth seeing: every 4xx/5xx and every
+     request slower than a second, with the id the error envelope also carries
+     so a report ("request abc123 failed") ties straight back to a log line.
+     Successful fast requests stay quiet -- access-logging every 2xx is noise on
+     a box one operator watches. Health probes never log. */
+  root.use("*", async (c, next) => {
+    const started = Date.now();
+    await next();
+    const path = c.req.path;
+    if (path === "/healthz" || path === "/readyz") return;
+    const ms = Date.now() - started;
+    const status = c.res.status;
+    if (status >= 400 || ms > 1000)
+      console.log(
+        `[onelight] ${c.req.method} ${path} ${String(status)} ${String(ms)}ms req=${c.get("requestId") ?? "-"}`,
+      );
+  });
 
   const userWire = (user: ActorUser) => ({
     id: user.id,
@@ -1482,7 +1499,19 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const currentWorkspace = async (c: { get: (key: "user") => ActorUser }) =>
     workspaceFor(c.get("user").workspaceId);
 
+  /* Liveness: the process is up and serving. Readiness: it can also reach the
+     database, which liveness deliberately does not check -- an orchestrator
+     holds traffic off a replica whose DB is unreachable (locked, disk full)
+     without killing it, since the process itself is fine. */
   api.get("/healthz", (c) => c.json({ status: "ok", version: env.version }));
+  api.get("/readyz", async (c) => {
+    try {
+      await env.db.run(sql`select 1`);
+      return c.json({ status: "ready", version: env.version });
+    } catch {
+      return c.json({ status: "not_ready" }, 503);
+    }
+  });
 
   // Public pre-auth bootstrap for the web shell: exactly these three fields
   // and nothing else (no ids, no emails, no settings), so nothing leaks
@@ -10976,6 +11005,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   // clientIp can read the real peer address for share rate limiting.
   root.all("/s/*", (c) => api.fetch(c.req.raw, c.env));
   root.get("/healthz", (c) => c.json({ status: "ok", version: env.version }));
+  root.get("/readyz", async (c) => {
+    try {
+      await env.db.run(sql`select 1`);
+      return c.json({ status: "ready", version: env.version });
+    } catch {
+      return c.json({ status: "not_ready" }, 503);
+    }
+  });
   return root;
 };
 

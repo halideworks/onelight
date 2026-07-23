@@ -964,6 +964,16 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       }
     });
 
+    it("serves /readyz when the database is reachable", async () => {
+      const h = ctx.h();
+      for (const path of ["/readyz", "/api/v1/readyz"]) {
+        const response = await req(h, path);
+        expect(response.status, path).toBe(200);
+        const body = await json(response);
+        expect(body.status).toBe("ready");
+      }
+    });
+
     it("serves the docs page", async () => {
       const h = ctx.h();
       for (const path of ["/api/docs", "/api/v1/docs"]) {

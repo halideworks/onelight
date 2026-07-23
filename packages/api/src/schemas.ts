@@ -1066,6 +1066,17 @@ export const routeDocs: Record<string, RouteDoc> = {
       "200": ok(z.object({ status: z.string(), version: z.string() })),
     },
   },
+  "GET /readyz": {
+    summary:
+      "Readiness: 200 when the database is reachable, 503 when it is not. Liveness is /healthz.",
+    responses: {
+      "200": ok(z.object({ status: z.string(), version: z.string() })),
+      "503": {
+        schema: z.object({ status: z.string() }),
+        description: "The database is not reachable.",
+      },
+    },
+  },
   "GET /bootstrap": {
     summary:
       "Public pre-auth bootstrap: OIDC availability, setup state, and the workspace name (null before setup).",
