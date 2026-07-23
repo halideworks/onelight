@@ -15,6 +15,7 @@ import {
   DEFAULT_GC_INTERVAL_MS,
   DEFAULT_TRASH_PURGE_AFTER_MS,
   DEFAULT_UPLOAD_REAP_AFTER_MS,
+  backupReferencedBlobKeys,
   diffOrphanBlobs,
   maintenanceConfigFromEnv,
   referencedBlobKeys,
@@ -285,6 +286,34 @@ describe("blob gc diff", () => {
       );
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /* A blob the live DB no longer references but a retained backup still does
+     must be protected, or the sweep deletes it out from under a snapshot you
+     might restore. */
+  it("protects blobs a retained backup manifest still references", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "onelight-bkm-"));
+    try {
+      await writeFile(
+        path.join(dir, "onelight-20260716-120000.manifest.json"),
+        JSON.stringify({
+          created_at: "2026-07-16T12:00:00.000Z",
+          blob_keys: ["renditions/v9/proxy_1080.mp4"],
+        }),
+      );
+      const protectedByBackup = backupReferencedBlobKeys(dir);
+      expect(protectedByBackup.has("renditions/v9/proxy_1080.mp4")).toBe(true);
+      // Live DB references nothing, but the backup does: unioning the two keeps
+      // the blob off the orphan list.
+      const objects = [
+        { key: "renditions/v9/proxy_1080.mp4", size: 5, mtimeMs: 0 },
+      ];
+      const referenced = new Set<string>();
+      for (const key of protectedByBackup) referenced.add(key);
+      expect(diffOrphanBlobs(objects, referenced)).toHaveLength(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 

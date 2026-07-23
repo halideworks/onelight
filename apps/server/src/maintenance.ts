@@ -1,3 +1,4 @@
+import fsSync from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { and, asc, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
@@ -59,6 +60,10 @@ export interface MaintenanceConfig {
   trashPurgeAfterMs: number;
   gcIntervalMs: number;
   gcDelete: boolean;
+  /* Where DB snapshots live, if backups are on. The GC reads their manifests
+     so a blob any retained snapshot references is never swept -- otherwise the
+     GC could delete a blob out from under a backup you might restore. */
+  backupDir?: string;
 }
 
 const positiveInt = (value: string | undefined, fallback: number): number => {
@@ -71,6 +76,7 @@ export const maintenanceConfigFromEnv = (
   base: { publicUrl: string; blobStore: BlobStore },
 ): MaintenanceConfig => {
   const gcDelete = (env.ONELIGHT_GC_DELETE ?? "").trim().toLowerCase();
+  const backupDir = (env.BACKUP_DIR ?? "").trim();
   return {
     publicUrl: base.publicUrl,
     blobStore: base.blobStore,
@@ -84,6 +90,7 @@ export const maintenanceConfigFromEnv = (
     ),
     gcIntervalMs: positiveInt(env.GC_INTERVAL_MS, DEFAULT_GC_INTERVAL_MS),
     gcDelete: gcDelete === "true" || gcDelete === "1",
+    ...(backupDir ? { backupDir } : {}),
   };
 };
 
@@ -811,6 +818,47 @@ export const referencedBlobKeys = async (db: AppDb): Promise<Set<string>> => {
   return keys;
 };
 
+/* The manifest a backup writes beside each DB snapshot: every blob key that
+   snapshot references. Read here so the GC can protect them. */
+export interface BackupManifest {
+  created_at: string;
+  blob_keys: string[];
+}
+
+export const readBackupManifests = (dir: string): BackupManifest[] => {
+  let names: string[];
+  try {
+    names = fsSync.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const manifests: BackupManifest[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".manifest.json")) continue;
+    try {
+      const parsed = JSON.parse(
+        fsSync.readFileSync(path.join(dir, name), "utf8"),
+      ) as BackupManifest;
+      if (Array.isArray(parsed.blob_keys)) manifests.push(parsed);
+    } catch {
+      /* A truncated or malformed manifest protects nothing; skip it. */
+    }
+  }
+  return manifests;
+};
+
+/* The union of every retained backup's referenced blob keys. The GC adds this
+   to its live referenced-set so a blob any snapshot still needs is never swept.
+   Explicit deletes (trash purge, project/user delete) are a separate matter: a
+   snapshot taken before a delete legitimately loses those blobs, and the
+   manifest is how a restore detects it. */
+export const backupReferencedBlobKeys = (dir: string): Set<string> => {
+  const keys = new Set<string>();
+  for (const manifest of readBackupManifests(dir))
+    for (const key of manifest.blob_keys) keys.add(key);
+  return keys;
+};
+
 const runBlobGc = async (
   db: AppDb,
   config: MaintenanceConfig,
@@ -823,6 +871,11 @@ const runBlobGc = async (
   }
   const objects = await walkBlobObjects(store.root);
   const referenced = await referencedBlobKeys(db);
+  /* A blob any retained snapshot still references is protected too, so the
+     sweep cannot delete a blob out from under a backup you might restore. */
+  if (config.backupDir)
+    for (const key of backupReferencedBlobKeys(config.backupDir))
+      referenced.add(key);
   const orphans = diffOrphanBlobs(objects, referenced);
   const totalBytes = orphans.reduce((sum, object) => sum + object.size, 0);
   log(

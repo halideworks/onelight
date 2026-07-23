@@ -23,6 +23,7 @@ import { eq } from "drizzle-orm";
 import {
   applyNodeMigrations,
   createNodeDb,
+  pendingMigrations,
   users,
   workspaces,
 } from "@onelight/db";
@@ -30,7 +31,7 @@ import { appSettings } from "@onelight/db/schema";
 import { LocalBlobStore } from "@onelight/worker";
 import { createMailerForConfig } from "./mailer.js";
 import { maintenanceConfigFromEnv, startMaintenance } from "./maintenance.js";
-import { backupConfigFromEnv, startBackups } from "./backup.js";
+import { backupConfigFromEnv, backupOnce, startBackups } from "./backup.js";
 import { NodePasswordHasher } from "./password.js";
 import { spriteFrameMatcher } from "./reanchor.js";
 import { isShareLandingPath } from "./share-shell.js";
@@ -39,6 +40,29 @@ import { startWorkerPump } from "./worker-pump.js";
 const config = loadConfig(process.env);
 fs.mkdirSync(path.dirname(config.DATABASE_PATH), { recursive: true });
 const { db, sqlite } = createNodeDb(config.DATABASE_PATH);
+/* A deploy that is about to change the schema snapshots the DB first, when
+   backups are configured and there is an existing DB to protect: SQLite table
+   rebuilds (and data backfills) cannot be reversed by a down-migration, so the
+   rollback path is to restore this pre-migration snapshot and redeploy the old
+   image. Kept in its own short-retained series so a burst of deploys never
+   evicts the day's ordinary backups. */
+const backupConfig = backupConfigFromEnv(process.env);
+const pending = pendingMigrations(sqlite);
+if (backupConfig && pending.length > 0 && fs.existsSync(config.DATABASE_PATH)) {
+  try {
+    const snapshot = await backupOnce(sqlite, db, backupConfig, new Date(), {
+      label: "premigrate",
+      keep: 10,
+    });
+    console.log(
+      `[onelight] pre-migration snapshot for ${String(pending.length)} pending migration(s): ${snapshot}`,
+    );
+  } catch (error) {
+    console.warn(
+      `[onelight] pre-migration snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
 applyNodeMigrations(sqlite);
 
 const ensureHeadlessAdmin = async (): Promise<void> => {
@@ -381,7 +405,9 @@ const start = async (): Promise<void> => {
       : {}),
     blobRoot,
   });
-  const stopBackups = backupConfig ? startBackups(sqlite, backupConfig) : null;
+  const stopBackups = backupConfig
+    ? startBackups(sqlite, db, backupConfig)
+    : null;
   if (!backupConfig)
     console.warn(
       "[onelight] Backups are disabled: set BACKUP_DIR to write periodic database snapshots.",

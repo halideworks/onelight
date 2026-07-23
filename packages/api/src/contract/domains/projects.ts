@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { PALETTES } from "@onelight/core";
+import {
+  assets,
+  captionTracks,
+  commentAttachments,
+  comments,
+  exportJobs,
+  projectCoverUploads,
+  projects,
+  renditions,
+  shares,
+} from "@onelight/db/schema";
 import {
   assertSnakeCaseKeys,
   errorCode,
@@ -7,7 +19,14 @@ import {
   json,
   req,
 } from "../harness.js";
-import { createProject, createUser, grantRole, unique } from "../seed.js";
+import { MemoryBlobStore } from "../memory-blob-store.js";
+import {
+  createProject,
+  createUser,
+  grantRole,
+  seedAssetVersion,
+  unique,
+} from "../seed.js";
 import type { SuiteContext } from "../context.js";
 
 export const registerProjectsDomain = (ctx: SuiteContext): void => {
@@ -54,6 +73,168 @@ export const registerProjectsDomain = (ctx: SuiteContext): void => {
         json: {},
       });
       expect(noName.status).toBe(400);
+    });
+
+    /* Deleting a project must free every blob it owns inline. This seeds one
+       blob of each kind a project can hold and asserts none survive the delete
+       -- the guard against the missing-column class that let the GC (and, once,
+       this path) strand or delete the wrong blobs. If a new blob-key column is
+       added and not wired into the delete collector, this fails. */
+    it("frees every kind of project blob on delete", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const store = h.blobStore;
+      if (!(store instanceof MemoryBlobStore)) return;
+      const project = await createProject(h, seed.admin);
+      const now = h.clock.now();
+      const put = async (key: string): Promise<string> => {
+        const body = new Response(new TextEncoder().encode("x").buffer).body;
+        if (body) await store.putStream(key, body);
+        return key;
+      };
+      const keys: string[] = [];
+
+      const media = await seedAssetVersion(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+      });
+      keys.push(await put(media.blobKey)); // original
+
+      const posterKey = `renditions/${h.ids.ulid()}.png`;
+      const vttKey = `renditions/${h.ids.ulid()}.vtt`;
+      await h.db
+        .insert(renditions)
+        .values({
+          id: h.ids.ulid(),
+          versionId: media.versionId,
+          kind: "poster",
+          blobKey: posterKey,
+          metaJson: JSON.stringify({ vtt_blob_key: vttKey }),
+          size: 1,
+          checksumSha256: "",
+          shareId: null,
+          createdAt: now,
+        })
+        .run();
+      keys.push(await put(posterKey), await put(vttKey));
+
+      const commentId = h.ids.ulid();
+      await h.db
+        .insert(comments)
+        .values({
+          id: commentId,
+          versionId: media.versionId,
+          authorUserId: seed.admin.id,
+          bodyText: "note",
+          createdAt: now,
+        })
+        .run();
+      const attachKey = `attachments/${h.ids.ulid()}`;
+      await h.db
+        .insert(commentAttachments)
+        .values({
+          id: h.ids.ulid(),
+          commentId,
+          blobKey: attachKey,
+          filename: "a.pdf",
+          size: 1,
+          contentType: "application/pdf",
+        })
+        .run();
+      keys.push(await put(attachKey));
+
+      const captionKey = `captions/${h.ids.ulid()}.vtt`;
+      await h.db
+        .insert(captionTracks)
+        .values({
+          id: h.ids.ulid(),
+          versionId: media.versionId,
+          language: "en",
+          label: "English",
+          blobKey: captionKey,
+          createdBy: seed.admin.id,
+          createdAt: now,
+        })
+        .run();
+      keys.push(await put(captionKey));
+
+      const thumbKey = `thumbnails/${h.ids.ulid()}`;
+      await h.db
+        .update(assets)
+        .set({ thumbnailBlobKey: thumbKey })
+        .where(eq(assets.id, media.assetId))
+        .run();
+      keys.push(await put(thumbKey));
+
+      const coverKey = `covers/${h.ids.ulid()}`;
+      await h.db
+        .update(projects)
+        .set({ coverBlobKey: coverKey })
+        .where(eq(projects.id, project.id))
+        .run();
+      keys.push(await put(coverKey));
+
+      const coverUploadKey = `cover-uploads/${h.ids.ulid()}`;
+      await h.db
+        .insert(projectCoverUploads)
+        .values({
+          id: h.ids.ulid(),
+          projectId: project.id,
+          blobKey: coverUploadKey,
+          filename: "cover.png",
+          createdBy: seed.admin.id,
+          createdAt: now,
+        })
+        .run();
+      keys.push(await put(coverUploadKey));
+
+      const logoKey = `${seed.workspaceId}/sharelogos/${h.ids.ulid()}.png`;
+      await h.db
+        .insert(shares)
+        .values({
+          id: h.ids.ulid(),
+          projectId: project.id,
+          slug: unique("slug"),
+          kind: "review",
+          title: "Share",
+          layout: "grid",
+          allowDownload: "none",
+          brandJson: JSON.stringify({ logo_key: logoKey }),
+          createdBy: seed.admin.id,
+          createdAt: now,
+        })
+        .run();
+      keys.push(await put(logoKey));
+
+      const exportKey = `exports/${h.ids.ulid()}.zip`;
+      await h.db
+        .insert(exportJobs)
+        .values({
+          id: h.ids.ulid(),
+          workspaceId: seed.workspaceId,
+          requestedBy: seed.admin.id,
+          projectId: project.id,
+          format: "pdf",
+          timecodeBase: "source",
+          status: "complete",
+          resultBlobKey: exportKey,
+          createdAt: now,
+        })
+        .run();
+      keys.push(await put(exportKey));
+
+      // Sanity: everything is present before the delete.
+      expect(keys.filter((key) => !store.blobs.has(key))).toEqual([]);
+
+      const deleted = await req(h, `/api/v1/projects/${project.id}`, {
+        method: "DELETE",
+        cookie: seed.admin.cookie,
+      });
+      expect(deleted.status).toBe(204);
+
+      // Nothing the project owned survives.
+      expect(keys.filter((key) => store.blobs.has(key))).toEqual([]);
     });
 
     it("serializes my_role per the phase-0 rules", async () => {

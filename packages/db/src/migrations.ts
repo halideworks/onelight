@@ -109,6 +109,24 @@ export const normalizeSqlStatement = (statement: string): string =>
     .replace(/;\s*$/, "")
     .trim();
 
+/* The migration files not yet recorded in __onelight_migrations. Read before
+   applyNodeMigrations so a caller can snapshot the DB when a deploy is about to
+   change the schema -- the rollback path for irreversible table rebuilds is to
+   restore that snapshot, not a down-migration that cannot exist. Returns [] on
+   a fresh DB with no tracking table (nothing to roll back to). */
+export const pendingMigrations = (sqlite: Database.Database): string[] => {
+  const hasTracking = sqlite
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='__onelight_migrations'",
+    )
+    .get();
+  if (!hasTracking) return migrationFiles.slice();
+  const isApplied = sqlite.prepare(
+    "SELECT 1 FROM __onelight_migrations WHERE id = ?",
+  );
+  return migrationFiles.filter((file) => !isApplied.get(file));
+};
+
 export const applyNodeMigrations = (sqlite: Database.Database): void => {
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS __onelight_migrations (id TEXT PRIMARY KEY)",

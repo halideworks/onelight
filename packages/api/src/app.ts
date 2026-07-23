@@ -304,6 +304,117 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return privateMediaUrl({ versionId: row.versionId }, row.blobKey);
   };
 
+  /* pdf_pages registers its first page as blob_key and lists the rest of the
+     page basenames in meta.pages, relative to the blob_key's directory. Mirror
+     of maintenance.ts renditionBlobKeys so the two never disagree on what a
+     rendition owns. */
+  const renditionOwnedKeys = (blobKey: string, metaJson: string): string[] => {
+    const keys = [blobKey];
+    const meta = parseJsonObject(metaJson);
+    if (typeof meta.vtt_blob_key === "string") keys.push(meta.vtt_blob_key);
+    if (Array.isArray(meta.pages)) {
+      const normalized = blobKey.replaceAll("\\", "/");
+      const directory = normalized.slice(0, normalized.lastIndexOf("/"));
+      for (const page of meta.pages)
+        if (typeof page === "string") keys.push(`${directory}/${page}`);
+    }
+    return keys;
+  };
+
+  /* Every blob key a project owns, so deleting the project can free them
+     inline instead of stranding gigabytes on disk until a GC that is off by
+     default eventually reconciles. Batched by project rather than per-version.
+     A completeness test seeds one blob per column and asserts this returns them
+     all -- the guard against the missing-column class that has bitten the GC. */
+  const collectProjectBlobKeys = async (
+    project: typeof projects.$inferSelect,
+  ): Promise<string[]> => {
+    const keys = new Set<string>();
+    const add = (key: string | null | undefined): void => {
+      if (key) keys.add(key);
+    };
+    const inProject = eq(assets.projectId, project.id);
+    for (const row of await env.db
+      .select({ key: assetVersions.originalBlobKey })
+      .from(assetVersions)
+      .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+      .where(inProject)
+      .all())
+      add(row.key);
+    for (const row of await env.db
+      .select({ blobKey: renditions.blobKey, metaJson: renditions.metaJson })
+      .from(renditions)
+      .innerJoin(assetVersions, eq(renditions.versionId, assetVersions.id))
+      .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+      .where(inProject)
+      .all())
+      for (const key of renditionOwnedKeys(row.blobKey, row.metaJson)) add(key);
+    for (const row of await env.db
+      .select({ key: commentAttachments.blobKey })
+      .from(commentAttachments)
+      .innerJoin(comments, eq(commentAttachments.commentId, comments.id))
+      .innerJoin(assetVersions, eq(comments.versionId, assetVersions.id))
+      .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+      .where(inProject)
+      .all())
+      add(row.key);
+    for (const row of await env.db
+      .select({ key: captionTracks.blobKey })
+      .from(captionTracks)
+      .innerJoin(assetVersions, eq(captionTracks.versionId, assetVersions.id))
+      .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+      .where(inProject)
+      .all())
+      add(row.key);
+    for (const row of await env.db
+      .select({ key: assets.thumbnailBlobKey })
+      .from(assets)
+      .where(and(inProject, isNotNull(assets.thumbnailBlobKey)))
+      .all())
+      add(row.key);
+    add(project.coverBlobKey);
+    for (const row of await env.db
+      .select({ key: projectCoverUploads.blobKey })
+      .from(projectCoverUploads)
+      .where(eq(projectCoverUploads.projectId, project.id))
+      .all())
+      add(row.key);
+    for (const row of await env.db
+      .select({ resultBlobKey: exportJobs.resultBlobKey })
+      .from(exportJobs)
+      .where(
+        and(
+          eq(exportJobs.projectId, project.id),
+          isNotNull(exportJobs.resultBlobKey),
+        ),
+      )
+      .all())
+      add(row.resultBlobKey);
+    for (const row of await env.db
+      .select({ brandJson: shares.brandJson })
+      .from(shares)
+      .where(and(eq(shares.projectId, project.id), isNotNull(shares.brandJson)))
+      .all()) {
+      if (!row.brandJson) continue;
+      try {
+        const brand = JSON.parse(row.brandJson) as { logo_key?: unknown };
+        if (typeof brand.logo_key === "string") add(brand.logo_key);
+      } catch {
+        /* A malformed brand blob names no logo. */
+      }
+    }
+    return [...keys];
+  };
+
+  const deleteProjectBlobs = async (
+    project: typeof projects.$inferSelect,
+  ): Promise<void> => {
+    if (!env.blobStore) return;
+    const store = env.blobStore;
+    for (const key of await collectProjectBlobKeys(project))
+      await store.delete(key).catch(() => undefined);
+  };
+
   /* Per-project facts the wire needs that each cost a query: the caller's
      grant, the cover URL, and the last-activity timestamp. Resolving them one
      project at a time is three queries per row; the list endpoint precomputes
@@ -2624,6 +2735,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       throw errors.conflict(
         "This user is referenced by project or invite records. Disable the user instead.",
       );
+    /* Free the avatar before the row goes: the avatar-delete route frees it,
+       but user delete did not, leaking one blob per deleted user. */
+    if (target.avatarKey && env.blobStore)
+      await env.blobStore.delete(target.avatarKey).catch(() => undefined);
     await env.db.delete(users).where(eq(users.id, target.id)).run();
     await audit(
       actor.workspaceId,
@@ -3420,6 +3535,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         .all()
     )[0];
     if (!project) throw errors.notFound();
+    /* Free the project's blobs before the row cascade removes the columns that
+       name them. The FK cascade deletes the rows; nothing deletes the objects,
+       so without this a project delete stranded every original, proxy, poster,
+       sprite, cover and logo on disk until a GC that is off by default caught
+       up. Deletes are best-effort; the GC remains the backstop for any miss. */
+    await deleteProjectBlobs(project);
     await env.db.delete(projects).where(eq(projects.id, project.id)).run();
     await audit(
       user.workspaceId,
