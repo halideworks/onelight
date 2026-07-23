@@ -478,6 +478,15 @@ const versionBlobKeys = async (
     .where(eq(comments.versionId, version.id))
     .all();
   for (const row of attachmentRows) keys.push(row.blobKey);
+  /* Caption sidecars are the version's too, and are the one blob a purge used
+     to miss: their rows cascade with the version but the object was left for
+     the GC, stranded whenever GC-delete is off. */
+  const captionRows = await db
+    .select({ blobKey: captionTracks.blobKey })
+    .from(captionTracks)
+    .where(eq(captionTracks.versionId, version.id))
+    .all();
+  for (const row of captionRows) keys.push(row.blobKey);
   return keys;
 };
 

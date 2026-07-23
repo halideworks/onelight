@@ -9583,10 +9583,15 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       ? await env.db
           .select()
           .from(assetVersions)
+          /* Soft-deleted versions excluded so version_count cannot over-count
+             once version-trash is wired; a no-op until then. */
           .where(
-            inArray(
-              assetVersions.assetId,
-              page.map((asset) => asset.id),
+            and(
+              inArray(
+                assetVersions.assetId,
+                page.map((asset) => asset.id),
+              ),
+              isNull(assetVersions.deletedAt),
             ),
           )
           .all()
@@ -9825,7 +9830,16 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const rows = await env.db
       .select()
       .from(assetVersions)
-      .where(eq(assetVersions.assetId, asset.id))
+      /* Exclude soft-deleted versions. The column exists and purgeTrashedVersions
+         is ready, but no route sets it yet -- so this is a no-op today that makes
+         the listing correct-by-construction the moment version-trash is wired,
+         rather than a leak that has to be remembered. */
+      .where(
+        and(
+          eq(assetVersions.assetId, asset.id),
+          isNull(assetVersions.deletedAt),
+        ),
+      )
       .orderBy(desc(assetVersions.versionNo))
       .all();
     return c.json({

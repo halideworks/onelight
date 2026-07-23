@@ -12,6 +12,7 @@ import {
 import {
   applyNodeMigrations,
   createNodeDb,
+  pendingMigrations,
   assetVersions,
   assets,
   folders,
@@ -21,6 +22,7 @@ import {
   transfers,
   users,
 } from "@onelight/db";
+import { backupConfigFromEnv, backupOnce } from "./backup.js";
 import { NodePasswordHasher } from "./password.js";
 
 /* Operator commands, run inside the server container:
@@ -40,6 +42,33 @@ const command = argv[0];
 const config = loadConfig(process.env);
 fs.mkdirSync(path.dirname(config.DATABASE_PATH), { recursive: true });
 const { db, sqlite } = createNodeDb(config.DATABASE_PATH);
+/* Same rollback safety the server boot has: a CLI run that would apply pending
+   migrations snapshots the DB first, into the same premigrate series, so an
+   operator running migrations by hand gets the same restore point. */
+const cliBackupConfig = backupConfigFromEnv(process.env);
+const cliPending = pendingMigrations(sqlite);
+if (
+  cliBackupConfig &&
+  cliPending.length > 0 &&
+  fs.existsSync(config.DATABASE_PATH)
+) {
+  try {
+    const snapshot = await backupOnce(
+      sqlite,
+      db,
+      cliBackupConfig,
+      new Date(),
+      { label: "premigrate", keep: 10 },
+    );
+    console.log(
+      `[onelight] pre-migration snapshot for ${String(cliPending.length)} pending migration(s): ${snapshot}`,
+    );
+  } catch (error) {
+    console.warn(
+      `[onelight] pre-migration snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
 applyNodeMigrations(sqlite);
 
 const flag = (name: string): string | undefined => {
