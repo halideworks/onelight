@@ -223,10 +223,20 @@ export const probeArgs = (source: string): string[] => [
   source,
 ];
 
+/* An ffmpeg/ffprobe with no output for this long is treated as hung and
+   killed. ffmpeg prints progress to stderr continuously while it works and a
+   probe finishes in well under this, so only a genuinely stuck process (filter
+   deadlock, unterminated probe) goes silent long enough to trip it. Without
+   it, a hung child pins its job 'processing' forever, the pump's 6h deadline
+   requeues it into a worker that still reports 409, and each of the retries
+   burns another 6h against the same wedged process while it pegs a core. */
+const PROCESS_IDLE_TIMEOUT_MS = 5 * 60_000;
+
 export const runProcess = (
   command: string,
   args: string[],
   cwd?: string,
+  idleTimeoutMs = PROCESS_IDLE_TIMEOUT_MS,
 ): Promise<ProcessResult> =>
   new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -235,10 +245,41 @@ export const runProcess = (
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-    child.once("error", reject);
+    let timedOut = false;
+    let idle: ReturnType<typeof setTimeout>;
+    const arm = (): void => {
+      clearTimeout(idle);
+      idle = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGKILL");
+      }, idleTimeoutMs);
+    };
+    const settle = (): void => clearTimeout(idle);
+    arm();
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout.push(chunk);
+      arm();
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr.push(chunk);
+      arm();
+    });
+    child.once("error", (error) => {
+      settle();
+      reject(error);
+    });
     child.once("close", (code) => {
+      settle();
+      if (timedOut) {
+        reject(
+          new Error(
+            `${command} was killed after ${String(
+              Math.round(idleTimeoutMs / 1000),
+            )}s without output (treated as hung).`,
+          ),
+        );
+        return;
+      }
       const result = {
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8"),
@@ -1389,6 +1430,17 @@ export const runTranscode = async (
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Rendition failed.";
+      /* Remove the half-written temp. The GC in maintenance.ts deliberately
+         skips .tmp-* names, so a leaked temp is never reclaimed -- and on a
+         tight container disk a recurring failure would otherwise grow temps
+         until the disk fills and every encode fails, a self-sustaining loop. */
+      await rm(
+        path.join(
+          path.dirname(output.path),
+          `.tmp-${path.basename(output.path)}`,
+        ),
+        { force: true },
+      ).catch(() => undefined);
       // Never swallow a rendition failure silently; the caller decides
       // whether the failed kind was primary for the asset.
       console.warn(
@@ -1561,10 +1613,34 @@ const streamProcess = (
   new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     const stderr: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => onChunk(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-    child.once("error", reject);
+    let timedOut = false;
+    let idle: ReturnType<typeof setTimeout>;
+    const arm = (): void => {
+      clearTimeout(idle);
+      idle = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGKILL");
+      }, PROCESS_IDLE_TIMEOUT_MS);
+    };
+    arm();
+    child.stdout.on("data", (chunk: Buffer) => {
+      onChunk(chunk);
+      arm();
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr.push(chunk);
+      arm();
+    });
+    child.once("error", (error) => {
+      clearTimeout(idle);
+      reject(error);
+    });
     child.once("close", (code) => {
+      clearTimeout(idle);
+      if (timedOut) {
+        reject(new Error(`${command} was killed after a stall (treated as hung).`));
+        return;
+      }
       if (code === 0) resolve();
       else
         reject(
@@ -1604,8 +1680,9 @@ export const writePeaks = async (
     path.dirname(outputPath),
     `.tmp-${path.basename(outputPath)}`,
   );
-  await writeFile(
-    tempPath,
+  try {
+    await writeFile(
+      tempPath,
     encodePeaks({
       sampleRate: PEAKS_SAMPLE_RATE,
       samplesPerPixel,
@@ -1613,8 +1690,12 @@ export const writePeaks = async (
       length,
       samples,
     }),
-  );
-  await rename(tempPath, outputPath);
+    );
+    await rename(tempPath, outputPath);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
   return {
     content_type: "application/octet-stream",
     peaks_format: "audiowaveform_v2",
@@ -1637,8 +1718,15 @@ const runFfmpegToFile = async (
     path.dirname(outputPath),
     `.tmp-${path.basename(outputPath)}`,
   );
-  await runProcess(ffmpeg, argsFor(tempPath));
-  await rename(tempPath, outputPath);
+  try {
+    await runProcess(ffmpeg, argsFor(tempPath));
+    await rename(tempPath, outputPath);
+  } catch (error) {
+    // The GC never reclaims .tmp-* names; clean the half-written temp here so
+    // a repeated still/export failure cannot grow the disk without bound.
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 };
 
 export const extractStill = (

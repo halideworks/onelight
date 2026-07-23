@@ -166,7 +166,12 @@ export const failJob = async (
     .update(jobs)
     .set({
       status: sql`CASE WHEN ${jobs.attempts} >= ${jobs.maxAttempts} THEN 'dead' ELSE 'queued' END`,
-      runAfter: now + retryAfterMs,
+      /* Exponential backoff off the base delay: a fast-failing job (corrupt
+         input that ffprobe rejects immediately) otherwise burned all its
+         attempts in a few seconds of thrash. The first retry waits the base
+         delay, then doubles per attempt, capped -- so a 1s base becomes 1s,
+         2s, 4s, 8s… rather than a flat 1s each. */
+      runAfter: sql`${now} + ${retryAfterMs} * (1 << MAX(MIN(${jobs.attempts} - 1, 6), 0))`,
       error: message,
       finishedAt: sql`CASE WHEN ${jobs.attempts} >= ${jobs.maxAttempts} THEN ${now} ELSE NULL END`,
       heartbeatAt: null,

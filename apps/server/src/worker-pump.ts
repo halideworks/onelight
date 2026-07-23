@@ -183,6 +183,12 @@ const sendJob = async (
       "x-onelight-signature": await hmacSha256Hex(workerSecret, payload),
     },
     body: payload,
+    /* Node's fetch has no default timeout. A worker that restarts mid-request
+       leaves a half-open socket that never resolves, and since the pump's
+       re-entrancy guard stays held across the hung await, ALL transcode and
+       export processing stops until the server is restarted. Bound every
+       worker call so a hang becomes a retryable failure, not a wedge. */
+    signal: AbortSignal.timeout(15_000),
   });
   // 409 means the worker is already running this job id; fall through to
   // polling instead of spawning a duplicate run.
@@ -214,6 +220,11 @@ const pollWorker = async (
             requestPath,
           ),
         },
+        /* Bound the status poll too (see sendJob): a hung status GET would
+           never re-evaluate the deadline loop and would hold the pump forever.
+           A timeout rejects, the caller's catch fails the job, and the next
+           tick retries. */
+        signal: AbortSignal.timeout(15_000),
       },
     );
     if (!response.ok)
