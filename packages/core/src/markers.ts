@@ -13,12 +13,22 @@ export interface MarkerComment {
   authorName?: string | null;
   frameIn: number;
   frameOut?: number | null;
+  completed?: boolean;
+  internal?: boolean;
+  replies?: readonly MarkerReply[];
+}
+
+export interface MarkerReply {
+  id?: string;
+  bodyText: string;
+  authorName?: string | null;
 }
 
 export interface MarkerOptions {
   title?: string;
   rate: FrameRate;
   startFrame?: number;
+  durationFrames?: number;
   dropFrame?: boolean;
   timecodeBase?: "source" | "record_run";
 }
@@ -65,6 +75,67 @@ const avidText = (value: string): string =>
 const byFrameThenId = (left: MarkerComment, right: MarkerComment): number =>
   left.frameIn - right.frameIn || left.id.localeCompare(right.id);
 
+const oneLine = (value: string): string => value.replace(/\s+/g, " ").trim();
+
+const truncate = (value: string, length: number): string => {
+  const points = [...value];
+  return points.length <= length
+    ? value
+    : `${points
+        .slice(0, Math.max(1, length - 3))
+        .join("")
+        .trimEnd()}...`;
+};
+
+const markerAuthor = (
+  value: { authorName?: string | null },
+  fallback: string,
+): string => oneLine(value.authorName ?? "") || fallback;
+
+const markerFlags = (comment: MarkerComment): string => {
+  const flags: string[] = [];
+  if (comment.completed) flags.push("Done");
+  if (comment.internal) flags.push("Internal");
+  return flags.length ? `[${flags.join(", ")}] ` : "";
+};
+
+// Marker names need to scan well in an NLE marker list. Full text and thread
+// context live in the note/comment field where the format provides one.
+const markerSummary = (comment: MarkerComment): string =>
+  truncate(
+    `${markerFlags(comment)}${markerAuthor(comment, "Reviewer")}: ${oneLine(comment.bodyText)}`,
+    120,
+  );
+
+const markerNote = (comment: MarkerComment): string => {
+  const lines = [
+    comment.bodyText.trim(),
+    "",
+    `Author: ${markerAuthor(comment, "Reviewer")}`,
+    `Status: ${comment.completed ? "Completed" : "Open"}`,
+  ];
+  if (comment.internal) lines.push("Visibility: Internal");
+  if (comment.replies?.length) {
+    lines.push("", "Replies:");
+    for (const reply of comment.replies)
+      lines.push(
+        `${markerAuthor(reply, "Reviewer")}: ${reply.bodyText.trim()}`,
+      );
+  }
+  return lines.join("\n");
+};
+
+const resolveMarkerText = (comment: MarkerComment): string => {
+  const lines = [
+    `${markerFlags(comment)}${markerAuthor(comment, "Reviewer")}: ${comment.bodyText.trim()}`,
+  ];
+  for (const reply of comment.replies ?? [])
+    lines.push(
+      `Reply from ${markerAuthor(reply, "Reviewer")}: ${reply.bodyText.trim()}`,
+    );
+  return lines.join("\n");
+};
+
 const sourceFrame = (frame: number, options: MarkerOptions): number =>
   options.timecodeBase === "record_run"
     ? frame
@@ -84,6 +155,23 @@ const timecodeLabel = (frame: number, options: MarkerOptions): string =>
 // Inclusive frameOut, so a point marker (frameOut null) has duration 1.
 const durationFrames = (comment: MarkerComment): number =>
   Math.max(1, (comment.frameOut ?? comment.frameIn) - comment.frameIn + 1);
+
+const timelineDurationFrames = (
+  comments: readonly MarkerComment[],
+  options: MarkerOptions,
+): number =>
+  Math.max(
+    1,
+    options.durationFrames ?? 0,
+    ...comments.map((comment) => comment.frameIn + durationFrames(comment)),
+  );
+
+const resolveColor = (comments: readonly MarkerComment[]): string =>
+  comments.some((comment) => comment.internal)
+    ? "ResolveColorPurple"
+    : comments.every((comment) => comment.completed)
+      ? "ResolveColorGreen"
+      : "ResolveColorBlue";
 
 // Resolve marker EDL, imported via Timelines > Import > Timeline Markers
 // from EDL. Format verified against working converters (see
@@ -118,17 +206,12 @@ export const exportResolveEdl = (
     const inLabel = timecodeLabel(inFrame, options);
     const outLabel = timecodeLabel(inFrame + duration, options);
     const rawBody = group
-      .map(
-        (comment) =>
-          `${edlText(comment.bodyText)}${
-            comment.authorName ? ` (${edlText(comment.authorName)})` : ""
-          }`,
-      )
-      .join(ENCODED_NEWLINE);
+      .map((comment) => edlText(resolveMarkerText(comment)))
+      .join(`${ENCODED_NEWLINE}---${ENCODED_NEWLINE}`);
     const body = /^\d/.test(rawBody) ? `_${rawBody}` : rawBody;
     lines.push(
       `${String(event).padStart(3, "0")}  001      V     C        ${inLabel} ${outLabel} ${inLabel} ${outLabel}`,
-      ` |C:ResolveColorBlue |M:${body} |D:${duration}`,
+      ` |C:${resolveColor(group)} |M:${body} |D:${duration}`,
     );
     event += 1;
   }
@@ -158,10 +241,10 @@ export const exportCsv = (
   return `${rows.join("\n")}\n`;
 };
 
-// FCPXML with the minimal structure FCPX accepts: resources > format with
-// the rational frameDuration, then library > event > project > sequence >
-// spine > gap, with the markers inside the gap. All times are exact
-// integer rationals "N/Ds" (frames * den / num seconds).
+// FCPXML project carrying a marker-only gap. The sequence and gap begin at
+// the chosen timecode origin, while duration remains the media duration.
+// This avoids turning a one-minute clip starting at 01:00:00:00 into an
+// hour-long empty sequence. All times are exact integer rationals.
 export const exportFcpXml = (
   comments: readonly MarkerComment[],
   options: MarkerOptions,
@@ -176,27 +259,26 @@ export const exportFcpXml = (
   const { num, den } = options.rate;
   const time = (frames: number): string => `${frames * den}/${num}s`;
   const sorted = [...comments].sort(byFrameThenId);
-  let end = 1;
+  const start = sourceFrame(0, options);
+  const duration = timelineDurationFrames(sorted, options);
   const markers = sorted.map((comment) => {
-    const start = sourceFrame(comment.frameIn, options);
-    const duration = durationFrames(comment);
-    end = Math.max(end, start + duration);
-    return `              <marker start="${time(start)}" duration="${time(duration)}" value="${escapeAttr(comment.bodyText)}"/>`;
+    const markerStart = start + comment.frameIn;
+    return `              <marker start="${time(markerStart)}" duration="${time(durationFrames(comment))}" value="${escapeAttr(markerSummary(comment))}" note="${escapeAttr(markerNote(comment))}" completed="${comment.completed ? "1" : "0"}"/>`;
   });
   const title = escapeAttr(options.title ?? "Onelight Comments");
   return `${[
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<!DOCTYPE fcpxml>`,
-    `<fcpxml version="1.11">`,
+    `<fcpxml version="1.10">`,
     `  <resources>`,
     `    <format id="r1" frameDuration="${den}/${num}s" width="1920" height="1080"/>`,
     `  </resources>`,
     `  <library>`,
     `    <event name="${title}">`,
     `      <project name="${title}">`,
-    `        <sequence format="r1" duration="${time(end)}" tcStart="0s" tcFormat="${effectiveDropFrame(options) ? "DF" : "NDF"}">`,
+    `        <sequence format="r1" duration="${time(duration)}" tcStart="${time(start)}" tcFormat="${effectiveDropFrame(options) ? "DF" : "NDF"}">`,
     `          <spine>`,
-    `            <gap name="Gap" offset="0s" start="0s" duration="${time(end)}">`,
+    `            <gap name="${title}" offset="${time(start)}" start="${time(start)}" duration="${time(duration)}">`,
     ...markers,
     `            </gap>`,
     `          </spine>`,
@@ -225,8 +307,8 @@ export const exportAvidText = (
         avidText(comment.authorName ?? "Onelight"),
         timecodeLabel(sourceFrame(comment.frameIn, options), options),
         "V1",
-        "blue",
-        avidText(comment.bodyText),
+        comment.internal ? "magenta" : comment.completed ? "green" : "blue",
+        avidText(markerNote(comment)),
       ].join("\t"),
     )
     .join("\n") + "\n";
@@ -241,10 +323,10 @@ export const exportAvidXml = (
   options: MarkerOptions,
 ): string => exportAvidText(comments, options);
 
-// FCP7 XML (xmeml) sequence markers for Premiere import. The sequence must
-// declare <rate> with <timebase> (rounded rate) and <ntsc> (TRUE for
-// 1001-denominator rates) or Premiere cannot place the markers. Marker
-// body goes in <comment>, the author in <name>. Point markers use out -1,
+// FCP7 XML (xmeml) sequence markers for Premiere import. Marker positions
+// are sequence-relative; the sequence timecode element carries the source
+// origin. This is how Premiere can open a normal-duration sequence whose
+// first frame still reads the source timecode. Point markers use out -1,
 // ranges use the exclusive out frame.
 export const exportXmeml = (
   comments: readonly MarkerComment[],
@@ -259,19 +341,19 @@ export const exportXmeml = (
   const timebase = Math.round(options.rate.num / options.rate.den);
   const ntsc = options.rate.den === 1001 ? "TRUE" : "FALSE";
   const sorted = [...comments].sort(byFrameThenId);
-  let sequenceDuration = 0;
+  const sequenceStart = sourceFrame(0, options);
+  const sequenceDuration = timelineDurationFrames(sorted, options);
   const markers = sorted.map((comment) => {
-    const inFrame = sourceFrame(comment.frameIn, options);
+    const inFrame = comment.frameIn;
     const isRange =
       comment.frameOut != null && comment.frameOut > comment.frameIn;
     const outFrame = isRange ? inFrame + durationFrames(comment) : -1;
-    sequenceDuration = Math.max(sequenceDuration, inFrame + 1, outFrame);
     return [
       `    <marker>`,
-      `      <name>${escapeText(comment.authorName ?? "")}</name>`,
-      `      <comment>${escapeText(comment.bodyText)}</comment>`,
+      `      <name>${escapeText(markerSummary(comment))}</name>`,
       `      <in>${inFrame}</in>`,
       `      <out>${outFrame}</out>`,
+      `      <comment>${escapeText(markerNote(comment))}</comment>`,
       `    </marker>`,
     ].join("\n");
   });
@@ -286,6 +368,15 @@ export const exportXmeml = (
     `      <timebase>${timebase}</timebase>`,
     `      <ntsc>${ntsc}</ntsc>`,
     `    </rate>`,
+    `    <timecode>`,
+    `      <rate>`,
+    `        <timebase>${timebase}</timebase>`,
+    `        <ntsc>${ntsc}</ntsc>`,
+    `      </rate>`,
+    `      <string>${timecodeLabel(sequenceStart, options)}</string>`,
+    `      <frame>${sequenceStart}</frame>`,
+    `      <displayformat>${effectiveDropFrame(options) ? "DF" : "NDF"}</displayformat>`,
+    `    </timecode>`,
     ...markers,
     `  </sequence>`,
     `</xmeml>`,
@@ -313,7 +404,7 @@ export const exportText = (
     .sort(byFrameThenId)
     .map(
       (comment) =>
-        `${timecodeLabel(sourceFrame(comment.frameIn, options), options)} ${comment.bodyText}`,
+        `${timecodeLabel(sourceFrame(comment.frameIn, options), options)} ${resolveMarkerText(comment)}`,
     )
     .join("\n") + "\n";
 

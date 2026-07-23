@@ -13,6 +13,8 @@ NUL/
 data/
 # synthesized media fixtures and bundled test harness; never committed
 qa/.artifacts/
+# Playwright browser process log on Windows
+qa/debug.log
 *.db
 *.db-shm
 *.db-wal

@@ -285,7 +285,18 @@ export const bodies = {
   }),
   exportCreate: z.object({
     format: exportFormat,
-    filters: z.record(z.unknown()).default({}),
+    filters: z
+      .object({
+        version_id: z.string().optional(),
+        author_user_id: z.string().optional(),
+        internal: z.boolean().optional(),
+        completed: z.boolean().optional(),
+        has_annotation: z.boolean().optional(),
+        frame_in: z.number().int().nonnegative().optional(),
+        frame_out: z.number().int().nonnegative().optional(),
+      })
+      .strict()
+      .default({}),
     timecode_base: z.enum(["source", "record_run"]).default("source"),
   }),
   /* A marker file pasted or uploaded back in: the two formats NLEs round-trip

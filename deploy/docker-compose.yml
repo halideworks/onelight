@@ -62,6 +62,12 @@ services:
     environment:
       PORT: 8080
       WORKER_SECRET: ${WORKER_SECRET:?WORKER_SECRET is required}
+      # The base stack remains portable. GPU override files pass the device
+      # and set a strict backend so production cannot silently fall to CPU.
+      ONELIGHT_HWACCEL: ${ONELIGHT_HWACCEL:-auto}
+      ONELIGHT_VAAPI_DEVICE: ${ONELIGHT_VAAPI_DEVICE:-}
+      ONELIGHT_VAAPI_LOW_POWER: ${ONELIGHT_VAAPI_LOW_POWER:-}
+      ONELIGHT_NVENC_DEVICE: ${ONELIGHT_NVENC_DEVICE:-0}
     volumes:
       - onelight-data:/data
     healthcheck:

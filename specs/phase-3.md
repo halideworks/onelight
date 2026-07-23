@@ -122,11 +122,22 @@ Share access is password and expiry checked before viewer state is issued. Viewe
 
 ## 3. Export formats
 
-`packages/core/src/markers` provides deterministic serializers for Resolve marker EDL with preserved text, Avid marker text and XML, Premiere xmeml, FCPXML rational marker times, CSV, JSON, and plain text. Same-frame collisions are grouped into one Resolve marker with a stable `\n`-joined body ordered by comment ULID, because Resolve collapses same-frame markers. Range comments become duration markers. Resolve labels are sanitized to avoid leading digits and unsupported characters.
+`packages/core/src/markers` provides deterministic serializers for Resolve marker EDL with preserved text, Avid marker text, Premiere xmeml, FCPXML rational marker times, CSV, JSON, and plain text. Same-frame collisions are grouped into one Resolve marker with a stable `\n`-joined body ordered by comment ULID, because Resolve collapses same-frame markers. Range comments become duration markers. Resolve labels are sanitized to avoid leading digits and unsupported characters.
 
 PDF reports use the worker burn-in renderer and include the annotated frame, source timecode, author, body, and thread state. Export filters are serialized with the export job for auditability.
 
 Supersession (2026-07-11 audit): the `avid_xml` format currently emits the same Media Composer five-field tab-separated marker text as `avid_txt`. No verified MC marker XML schema exists in docs/research, and the design doc requires round-tripping a real MC export before shipping a bespoke XML shape. Replace with true MC XML once a captured reference export is available.
+
+Supersession (2026-07-23 NLE quality pass): marker notes retain author,
+completed state, internal state on project exports, and thread replies. Share
+exports are server-constrained to share assets and exclude internal comments.
+Each version is serialized with its own exact rate, timecode origin, duration,
+and drop-frame state. xmeml marker positions are sequence-relative and its
+timecode element carries the source origin. FCPXML uses exact rational time,
+source `tcStart`, and media duration. Multi-version exports contain one valid
+file per version in a ZIP instead of concatenating complete documents.
+Resolve and Premiere imports were manually validated on 2026-07-23. Media
+Composer and Final Cut remain pending real-application validation.
 
 ## 4. Watermarking and webhooks
 

@@ -29,12 +29,13 @@ FROM node:22-trixie-slim
 # provides /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf, the default
 # fontfile for the burned watermark drawtext recipe.
 #
-# intel-media-va-driver (iHD) plus libva are what h264_vaapi loads for Intel
-# QuickSync. They are inert unless the container is given a render node AND
-# ONELIGHT_VAAPI_DEVICE names it, so this image still runs anywhere -- it just
-# encodes in software. vainfo is kept for diagnosing exactly that.
+# intel-media-va-driver (iHD) exposes Intel QuickSync and Arc through VAAPI.
+# mesa-va-drivers does the same for supported AMD GPUs. NVIDIA's codec
+# libraries are injected by the NVIDIA container runtime, while Debian's
+# ffmpeg supplies the NVENC wrapper. All are inert without a passed-through
+# GPU. vainfo is kept for render-node diagnostics.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg mesa-vulkan-drivers libvulkan1 poppler-utils libvips-tools fonts-dejavu-core ca-certificates intel-media-va-driver libva2 libva-drm2 vainfo \
+  && apt-get install -y --no-install-recommends ffmpeg mesa-va-drivers mesa-vulkan-drivers libvulkan1 poppler-utils libvips-tools fonts-dejavu-core ca-certificates intel-media-va-driver libva2 libva-drm2 vainfo \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --create-home --uid 10001 onelight \
   && mkdir -p /data \

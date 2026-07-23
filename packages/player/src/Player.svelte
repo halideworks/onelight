@@ -12,6 +12,7 @@
     timecodeFromFrames
   } from '@onelight/core';
   import AnnotationOverlay from './AnnotationOverlay.svelte';
+  import MarkerFace from './MarkerFace.svelte';
   import Slider from './Slider.svelte';
   import Timeline from './Timeline.svelte';
   import WaveformStage from './WaveformStage.svelte';
@@ -128,9 +129,6 @@
       | ((diagnostic: ShuttleAudioDiagnostic) => void)
       | undefined;
   } = $props();
-  const markerInitial = (marker: TimelineMarker): string =>
-    [...(marker.author?.trim() || 'Reviewer')][0]?.toUpperCase() ?? '?';
-
   /* The element that plays. A video for footage, an audio element for a mix:
      everything the transport does (play, pause, currentTime, playbackRate,
      volume) is HTMLMediaElement, and the few places that need pixels ask for
@@ -2429,11 +2427,7 @@
                     onclick={(event) => { event.stopPropagation(); handleMarkerSelect(marker.id, marker.frameIn); }}
                   >
                     <span class="scrub-face" aria-hidden="true">
-                      {#if marker.avatarUrl}
-                        <img src={marker.avatarUrl} alt="" loading="lazy" decoding="async" draggable="false" />
-                      {:else}
-                        <span>{markerInitial(marker)}</span>
-                      {/if}
+                      <MarkerFace {marker} />
                     </span>
                   </button>
                 {:else}
@@ -2445,11 +2439,7 @@
                     onpointerdown={(event) => event.stopPropagation()}
                     onclick={(event) => { event.stopPropagation(); handleMarkerSelect(marker.id, marker.frameIn); }}
                   >
-                    {#if marker.avatarUrl}
-                      <img src={marker.avatarUrl} alt="" loading="lazy" decoding="async" draggable="false" />
-                    {:else}
-                      <span>{markerInitial(marker)}</span>
-                    {/if}
+                    <MarkerFace {marker} />
                   </button>
                 {/if}
               {/each}
@@ -2572,7 +2562,6 @@
   .scrub { padding: 12px 0 8px; cursor: pointer; touch-action: none; outline: none; }
   .scrub-track { position: relative; height: 5px; border-radius: 3px; background: var(--n-150, #1c1c1c); transition: height 140ms ease; }
   .scrub-mark { position: absolute; top: -4px; width: 12px; height: 12px; padding: 0; border: 0; border-radius: 50%; overflow: hidden; background: var(--ink); color: var(--n-050, #101010); transform: translateX(-50%); cursor: pointer; opacity: 0.95; font-size: 7px; font-weight: 700; line-height: 12px; text-align: center; }
-  .scrub-mark > img, .scrub-face img { display: block; width: 100%; height: 100%; object-fit: cover; }
   .scrub-mark.span { top: 1px; height: 4px; transform: none; min-width: 3px; overflow: visible; opacity: 0.55; border-radius: 2px; }
   .scrub-face { position: absolute; left: 0; top: 50%; display: grid; place-items: center; width: 12px; height: 12px; border-radius: 50%; overflow: hidden; transform: translate(-50%, -50%); background: var(--ink); color: var(--n-050, #101010); font-size: 7px; font-weight: 700; line-height: 1; }
   .scrub-mark:hover { opacity: 1; }
@@ -2842,7 +2831,7 @@
        indefinite parent painted the deck over whatever followed the player. */
     .player { height: auto; padding: 12px; }
     /* The desktop stage takes "the height the transport does not use", but on
-       a phone the page scrolls and that flex height collapses to min-height —
+       a phone the page scrolls and that flex height collapses to min-height.
        every clip became a 120px letterbox. Here the footage's own shape sizes
        the stage: full width at its aspect, capped so vertical clips lead the
        screen without swallowing it. */
@@ -2903,7 +2892,7 @@
   }
   /* The touch volume: a vertical slider in a small shelf above the sound
      button (the inline 3px slider is unusable under a thumb, but loudness
-     still needs a control — hardware keys do not reach a muted element on
+     still needs a control. Hardware keys do not reach a muted element on
      every platform). */
   .soundwrap { position: relative; display: inline-flex; }
   .volpop {
@@ -2919,15 +2908,15 @@
     background: var(--n-200, #232323);
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
   }
-  /* Touch: hardware buttons own loudness on the lock screen, not in a page —
-     the slider moves to the popover — and every control grows to a real
+  /* Touch: hardware buttons own loudness on the lock screen, not in a page.
+     The slider moves to the popover, and every control grows to a real
      target. */
   @media (pointer: coarse) {
     .vol { display: none; }
     .side.volume .vol { margin-right: 0; }
     .deck button { min-height: 40px; }
     .icon { min-width: 40px; min-height: 40px; justify-content: center; }
-    /* 40px targets do not fit the desktop deck's fixed 34px band — left
+    /* 40px targets do not fit the desktop deck's fixed 34px band. Left
        fixed, the readout row clips into whatever sits below the player.
        (Moot under 720px, where the deck dissolves into the row.) */
     .deck { grid-template-rows: auto auto; }

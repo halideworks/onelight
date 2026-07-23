@@ -214,3 +214,18 @@ The probe stores the complete ffprobe JSON plus normalized fields. VFR is detect
 ## 6. Required manual checks
 
 David will manually test the 23.976 ProRes tmcd path, HDR behavior, and browser color matrix. The automated suite must still retain fixtures and assertions for those cases.
+
+Supersession (2026-07-23): probing preserves the exact reduced
+`avg_frame_rate` rational, using `r_frame_rate` only as a fallback, and never
+clamps to a nearby editorial rate. A dedicated `tmcd` stream wins over format
+and other stream tags; the selected tag source is retained. Source color
+metadata now includes primaries, transfer, matrix, range, chroma location,
+pixel format, bit depth, field order, and side data in addition to the complete
+ffprobe JSON.
+
+SDR proxy conversion explicitly resolves source matrix, transfer, primaries,
+and range before producing BT.709 limited range. Untagged SD is interpreted as
+BT.601, untagged HD as BT.709, and full-range sources are numerically converted
+to limited range rather than relabeled. Proxies and burned-watermark
+derivatives re-embed the selected source timecode, and the integration test
+probes their timecode track and color tags.

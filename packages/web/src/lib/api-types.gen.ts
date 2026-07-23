@@ -7419,7 +7419,13 @@ export interface paths {
                         format: "resolve_edl" | "avid_txt" | "avid_xml" | "xmeml" | "fcpxml" | "csv" | "json" | "text" | "pdf";
                         /** @default {} */
                         filters?: {
-                            [key: string]: unknown;
+                            version_id?: string;
+                            author_user_id?: string;
+                            internal?: boolean;
+                            completed?: boolean;
+                            has_annotation?: boolean;
+                            frame_in?: number;
+                            frame_out?: number;
                         };
                         /**
                          * @default source
@@ -7512,7 +7518,13 @@ export interface paths {
                         format: "resolve_edl" | "avid_txt" | "avid_xml" | "xmeml" | "fcpxml" | "csv" | "json" | "text" | "pdf";
                         /** @default {} */
                         filters?: {
-                            [key: string]: unknown;
+                            version_id?: string;
+                            author_user_id?: string;
+                            internal?: boolean;
+                            completed?: boolean;
+                            has_annotation?: boolean;
+                            frame_in?: number;
+                            frame_out?: number;
                         };
                         /**
                          * @default source

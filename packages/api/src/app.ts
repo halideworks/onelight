@@ -6708,7 +6708,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         requestedBy: actor.id,
         projectId: share.projectId,
         format: body.format,
-        filtersJson: JSON.stringify(body.filters),
+        // These final constraints are server-controlled. They prevent a share
+        // export from leaking comments on other project assets or internal
+        // review notes.
+        filtersJson: JSON.stringify({
+          ...body.filters,
+          share_id: share.id,
+          internal: false,
+        }),
         timecodeBase: body.timecode_base,
         status: "queued",
         resultBlobKey: null,
@@ -7936,7 +7943,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       });
     }
     /* Video serves the review proxy; a still has no proxy and serves its
-       full-resolution tile instead — without this, image assets in a share
+       full-resolution tile instead. Without this, image assets in a share
        answered 404 forever. Audio serves its own proxy for the same reason:
        the original may be a 24-bit WAV no browser will play. */
     const renditionRows = (await env.db

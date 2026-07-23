@@ -8,6 +8,7 @@
   import { frameForX, markerInkFor, spanForRange, xForFrame } from './timeline.js';
   import { isRangeDrag } from './transport-state.js';
   import type { TimelineMarker } from './timeline.js';
+  import MarkerFace from './MarkerFace.svelte';
   import { filmstripTiles, spriteSheetSize } from './filmstrip.js';
   import type { SpriteCue } from './filmstrip.js';
 
@@ -76,8 +77,6 @@
     const line = (text ?? '').split('\n')[0]?.trim() ?? '';
     return line.length > 90 ? `${line.slice(0, 90)}...` : line;
   };
-  const markerInitial = (marker: TimelineMarker): string =>
-    [...(marker.author?.trim() || 'Reviewer')][0]?.toUpperCase() ?? '?';
   const ioSpan = $derived(
     inFrame !== null && outFrame !== null && outFrame >= inFrame
       ? spanForRange(inFrame, outFrame, durationFrames)
@@ -391,11 +390,7 @@
             onblur={() => hideTip(marker)}
           >
             <span class="marker-face" aria-hidden="true">
-              {#if marker.avatarUrl}
-                <img src={marker.avatarUrl} alt="" loading="lazy" decoding="async" draggable="false" />
-              {:else}
-                <span>{markerInitial(marker)}</span>
-              {/if}
+              <MarkerFace {marker} />
             </span>
           </button>
         {:else}
@@ -413,11 +408,7 @@
             onfocus={() => showTip(marker)}
             onblur={() => hideTip(marker)}
           >
-            {#if marker.avatarUrl}
-              <img src={marker.avatarUrl} alt="" loading="lazy" decoding="async" draggable="false" />
-            {:else}
-              <span>{markerInitial(marker)}</span>
-            {/if}
+            <MarkerFace {marker} />
           </button>
         {/if}
       {/each}
@@ -571,7 +562,6 @@
     line-height: 12px;
     text-align: center;
   }
-  .mark img, .marker-face img { display: block; width: 100%; height: 100%; object-fit: cover; }
   .mark:hover { filter: brightness(1.15); }
   .span {
     top: 6px;

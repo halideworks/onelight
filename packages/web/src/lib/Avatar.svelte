@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { PALETTES } from '@onelight/core';
+  import { generatedAvatarFor } from '@onelight/core';
   import { washFor } from '$lib/washes.js';
 
   /* A person's picture, or a generated stand-in that is theirs alone: their
@@ -25,18 +25,7 @@
     broken = false;
   });
 
-  const hash = $derived.by(() => {
-    const seed = `${id ?? ''}:${name}`;
-    let value = 2166136261;
-    for (let index = 0; index < seed.length; index += 1) {
-      value ^= seed.charCodeAt(index);
-      value = Math.imul(value, 16777619);
-    }
-    return value >>> 0;
-  });
-
-  const palette = $derived(PALETTES[hash % PALETTES.length] ?? 'sumimai');
-  const initial = $derived([...name.trim()][0]?.toUpperCase() ?? '?');
+  const generated = $derived(generatedAvatarFor(name, id));
 </script>
 
 {#if url && !broken}
@@ -53,9 +42,9 @@
 {:else}
   <span
     class="avatar gen"
-    style={`width: ${size}px; height: ${size}px; font-size: ${Math.round(size * 0.44)}px; background-image: ${washFor(palette)};`}
+    style={`width: ${size}px; height: ${size}px; font-size: ${Math.round(size * 0.44)}px; background-image: ${washFor(generated.palette)};`}
     aria-hidden="true"
-  >{initial}</span>
+  >{generated.initial}</span>
 {/if}
 
 <style>

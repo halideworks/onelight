@@ -1,4 +1,5 @@
 export * from "./config.js";
+export * from "./avatar.js";
 export * from "./crypto-password.js";
 export * from "./crypto.js";
 export * from "./crc32c.js";

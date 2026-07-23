@@ -60,7 +60,7 @@ describe("comment timecode", () => {
 
   it("never lets a bad rate throw, it falls back to the frame number", () => {
     expect(
-      commentTimecode(commentOf({ frame: 7, rate: { num: 13, den: 1 } })),
+      commentTimecode(commentOf({ frame: 7, rate: { num: 0, den: 1 } })),
     ).toBe("frame 7");
   });
 });

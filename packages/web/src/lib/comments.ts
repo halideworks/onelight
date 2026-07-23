@@ -3,6 +3,8 @@ import type {
   FrameAnnotation,
   TimelineMarker,
 } from "@onelight/player";
+import { generatedAvatarFor } from "@onelight/core";
+import { washFor } from "./washes.js";
 
 /* The comment fields the review room and the share room share: enough to
    render annotations, timeline markers, and the note body. Each page extends
@@ -62,15 +64,23 @@ export const annotationsFrom = (comments: ReviewComment[]): FrameAnnotation[] =>
 export const markersFrom = (comments: ReviewComment[]): TimelineMarker[] =>
   comments
     .filter((comment) => comment.frame_in !== null)
-    .map((comment) => ({
-      id: comment.id,
-      frameIn: comment.frame_in as number,
-      frameOut: comment.frame_out,
-      author: comment.author_name,
-      /* Colour keys to the author's id; share viewers have no id on the
-         public wire, so their name stands in and stays stable per viewer. */
-      authorId: comment.author_user_id ?? comment.author_name ?? null,
-      avatarUrl: comment.author_avatar_url ?? null,
-      text: comment.body_text,
-      completed: comment.completed_at !== null,
-    }));
+    .map((comment) => {
+      /* Share viewers have no id on the public wire, so their name stands in
+         and stays stable per viewer. This is also the seed used by Avatar. */
+      const authorId = comment.author_user_id ?? comment.author_name ?? null;
+      const generated = generatedAvatarFor(
+        comment.author_name ?? "Reviewer",
+        authorId,
+      );
+      return {
+        id: comment.id,
+        frameIn: comment.frame_in as number,
+        frameOut: comment.frame_out,
+        author: comment.author_name,
+        authorId,
+        avatarUrl: comment.author_avatar_url ?? null,
+        generatedAvatarBackground: washFor(generated.palette),
+        text: comment.body_text,
+        completed: comment.completed_at !== null,
+      };
+    });

@@ -316,7 +316,6 @@
   const EXPORT_FORMATS: ReadonlyArray<readonly [string, string]> = [
     ['resolve_edl', 'Resolve marker EDL'],
     ['avid_txt', 'Avid marker text'],
-    ['avid_xml', 'Avid marker XML'],
     ['fcpxml', 'Final Cut Pro FCPXML'],
     ['xmeml', 'Premiere / FCP7 XML'],
     ['csv', 'CSV'],
@@ -1820,6 +1819,21 @@
                       Timelines, Import, Timeline Markers from EDL. The regular
                       timeline import makes cuts, not markers.
                     </p>
+                  {:else if exportFormat === 'xmeml'}
+                    <p class="exchange-hint">
+                      In Premiere: File, Import. Open the marker-only sequence,
+                      then copy its sequence markers into the target sequence.
+                    </p>
+                  {:else if exportFormat === 'fcpxml'}
+                    <p class="exchange-hint">
+                      In Final Cut Pro: File, Import, XML. The imported project
+                      keeps the source timecode origin and note status.
+                    </p>
+                  {:else if exportFormat === 'avid_txt'}
+                    <p class="exchange-hint">
+                      In Media Composer: open Tools, Markers, then use the marker
+                      window menu to import the text file.
+                    </p>
                   {/if}
                   <p class="exchange-title">Bring markers back</p>
                   <p class="exchange-hint">A Resolve marker EDL or an Onelight CSV becomes notes on this version.</p>
@@ -2223,7 +2237,7 @@
   }
   /* Above the phone width the wrapper adds no box at all. */
   .acts { display: contents; }
-  /* Phone: the header is two bands — where you are, then what you can do.
+  /* Phone: the header is two bands, where you are, then what you can do.
      The actions scroll sideways as one row instead of stacking four. */
   @media (max-width: 720px) {
     .topbar { row-gap: 6px; }

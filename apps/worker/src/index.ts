@@ -8,12 +8,20 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { MediaInfo, TranscodeJob } from "@onelight/core";
 import {
+  DEFAULT_WATERMARK_FONTFILE,
+  SOFTWARE_ACCELERATION,
   extractStill,
+  hardwareAccelerationName,
   probeFile,
   renderWatermark,
   runTranscode,
+  selectHardwareAcceleration,
 } from "@onelight/worker";
-import type { WatermarkSpec, WatermarkTokens } from "@onelight/worker";
+import type {
+  HardwareAcceleration,
+  WatermarkSpec,
+  WatermarkTokens,
+} from "@onelight/worker";
 
 interface WorkerOutput {
   kind: string;
@@ -31,6 +39,7 @@ interface WorkerRequest {
   output_path?: string;
   frame?: number;
   rate?: { num: number; den: number };
+  timecode?: string;
   spec?: WatermarkSpec;
   tokens?: WatermarkTokens;
   callback_url?: string;
@@ -47,6 +56,8 @@ const port = Number(process.env.PORT ?? 8080);
 const secret = process.env.WORKER_SECRET ?? "";
 const workRoot = path.resolve(process.env.WORK_ROOT ?? "/data/work");
 const jobs = new Map<string, JobState>();
+const ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg";
+let hardwareAcceleration: HardwareAcceleration = SOFTWARE_ACCELERATION;
 const SIGNATURE_SKEW_MS = 5 * 60_000;
 const PRUNE_AFTER_MS = 60 * 60_000;
 
@@ -141,6 +152,10 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
           body.spec ?? {},
           body.tokens ?? {},
           body.rate,
+          ffmpeg,
+          DEFAULT_WATERMARK_FONTFILE,
+          hardwareAcceleration,
+          body.timecode,
         );
       }
       const complete = {
@@ -190,7 +205,13 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
       })),
       mediaInfo,
     };
-    const result = await runTranscode(transcodeJob, outputs);
+    const result = await runTranscode(
+      transcodeJob,
+      outputs,
+      ffmpeg,
+      process.env.PDFTOPPM_PATH ?? "pdftoppm",
+      hardwareAcceleration,
+    );
     const complete = {
       job_id: body.job_id,
       status: "complete",
@@ -225,8 +246,9 @@ const handler = async (
     json(response, 200, {
       status: "ok",
       worker: "onelight-worker",
-      ffmpeg: process.env.FFMPEG_PATH ?? "ffmpeg",
+      ffmpeg,
       ffprobe: process.env.FFPROBE_PATH ?? "ffprobe",
+      hardware_acceleration: hardwareAccelerationName(hardwareAcceleration),
     });
     return;
   }
@@ -327,9 +349,24 @@ pruneTimer.unref();
 const server = createServer((request, response) => {
   void handler(request, response);
 });
-server.listen(port, "0.0.0.0", () =>
-  console.log(`Onelight worker listening on ${port}`),
-);
+
+const start = async (): Promise<void> => {
+  hardwareAcceleration = await selectHardwareAcceleration(ffmpeg);
+  console.log(
+    `[onelight-worker] hardware acceleration: ${hardwareAccelerationName(hardwareAcceleration)}`,
+  );
+  server.listen(port, "0.0.0.0", () =>
+    console.log(`Onelight worker listening on ${port}`),
+  );
+};
+void start().catch((error) => {
+  console.error(
+    `[onelight-worker] startup failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
+  );
+  process.exit(1);
+});
 
 const shutdown = (): void => {
   clearInterval(pruneTimer);

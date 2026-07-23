@@ -284,7 +284,9 @@ Priority: poster/sprite first (UI becomes browsable in seconds), 1080p proxy nex
 
 ### 6.2 Probe
 
-`ffprobe -show_format -show_streams -show_entries format_tags=timecode:stream_tags=timecode` captured verbatim into `media_info_json`. Extract: codec, dimensions, rational frame rate (`r_frame_rate` vs `avg_frame_rate` - mismatch ⇒ VFR flag), duration, bit depth, color primaries/transfer/matrix/range, audio channel layout, **start timecode from the tmcd track** (`;` ⇒ drop-frame). VFR detection: `-vf vfrdet`. Sources with no color tags get flagged `color_assumed: true` (assume BT.709 for HD+, BT.601 for SD) and the UI shows the assumption - colorists get honesty, not silent guessing.
+`ffprobe -show_format -show_streams` is captured verbatim into `media_info_json`. Extract: codec, dimensions, exact reduced rational frame rate (`avg_frame_rate`, with `r_frame_rate` only as fallback), duration, bit depth, pixel format, field order, chroma location, color primaries/transfer/matrix/range, HDR side data, audio channel layout, and start timecode. Timecode selection is deterministic: dedicated `tmcd` stream first, then format tag, video-stream tag, and another tagged stream. The selected value and its source are retained. A semicolon is treated as drop-frame only at exact 30000/1001 or 60000/1001.
+
+The probe never substitutes a nearby editorial rate. `48000/1001` remains `48000/1001`, and `23/1` remains `23/1`; replacing either changes frame identity. VFR detection compares `r_frame_rate` and `avg_frame_rate`, with `vfrdet` retained for the curated corpus. Sources with no color tags get `color_assumed: true`; the proxy conversion interprets untagged HD as BT.709 and untagged SD as BT.601, records that assumption, and the UI discloses it.
 
 ### 6.3 SDR review proxy (the workhorse)
 
@@ -295,21 +297,29 @@ Canonical 1080p recipe (per research / ASWF dailies guidance):
 ```
 ffmpeg -i src \
   -vf "fps=<num>/<den>,scale=-2:1080,format=yuv420p" \        # CFR always; VFR dies here
-  -c:v libx264 -preset slow -crf 18 -tune film \
-  -profile:v high -level 4.2 -g 24 -keyint_min 24 -sc_threshold 0 \  # 1s GOP: snappy stepping
+  -c:v libx264 -preset medium -crf 18 \
+  -profile:v high -level 4.2 -g <rounded-fps> -keyint_min <rounded-fps> -sc_threshold 0 \  # 1s GOP: snappy stepping
   -maxrate 12M -bufsize 24M \
   -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv \
   -c:a aac -b:a 192k -ac 2 \
   -timecode <source_start_tc> -movflags +faststart out_1080.mp4
 ```
 
-Rendition ladder by source: ≤1080p sources -> 1080p (CRF 18) + 540p (CRF 21); 4K+ sources -> add 2160p (CRF 19, `-level 5.2`). Same-as-source fps always. NVENC path (`h264_nvenc -rc vbr -cq 19`) auto-selected when the worker sees a GPU. 10-bit sources get correct dithering via `format=yuv420p` after any filtering, and the proxy always carries explicit 709/tv tags - **untagged output is the #1 review-tool color bug** (Safari assumes 601; QuickTime gamma shift). QC matrix in CI: golden-frame screenshots compared across Chrome/Safari/Firefox rendering of tagged output (§21).
+Rendition ladder by source: ≤1080p sources -> 1080p (CRF 18) + 540p (CRF 21); 4K+ sources -> add 2160p (CRF 19, `-level 5.2`). Same-as-source fps always. 10-bit sources get correct dithering via `format=yuv420p` after any filtering, and the proxy always carries explicit 709/tv tags - **untagged output is the #1 review-tool color bug** (Safari assumes 601; QuickTime gamma shift). QC matrix in CI: golden-frame screenshots compared across Chrome/Safari/Firefox rendering of tagged output (§21).
+
+*Supersession 2026-07-23:* The workhorse encode is hardware-first and capability-probed. Intel integrated graphics and Intel Arc use the Intel media driver through VAAPI, NVIDIA uses NVENC, and native Windows AMD uses AMF. The corresponding quality modes are VAAPI QVBR, with startup-probed VBR or CQP fallback for older drivers, NVENC VBR-CQ at preset p6 with quarter-resolution multipass, lookahead and adaptive quantization, and AMF peak-constrained VBR with preanalysis and VBAQ. Explicit production selections are strict: the worker performs a real one-frame encode before listening and refuses to boot if that backend is unavailable. Auto mode may fall back to libx264. A runtime hardware failure retries only that rendition in software.
+
+Every path keeps the one-second fixed GOP and progressive faststart container. VBV limits are 36/72 Mbit/s max/buffer at 2160, 12/24 at 1080, and 4/8 at 540, scaled up for frame rates above 30 fps. These caps prevent an I-frame spike from stalling byte-range playback without turning the files into low-quality CBR streams. HLS remains deferred because deterministic frame identity still outranks speculative ABR gains for v1.
+
+*Supersession 2026-07-23, metadata exactness:* The original object is never rewritten. Proxies retain the exact measured CFR rational and source start timecode, including a `tmcd` track where the container supports it. Watermarked derivatives re-embed the same timecode. SDR proxy conversion explicitly interprets the source matrix, transfer, primaries, and full/limited range, including the BT.601 default for untagged SD, before producing BT.709 limited range. Merely relabeling 601 or full-range pixels as 709/tv is forbidden. Rendition metadata records source and output color contracts so the player can verify them.
 
 ### 6.4 HDR sources
 
 Two renditions, always both:
 - **HDR rail**: HEVC Main10 `-tag:v hvc1` (Safari/Chrome-HW) *and/or* AV1 10-bit (SVT-AV1; Chrome/Firefox/Edge), preserving source primaries/transfer (PQ or HLG), `mdcv`/`clli` passthrough. Codec choice per §19 royalty posture: AV1 preferred, HEVC where Safari matters.
 - **Tonemapped SDR proxy** via libplacebo (`tonemapping=bt.2390`, correct HLG inverse-OOTF handling), labeled in the UI as "SDR preview (tone-mapped)". Optional per-project **supplied 3D LUT** for the SDR derive (the YouTube model - colorists distrust auto-tonemap).
+
+*Supersession 2026-07-23:* VAAPI and NVENC also encode both 10-bit HDR rails in hardware, with the same one-second GOP and VBV policy as the review ladder. Unsupported codec and device combinations retry through SVT-AV1 or x265. Current AMF builds expose only 8-bit inputs for these encoders, so AMF stays on the software HDR recipe rather than silently truncating the rail. The tonemapped SDR derive remains hardware encoded on NVENC and AMF. Its VAAPI encode remains software because libplacebo owns the Vulkan filter device and VAAPI's required `hwupload` cannot target a second device in the same simple graph.
 
 Player-side gating in §7.4.
 
@@ -411,18 +421,20 @@ The heart of the product; feature-complete against frame.io V4's model in v1:
 
 ## 12. NLE round-trip
 
-File-based exports ship in **v1** (`packages/core/markers`, golden-file tested against real NLE imports):
+File-based exports ship in **v1** (`packages/core/markers`, byte-exact golden tested and fuzz hardened):
 
 | Target | Format | Notes (research-verified syntax) |
 |---|---|---|
 | Resolve | Marker EDL (`TITLE:`/`FCM:` + `|C:ResolveColor |M:note |D:dur`) | **Preserve comment text** (fixes frame.io's dropped-text bug); sanitize: no leading digits (`_` prefix), ASCII-only, collapse same-frame collisions |
-| Avid | Tab-separated marker .txt + Avid Marker XML | Round-trip a real MC export before shipping (trailing-field semantics) |
+| Avid | Tab-separated marker .txt | The legacy `avid_xml` API value is a compatibility alias that returns `.txt`; true marker XML waits for a captured Media Composer export |
 | Premiere | FCP7 XML (xmeml) sequence markers | Native CSV import doesn't exist; xmeml does |
 | FCPX | FCPXML `<marker start="N/Ds">` rational times | |
 | Generic | CSV, plain text, JSON | |
 | PDF report | Per-comment annotated frame grabs (server burn-in renderer) + thread text | The client-deliverable |
 
-Exports respect comment filters; range comments become duration markers; timecode base = source TC with record-run option (must match the user's timeline start or Resolve misaligns - surfaced in the export dialog).
+Exports respect comment filters; range comments become duration markers; timecode base = source TC with record-run option (must match the user's timeline start or Resolve misaligns - surfaced in the export dialog). Marker names scan as author plus a concise summary, while note fields retain the author, completed state, internal state on project exports, and replies. Share exports are constrained to assets in that share and can never include internal comments.
+
+Every version is serialized with its own exact rate, source origin, duration, and drop-frame flag. Premiere xmeml markers are sequence-relative while the sequence timecode carries the source origin. FCPXML uses exact rational seconds and a source-origin gap whose duration is the media duration. Multi-version project exports are one valid file per version in a ZIP, never concatenated XML documents. Resolve and Premiere imports were manually validated on 2026-07-23; Avid and Final Cut remain on the real-application release checklist.
 
 **Phase 6 - native panels**:
 - **Resolve first** (vacated niche): Workflow Integration plugin (JS/CEF) + scripting API - browse projects, pull comments as timeline markers live, push renders up as new versions with metadata. Ships in the repo with an installer.

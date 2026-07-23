@@ -14,24 +14,9 @@
  * The seed prints at collection and is embedded in every failure message;
  * reproduce with FUZZ_SEED=<seed> pnpm test.
  *
- * Known issues found by this fuzz (upstream of this file, report-only, the
- * corpus is shaped so the suite stays green while they stand):
- *
- *   1. exportFcpXml/exportXmeml pass C0 control characters (for example
- *      \u0001) straight into attribute and text content. XML 1.0 forbids
- *      them entirely, so a strict importer rejects the document. The scan
- *      below deliberately does not check character validity.
- *   2. exportXmeml does not escape ">" and so emits a raw "]]>" when the
- *      body contains one, which is ill-formed XML ("]]>" must not appear
- *      in content). The corpus rewrites the three-character sequence; a
- *      raw ">" alone is legal and is exercised.
- *   3. Every timecode-labelling exporter throws when options carry
- *      dropFrame=true with a non-drop rate (for example 24/1). The pump
- *      (apps/server/src/worker-pump.ts) builds options from
- *      version.dropFrame, which is set from a ";" in the probed timecode
- *      tag independently of the rate, so a mistagged 24 fps source makes
- *      every marker export fail. The corpus only pairs dropFrame with
- *      29.97/59.94, matching correctly probed media.
+ * The hostile corpus includes XML-illegal controls, raw "]]>", and
+ * mistagged drop-frame flags. These are regression cases found by the
+ * original fuzz pass and now fixed in the exporters.
  */
 
 import { describe, expect, it } from "vitest";
@@ -109,10 +94,7 @@ const randomBody = (): string => {
     for (let index = 0; index < count; index += 1) parts.push(pick(FRAGMENTS));
     body = parts.join(" ");
   }
-  /* Known issue 2 above: exportXmeml emits a raw "]]>" verbatim, which is
-     ill-formed; keep the sequence out of the corpus until that is fixed
-     upstream. Raw ">" and "]]" both stay exercised. */
-  return body.replaceAll("]]>", "]] >");
+  return body;
 };
 
 const randomComments = (): MarkerComment[] => {
@@ -128,6 +110,18 @@ const randomComments = (): MarkerComment[] => {
       frameIn,
       frameOut:
         shape < 0.4 ? null : shape < 0.6 ? frameIn : frameIn + 1 + int(5_000),
+      completed: rng() < 0.35,
+      internal: rng() < 0.2,
+      replies:
+        rng() < 0.35
+          ? [
+              {
+                id: `${String(int(1_000_000)).padStart(7, "0")}-${index}-r`,
+                bodyText: randomBody(),
+                authorName: rng() < 0.25 ? null : randomBody().slice(0, 80),
+              },
+            ]
+          : [],
     });
   }
   return comments;
@@ -138,10 +132,7 @@ const randomOptions = (): MarkerOptions => {
   return {
     ...(rng() < 0.3 ? {} : { title: pick(FRAGMENTS) }),
     rate,
-    /* Known issue 3 above: dropFrame with a non-drop rate throws today, so
-       the corpus mirrors correctly probed media and pairs dropFrame only
-       with 29.97/59.94. */
-    dropFrame: isDropFrameRate(rate) && rng() < 0.5,
+    dropFrame: rng() < 0.5,
     startFrame: rng() < 0.5 ? 0 : int(2_000_000),
     timecodeBase: rng() < 0.5 ? "source" : "record_run",
   };
@@ -179,7 +170,9 @@ const checkEdl = (
     }
   expect(lines[0]?.startsWith("TITLE: "), `${context}: TITLE line`).toBe(true);
   expect(lines[1], `${context}: FCM line`).toBe(
-    options.dropFrame ? "FCM: DROP FRAME" : "FCM: NON-DROP FRAME",
+    options.dropFrame && isDropFrameRate(options.rate)
+      ? "FCM: DROP FRAME"
+      : "FCM: NON-DROP FRAME",
   );
   expect(lines[2], `${context}: blank line after header`).toBe("");
   const body = lines.slice(3);

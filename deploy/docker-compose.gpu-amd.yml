@@ -1,0 +1,10 @@
+services:
+  onelight-worker:
+    environment:
+      ONELIGHT_HWACCEL: vaapi
+      ONELIGHT_VAAPI_DEVICE: ${ONELIGHT_VAAPI_DEVICE:-/dev/dri/renderD128}
+      ONELIGHT_VAAPI_LOW_POWER: "false"
+    devices:
+      - ${ONELIGHT_VAAPI_DEVICE:-/dev/dri/renderD128}:${ONELIGHT_VAAPI_DEVICE:-/dev/dri/renderD128}
+    group_add:
+      - ${ONELIGHT_RENDER_GID:?ONELIGHT_RENDER_GID is required for AMD GPU access}

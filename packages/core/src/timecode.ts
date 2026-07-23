@@ -18,6 +18,7 @@ export const SUPPORTED_RATES: readonly FrameRate[] = [
   { num: 24, den: 1 },
   { num: 25, den: 1 },
   { num: 30000, den: 1001 },
+  { num: 30, den: 1 },
   { num: 48, den: 1 },
   { num: 50, den: 1 },
   { num: 60000, den: 1001 },
@@ -26,7 +27,7 @@ export const SUPPORTED_RATES: readonly FrameRate[] = [
 
 const nominalFps = (rate: FrameRate): number => Math.round(rate.num / rate.den);
 const isRate = (rate: FrameRate, num: number, den: number): boolean =>
-  rate.num === num && rate.den === den;
+  rate.num * den === num * rate.den;
 
 export const isDropFrameRate = (rate: FrameRate): boolean =>
   isRate(rate, 30000, 1001) || isRate(rate, 60000, 1001);
@@ -40,12 +41,17 @@ const dropCount = (rate: FrameRate): number => {
 };
 
 const validateRate = (rate: FrameRate): void => {
+  const fps = rate.num / rate.den;
   if (
-    !SUPPORTED_RATES.some(
-      (candidate) => candidate.num === rate.num && candidate.den === rate.den,
-    )
+    !Number.isInteger(rate.num) ||
+    !Number.isInteger(rate.den) ||
+    rate.num <= 0 ||
+    rate.den <= 0 ||
+    !Number.isFinite(fps) ||
+    Math.round(fps) < 1 ||
+    Math.round(fps) > 999
   )
-    throw errors.validation("Unsupported frame rate.");
+    throw errors.validation("Frame rate must be a positive rational rate.");
 };
 
 export const framesFromTimecode = (tc: Timecode, rate: FrameRate): number => {
@@ -135,7 +141,7 @@ export const formatTimecode = (tc: Timecode): string => {
 };
 
 export const parseTimecode = (value: string, rate: FrameRate): Timecode => {
-  const match = /^(\d{2,}):(\d{2}):(\d{2})(:|;)(\d{2})$/.exec(value);
+  const match = /^(\d{2,}):(\d{2}):(\d{2})(:|;)(\d{2,3})$/.exec(value);
   if (!match)
     throw errors.validation("Timecode must use HH:MM:SS:FF or HH:MM:SS;FF.");
   const dropFrame = match[4] === ";";

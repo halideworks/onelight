@@ -6,10 +6,14 @@ import type { MediaInfo, TranscodeJob } from "@onelight/core";
 import {
   DEFAULT_WATERMARK_FONTFILE,
   HDR_TONEMAP_FILTER,
+  HWACCEL_ENV,
+  NVENC_DEVICE_ENV,
   POSTER_THUMBNAIL_WINDOW,
+  SOFTWARE_ACCELERATION,
   VAAPI_DEVICE_ENV,
   VULKAN_HWDEVICE_ARGS,
   bt709ConvertFilter,
+  buildHardwareProbeArgs,
   buildHdrAv1Args,
   buildHdrHevcArgs,
   buildPdfPagesArgs,
@@ -19,9 +23,10 @@ import {
   buildWatermarkArgs,
   buildWatermarkFilter,
   canUseVaapi,
-  clampToSupportedRate,
   createPeakCollector,
   escapeDrawtextValue,
+  hardwareAccelerationName,
+  hardwareAccelerationPlanFromEnv,
   isAudioOnly,
   needsBt709Conversion,
   normalizeProbe,
@@ -34,8 +39,10 @@ import {
   primaryRenditionKinds,
   probeArgs,
   renderWatermarkText,
+  selectHardwareAcceleration,
   sidecarArgs,
   spriteInterval,
+  streamingLimits,
   writeSpriteVtt,
 } from "./media.js";
 
@@ -119,9 +126,8 @@ describe("probe normalization", () => {
     // A ";" on a mistagged 23.976 or 25 source must not set drop-frame.
     expect(dropFrameOf("24000/1001")).toBe(false);
     expect(dropFrameOf("25/1")).toBe(false);
-    // An exact 30 clamps to the supported 29.97 rate, which IS a drop rate,
-    // so the flag is evaluated against the clamped rate, not the probed one.
-    expect(dropFrameOf("30/1")).toBe(true);
+    // Exact 30 is preserved and is not a drop-frame rate.
+    expect(dropFrameOf("30/1")).toBe(false);
   });
 
   it("treats 24000/1001 r_frame_rate vs 24 avg_frame_rate as CFR", () => {
@@ -141,7 +147,7 @@ describe("probe normalization", () => {
     expect(mediaInfo.dropFrame).toBeUndefined();
   });
 
-  it("flags materially different rates as VFR and clamps to the whitelist", () => {
+  it("flags materially different rates as VFR and preserves the measured rational", () => {
     const mediaInfo = normalizeProbe({
       format: {},
       streams: [
@@ -153,30 +159,98 @@ describe("probe normalization", () => {
       ],
     });
     expect(mediaInfo.variableFrameRate).toBe(true);
-    expect(mediaInfo.frameRateClamped).toBe(true);
-    expect(mediaInfo.probedFrameRate).toBe("15/1");
-    expect(mediaInfo.frameRateNum).toBe(24000);
-    expect(mediaInfo.frameRateDen).toBe(1001);
+    expect(mediaInfo.frameRateNum).toBe(15);
+    expect(mediaInfo.frameRateDen).toBe(1);
   });
 
-  it("clamps to the nearest supported rational rate", () => {
+  it("reduces rational rates without substituting an editorial rate", () => {
     expect(parseRational("30000/1001")).toEqual({ num: 30000, den: 1001 });
-    expect(clampToSupportedRate({ num: 24000, den: 1001 })).toEqual({
-      rate: { num: 24000, den: 1001 },
-      exact: true,
+    expect(parseRational("30000/1000")).toEqual({ num: 30, den: 1 });
+    expect(parseRational("48000/1001")).toEqual({ num: 48000, den: 1001 });
+    expect(parseRational("23/1")).toEqual({ num: 23, den: 1 });
+  });
+
+  it("prefers a dedicated tmcd stream and records the metadata source", () => {
+    const mediaInfo = normalizeProbe({
+      format: { tags: { timecode: "02:00:00:00" } },
+      streams: [
+        {
+          codec_type: "video",
+          avg_frame_rate: "24/1",
+          tags: { timecode: "03:00:00:00" },
+        },
+        {
+          codec_type: "data",
+          codec_tag_string: "tmcd",
+          tags: { timecode: "01:00:00:00" },
+        },
+      ],
     });
-    expect(clampToSupportedRate({ num: 48, den: 1 }).exact).toBe(true);
-    expect(clampToSupportedRate({ num: 30, den: 1 })).toEqual({
-      rate: { num: 30000, den: 1001 },
-      exact: false,
+    expect(mediaInfo.sourceTimecodeStart).toBe("01:00:00:00");
+    expect(mediaInfo.sourceTimecodeSource).toBe("tmcd_stream");
+  });
+
+  it("retains source color, pixel, field, and HDR side-data metadata", () => {
+    const sideData = [
+      {
+        side_data_type: "Mastering display metadata",
+        max_luminance: "1000/1",
+      },
+    ];
+    const mediaInfo = normalizeProbe({
+      format: {},
+      streams: [
+        {
+          codec_type: "video",
+          avg_frame_rate: "24/1",
+          color_primaries: "bt2020",
+          color_transfer: "smpte2084",
+          color_space: "bt2020nc",
+          color_range: "tv",
+          chroma_location: "topleft",
+          pix_fmt: "yuv420p10le",
+          bits_per_raw_sample: "10",
+          field_order: "progressive",
+          side_data_list: sideData,
+        },
+      ],
     });
-    expect(clampToSupportedRate({ num: 48000, den: 1001 })).toEqual({
-      rate: { num: 48, den: 1 },
-      exact: false,
+    expect(mediaInfo.sourceColor).toEqual({
+      primaries: "bt2020",
+      transfer: "smpte2084",
+      matrix: "bt2020nc",
+      range: "tv",
+      chromaLocation: "topleft",
+      pixelFormat: "yuv420p10le",
+      bitsPerRawSample: "10",
+      fieldOrder: "progressive",
+      sideData,
+      assumed: false,
     });
-    expect(clampToSupportedRate({ num: 23, den: 1 }).rate).toEqual({
-      num: 24000,
-      den: 1001,
+  });
+
+  it("records every partially missing source color contract as an assumption", () => {
+    const mediaInfo = normalizeProbe({
+      format: {},
+      streams: [
+        {
+          codec_type: "video",
+          width: 720,
+          height: 480,
+          avg_frame_rate: "25/1",
+          color_space: "smpte170m",
+        },
+      ],
+    });
+    expect(mediaInfo.colorAssumed).toBe(true);
+    expect(mediaInfo.sourceColor).toMatchObject({
+      primaries: null,
+      transfer: null,
+      matrix: "smpte170m",
+      range: null,
+      assumed: true,
+      assumption:
+        "Missing primaries, transfer, range interpreted from BT.601 limited-range defaults for display-proxy conversion.",
     });
   });
 });
@@ -290,11 +364,14 @@ describe("VAAPI (QuickSync) hardware encode", () => {
     expect(flag(args, "-vf")).toBe(
       "scale=-2:1080,fps=24000/1001,format=nv12,hwupload",
     );
-    // Alder Lake-N exposes only the low-power entrypoint, and CQP is the rate
-    // control it supports -- CRF has no VAAPI equivalent.
+    // QVBR preserves target quality while applying a network-safe VBV.
+    // Startup probing falls through VBR and CQP for older Intel drivers.
     expect(flag(args, "-low_power")).toBe("1");
-    expect(flag(args, "-rc_mode")).toBe("CQP");
-    expect(flag(args, "-qp")).toBe("18");
+    expect(flag(args, "-rc_mode")).toBe("QVBR");
+    expect(flag(args, "-global_quality")).toBe("18");
+    expect(flag(args, "-b:v")).toBe("7500k");
+    expect(flag(args, "-maxrate")).toBe("12000k");
+    expect(flag(args, "-bufsize")).toBe("24000k");
     expect(args).not.toContain("-crf");
     // x264-only options must not be handed to a VAAPI encoder.
     expect(args).not.toContain("-preset");
@@ -303,7 +380,7 @@ describe("VAAPI (QuickSync) hardware encode", () => {
     expect(args).not.toContain("-pix_fmt");
   });
 
-  it("keys QP on ladder height exactly as CRF does", () => {
+  it("keys QVBR quality on ladder height exactly as CRF does", () => {
     for (const entry of [
       { height: 2160, qp: "19" },
       { height: 1080, qp: "18" },
@@ -315,7 +392,7 @@ describe("VAAPI (QuickSync) hardware encode", () => {
         entry.height,
         NODE,
       );
-      expect(flag(args, "-qp")).toBe(entry.qp);
+      expect(flag(args, "-global_quality")).toBe(entry.qp);
     }
   });
 
@@ -377,7 +454,11 @@ describe("VAAPI (QuickSync) hardware encode", () => {
   // h264 decode is normative, so this is free correctness-wise.
   it("decodes on the GPU as well as encoding there", () => {
     const args = buildSdrProxyArgs(
-      jobOf(mediaInfoOf()),
+      jobOf(
+        mediaInfoOf({
+          streams: [{ codec_type: "video", codec_name: "h264" }],
+        }),
+      ),
       "proxy.mp4",
       1080,
       NODE,
@@ -393,7 +474,12 @@ describe("VAAPI (QuickSync) hardware encode", () => {
   // The sprite reads every frame of the source, so it pays full decode cost
   // even though it encodes nothing on the GPU.
   it("decodes sidecars on the GPU too, and only when the source is not HDR", () => {
-    const sdr = jobOf(mediaInfoOf({ durationFrames: 240 }));
+    const sdr = jobOf(
+      mediaInfoOf({
+        durationFrames: 240,
+        streams: [{ codec_type: "video", codec_name: "h264" }],
+      }),
+    );
     for (const kind of ["poster", "sprite"]) {
       const args = sidecarArgs(sdr, `${kind}.png`, kind, NODE) ?? [];
       expect(flag(args, "-hwaccel"), kind).toBe("vaapi");
@@ -408,6 +494,152 @@ describe("VAAPI (QuickSync) hardware encode", () => {
     expect(sidecarArgs(hdr, "poster.png", "poster", NODE) ?? []).not.toContain(
       "-hwaccel",
     );
+  });
+});
+
+describe("cross-vendor hardware acceleration", () => {
+  const h264 = mediaInfoOf({
+    streams: [{ codec_type: "video", codec_name: "h264" }],
+  });
+
+  it("builds a quality-tuned NVENC recipe with bounded network peaks", () => {
+    const args = buildSdrProxyArgs(jobOf(h264), "proxy.mp4", 1080, {
+      backend: "nvenc",
+      device: "1",
+    });
+    expect(flag(args, "-hwaccel")).toBe("cuda");
+    expect(flag(args, "-c:v")).toBe("h264_nvenc");
+    expect(flag(args, "-gpu")).toBe("1");
+    expect(flag(args, "-preset")).toBe("p6");
+    expect(flag(args, "-tune")).toBe("hq");
+    expect(flag(args, "-rc")).toBe("vbr");
+    expect(flag(args, "-cq")).toBe("18");
+    expect(flag(args, "-maxrate")).toBe("12000k");
+    expect(flag(args, "-bufsize")).toBe("24000k");
+    expect(flag(args, "-spatial-aq")).toBe("1");
+    expect(flag(args, "-temporal-aq")).toBe("1");
+    expect(flag(args, "-rc-lookahead")).toBe("20");
+  });
+
+  it("builds an AMF quality recipe without requesting unsupported decode", () => {
+    const args = buildSdrProxyArgs(jobOf(h264), "proxy.mp4", 1080, {
+      backend: "amf",
+    });
+    expect(args).not.toContain("-hwaccel");
+    expect(flag(args, "-c:v")).toBe("h264_amf");
+    expect(flag(args, "-usage")).toBe("transcoding");
+    expect(flag(args, "-quality")).toBe("quality");
+    expect(flag(args, "-rc")).toBe("vbr_peak");
+    expect(flag(args, "-maxrate")).toBe("12000k");
+    expect(flag(args, "-vbaq")).toBe("true");
+    expect(flag(args, "-preanalysis")).toBe("true");
+  });
+
+  it("scales the streaming cap by rung and frame rate", () => {
+    expect(streamingLimits(540, mediaInfoOf())).toEqual({
+      average: "2500k",
+      maximum: "4000k",
+      buffer: "8000k",
+    });
+    expect(streamingLimits(1080, mediaInfoOf())).toEqual({
+      average: "7500k",
+      maximum: "12000k",
+      buffer: "24000k",
+    });
+    expect(
+      streamingLimits(2160, mediaInfoOf({ frameRateNum: 60, frameRateDen: 1 })),
+    ).toEqual({
+      average: "48000k",
+      maximum: "72000k",
+      buffer: "144000k",
+    });
+  });
+
+  it("makes explicit production selections strict and validates typos", () => {
+    expect(
+      hardwareAccelerationPlanFromEnv(
+        {
+          [HWACCEL_ENV]: "nvenc",
+          [NVENC_DEVICE_ENV]: "2",
+        },
+        "linux",
+      ),
+    ).toEqual({
+      candidates: [{ backend: "nvenc", device: "2" }],
+      required: true,
+    });
+    expect(() =>
+      hardwareAccelerationPlanFromEnv({ [HWACCEL_ENV]: "quick-sync" }, "linux"),
+    ).toThrow(`${HWACCEL_ENV} must be`);
+    expect(hardwareAccelerationName(SOFTWARE_ACCELERATION)).toBe("software");
+  });
+
+  it("probes the selected encoder with the real rate-control path", () => {
+    const args = buildHardwareProbeArgs({
+      backend: "vaapi",
+      device: "/dev/dri/renderD128",
+      lowPower: true,
+      rateControl: "QVBR",
+    });
+    expect(flag(args, "-vaapi_device")).toBe("/dev/dri/renderD128");
+    expect(flag(args, "-c:v")).toBe("h264_vaapi");
+    expect(flag(args, "-rc_mode")).toBe("QVBR");
+    expect(flag(args, "-frames:v")).toBe("1");
+    expect(flag(args, "-f")).toBe("lavfi");
+  });
+
+  it("falls through VAAPI driver modes during startup probing", async () => {
+    const attempted: string[] = [];
+    const selected = await selectHardwareAcceleration(
+      "ffmpeg",
+      {
+        [HWACCEL_ENV]: "vaapi",
+        [VAAPI_DEVICE_ENV]: "/dev/dri/renderD128",
+      },
+      "linux",
+      (_command, args) => {
+        const mode = flag(args, "-rc_mode") ?? "";
+        attempted.push(mode);
+        return mode === "VBR"
+          ? Promise.resolve()
+          : Promise.reject(new Error("unsupported mode"));
+      },
+    );
+    expect(attempted).toEqual(["QVBR", "VBR"]);
+    expect(selected).toMatchObject({
+      backend: "vaapi",
+      rateControl: "VBR",
+      lowPower: true,
+    });
+  });
+
+  it("fails startup when an explicitly required GPU is unavailable", async () => {
+    await expect(
+      selectHardwareAcceleration(
+        "ffmpeg",
+        { [HWACCEL_ENV]: "nvenc" },
+        "linux",
+        () => Promise.reject(new Error("libcuda unavailable")),
+      ),
+    ).rejects.toThrow("Requested hardware acceleration is unavailable");
+  });
+
+  it("tries NVIDIA then AMD in Windows auto mode", async () => {
+    const encoders: string[] = [];
+    const selected = await selectHardwareAcceleration(
+      "ffmpeg",
+      { [HWACCEL_ENV]: "auto" },
+      "win32",
+      (_command, args) => {
+        const encoder = flag(args, "-c:v") ?? "";
+        encoders.push(encoder);
+        return encoder === "h264_amf"
+          ? Promise.resolve()
+          : Promise.reject(new Error("encoder unavailable"));
+      },
+    );
+    expect(encoders).toEqual(["h264_nvenc", "h264_amf"]);
+    expect(selected).toEqual({ backend: "amf" });
   });
 });
 
@@ -455,7 +687,11 @@ describe("one-pass SDR encode", () => {
   it("uses the GPU for the whole pass when a device is configured", () => {
     const args =
       buildCombinedSdrArgs(
-        jobOf(mediaInfoOf()),
+        jobOf(
+          mediaInfoOf({
+            streams: [{ codec_type: "video", codec_name: "h264" }],
+          }),
+        ),
         outputs,
         "/dev/dri/renderD128",
       ) ?? [];
@@ -563,7 +799,7 @@ describe("poster frame selection", () => {
       `${bt709ConvertFilter(bt601)},scale=-2:1080,fps=24000/1001,format=yuv420p`,
     );
     expect(bt709ConvertFilter(bt601)).toBe(
-      "zscale=matrixin=smpte170m:transferin=smpte170m:primariesin=smpte170m:matrix=709:primaries=709:transfer=709",
+      "zscale=matrixin=smpte170m:transferin=smpte170m:primariesin=smpte170m:rangein=limited:matrix=709:primaries=709:transfer=709:range=limited",
     );
     const tagged709 = mediaInfoOf({
       streams: [
@@ -590,7 +826,7 @@ describe("poster frame selection", () => {
     });
     expect(needsBt709Conversion(partial)).toBe(true);
     expect(bt709ConvertFilter(partial)).toBe(
-      "zscale=matrixin=smpte170m:transferin=smpte170m:primariesin=smpte170m:matrix=709:primaries=709:transfer=709",
+      "zscale=matrixin=smpte170m:transferin=smpte170m:primariesin=smpte170m:rangein=limited:matrix=709:primaries=709:transfer=709:range=limited",
     );
     // A tagged component overrides its default; "unknown" is treated as blank.
     const pal = mediaInfoOf({
@@ -604,8 +840,32 @@ describe("poster frame selection", () => {
       ],
     });
     expect(bt709ConvertFilter(pal)).toBe(
-      "zscale=matrixin=bt470bg:transferin=smpte170m:primariesin=bt470bg:matrix=709:primaries=709:transfer=709",
+      "zscale=matrixin=bt470bg:transferin=smpte170m:primariesin=bt470bg:rangein=limited:matrix=709:primaries=709:transfer=709:range=limited",
     );
+  });
+
+  it("converts untagged SD and full-range SDR instead of relabelling pixels", () => {
+    const untaggedSd = mediaInfoOf({
+      streams: [{ codec_type: "video", width: 720, height: 480 }],
+      colorAssumed: true,
+    });
+    expect(needsBt709Conversion(untaggedSd)).toBe(true);
+    expect(bt709ConvertFilter(untaggedSd)).toContain("matrixin=smpte170m");
+
+    const full709 = mediaInfoOf({
+      streams: [
+        {
+          codec_type: "video",
+          color_space: "bt709",
+          color_primaries: "bt709",
+          color_transfer: "bt709",
+          color_range: "pc",
+        },
+      ],
+    });
+    expect(needsBt709Conversion(full709)).toBe(true);
+    expect(bt709ConvertFilter(full709)).toContain("rangein=full:matrix=709");
+    expect(bt709ConvertFilter(full709)).toContain("range=limited");
   });
 
   it("writes a tmcd track when the source carries a start timecode", () => {
@@ -627,12 +887,61 @@ describe("HDR renditions", () => {
     expect(flag(av1, "-g")).toBe("24");
     expect(flag(av1, "-svtav1-params")).toBe("keyint=24");
     expect(flag(av1, "-color_trc")).toBe("smpte2084");
+    expect(flag(av1, "-color_range")).toBe("tv");
     const hevc = buildHdrHevcArgs(jobOf(hdrMediaInfo("smpte2084")), "hdr.mp4");
     expect(flag(hevc, "-g")).toBe("24");
     expect(flag(hevc, "-x265-params")).toBe(
       "keyint=24:min-keyint=24:scenecut=0",
     );
     expect(flag(hevc, "-tag:v")).toBe("hvc1");
+    expect(flag(hevc, "-color_range")).toBe("tv");
+    expect(flag(hevc, "-maxrate")).toBe("36000k");
+    expect(flag(hevc, "-bufsize")).toBe("72000k");
+  });
+
+  it("uses Intel or Arc hardware for both 10-bit HDR rails", () => {
+    const job = jobOf(hdrMediaInfo("smpte2084"));
+    const vaapi = {
+      backend: "vaapi",
+      device: "/dev/dri/renderD128",
+      lowPower: true,
+      rateControl: "QVBR",
+    } as const;
+    const av1 = buildHdrAv1Args(job, "hdr-av1.mp4", vaapi);
+    expect(flag(av1, "-vaapi_device")).toBe("/dev/dri/renderD128");
+    expect(flag(av1, "-vf")).toContain("format=p010,hwupload");
+    expect(flag(av1, "-c:v")).toBe("av1_vaapi");
+    expect(flag(av1, "-profile:v")).toBe("main");
+    expect(flag(av1, "-rc_mode")).toBe("QVBR");
+    const hevc = buildHdrHevcArgs(job, "hdr-hevc.mp4", vaapi);
+    expect(flag(hevc, "-c:v")).toBe("hevc_vaapi");
+    expect(flag(hevc, "-profile:v")).toBe("main10");
+    expect(flag(hevc, "-tag:v")).toBe("hvc1");
+  });
+
+  it("uses NVIDIA 10-bit encoders with the quality preset and VBV", () => {
+    const job = jobOf(hdrMediaInfo("arib-std-b67"));
+    const nvenc = { backend: "nvenc", device: "0" } as const;
+    const av1 = buildHdrAv1Args(job, "hdr-av1.mp4", nvenc);
+    expect(flag(av1, "-vf")).toContain("format=yuv420p10le");
+    expect(flag(av1, "-c:v")).toBe("av1_nvenc");
+    expect(flag(av1, "-highbitdepth")).toBe("1");
+    expect(flag(av1, "-preset")).toBe("p6");
+    expect(flag(av1, "-maxrate")).toBe("36000k");
+    const hevc = buildHdrHevcArgs(job, "hdr-hevc.mp4", nvenc);
+    expect(flag(hevc, "-c:v")).toBe("hevc_nvenc");
+    expect(flag(hevc, "-profile:v")).toBe("main10");
+    expect(flag(hevc, "-no-scenecut")).toBe("1");
+  });
+
+  it("does not truncate HDR through an 8-bit-only AMF build", () => {
+    const job = jobOf(hdrMediaInfo("smpte2084"));
+    expect(
+      flag(buildHdrAv1Args(job, "hdr-av1.mp4", { backend: "amf" }), "-c:v"),
+    ).toBe("libsvtav1");
+    expect(
+      flag(buildHdrHevcArgs(job, "hdr-hevc.mp4", { backend: "amf" }), "-c:v"),
+    ).toBe("libx265");
   });
 });
 
@@ -825,6 +1134,21 @@ describe("watermark recipe", () => {
     expect(args[args.length - 1]).toBe(
       "/blobs/renditions/v1/watermarked-s1-h1.mp4",
     );
+  });
+
+  it("writes the source timecode track through a burned watermark encode", () => {
+    const args = buildWatermarkArgs(
+      "/blobs/renditions/v1/proxy_1080.mp4",
+      "/blobs/renditions/v1/watermarked-s1-h1.mp4",
+      { text: "{share}" },
+      tokens,
+      { num: 24, den: 1 },
+      DEFAULT_WATERMARK_FONTFILE,
+      SOFTWARE_ACCELERATION,
+      "01:00:00:00",
+    );
+    expect(flag(args, "-timecode")).toBe("01:00:00:00");
+    expect(flag(args, "-write_tmcd")).toBe("on");
   });
 });
 

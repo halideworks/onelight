@@ -528,6 +528,14 @@ const assertBt709Proxy = (probe, label, expectedRate) => {
   const matrix = video.color_space ?? video.colorspace;
   assert(matrix === "bt709", `${label}: color matrix is bt709 (got ${matrix})`);
   assert(
+    video.color_range === "tv",
+    `${label}: color range is tv (got ${video.color_range})`,
+  );
+  assert(
+    !video.field_order || video.field_order === "progressive",
+    `${label}: field order is progressive (got ${video.field_order})`,
+  );
+  assert(
     video.pix_fmt === "yuv420p",
     `${label}: pix_fmt is yuv420p (got ${video.pix_fmt})`,
   );
@@ -573,6 +581,13 @@ const sdrLeg = async (client, projectId, workDir, fontFile) => {
   assert(
     version.duration_frames === EXPECTED_SDR_FRAMES,
     `duration_frames is ${EXPECTED_SDR_FRAMES} (got ${version.duration_frames})`,
+  );
+  assert(
+    version.color?.primaries === "bt709" &&
+      version.color?.transfer === "bt709" &&
+      version.color?.matrix === "bt709" &&
+      version.color?.range === "tv",
+    `source color metadata is retained (got ${JSON.stringify(version.color)})`,
   );
   log("version wire: rate, drop_frame, start frame, and duration all match");
 
@@ -627,7 +642,13 @@ const sdrLeg = async (client, projectId, workDir, fontFile) => {
   return { asset, version, proxyBytes };
 };
 
-const shareAndWatermarkLeg = async (client, projectId, asset, proxyBytes) => {
+const shareAndWatermarkLeg = async (
+  client,
+  projectId,
+  asset,
+  proxyBytes,
+  workDir,
+) => {
   log("--- share, watermark, and viewer leg ---");
   const commentBody =
     "Reel 42 note: keep | pipes intact\nsecond line for the EDL";
@@ -714,6 +735,27 @@ const shareAndWatermarkLeg = async (client, projectId, asset, proxyBytes) => {
   log(
     `watermark burned: clean ${proxyBytes.length} bytes, burned ${watermarkedBytes.length} bytes (drawtext changed the encode)`,
   );
+  const watermarkedPath = path.join(workDir, "downloaded-watermarked.mp4");
+  await writeFile(watermarkedPath, watermarkedBytes);
+  const watermarkedProbe = await ffprobeJson(watermarkedPath);
+  const watermarkedTimecode =
+    watermarkedProbe.format?.tags?.timecode ??
+    (watermarkedProbe.streams ?? [])
+      .map((stream) => stream.tags?.timecode)
+      .find((value) => typeof value === "string");
+  assert(
+    watermarkedTimecode === DF_TIMECODE,
+    `watermarked timecode tag is ${DF_TIMECODE} (got ${watermarkedTimecode})`,
+  );
+  assert(
+    (watermarkedProbe.streams ?? []).some(
+      (stream) =>
+        stream.codec_tag_string === "tmcd" || stream.codec_name === "tmcd",
+    ),
+    "watermarked rendition carries a tmcd timecode track",
+  );
+  assertBt709Proxy(watermarkedProbe, "watermarked rendition", DF_RATE);
+  log("watermarked rendition retains BT.709 tags and source tmcd");
 
   return { share, commentBody };
 };
@@ -775,6 +817,12 @@ const hdrLeg = async (client, projectId, workDir) => {
   assert(
     sourceVideo?.color_transfer === "smpte2084",
     `stored media_info shows the smpte2084 source transfer (got ${sourceVideo?.color_transfer})`,
+  );
+  assert(
+    version.color?.primaries === "bt2020" &&
+      version.color?.transfer === "smpte2084" &&
+      version.color?.matrix === "bt2020nc",
+    `stored color summary retains HDR primaries, transfer, and matrix (got ${JSON.stringify(version.color)})`,
   );
 
   const renditions = await (
@@ -886,6 +934,7 @@ const main = async () => {
       project.id,
       asset,
       proxyBytes,
+      workDir,
     );
     await edlExportLeg(client, share, commentBody);
     await hdrLeg(client, project.id, workDir);

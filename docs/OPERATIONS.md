@@ -35,6 +35,54 @@
   system page warns when backups are off and calls a newest snapshot older
   than a day stale.
 
+## Hardware encoding
+
+The review ladder, burned watermarks, supported source decoding, and 10-bit HDR
+rails use the selected hardware backend where that vendor exposes the required
+format. The portable base stack uses `ONELIGHT_HWACCEL=auto` and falls back to
+libx264 only when no probe succeeds. Set an explicit backend in production so
+a missing driver or inaccessible device stops the worker instead of quietly
+consuming CPU.
+
+Intel integrated graphics and Intel Arc use the same Quick Sync media engine
+through VAAPI on Linux:
+
+```sh
+export ONELIGHT_RENDER_GID="$(getent group render | cut -d: -f3)"
+docker compose -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.gpu-intel.yml up -d --build
+```
+
+NVIDIA requires the host driver and NVIDIA Container Toolkit:
+
+```sh
+docker compose -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.gpu-nvidia.yml up -d --build
+```
+
+AMD on Linux uses the VAAPI override and Mesa driver:
+
+```sh
+export ONELIGHT_RENDER_GID="$(getent group render | cut -d: -f3)"
+docker compose -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.gpu-amd.yml up -d --build
+```
+
+For a native Windows worker, use `ONELIGHT_HWACCEL=nvenc` for NVIDIA or
+`ONELIGHT_HWACCEL=amf` for AMD. `auto` tries both in that order. Verify the
+active selection without reading local logs:
+
+```sh
+curl http://127.0.0.1:8080/healthz
+```
+
+The `hardware_acceleration` field identifies the backend and device. Intel
+probing tries QVBR first, then the driver-supported VBR or CQP fallback. A
+failure after startup retries that individual rendition in software so a
+driver reset does not lose the entire asset. VAAPI and NVENC encode AV1 and
+HEVC Main10 HDR rails when the GPU supports them. AMF's current 8-bit-only HDR
+inputs stay on the software recipe to preserve correctness.
+
 ## Hooks
 
 Onelight generates what it can from the media itself and leaves the rest as

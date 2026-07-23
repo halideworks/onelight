@@ -16,6 +16,7 @@ import {
   hmacSha256Hex,
   parseTimecode,
   UlidGenerator,
+  zipStream,
 } from "@onelight/core";
 import type { MediaInfo } from "@onelight/core";
 import {
@@ -70,6 +71,7 @@ interface ExportFilter {
   has_annotation?: boolean;
   frame_in?: number;
   frame_out?: number;
+  share_id?: string;
 }
 
 const DEFAULT_WORKER_JOB_TIMEOUT_MS = 6 * 60 * 60_000;
@@ -394,6 +396,9 @@ const processWatermarkJob = async (
       date: new Date().toISOString().slice(0, 10),
     },
     ...(rate ? { rate } : {}),
+    ...(version?.sourceTimecodeStart
+      ? { timecode: version.sourceTimecodeStart }
+      : {}),
   });
   const state = await waitForWorker(
     db,
@@ -805,7 +810,7 @@ const processJob = async (
     // Drop-frame timecode is defined only for the 29.97 (30000/1001) and
     // 59.94 (60000/1001) NTSC rates. A ";" separator on any other (commonly
     // mistagged 24/25/30) source is not drop-frame; honoring it corrupts
-    // frame math and breaks exports, so the flag is gated on the clamped rate
+    // frame math and breaks exports, so the flag is gated on the exact rate
     // as well as the separator. The worker's normalizeProbe applies the same
     // guard; this is the write-back source of truth.
     const dropFrame =
@@ -837,7 +842,11 @@ const processJob = async (
           typeof mediaInfo.durationFrames === "number"
             ? mediaInfo.durationFrames
             : null,
-        colorJson: JSON.stringify({ assumed: mediaInfo.colorAssumed === true }),
+        colorJson: JSON.stringify(
+          mediaInfo.sourceColor ?? {
+            assumed: mediaInfo.colorAssumed === true,
+          },
+        ),
         transcodeStatus: "processing",
       })
       .where(eq(assetVersions.id, versionId))
@@ -1287,6 +1296,56 @@ const reclaimStuckExports = async (
     .run();
 };
 
+const safeExportStem = (value: string): string =>
+  value
+    .normalize("NFKC")
+    // Windows reserves these characters, and control bytes are unsafe on
+    // every filesystem and in Content-Disposition.
+    // eslint-disable-next-line no-control-regex
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/g, "")
+    .slice(0, 120) || "onelight-comments";
+
+const exportExtension = (format: string): string =>
+  format === "fcpxml"
+    ? "fcpxml"
+    : format === "avid_xml" || format === "avid_txt"
+      ? "txt"
+      : format === "xmeml"
+        ? "xml"
+        : format === "resolve_edl"
+          ? "edl"
+          : format === "csv"
+            ? "csv"
+            : format === "json"
+              ? "json"
+              : "txt";
+
+const zipTextFiles = async (
+  files: ReadonlyArray<{ name: string; content: string }>,
+): Promise<Uint8Array> => {
+  const encoder = new TextEncoder();
+  const entries = files.map((file) => {
+    const bytes = encoder.encode(file.content);
+    return {
+      name: file.name,
+      size: bytes.byteLength,
+      open: () =>
+        Promise.resolve(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(bytes);
+              controller.close();
+            },
+          }),
+        ),
+    };
+  });
+  return new Uint8Array(await new Response(zipStream(entries)).arrayBuffer());
+};
+
 const processExportJob = async (
   db: AppDb,
   job: typeof exportJobs.$inferSelect,
@@ -1302,8 +1361,20 @@ const processExportJob = async (
     .where(and(eq(assets.projectId, job.projectId), isNull(comments.deletedAt)))
     .orderBy(asc(comments.frameIn), asc(comments.id))
     .all();
+  const shareAssetIds = filter.share_id
+    ? new Set(
+        (
+          await db
+            .select({ assetId: shareAssets.assetId })
+            .from(shareAssets)
+            .where(eq(shareAssets.shareId, filter.share_id))
+            .all()
+        ).map((row) => row.assetId),
+      )
+    : null;
   const selected = rows.filter((row: ExportRow) => {
     const comment = row.comment;
+    if (shareAssetIds && !shareAssetIds.has(row.asset.id)) return false;
     if (filter.version_id && comment.versionId !== filter.version_id)
       return false;
     if (filter.author_user_id && comment.authorUserId !== filter.author_user_id)
@@ -1333,23 +1404,45 @@ const processExportJob = async (
   });
   // Marker formats require a frame; the PDF report keeps frameless comments
   // as text-only blocks instead.
-  const markerRows = selected.filter((row) => row.comment.frameIn !== null);
+  const markerRows = selected.filter(
+    (row) => row.comment.parentId === null && row.comment.frameIn !== null,
+  );
+  const repliesByParent = new Map<string, ExportRow[]>();
+  for (const row of rows) {
+    const parentId = row.comment.parentId;
+    if (!parentId) continue;
+    if (filter.internal !== undefined) {
+      if (Boolean(row.comment.internal) !== filter.internal) continue;
+    }
+    const replies = repliesByParent.get(parentId) ?? [];
+    replies.push(row);
+    repliesByParent.set(parentId, replies);
+  }
   // Each version carries its own rational rate, start frame, and drop-frame
   // flag, so comments are grouped by version and serialized per group.
   interface ExportGroup {
     version?: typeof assetVersions.$inferSelect;
+    asset?: typeof assets.$inferSelect;
     markers: Array<{
       id: string;
       bodyText: string;
       authorName: string | null;
       frameIn: number;
       frameOut: number | null;
+      completed: boolean;
+      internal: boolean;
+      replies: Array<{
+        id: string;
+        bodyText: string;
+        authorName: string | null;
+      }>;
     }>;
   }
   const byVersion = new Map<string, ExportGroup>();
   for (const row of markerRows) {
     const entry: ExportGroup = byVersion.get(row.version.id) ?? {
       version: row.version,
+      asset: row.asset,
       markers: [],
     };
     entry.markers.push({
@@ -1358,26 +1451,41 @@ const processExportJob = async (
       authorName: row.comment.authorName,
       frameIn: row.comment.frameIn as number,
       frameOut: row.comment.frameOut,
+      completed: row.comment.completedAt !== null,
+      internal: Boolean(row.comment.internal),
+      replies: (repliesByParent.get(row.comment.id) ?? []).map((reply) => ({
+        id: reply.comment.id,
+        bodyText: reply.comment.bodyText,
+        authorName: reply.comment.authorName,
+      })),
     });
     byVersion.set(row.version.id, entry);
   }
   const groupList: ExportGroup[] = byVersion.size
     ? [...byVersion.values()]
     : [{ markers: [] }];
-  const optionsFor = (version: typeof assetVersions.$inferSelect | undefined) =>
-    ({
-      title: "Onelight Comments",
+  const optionsFor = (group: ExportGroup) => {
+    const version = group.version;
+    return {
+      title: version
+        ? `${group.asset?.name ?? version.originalFilename} v${version.versionNo} - Onelight comments`
+        : "Onelight comments",
       rate: {
         num: version?.frameRateNum ?? 24,
         den: version?.frameRateDen ?? 1,
       },
       startFrame:
         job.timecodeBase === "source" ? (version?.sourceStartFrame ?? 0) : 0,
+      ...(version?.durationFrames === null ||
+      version?.durationFrames === undefined
+        ? {}
+        : { durationFrames: version.durationFrames }),
       dropFrame: Boolean(version?.dropFrame),
       timecodeBase: job.timecodeBase,
-    }) as const;
+    } as const;
+  };
   const serializeGroup = (group: (typeof groupList)[number]): string => {
-    const options = optionsFor(group.version);
+    const options = optionsFor(group);
     return job.format === "resolve_edl"
       ? exportResolveEdl(group.markers, options)
       : job.format === "avid_txt"
@@ -1390,40 +1498,36 @@ const processExportJob = async (
               ? exportFcpXml(group.markers, options)
               : job.format === "csv"
                 ? exportCsv(group.markers, options)
-                : exportText(group.markers, options);
+                : job.format === "json"
+                  ? exportJson(group.markers, options)
+                  : exportText(group.markers, options);
   };
-  const output =
-    job.format === "pdf"
-      ? await buildPdfExport(db, job, blobRoot, media, rows, selected)
-      : job.format === "json"
-        ? JSON.stringify(
-            groupList.flatMap(
-              (group) =>
-                JSON.parse(
-                  exportJson(group.markers, optionsFor(group.version)),
-                ) as unknown[],
-            ),
-            null,
-            2,
-          ) + "\n"
-        : groupList.map(serializeGroup).join("\n");
-  const directory = path.join(blobRoot, "exports");
+  let output: string | Uint8Array;
+  let outputName: string;
+  if (job.format === "pdf") {
+    output = await buildPdfExport(db, job, blobRoot, media, rows, selected);
+    outputName = "onelight-comment-report.pdf";
+  } else {
+    const extension = exportExtension(job.format);
+    const files = groupList.map((group) => ({
+      name: `${safeExportStem(
+        group.version
+          ? `${group.asset?.name ?? group.version.originalFilename} v${group.version.versionNo} comments`
+          : "onelight-comments",
+      )}.${extension}`,
+      content: serializeGroup(group),
+    }));
+    if (files.length === 1 && files[0]) {
+      output = files[0].content;
+      outputName = files[0].name;
+    } else {
+      output = await zipTextFiles(files);
+      outputName = "onelight-comments.zip";
+    }
+  }
+  const key = `exports/${job.id}/${outputName}`;
+  const directory = path.dirname(path.join(blobRoot, key));
   await mkdir(directory, { recursive: true });
-  const extension =
-    job.format === "pdf"
-      ? "pdf"
-      : job.format === "fcpxml"
-        ? "xml"
-        : job.format === "avid_xml" || job.format === "xmeml"
-          ? "xml"
-          : job.format === "csv"
-            ? "csv"
-            : job.format === "json"
-              ? "json"
-              : job.format === "resolve_edl"
-                ? "edl"
-                : "txt";
-  const key = `exports/${job.id}.${extension}`;
   await writeFile(path.join(blobRoot, key), output);
   await db
     .update(exportJobs)

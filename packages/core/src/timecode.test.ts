@@ -53,6 +53,8 @@ describe("timecode round-trip properties (P2-T05)", () => {
       { num: 24, den: 1 },
       { num: 25, den: 1 },
       { num: 30000, den: 1001 },
+      { num: 30, den: 1 },
+      { num: 48, den: 1 },
       { num: 50, den: 1 },
       { num: 60, den: 1 },
     ];
@@ -100,19 +102,30 @@ describe("timecode round-trip properties (P2-T05)", () => {
     ).toThrow();
   });
 
-  it("rejects unsupported rates", () => {
+  it("round-trips exact nonstandard rational rates without substitution", () => {
     for (const rate of [
       { num: 23, den: 1 },
       { num: 12, den: 1 },
       { num: 30000, den: 1000 },
     ]) {
-      expect(() => timecodeFromFrames(0, rate)).toThrow();
-      expect(() =>
-        framesFromTimecode(
-          { hours: 0, minutes: 0, seconds: 0, frames: 0, dropFrame: false },
-          rate,
-        ),
-      ).toThrow();
+      expect(roundTrip(12_345, rate, false)).toBe(12_345);
     }
+  });
+
+  it("supports three-digit frame labels for high-frame-rate sources", () => {
+    const rate = { num: 120, den: 1 };
+    const label = formatTimecode(timecodeFromFrames(119, rate));
+    expect(label).toBe("00:00:00:119");
+    expect(framesFromTimecode(parseTimecode(label, rate), rate)).toBe(119);
+  });
+
+  it("rejects invalid rational rates", () => {
+    for (const rate of [
+      { num: 0, den: 1 },
+      { num: 24, den: 0 },
+      { num: -24, den: 1 },
+      { num: 1000, den: 1 },
+    ])
+      expect(() => timecodeFromFrames(0, rate)).toThrow();
   });
 });

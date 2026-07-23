@@ -664,6 +664,65 @@ review. Structured stdout records show the browser, platform, requested rate,
 media readiness, clock, volume and mute state, and last successful sidecar
 stage. The reviewer does not need developer tools or a log-gathering step.
 
+## NLE fidelity and preserved source metadata (2026-07-23)
+
+- **Marker exports now carry review context, not just bodies.** NLE note fields
+  retain the author, completion state, project-only internal state, and thread
+  replies. Resolve colors distinguish open, completed, and internal markers.
+  Avid uses its documented text colors. Share exports are server-constrained
+  to assets in the share and always exclude internal comments.
+- **XML timelines have real timeline semantics.** Premiere xmeml markers are
+  sequence-relative while the sequence timecode stores the source origin.
+  FCPXML uses exact rational seconds, source `tcStart`, and media duration, so
+  a one-minute source starting at 01:00 does not become an hour-long sequence.
+  Multi-version exports are one valid file per version in a ZIP instead of
+  concatenated complete documents. Avid is labeled and downloaded as marker
+  text; the old `avid_xml` API value remains only as a compatibility alias.
+- **Manual NLE state is now explicit.** David imported the Resolve and Premiere
+  outputs successfully on 2026-07-23. This pass improves their marker names,
+  notes, source origins, and durations. Media Composer is unavailable and Final
+  Cut has not yet been recorded, so those two remain release checks.
+- **Frame rate is never rounded into another rate.** Probe rationals are
+  reduced and retained exactly. Dedicated `tmcd` wins over duplicate format or
+  video tags, and the selected source is recorded. The original upload remains
+  byte-for-byte untouched; proxies and watermarked derivatives re-embed source
+  timecode and the integration harness probes the resulting timecode track.
+  A true VFR source is explicitly marked and normalized to a deterministic CFR
+  proxy at its exact measured average rational. That preserves the original and
+  the chosen starting label, but it does not pretend a one-rate SMPTE track can
+  encode every irregular source-frame interval.
+- **Color metadata is retained and conversions are explicit.** The version
+  stores primaries, transfer, matrix, range, chroma location, pixel format,
+  bit depth, field order, side data, and any untagged-source assumption. SDR
+  transcodes numerically convert BT.601 and full-range sources to BT.709
+  limited range. They do not relabel the source. HDR rails retain source color
+  tags. Every rendition records both source and output color contracts.
+- **Node FTS5 is complete.** Startup installs a versioned, trigger-maintained
+  trigram FTS5 index over assets, comments, projects, people, and shares.
+  Literal LIKE remains the correctness predicate and the fallback for D1 and
+  two-character searches, preserving the public substring contract and
+  visibility checks.
+
+## Browser color plan (2026-07-23)
+
+The deep-research decision and implementation spec are now recorded in
+`docs/research/browser-color-reference-2026-07.md` and
+`specs/browser-color-reference.md`.
+
+The key boundary is raw decoded planes. A self-check can detect a bad native
+path but cannot repair it. Production SDR reference mode will demux with
+mediabunny, decode with WebCodecs, copy native I420 or NV12 planes, and perform
+range, matrix, and transfer conversion in an audited WebGL2 shader targeting an
+explicit sRGB canvas. `drawImage`, RGB `VideoFrame.copyTo`, and WebGPU external
+textures remain browser-managed conversions and therefore cannot be the
+reference path.
+
+Native playback remains the universal fallback and the first HDR path. HDR
+selection will require both exact Media Capabilities support and an HDR-capable
+video plane. The SDR tonemapped proxy remains the default otherwise. Automatic
+reference mode is blocked on cross-engine pixel, frame, memory, recovery, and
+real Safari/Windows performance gates.
+
 ## Full application hardening audit (2026-07-23)
 
 The v1 app was audited across authorization, public contracts, upload and
@@ -711,23 +770,31 @@ Node suite passes 517 tests, the D1 workers suite passes 22, and the media QA
 suite passes 12 across Chromium and Firefox with the unavailable WebKit leg
 skipping cleanly.
 
+The 2026-07-23 media pass made the workhorse ladder hardware-first across Intel
+Quick Sync and Arc, NVIDIA NVENC, and AMD AMF. Startup now performs a real
+encode probe, explicit production selections fail closed, auto mode falls back
+safely, and `/healthz` reports the active backend. The ladder now has
+frame-rate-aware VBV caps, fixed one-second GOPs on every encoder, quality
+presets appropriate to each vendor, per-rendition software retry after a
+driver reset, and Compose overrides that pass through Intel, NVIDIA, or AMD
+devices. Comment timeline blips now use the commenter's uploaded avatar or the
+same deterministic generated avatar as the rest of the app.
+
 ## Before tagging v1.0 (blocking, all require Linux or human judgement)
 
 1. DONE 2026-07-17: first green run of the integration and media-qc CI jobs on Linux, exercising compose end to end, the HDR libplacebo tonemap on lavapipe, the zscale conversion, tmcd write, pdftoppm, watermark burn, range serving, and graceful shutdown against real ffmpeg. Getting there surfaced and fixed: CI had never actually executed (a pnpm/action-setup version pin conflicted with packageManager and killed every run at setup); the node job was missing the web:check gate and the SPA build the workers pool needs; the qa HDR smoke run omitted the worker's VULKAN_HWDEVICE_ARGS so libplacebo refused lavapipe (the spec now mirrors the worker invocation exactly); and Playwright WebKit on Linux reads the 75 percent bars low (a GStreamer/GL decode artifact, not real Safari; the exact deviation is pinned per-engine-and-platform in the qa color spec so any decoder drift still fails, and the reference tolerances were never widened).
-2. Real NLE import round-trips of the marker exporters (Resolve EDL, Avid text, xmeml, FCPXML) against actual applications, recorded per the golden-file protocol in the design doc. Fixtures are byte-exact and fuzz-hardened; the NLEs are the judges.
+2. PARTIAL 2026-07-23: Resolve EDL and Premiere xmeml import successfully in real applications. Media Composer marker text and Final Cut FCPXML still need recorded imports. Fixtures are byte-exact and fuzz-hardened; the NLEs remain the judges.
 3. Share-flow browser pass (focus order, drawing, watermark overlay, modal a11y) with screenshots checked against section 24 and the mockups. The authenticated review room passed the 2026-07-23 desktop, tablet and phone layout audit.
 4. The curated real-camera corpus of design doc section 21 (ProRes/DNx/XAVC, VFR phone clip, 8ch MXF, broken files) as CI fixtures where licensing allows; synthetic PQ/HLG fixtures already run.
 
 ## Hardening backlog (post-v1.0, rough priority)
 
 - Worker pump over signed URLs so the media worker can run against R2/S3 storage instead of a shared filesystem (unblocks full CF transcode and split-host deployments; design sketch in apps/cf/src/index.ts). This is the largest remaining architectural item.
-- Browser color self-check, detect and disclose (decided 2026-07-17): at session start the player decodes a tiny known clip, reads reference patches the way the qa color harness does, and if the browser's decode is off-spec badges the session as not color-accurate with a pointer to a browser that is. The deviation becomes information for the reviewer; the app never bends pixels to compensate (that decision is recorded here: a corrective transform cannot be targeted, cannot be kept true across browser updates, and breaks the player's promise that what you see is what the file contains). First flagged offender: Playwright WebKit on Linux, 3-5/255 low on the 75 percent bars.
-- Reference-mode decode, pulled forward from phase 7 (decided 2026-07-17): decode via WebCodecs and perform the 709 matrix and range expansion in our own WebGL/WebGPU shader, removing the browser's YUV-to-RGB conversion from the path entirely so every engine that can hand us frames produces identical pixels by construction. The qa harness already trusts WebCodecs as its frame-accuracy ground truth, and the WebKit color finding above is the motivating case. The self-check is the cheap first step; reference mode is the structural fix.
+- Browser color self-check and raw-plane SDR reference mode. Deep research and dependency-ordered acceptance gates are in `docs/research/browser-color-reference-2026-07.md` and `specs/browser-color-reference.md`. The baseline is WebGL2 over copied I420/NV12 planes; WebGPU is an optional accelerator after parity, not the correctness boundary.
 - Storage usage accounting reconciliation surfaced in the UI (the GC reconciliation and reaping sweeps exist server-side).
 - A separate export pump so a long export does not head-of-line-block transcode on the single pump.
 - Uppy-based uploader if the directory uploader proves insufficient for camera-card ingest at scale.
 - General Idempotency-Key response-replay store (the current implementation replays upload creation; see the phase-1 supersession note).
-- SQLite FTS5 search on Node with LIKE fallback on D1 (the spec supersession keeps LIKE everywhere until D1 FTS5 support is verified).
 - DNS-rebinding-safe webhook delivery.
 - A true tiled watermark grid (v1 approximates with three diagonal placements); watermarked sprite sidecars (the scrubber filmstrip on a watermarked share currently shows clean low-res frames).
 - Per-asset share view analytics: the viewer roster exists, but per-asset view events are not recorded server-side.

@@ -50,12 +50,26 @@ export interface MediaInfo {
   format: Record<string, unknown>;
   streams: Array<Record<string, unknown>>;
   sourceTimecodeStart?: string;
+  sourceTimecodeSource?: "tmcd_stream" | "format" | "video_stream" | "stream";
   frameRateNum?: number;
   frameRateDen?: number;
   durationFrames?: number;
   dropFrame?: boolean;
   variableFrameRate: boolean;
   colorAssumed: boolean;
+  sourceColor?: {
+    primaries: string | null;
+    transfer: string | null;
+    matrix: string | null;
+    range: string | null;
+    chromaLocation: string | null;
+    pixelFormat: string | null;
+    bitsPerRawSample: string | null;
+    fieldOrder: string | null;
+    sideData: unknown[];
+    assumed: boolean;
+    assumption?: string;
+  };
 }
 
 export interface TranscodeJob {

@@ -56,6 +56,7 @@ const sourceOptions: MarkerOptions = {
   title: "Onelight Comments",
   rate: { num: 24, den: 1 },
   startFrame: 86400,
+  durationFrames: 240,
   dropFrame: false,
   timecodeBase: "source",
 };
@@ -88,6 +89,7 @@ const dropFrameOptions: MarkerOptions = {
   title: "Reel B",
   rate: { num: 30000, den: 1001 },
   startFrame: 107892,
+  durationFrames: 1803,
   dropFrame: true,
   timecodeBase: "source",
 };
@@ -99,11 +101,11 @@ describe("exportResolveEdl", () => {
         `FCM: NON-DROP FRAME\n` +
         `\n` +
         `001  001      V     C        01:00:00:00 01:00:00:01 01:00:00:00 01:00:00:01\n` +
-        ` |C:ResolveColorBlue |M:Fix the flag pole matte (Ava) |D:1\n` +
+        ` |C:ResolveColorBlue |M:Ava: Fix the flag pole matte |D:1\n` +
         `002  001      V     C        01:00:01:00 01:00:02:00 01:00:01:00 01:00:02:00\n` +
-        ` |C:ResolveColorBlue |M:Sky replacement runs long (Ben) |D:24\n` +
+        ` |C:ResolveColorBlue |M:Ben: Sky replacement runs long |D:24\n` +
         `003  001      V     C        01:00:04:04 01:00:04:05 01:00:04:04 01:00:04:05\n` +
-        ` |C:ResolveColorBlue |M:_42 / grade is too warm\\nsecond line (Chloe)\\nCafe pass, senor |D:1\n`,
+        ` |C:ResolveColorBlue |M:Chloe: 42 / grade is too warm\\nsecond line\\n---\\nReviewer: Cafe pass, senor |D:1\n`,
     );
   });
 
@@ -113,9 +115,9 @@ describe("exportResolveEdl", () => {
         `FCM: DROP FRAME\n` +
         `\n` +
         `001  001      V     C        01:00:00;00 01:00:00;01 01:00:00;00 01:00:00;01\n` +
-        ` |C:ResolveColorBlue |M:Drop frame start (Dee) |D:1\n` +
+        ` |C:ResolveColorBlue |M:Dee: Drop frame start |D:1\n` +
         `002  001      V     C        01:00:59;29 01:01:00;05 01:00:59;29 01:01:00;05\n` +
-        ` |C:ResolveColorBlue |M:Crosses the drop minute |D:4\n`,
+        ` |C:ResolveColorBlue |M:Reviewer: Crosses the drop minute |D:4\n`,
     );
   });
 
@@ -125,11 +127,11 @@ describe("exportResolveEdl", () => {
         `FCM: NON-DROP FRAME\n` +
         `\n` +
         `001  001      V     C        00:00:00:00 00:00:00:01 00:00:00:00 00:00:00:01\n` +
-        ` |C:ResolveColorBlue |M:Fix the flag pole matte (Ava) |D:1\n` +
+        ` |C:ResolveColorBlue |M:Ava: Fix the flag pole matte |D:1\n` +
         `002  001      V     C        00:00:01:00 00:00:02:00 00:00:01:00 00:00:02:00\n` +
-        ` |C:ResolveColorBlue |M:Sky replacement runs long (Ben) |D:24\n` +
+        ` |C:ResolveColorBlue |M:Ben: Sky replacement runs long |D:24\n` +
         `003  001      V     C        00:00:04:04 00:00:04:05 00:00:04:04 00:00:04:05\n` +
-        ` |C:ResolveColorBlue |M:_42 / grade is too warm\\nsecond line (Chloe)\\nCafe pass, senor |D:1\n`,
+        ` |C:ResolveColorBlue |M:Chloe: 42 / grade is too warm\\nsecond line\\n---\\nReviewer: Cafe pass, senor |D:1\n`,
     );
   });
 });
@@ -137,17 +139,17 @@ describe("exportResolveEdl", () => {
 describe("exportAvidText", () => {
   it("emits the five-field tab-separated Media Composer format", () => {
     expect(exportAvidText(sourceComments, sourceOptions)).toBe(
-      `Ava\t01:00:00:00\tV1\tblue\tFix the flag pole matte\n` +
-        `Ben\t01:00:01:00\tV1\tblue\tSky replacement runs long\n` +
-        `Chloé\t01:00:04:04\tV1\tblue\t42 | grade is too warm\\nsecond line\n` +
-        `Onelight\t01:00:04:04\tV1\tblue\tCafé pass, señor\n`,
+      `Ava\t01:00:00:00\tV1\tblue\tFix the flag pole matte\\n\\nAuthor: Ava\\nStatus: Open\n` +
+        `Ben\t01:00:01:00\tV1\tblue\tSky replacement runs long\\n\\nAuthor: Ben\\nStatus: Open\n` +
+        `Chloé\t01:00:04:04\tV1\tblue\t42 | grade is too warm\\nsecond line\\n\\nAuthor: Chloé\\nStatus: Open\n` +
+        `Onelight\t01:00:04:04\tV1\tblue\tCafé pass, señor\\n\\nAuthor: Reviewer\\nStatus: Open\n`,
     );
   });
 
   it("emits drop-frame labels at 29.97 DF", () => {
     expect(exportAvidText(dropFrameComments, dropFrameOptions)).toBe(
-      `Dee\t01:00:00;00\tV1\tblue\tDrop frame start\n` +
-        `Onelight\t01:00:59;29\tV1\tblue\tCrosses the drop minute\n`,
+      `Dee\t01:00:00;00\tV1\tblue\tDrop frame start\\n\\nAuthor: Dee\\nStatus: Open\n` +
+        `Onelight\t01:00:59;29\tV1\tblue\tCrosses the drop minute\\n\\nAuthor: Reviewer\\nStatus: Open\n`,
     );
   });
 });
@@ -158,48 +160,98 @@ describe("exportAvidXml", () => {
       exportAvidText(sourceComments, sourceOptions),
     );
     expect(exportAvidXml(dropFrameComments, dropFrameOptions)).toBe(
-      `Dee\t01:00:00;00\tV1\tblue\tDrop frame start\n` +
-        `Onelight\t01:00:59;29\tV1\tblue\tCrosses the drop minute\n`,
+      `Dee\t01:00:00;00\tV1\tblue\tDrop frame start\\n\\nAuthor: Dee\\nStatus: Open\n` +
+        `Onelight\t01:00:59;29\tV1\tblue\tCrosses the drop minute\\n\\nAuthor: Reviewer\\nStatus: Open\n`,
     );
   });
 });
 
+describe("thread context and review state", () => {
+  const thread: MarkerComment[] = [
+    {
+      id: "01J0000000000000000000ST01",
+      bodyText: "Hold for legal",
+      authorName: "Ava",
+      frameIn: 12,
+      completed: true,
+      internal: true,
+      replies: [
+        {
+          id: "01J0000000000000000000ST02",
+          bodyText: "Approved with the alternate card",
+          authorName: "Ben",
+        },
+      ],
+    },
+  ];
+
+  it("carries author, replies, completion, and internal visibility into NLE notes", () => {
+    const edl = exportResolveEdl(thread, sourceOptions);
+    expect(edl).toContain("|C:ResolveColorPurple");
+    expect(edl).toContain("[Done, Internal] Ava: Hold for legal");
+    expect(edl).toContain("Reply from Ben: Approved with the alternate card");
+
+    const avid = exportAvidText(thread, sourceOptions);
+    expect(avid).toContain("\tmagenta\t");
+    expect(avid).toContain("Status: Completed");
+    expect(avid).toContain("Visibility: Internal");
+    expect(avid).toContain("Ben: Approved with the alternate card");
+
+    const fcp = exportFcpXml(thread, sourceOptions);
+    expect(fcp).toContain('completed="1"');
+    expect(fcp).toContain("Visibility: Internal");
+
+    const xmeml = exportXmeml(thread, sourceOptions);
+    expect(xmeml).toContain("Status: Completed");
+    expect(xmeml).toContain("Ben: Approved with the alternate card");
+  });
+});
+
 describe("exportXmeml", () => {
-  it("declares timebase and ntsc and keeps bodies verbatim in comment", () => {
+  it("keeps source timecode in the sequence while markers stay sequence-relative", () => {
     expect(exportXmeml(sourceComments, sourceOptions)).toBe(
       `<?xml version="1.0" encoding="UTF-8"?>\n` +
         `<!DOCTYPE xmeml>\n` +
         `<xmeml version="5">\n` +
         `  <sequence>\n` +
         `    <name>Onelight Comments</name>\n` +
-        `    <duration>86501</duration>\n` +
+        `    <duration>240</duration>\n` +
         `    <rate>\n` +
         `      <timebase>24</timebase>\n` +
         `      <ntsc>FALSE</ntsc>\n` +
         `    </rate>\n` +
+        `    <timecode>\n` +
+        `      <rate>\n` +
+        `        <timebase>24</timebase>\n` +
+        `        <ntsc>FALSE</ntsc>\n` +
+        `      </rate>\n` +
+        `      <string>01:00:00:00</string>\n` +
+        `      <frame>86400</frame>\n` +
+        `      <displayformat>NDF</displayformat>\n` +
+        `    </timecode>\n` +
         `    <marker>\n` +
-        `      <name>Ava</name>\n` +
-        `      <comment>Fix the flag pole matte</comment>\n` +
-        `      <in>86400</in>\n` +
+        `      <name>Ava: Fix the flag pole matte</name>\n` +
+        `      <in>0</in>\n` +
         `      <out>-1</out>\n` +
+        `      <comment>Fix the flag pole matte\n\nAuthor: Ava\nStatus: Open</comment>\n` +
         `    </marker>\n` +
         `    <marker>\n` +
-        `      <name>Ben</name>\n` +
-        `      <comment>Sky replacement runs long</comment>\n` +
-        `      <in>86424</in>\n` +
-        `      <out>86448</out>\n` +
+        `      <name>Ben: Sky replacement runs long</name>\n` +
+        `      <in>24</in>\n` +
+        `      <out>48</out>\n` +
+        `      <comment>Sky replacement runs long\n\nAuthor: Ben\nStatus: Open</comment>\n` +
         `    </marker>\n` +
         `    <marker>\n` +
-        `      <name>Chloé</name>\n` +
-        `      <comment>42 | grade is too warm\nsecond line</comment>\n` +
-        `      <in>86500</in>\n` +
+        `      <name>Chloé: 42 | grade is too warm second line</name>\n` +
+        `      <in>100</in>\n` +
         `      <out>-1</out>\n` +
+        `      <comment>42 | grade is too warm\nsecond line\n\nAuthor: Chloé\nStatus: Open</comment>\n` +
         `    </marker>\n` +
         `    <marker>\n` +
-        `      <name></name>\n` +
-        `      <comment>Café pass, señor</comment>\n` +
-        `      <in>86500</in>\n` +
+        `      <name>Reviewer: Café pass, señor</name>\n` +
+        `      <in>100</in>\n` +
         `      <out>-1</out>\n` +
+        `      <comment>Café pass, señor\n\nAuthor: Reviewer\nStatus: Open</comment>\n` +
         `    </marker>\n` +
         `  </sequence>\n` +
         `</xmeml>\n`,
@@ -213,22 +265,31 @@ describe("exportXmeml", () => {
         `<xmeml version="5">\n` +
         `  <sequence>\n` +
         `    <name>Reel B</name>\n` +
-        `    <duration>109695</duration>\n` +
+        `    <duration>1803</duration>\n` +
         `    <rate>\n` +
         `      <timebase>30</timebase>\n` +
         `      <ntsc>TRUE</ntsc>\n` +
         `    </rate>\n` +
+        `    <timecode>\n` +
+        `      <rate>\n` +
+        `        <timebase>30</timebase>\n` +
+        `        <ntsc>TRUE</ntsc>\n` +
+        `      </rate>\n` +
+        `      <string>01:00:00;00</string>\n` +
+        `      <frame>107892</frame>\n` +
+        `      <displayformat>DF</displayformat>\n` +
+        `    </timecode>\n` +
         `    <marker>\n` +
-        `      <name>Dee</name>\n` +
-        `      <comment>Drop frame start</comment>\n` +
-        `      <in>107892</in>\n` +
+        `      <name>Dee: Drop frame start</name>\n` +
+        `      <in>0</in>\n` +
         `      <out>-1</out>\n` +
+        `      <comment>Drop frame start\n\nAuthor: Dee\nStatus: Open</comment>\n` +
         `    </marker>\n` +
         `    <marker>\n` +
-        `      <name></name>\n` +
-        `      <comment>Crosses the drop minute</comment>\n` +
-        `      <in>109691</in>\n` +
-        `      <out>109695</out>\n` +
+        `      <name>Reviewer: Crosses the drop minute</name>\n` +
+        `      <in>1799</in>\n` +
+        `      <out>1803</out>\n` +
+        `      <comment>Crosses the drop minute\n\nAuthor: Reviewer\nStatus: Open</comment>\n` +
         `    </marker>\n` +
         `  </sequence>\n` +
         `</xmeml>\n`,
@@ -237,24 +298,24 @@ describe("exportXmeml", () => {
 });
 
 describe("exportFcpXml", () => {
-  it("emits a minimal valid fcpxml skeleton with exact rational times", () => {
+  it("emits exact rational source timing without inflating sequence duration", () => {
     expect(exportFcpXml(sourceComments, sourceOptions)).toBe(
       `<?xml version="1.0" encoding="UTF-8"?>\n` +
         `<!DOCTYPE fcpxml>\n` +
-        `<fcpxml version="1.11">\n` +
+        `<fcpxml version="1.10">\n` +
         `  <resources>\n` +
         `    <format id="r1" frameDuration="1/24s" width="1920" height="1080"/>\n` +
         `  </resources>\n` +
         `  <library>\n` +
         `    <event name="Onelight Comments">\n` +
         `      <project name="Onelight Comments">\n` +
-        `        <sequence format="r1" duration="86501/24s" tcStart="0s" tcFormat="NDF">\n` +
+        `        <sequence format="r1" duration="240/24s" tcStart="86400/24s" tcFormat="NDF">\n` +
         `          <spine>\n` +
-        `            <gap name="Gap" offset="0s" start="0s" duration="86501/24s">\n` +
-        `              <marker start="86400/24s" duration="1/24s" value="Fix the flag pole matte"/>\n` +
-        `              <marker start="86424/24s" duration="24/24s" value="Sky replacement runs long"/>\n` +
-        `              <marker start="86500/24s" duration="1/24s" value="42 | grade is too warm&#10;second line"/>\n` +
-        `              <marker start="86500/24s" duration="1/24s" value="Café pass, señor"/>\n` +
+        `            <gap name="Onelight Comments" offset="86400/24s" start="86400/24s" duration="240/24s">\n` +
+        `              <marker start="86400/24s" duration="1/24s" value="Ava: Fix the flag pole matte" note="Fix the flag pole matte&#10;&#10;Author: Ava&#10;Status: Open" completed="0"/>\n` +
+        `              <marker start="86424/24s" duration="24/24s" value="Ben: Sky replacement runs long" note="Sky replacement runs long&#10;&#10;Author: Ben&#10;Status: Open" completed="0"/>\n` +
+        `              <marker start="86500/24s" duration="1/24s" value="Chloé: 42 | grade is too warm second line" note="42 | grade is too warm&#10;second line&#10;&#10;Author: Chloé&#10;Status: Open" completed="0"/>\n` +
+        `              <marker start="86500/24s" duration="1/24s" value="Reviewer: Café pass, señor" note="Café pass, señor&#10;&#10;Author: Reviewer&#10;Status: Open" completed="0"/>\n` +
         `            </gap>\n` +
         `          </spine>\n` +
         `        </sequence>\n` +
@@ -269,18 +330,18 @@ describe("exportFcpXml", () => {
     expect(exportFcpXml(dropFrameComments, dropFrameOptions)).toBe(
       `<?xml version="1.0" encoding="UTF-8"?>\n` +
         `<!DOCTYPE fcpxml>\n` +
-        `<fcpxml version="1.11">\n` +
+        `<fcpxml version="1.10">\n` +
         `  <resources>\n` +
         `    <format id="r1" frameDuration="1001/30000s" width="1920" height="1080"/>\n` +
         `  </resources>\n` +
         `  <library>\n` +
         `    <event name="Reel B">\n` +
         `      <project name="Reel B">\n` +
-        `        <sequence format="r1" duration="109804695/30000s" tcStart="0s" tcFormat="DF">\n` +
+        `        <sequence format="r1" duration="1804803/30000s" tcStart="107999892/30000s" tcFormat="DF">\n` +
         `          <spine>\n` +
-        `            <gap name="Gap" offset="0s" start="0s" duration="109804695/30000s">\n` +
-        `              <marker start="107999892/30000s" duration="1001/30000s" value="Drop frame start"/>\n` +
-        `              <marker start="109800691/30000s" duration="4004/30000s" value="Crosses the drop minute"/>\n` +
+        `            <gap name="Reel B" offset="107999892/30000s" start="107999892/30000s" duration="1804803/30000s">\n` +
+        `              <marker start="107999892/30000s" duration="1001/30000s" value="Dee: Drop frame start" note="Drop frame start&#10;&#10;Author: Dee&#10;Status: Open" completed="0"/>\n` +
+        `              <marker start="109800691/30000s" duration="4004/30000s" value="Reviewer: Crosses the drop minute" note="Crosses the drop minute&#10;&#10;Author: Reviewer&#10;Status: Open" completed="0"/>\n` +
         `            </gap>\n` +
         `          </spine>\n` +
         `        </sequence>\n` +
@@ -355,10 +416,10 @@ describe("exportJson", () => {
 describe("exportText", () => {
   it("keeps bodies verbatim after the timecode label", () => {
     expect(exportText(sourceComments, sourceOptions)).toBe(
-      `01:00:00:00 Fix the flag pole matte\n` +
-        `01:00:01:00 Sky replacement runs long\n` +
-        `01:00:04:04 42 | grade is too warm\nsecond line\n` +
-        `01:00:04:04 Café pass, señor\n`,
+      `01:00:00:00 Ava: Fix the flag pole matte\n` +
+        `01:00:01:00 Ben: Sky replacement runs long\n` +
+        `01:00:04:04 Chloé: 42 | grade is too warm\nsecond line\n` +
+        `01:00:04:04 Reviewer: Café pass, señor\n`,
     );
   });
 });
@@ -411,13 +472,15 @@ describe("defensive exporters", () => {
     const fcp = exportFcpXml(dirty, mistagged);
     expect(fcp).not.toContain("\x07");
     expect(fcp).not.toContain("\x00");
-    expect(fcp).toContain('value="bell and null end"');
+    expect(fcp).toContain('value="ctl: bell and null end"');
     const xmeml = exportXmeml(dirty, mistagged);
     expect(xmeml).not.toContain("\x07");
     expect(xmeml).not.toContain("\x00");
     expect(xmeml).not.toContain("\x1f");
-    expect(xmeml).toContain("<comment>bell and null end</comment>");
-    expect(xmeml).toContain("<name>ctl</name>");
+    expect(xmeml).toContain(
+      "<comment>bell and null end\n\nAuthor: ctl\nStatus: Open</comment>",
+    );
+    expect(xmeml).toContain("<name>ctl: bell and null end</name>");
   });
 
   it("neutralizes the CDATA terminator in xmeml character data", () => {

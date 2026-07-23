@@ -14,6 +14,9 @@ export type TimelineMarker = {
   authorId?: string | null;
   /* A share-scoped or authenticated image URL. Missing images use initials. */
   avatarUrl?: string | null;
+  /* The app's deterministic generated-avatar wash. It is supplied by the host
+     because the player does not own the product palette. */
+  generatedAvatarBackground?: string | null;
   text?: string | null;
   completed?: boolean;
 };

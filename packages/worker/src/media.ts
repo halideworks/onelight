@@ -16,8 +16,6 @@ export interface ProcessResult {
 
 export interface NormalizedMediaInfo extends MediaInfo {
   dropFrame?: boolean;
-  frameRateClamped?: boolean;
-  probedFrameRate?: string;
   nominalRate?: boolean;
 }
 
@@ -52,9 +50,23 @@ export const parseRational = (
   const den = Number(rawDen ?? 1);
   if (!Number.isInteger(num) || !Number.isInteger(den) || num <= 0 || den <= 0)
     return undefined;
-  return { num, den };
+  const gcd = (left: number, right: number): number => {
+    let a = left;
+    let b = right;
+    while (b !== 0) {
+      const remainder = a % b;
+      a = b;
+      b = remainder;
+    }
+    return a;
+  };
+  const divisor = gcd(num, den);
+  return { num: num / divisor, den: den / divisor };
 };
 
+/* Canonical editorial rates exercised by the media QA corpus. This is a test
+   and capability list, never a normalization target: normalizeProbe retains
+   any valid measured rational exactly. */
 export const SUPPORTED_MEDIA_RATES: ReadonlyArray<{
   num: number;
   den: number;
@@ -63,30 +75,12 @@ export const SUPPORTED_MEDIA_RATES: ReadonlyArray<{
   { num: 24, den: 1 },
   { num: 25, den: 1 },
   { num: 30000, den: 1001 },
+  { num: 30, den: 1 },
   { num: 48, den: 1 },
   { num: 50, den: 1 },
   { num: 60000, den: 1001 },
   { num: 60, den: 1 },
 ];
-
-export const clampToSupportedRate = (rate: {
-  num: number;
-  den: number;
-}): { rate: { num: number; den: number }; exact: boolean } => {
-  const exact = SUPPORTED_MEDIA_RATES.find(
-    (candidate) => candidate.num * rate.den === rate.num * candidate.den,
-  );
-  if (exact) return { rate: exact, exact: true };
-  const fps = rate.num / rate.den;
-  let best = SUPPORTED_MEDIA_RATES[0] as { num: number; den: number };
-  for (const candidate of SUPPORTED_MEDIA_RATES)
-    if (
-      Math.abs(candidate.num / candidate.den - fps) <
-      Math.abs(best.num / best.den - fps)
-    )
-      best = candidate;
-  return { rate: best, exact: false };
-};
 
 // The spec mandates avg_frame_rate; r_frame_rate is only a fallback.
 const probedFrameRate = (
@@ -119,19 +113,73 @@ const frameCount = (
   return undefined;
 };
 
-const findTimecode = (document: ProbeDocument): string | undefined => {
+const findTimecode = (
+  document: ProbeDocument,
+):
+  | {
+      value: string;
+      source: NonNullable<MediaInfo["sourceTimecodeSource"]>;
+    }
+  | undefined => {
   const formatTags = document.format?.tags as
     Record<string, unknown> | undefined;
-  const streamTags =
-    document.streams?.flatMap((stream) => {
-      const tags = stream.tags as Record<string, unknown> | undefined;
-      return tags ? [tags] : [];
-    }) ?? [];
-  const candidates = [
-    formatTags?.timecode,
-    ...streamTags.map((tags) => tags.timecode),
-  ];
-  return candidates.map(asString).find((value) => value !== undefined);
+  const streams = document.streams ?? [];
+  const tagged = streams.flatMap((stream) => {
+    const tags = stream.tags as Record<string, unknown> | undefined;
+    const value = asString(tags?.timecode);
+    return value ? [{ stream, value }] : [];
+  });
+  const tmcd = tagged.find(({ stream }) => stream.codec_tag_string === "tmcd");
+  if (tmcd) return { value: tmcd.value, source: "tmcd_stream" };
+  const formatValue = asString(formatTags?.timecode);
+  if (formatValue) return { value: formatValue, source: "format" };
+  const video = tagged.find(({ stream }) => stream.codec_type === "video");
+  if (video) return { value: video.value, source: "video_stream" };
+  const first = tagged[0];
+  return first ? { value: first.value, source: "stream" } : undefined;
+};
+
+const nullableProbeString = (value: unknown): string | null =>
+  asString(value) === "unknown" ? null : (asString(value) ?? null);
+
+const sourceColorMetadata = (
+  video: Record<string, unknown>,
+): NonNullable<MediaInfo["sourceColor"]> => {
+  const primaries = nullableProbeString(video.color_primaries);
+  const transfer = nullableProbeString(video.color_transfer);
+  const matrix = nullableProbeString(video.color_space ?? video.colorspace);
+  const range = nullableProbeString(video.color_range);
+  const missing = [
+    ["primaries", primaries],
+    ["transfer", transfer],
+    ["matrix", matrix],
+    ["range", range],
+  ]
+    .filter((entry) => entry[1] === null)
+    .map((entry) => entry[0]);
+  const assumed = missing.length > 0;
+  const height = Number(video.height);
+  const standard =
+    Number.isFinite(height) && height <= 576 ? "BT.601" : "BT.709";
+  return {
+    primaries,
+    transfer,
+    matrix,
+    range,
+    chromaLocation: nullableProbeString(video.chroma_location),
+    pixelFormat: nullableProbeString(video.pix_fmt),
+    bitsPerRawSample: nullableProbeString(video.bits_per_raw_sample),
+    fieldOrder: nullableProbeString(video.field_order),
+    sideData: Array.isArray(video.side_data_list)
+      ? [...video.side_data_list]
+      : [],
+    assumed,
+    ...(assumed
+      ? {
+          assumption: `Missing ${missing.join(", ")} interpreted from ${standard} limited-range defaults for display-proxy conversion.`,
+        }
+      : {}),
+  };
 };
 
 // Drop-frame timecode exists only for the 29.97 (30000/1001) and 59.94
@@ -159,7 +207,7 @@ export const normalizeProbe = (
         video.color_range,
       ]
     : [];
-  const colorAssumed = colors.every(
+  const colorAssumed = colors.some(
     (value) => value === undefined || value === "unknown",
   );
   const normalized: NormalizedMediaInfo = {
@@ -167,25 +215,24 @@ export const normalizeProbe = (
     streams,
     variableFrameRate,
     colorAssumed,
+    ...(video ? { sourceColor: sourceColorMetadata(video) } : {}),
   };
   if (probed) {
-    const clamped = clampToSupportedRate(probed);
-    normalized.frameRateNum = clamped.rate.num;
-    normalized.frameRateDen = clamped.rate.den;
-    if (!clamped.exact) {
-      normalized.frameRateClamped = true;
-      normalized.probedFrameRate = `${probed.num}/${probed.den}`;
-    }
+    // Preserve the measured rational exactly. Substituting a nearby editorial
+    // rate changes frame identity and eventually shifts marker timecode.
+    normalized.frameRateNum = probed.num;
+    normalized.frameRateDen = probed.den;
   }
   const timecode = findTimecode(document);
   if (timecode !== undefined) {
-    normalized.sourceTimecodeStart = timecode;
+    normalized.sourceTimecodeStart = timecode.value;
+    normalized.sourceTimecodeSource = timecode.source;
     // Drop-frame timecode is defined only for the 29.97 and 59.94 NTSC rates.
     // A ";" separator on any other (commonly mistagged 24/25/30) source is not
     // drop-frame; honoring it would corrupt frame math and break exports, so
     // dropFrame is gated on the clamped rate as well as the separator.
     normalized.dropFrame =
-      timecode.includes(";") &&
+      timecode.value.includes(";") &&
       isNtscDropRate(normalized.frameRateNum, normalized.frameRateDen);
   }
   const rate =
@@ -340,12 +387,100 @@ export const VULKAN_HWDEVICE_ARGS: ReadonlyArray<string> = [
 const tonemapHwDeviceArgs = (mediaInfo: MediaInfo): string[] =>
   isHdrSource(mediaInfo) ? [...VULKAN_HWDEVICE_ARGS] : [];
 
-// Intel QuickSync (VAAPI) hardware H.264 encode. Opt-in per host through
-// ONELIGHT_VAAPI_DEVICE (a render node such as /dev/dri/renderD128) rather than
-// autodetected, because the node only exists where the container was actually
-// handed the GPU: an unset variable must degrade to software rather than fail
-// the job. Unset is the portable default and the path CI exercises.
+export type HardwareBackend = "software" | "vaapi" | "nvenc" | "amf";
+export type VaapiRateControl = "QVBR" | "VBR" | "CQP";
+export type HardwareAcceleration =
+  | { backend: "software" }
+  | {
+      backend: "vaapi";
+      device: string;
+      lowPower: boolean;
+      rateControl: VaapiRateControl;
+    }
+  | { backend: "nvenc"; device: string }
+  | { backend: "amf" };
+
+export const SOFTWARE_ACCELERATION: HardwareAcceleration = {
+  backend: "software",
+};
+export const HWACCEL_ENV = "ONELIGHT_HWACCEL";
 export const VAAPI_DEVICE_ENV = "ONELIGHT_VAAPI_DEVICE";
+export const NVENC_DEVICE_ENV = "ONELIGHT_NVENC_DEVICE";
+
+export interface HardwareAccelerationPlan {
+  candidates: HardwareAcceleration[];
+  required: boolean;
+}
+
+const enabled = (value: string | undefined, fallback: boolean): boolean =>
+  value === undefined
+    ? fallback
+    : !["0", "false", "no", "off"].includes(value.toLowerCase());
+
+/* Auto is intentionally capability-tested, not inferred from encoder names:
+   ffmpeg can list NVENC while the NVIDIA runtime library is absent, and a
+   mounted render node can still be denied to the container user. Explicit
+   modes are strict so a production install configured for a GPU cannot drift
+   silently back to CPU encoding. */
+export const hardwareAccelerationPlanFromEnv = (
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  platform = process.platform,
+): HardwareAccelerationPlan => {
+  const requested = (env[HWACCEL_ENV] ?? "auto").trim().toLowerCase();
+  if (
+    !["auto", "software", "none", "vaapi", "nvenc", "amf"].includes(requested)
+  )
+    throw new Error(
+      `${HWACCEL_ENV} must be auto, software, vaapi, nvenc, or amf`,
+    );
+  const vaapi: HardwareAcceleration = {
+    backend: "vaapi",
+    device: env[VAAPI_DEVICE_ENV] || "/dev/dri/renderD128",
+    lowPower: enabled(env.ONELIGHT_VAAPI_LOW_POWER, true),
+    rateControl: "QVBR",
+  };
+  const nvenc: HardwareAcceleration = {
+    backend: "nvenc",
+    device: env[NVENC_DEVICE_ENV] || "0",
+  };
+  if (requested === "software" || requested === "none")
+    return { candidates: [SOFTWARE_ACCELERATION], required: false };
+  if (requested === "vaapi") return { candidates: [vaapi], required: true };
+  if (requested === "nvenc") return { candidates: [nvenc], required: true };
+  if (requested === "amf")
+    return { candidates: [{ backend: "amf" }], required: true };
+
+  const nvidiaVisible = env.NVIDIA_VISIBLE_DEVICES;
+  const hasNvidiaSignal =
+    nvidiaVisible !== undefined &&
+    !["", "none", "void"].includes(nvidiaVisible.toLowerCase());
+  const candidates: HardwareAcceleration[] = [];
+  if (env[VAAPI_DEVICE_ENV]) candidates.push(vaapi);
+  if (hasNvidiaSignal) candidates.push(nvenc);
+  if (platform === "win32") {
+    if (!hasNvidiaSignal) candidates.push(nvenc);
+    candidates.push({ backend: "amf" });
+  } else {
+    if (!env[VAAPI_DEVICE_ENV]) candidates.push(vaapi);
+    if (!hasNvidiaSignal) candidates.push(nvenc);
+  }
+  candidates.push(SOFTWARE_ACCELERATION);
+  return { candidates, required: false };
+};
+
+type HardwareInput = HardwareAcceleration | string | undefined;
+
+/* A string remains a VAAPI device for the small public argument-builder API
+   used by downstream tests and integrations before multi-backend support. */
+const accelerationFrom = (input: HardwareInput): HardwareAcceleration =>
+  typeof input === "string"
+    ? {
+        backend: "vaapi",
+        device: input,
+        lowPower: true,
+        rateControl: "QVBR",
+      }
+    : (input ?? SOFTWARE_ACCELERATION);
 
 // An HDR source tonemaps through libplacebo, which requires -filter_hw_device
 // vk. hwupload targets that same filter device, so it would hand Vulkan frames
@@ -358,18 +493,22 @@ export const canUseVaapi = (
   device: string | undefined,
 ): boolean => Boolean(device) && !isHdrSource(mediaInfo);
 
-// Uploading to the GPU replaces the software pixel-format stage: nv12 is what
-// the Intel encoder consumes.
+// Uploading to VAAPI replaces the software pixel-format stage. NVENC and AMF
+// accept system-memory yuv420p and perform their own upload.
 const VAAPI_UPLOAD_FILTER = "format=nv12,hwupload";
 
-// Decode on the GPU too. H.264 decode is normative, so this is bit-exact:
-// verified on an N150 by encoding the same source both ways -- identical md5
-// of the file AND of every decoded frame. It is pure savings, and it is the
-// larger half of them, because software decode of a high-bitrate source costs
-// more CPU than the encode ever did. Without -hwaccel_output_format the frames
-// are downloaded to system memory, so every existing software filter (swscale,
-// zscale, libplacebo) still sees exactly what it saw before: no resampler
-// changes, no colour changes.
+// Decode on the GPU only for codecs both hardware families commonly expose.
+// Camera and post codecs such as ProRes and DNx stay on their authoritative
+// software decoders while the much more expensive encode remains accelerated.
+// Without -hwaccel_output_format the frames return to system memory, so all
+// existing colour and scale filters keep their tested pixel path.
+const HARDWARE_DECODE_CODECS = new Set(["h264", "hevc", "vp9", "av1"]);
+const canHardwareDecode = (mediaInfo: MediaInfo): boolean => {
+  if (isHdrSource(mediaInfo)) return false;
+  const codec = asString(videoStream(mediaInfo)?.codec_name);
+  return codec !== undefined && HARDWARE_DECODE_CODECS.has(codec);
+};
+
 const vaapiDecodeArgs = (device: string): string[] => [
   "-hwaccel",
   "vaapi",
@@ -377,58 +516,375 @@ const vaapiDecodeArgs = (device: string): string[] => [
   device,
 ];
 
-// -vaapi_device is shorthand for -init_hw_device vaapi=va:<node> plus
-// -filter_hw_device va, which is what points hwupload at the GPU. It is a
-// global option, so like the Vulkan args it must precede the input.
-const vaapiHwDeviceArgs = (device: string): string[] => [
-  ...vaapiDecodeArgs(device),
-  "-vaapi_device",
+const nvdecArgs = (device: string): string[] => [
+  "-hwaccel",
+  "cuda",
+  "-hwaccel_device",
   device,
 ];
 
-// The Alder Lake-N family (the N150 here) exposes only VAEntrypointEncSliceLP,
-// so the low-power encoder is the only one that exists; ffmpeg falls back to it
-// unprompted today, but saying so keeps the failure legible on parts that
-// expose both entrypoints. CQP is the rate control the LP entrypoint supports:
-// it has no CRF, so the software ladder's CRF is reused as the QP, trading a
-// little file size for the same perceptual target. libx264's -preset and
-// -sc_threshold have no VAAPI equivalent and are omitted rather than passed and
-// ignored, and -pix_fmt is dropped because the frames are VAAPI surfaces by
-// then, not software yuv420p.
-const vaapiVideoArgs = (quality: string): string[] => [
+const hardwareDecodeArgs = (
+  mediaInfo: MediaInfo,
+  acceleration: HardwareAcceleration,
+): string[] => {
+  if (!canHardwareDecode(mediaInfo)) return [];
+  return acceleration.backend === "vaapi"
+    ? vaapiDecodeArgs(acceleration.device)
+    : acceleration.backend === "nvenc"
+      ? nvdecArgs(acceleration.device)
+      : [];
+};
+
+// -vaapi_device is shorthand for -init_hw_device vaapi=va:<node> plus
+// -filter_hw_device va, which is what points hwupload at the GPU. It is a
+// global option, so like the Vulkan args it must precede the input.
+const encoderDeviceArgs = (acceleration: HardwareAcceleration): string[] =>
+  acceleration.backend === "vaapi"
+    ? ["-vaapi_device", acceleration.device]
+    : [];
+
+export interface StreamingLimits {
+  average: string;
+  maximum: string;
+  buffer: string;
+}
+
+/* One second GOPs make review seeking fast; a two-second VBV absorbs the large
+   I-frame they create without allowing CRF or target-quality encoders to emit
+   bandwidth spikes that stall a remote viewer. 50/60 fps receives more bits,
+   while the viewer can still choose the 540 rung on a narrow connection. */
+const streamingLimitsForFps = (
+  height: number,
+  fps: number,
+): StreamingLimits => {
+  const base =
+    height >= 2160
+      ? { average: 24_000, maximum: 36_000 }
+      : height <= 540
+        ? { average: 2_500, maximum: 4_000 }
+        : { average: 7_500, maximum: 12_000 };
+  const factor = fps > 30 ? Math.min(2, fps / 30) : 1;
+  const maximum = Math.round(base.maximum * factor);
+  return {
+    average: `${String(Math.round(base.average * factor))}k`,
+    maximum: `${String(maximum)}k`,
+    buffer: `${String(maximum * 2)}k`,
+  };
+};
+
+export const streamingLimits = (
+  height: number,
+  mediaInfo: MediaInfo,
+): StreamingLimits =>
+  streamingLimitsForFps(
+    height,
+    mediaInfo.frameRateNum && mediaInfo.frameRateDen
+      ? mediaInfo.frameRateNum / mediaInfo.frameRateDen
+      : 24,
+  );
+
+const profileArgs = (height: number): string[] => [
+  "-profile:v",
+  "high",
+  "-level:v",
+  height >= 2160 ? "5.2" : height <= 540 ? "4.0" : "4.2",
+];
+
+const rateLimitArgs = (limits: StreamingLimits): string[] => [
+  "-maxrate",
+  limits.maximum,
+  "-bufsize",
+  limits.buffer,
+];
+
+const vaapiRateControlArgs = (
+  quality: string,
+  limits: StreamingLimits,
+  acceleration: Extract<HardwareAcceleration, { backend: "vaapi" }>,
+): string[] =>
+  acceleration.rateControl === "QVBR"
+    ? [
+        "-rc_mode",
+        "QVBR",
+        "-global_quality",
+        quality,
+        "-b:v",
+        limits.average,
+        ...rateLimitArgs(limits),
+      ]
+    : acceleration.rateControl === "VBR"
+      ? ["-rc_mode", "VBR", "-b:v", limits.average, ...rateLimitArgs(limits)]
+      : ["-rc_mode", "CQP", "-qp", quality];
+
+const vaapiVideoArgs = (
+  quality: string,
+  limits: StreamingLimits,
+  acceleration: Extract<HardwareAcceleration, { backend: "vaapi" }>,
+): string[] => [
   "-c:v",
   "h264_vaapi",
   "-low_power",
-  "1",
-  "-rc_mode",
-  "CQP",
-  "-qp",
-  quality,
+  acceleration.lowPower ? "1" : "0",
+  ...vaapiRateControlArgs(quality, limits, acceleration),
 ];
 
-const softwareVideoArgs = (quality: string): string[] => [
+const nvencQualityArgs = (
+  quality: string,
+  limits: StreamingLimits,
+  device: string,
+): string[] => [
+  "-gpu",
+  device,
+  "-preset",
+  "p6",
+  "-tune",
+  "hq",
+  "-multipass",
+  "qres",
+  "-rc",
+  "vbr",
+  "-cq",
+  quality,
+  "-b:v",
+  limits.average,
+  ...rateLimitArgs(limits),
+  "-spatial-aq",
+  "1",
+  "-temporal-aq",
+  "1",
+  "-rc-lookahead",
+  "20",
+];
+
+const nvencVideoArgs = (
+  quality: string,
+  limits: StreamingLimits,
+  device: string,
+): string[] => [
+  "-c:v",
+  "h264_nvenc",
+  ...nvencQualityArgs(quality, limits, device),
+  "-bf",
+  "3",
+  "-b_ref_mode",
+  "middle",
+];
+
+const amfVideoArgs = (limits: StreamingLimits): string[] => [
+  "-c:v",
+  "h264_amf",
+  "-usage",
+  "transcoding",
+  "-quality",
+  "quality",
+  "-rc",
+  "vbr_peak",
+  "-b:v",
+  limits.average,
+  ...rateLimitArgs(limits),
+  "-vbaq",
+  "true",
+  "-preanalysis",
+  "true",
+];
+
+const softwareVideoArgs = (
+  quality: string,
+  limits: StreamingLimits,
+): string[] => [
   "-c:v",
   "libx264",
   "-preset",
   "medium",
   "-crf",
   quality,
+  ...rateLimitArgs(limits),
   "-pix_fmt",
   "yuv420p",
 ];
 
+const videoArgs = (
+  quality: string,
+  limits: StreamingLimits,
+  acceleration: HardwareAcceleration,
+): string[] =>
+  acceleration.backend === "vaapi"
+    ? vaapiVideoArgs(quality, limits, acceleration)
+    : acceleration.backend === "nvenc"
+      ? nvencVideoArgs(quality, limits, acceleration.device)
+      : acceleration.backend === "amf"
+        ? amfVideoArgs(limits)
+        : softwareVideoArgs(quality, limits);
+
+const encoderPixelFilter = (acceleration: HardwareAcceleration): string =>
+  acceleration.backend === "vaapi" ? VAAPI_UPLOAD_FILTER : "format=yuv420p";
+
+const fixedGopArgs = (
+  acceleration: HardwareAcceleration,
+  gop: number,
+): string[] =>
+  acceleration.backend === "software"
+    ? ["-sc_threshold", "0"]
+    : acceleration.backend === "nvenc"
+      ? ["-no-scenecut", "1"]
+      : acceleration.backend === "amf"
+        ? ["-header_spacing", String(gop)]
+        : [];
+
+const accelerationLabel = (acceleration: HardwareAcceleration): string =>
+  acceleration.backend === "vaapi"
+    ? `vaapi:${acceleration.device}:${acceleration.rateControl}:${acceleration.lowPower ? "low-power" : "normal"}`
+    : acceleration.backend === "nvenc"
+      ? `nvenc:${acceleration.device}`
+      : acceleration.backend;
+
+const vaapiProbeVariants = (
+  acceleration: Extract<HardwareAcceleration, { backend: "vaapi" }>,
+): HardwareAcceleration[] => {
+  const variants: HardwareAcceleration[] = [];
+  const powerModes = acceleration.lowPower ? [true, false] : [false];
+  for (const lowPower of powerModes)
+    for (const rateControl of [
+      acceleration.rateControl,
+      "VBR",
+      "CQP",
+    ] as VaapiRateControl[]) {
+      const candidate: HardwareAcceleration = {
+        ...acceleration,
+        lowPower,
+        rateControl,
+      };
+      if (
+        !variants.some(
+          (entry) =>
+            entry.backend === "vaapi" &&
+            entry.lowPower === candidate.lowPower &&
+            entry.rateControl === candidate.rateControl,
+        )
+      )
+        variants.push(candidate);
+    }
+  return variants;
+};
+
+export const buildHardwareProbeArgs = (
+  acceleration: Exclude<HardwareAcceleration, { backend: "software" }>,
+): string[] => {
+  const limits = { average: "500k", maximum: "1000k", buffer: "2000k" };
+  return [
+    "-hide_banner",
+    "-y",
+    ...encoderDeviceArgs(acceleration),
+    "-f",
+    "lavfi",
+    "-i",
+    /* NVENC rejects dimensions below its hardware minimum. 640x360 is still
+       effectively free for one frame and exercises the same path as a proxy. */
+    "color=size=640x360:rate=24:duration=0.1",
+    "-an",
+    "-vf",
+    encoderPixelFilter(acceleration),
+    "-frames:v",
+    "1",
+    ...videoArgs("21", limits, acceleration),
+    ...profileArgs(540),
+    "-g",
+    "24",
+    ...fixedGopArgs(acceleration, 24),
+    "-f",
+    "null",
+    "-",
+  ];
+};
+
+type HardwareProbe = (ffmpeg: string, args: string[]) => Promise<unknown>;
+
+export const selectHardwareAcceleration = async (
+  ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg",
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  platform = process.platform,
+  probe: HardwareProbe = (command, args) =>
+    runProcess(command, args, undefined, 30_000),
+): Promise<HardwareAcceleration> => {
+  const plan = hardwareAccelerationPlanFromEnv(env, platform);
+  let lastError = "";
+  for (const candidate of plan.candidates) {
+    if (candidate.backend === "software") {
+      if (lastError)
+        console.warn(
+          `[onelight-worker] no usable hardware encoder was found, using libx264: ${lastError.slice(-800)}`,
+        );
+      return candidate;
+    }
+    const variants =
+      candidate.backend === "vaapi"
+        ? vaapiProbeVariants(candidate)
+        : [candidate];
+    for (const variant of variants) {
+      try {
+        await probe(
+          ffmpeg,
+          buildHardwareProbeArgs(
+            variant as Exclude<HardwareAcceleration, { backend: "software" }>,
+          ),
+        );
+        return variant;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+  if (plan.required)
+    throw new Error(
+      `Requested hardware acceleration is unavailable: ${lastError.slice(-800)}`,
+    );
+  return SOFTWARE_ACCELERATION;
+};
+
+export const hardwareAccelerationName = accelerationLabel;
+
 // Output half of the SDR BT.709 conversion; the input half is derived per
 // source below so zscale always sees a complete input colorspec.
-const BT709_OUTPUT_PARAMS = "matrix=709:primaries=709:transfer=709";
-
-const bt709ish = (value: string | undefined): boolean =>
-  value === undefined || value === "unknown" || value === "bt709";
+const BT709_OUTPUT_PARAMS =
+  "matrix=709:primaries=709:transfer=709:range=limited";
 
 // A component the probe left blank (undefined or the literal "unknown") falls
 // back to its SD BT.601 default; a tagged component passes through. ffprobe
 // and zscale share these enum spellings.
 const knownColorOr = (value: string | undefined, fallback: string): string =>
   value !== undefined && value !== "unknown" ? value : fallback;
+
+const sourceRange = (video: Record<string, unknown> | undefined): string =>
+  ["pc", "jpeg", "full"].includes(asString(video?.color_range) ?? "")
+    ? "full"
+    : "limited";
+
+const sourceRangeTag = (video: Record<string, unknown> | undefined): string =>
+  sourceRange(video) === "full" ? "pc" : "tv";
+
+const sourceColorDefaults = (
+  video: Record<string, unknown>,
+): { matrix: string; transfer: string; primaries: string; range: string } => {
+  const height = Number(video.height);
+  const isSd = Number.isFinite(height) && height <= 576;
+  const matrix = knownColorOr(
+    asString(video.color_space ?? video.colorspace),
+    isSd ? "smpte170m" : "bt709",
+  );
+  const is601 = matrix === "smpte170m" || matrix === "bt470bg";
+  return {
+    matrix,
+    transfer: knownColorOr(
+      asString(video.color_transfer),
+      is601 ? "smpte170m" : "bt709",
+    ),
+    primaries: knownColorOr(
+      asString(video.color_primaries),
+      matrix === "bt470bg" ? "bt470bg" : is601 ? "smpte170m" : "bt709",
+    ),
+    range: sourceRange(video),
+  };
+};
 
 // zscale rejects a frame whose input colorspec is incomplete ("no path
 // between colorspaces"), which is exactly the common partially-tagged SD case
@@ -439,26 +895,27 @@ const knownColorOr = (value: string | undefined, fallback: string): string =>
 // so this one recipe covers every needsBt709Conversion source.
 export const bt709ConvertFilter = (mediaInfo: MediaInfo): string => {
   const video = videoStream(mediaInfo);
-  const matrixin = knownColorOr(
-    asString(video?.color_space ?? video?.colorspace),
-    "smpte170m",
-  );
-  const transferin = knownColorOr(asString(video?.color_transfer), "smpte170m");
-  const primariesin = knownColorOr(
-    asString(video?.color_primaries),
-    "smpte170m",
-  );
-  return `zscale=matrixin=${matrixin}:transferin=${transferin}:primariesin=${primariesin}:${BT709_OUTPUT_PARAMS}`;
+  const input = video
+    ? sourceColorDefaults(video)
+    : {
+        matrix: "bt709",
+        transfer: "bt709",
+        primaries: "bt709",
+        range: "limited",
+      };
+  return `zscale=matrixin=${input.matrix}:transferin=${input.transfer}:primariesin=${input.primaries}:rangein=${input.range}:${BT709_OUTPUT_PARAMS}`;
 };
 
 export const needsBt709Conversion = (mediaInfo: MediaInfo): boolean => {
   if (isHdrSource(mediaInfo)) return false;
   const video = videoStream(mediaInfo);
   if (!video) return false;
-  return !(
-    bt709ish(asString(video.color_space ?? video.colorspace)) &&
-    bt709ish(asString(video.color_primaries)) &&
-    bt709ish(asString(video.color_transfer))
+  const input = sourceColorDefaults(video);
+  return (
+    input.matrix !== "bt709" ||
+    input.primaries !== "bt709" ||
+    input.transfer !== "bt709" ||
+    input.range !== "limited"
   );
 };
 
@@ -566,14 +1023,13 @@ export const sidecarArgs = (
   job: TranscodeJob,
   outputPath: string,
   kind: string,
-  vaapiDevice = process.env[VAAPI_DEVICE_ENV],
+  hardware: HardwareInput = SOFTWARE_ACCELERATION,
 ): string[] | undefined => {
+  const acceleration = accelerationFrom(hardware);
   /* Sidecars encode nothing on the GPU, but they still decode the source --
      the sprite reads every frame of it -- so the decoder is worth moving even
      here. */
-  const decodeArgs = canUseVaapi(job.mediaInfo, vaapiDevice)
-    ? vaapiDecodeArgs(vaapiDevice as string)
-    : [];
+  const decodeArgs = hardwareDecodeArgs(job.mediaInfo, acceleration);
   if (kind === "poster" && isAudioOnly(job.mediaInfo))
     return [
       "-hide_banner",
@@ -891,16 +1347,28 @@ export const buildWatermarkArgs = (
   tokens: WatermarkTokens,
   rate?: { num: number; den: number },
   fontfile = DEFAULT_WATERMARK_FONTFILE,
-  vaapiDevice = process.env[VAAPI_DEVICE_ENV],
+  hardware: HardwareInput = SOFTWARE_ACCELERATION,
+  timecode?: string,
 ): string[] => {
+  const acceleration = accelerationFrom(hardware);
   const gop = rate ? Math.max(1, Math.round(rate.num / rate.den)) : 24;
+  const limits = streamingLimitsForFps(1080, rate ? rate.num / rate.den : 24);
   // The source here is our own finished proxy, which is always SDR BT.709, so
-  // there is no HDR case to exclude: the device alone decides.
-  const hardware = Boolean(vaapiDevice);
-  return [
+  // there is no HDR case to exclude: the selected encoder alone decides.
+  const args = [
     "-hide_banner",
     "-y",
-    ...(hardware ? vaapiHwDeviceArgs(vaapiDevice as string) : []),
+    ...hardwareDecodeArgs(
+      {
+        format: {},
+        streams: [{ codec_type: "video", codec_name: "h264" }],
+        variableFrameRate: false,
+        colorAssumed: false,
+        ...(rate ? { frameRateNum: rate.num, frameRateDen: rate.den } : {}),
+      },
+      acceleration,
+    ),
+    ...encoderDeviceArgs(acceleration),
     "-i",
     source,
     "-map",
@@ -908,15 +1376,14 @@ export const buildWatermarkArgs = (
     "-map",
     "0:a:0?",
     "-vf",
-    `${buildWatermarkFilter(spec, tokens, fontfile)},${
-      hardware ? VAAPI_UPLOAD_FILTER : "format=yuv420p"
-    }`,
-    ...(hardware ? vaapiVideoArgs("18") : softwareVideoArgs("18")),
+    `${buildWatermarkFilter(spec, tokens, fontfile)},${encoderPixelFilter(acceleration)}`,
+    ...videoArgs("18", limits, acceleration),
+    ...profileArgs(1080),
     "-g",
     String(gop),
     "-keyint_min",
     String(gop),
-    ...(hardware ? [] : ["-sc_threshold", "0"]),
+    ...fixedGopArgs(acceleration, gop),
     "-colorspace",
     "bt709",
     "-color_primaries",
@@ -931,8 +1398,10 @@ export const buildWatermarkArgs = (
     "+faststart",
     "-map_metadata",
     "0",
-    outputPath,
   ];
+  if (timecode) args.push("-timecode", timecode, "-write_tmcd", "on");
+  args.push(outputPath);
+  return args;
 };
 
 const vttTime = (seconds: number): string => {
@@ -981,17 +1450,18 @@ const sdrProxyOutputTail = (
   job: TranscodeJob,
   outputPath: string,
   height: number,
-  hardware: boolean,
+  acceleration: HardwareAcceleration,
 ): string[] => {
+  const gop = gopSize(job.mediaInfo);
+  const limits = streamingLimits(height, job.mediaInfo);
   const args = [
-    ...(hardware
-      ? vaapiVideoArgs(ladderQuality(height))
-      : softwareVideoArgs(ladderQuality(height))),
+    ...videoArgs(ladderQuality(height), limits, acceleration),
+    ...profileArgs(height),
     "-g",
-    String(gopSize(job.mediaInfo)),
+    String(gop),
     "-keyint_min",
-    String(gopSize(job.mediaInfo)),
-    ...(hardware ? [] : ["-sc_threshold", "0"]),
+    String(gop),
+    ...fixedGopArgs(acceleration, gop),
     "-colorspace",
     "bt709",
     "-color_primaries",
@@ -1039,14 +1509,15 @@ export const COMBINABLE_PROXY_KINDS = ["proxy_2160", "proxy_1080", "proxy_540"];
    is a different recipe per output, not a shared prefix.
 
    Returns undefined when there is nothing to save (fewer than two combinable
-   outputs), and the caller treats any failure as "just encode them one by one" —
+   outputs), and the caller treats any failure as "just encode them one by one".
    this is an optimisation, never a new failure mode. */
 export const buildCombinedSdrArgs = (
   job: TranscodeJob,
   outputs: Array<{ kind: string; path: string; height?: number }>,
-  vaapiDevice = process.env[VAAPI_DEVICE_ENV],
+  hardware: HardwareInput = SOFTWARE_ACCELERATION,
 ): string[] | undefined => {
   if (isHdrSource(job.mediaInfo)) return undefined;
+  const acceleration = accelerationFrom(hardware);
   const proxies = outputs.filter((o) =>
     COMBINABLE_PROXY_KINDS.includes(o.kind),
   );
@@ -1054,7 +1525,6 @@ export const buildCombinedSdrArgs = (
   const branches = proxies.length + (sprite ? 1 : 0);
   if (branches < 2) return undefined;
 
-  const hardware = canUseVaapi(job.mediaInfo, vaapiDevice);
   const labels = proxies.map((_, index) => `p${String(index)}`);
   if (sprite) labels.push("sp");
 
@@ -1068,7 +1538,7 @@ export const buildCombinedSdrArgs = (
       (output, index) =>
         `[${labels[index] as string}]${ladderScale(output.height ?? 1080)},${fpsFilter(
           job.mediaInfo,
-        )},${hardware ? VAAPI_UPLOAD_FILTER : "format=yuv420p"}[v${String(index)}]`,
+        )},${encoderPixelFilter(acceleration)}[v${String(index)}]`,
     ),
     ...(sprite
       ? [
@@ -1080,7 +1550,8 @@ export const buildCombinedSdrArgs = (
   const args = [
     "-hide_banner",
     "-y",
-    ...(hardware ? vaapiHwDeviceArgs(vaapiDevice as string) : []),
+    ...hardwareDecodeArgs(job.mediaInfo, acceleration),
+    ...encoderDeviceArgs(acceleration),
     "-i",
     job.sourceKey,
     "-filter_complex",
@@ -1089,7 +1560,12 @@ export const buildCombinedSdrArgs = (
   proxies.forEach((output, index) => {
     args.push("-map", `[v${String(index)}]`, "-map", "0:a:0?");
     args.push(
-      ...sdrProxyOutputTail(job, output.path, output.height ?? 1080, hardware),
+      ...sdrProxyOutputTail(
+        job,
+        output.path,
+        output.height ?? 1080,
+        acceleration,
+      ),
     );
   });
   if (sprite)
@@ -1101,18 +1577,27 @@ export const buildSdrProxyArgs = (
   job: TranscodeJob,
   outputPath: string,
   height: number,
-  vaapiDevice = process.env[VAAPI_DEVICE_ENV],
+  hardware: HardwareInput = SOFTWARE_ACCELERATION,
 ): string[] => {
+  const requestedAcceleration = accelerationFrom(hardware);
+  /* libplacebo owns the Vulkan filter device for HDR tonemapping. VAAPI's
+     required hwupload cannot target a second filter device in the same simple
+     graph, so this one path stays on libx264. NVENC and AMF accept the
+     tonemapped system-memory frames and remain accelerated. */
+  const acceleration =
+    isHdrSource(job.mediaInfo) && requestedAcceleration.backend === "vaapi"
+      ? SOFTWARE_ACCELERATION
+      : requestedAcceleration;
   const scale = ladderScale(height);
-  const hardware = canUseVaapi(job.mediaInfo, vaapiDevice);
-  const filters = `${colorPrefix(job.mediaInfo)}${scale},${fpsFilter(job.mediaInfo)},${
-    hardware ? VAAPI_UPLOAD_FILTER : "format=yuv420p"
-  }`;
+  const filters = `${colorPrefix(job.mediaInfo)}${scale},${fpsFilter(job.mediaInfo)},${encoderPixelFilter(
+    acceleration,
+  )}`;
   return [
     "-hide_banner",
     "-y",
     ...tonemapHwDeviceArgs(job.mediaInfo),
-    ...(hardware ? vaapiHwDeviceArgs(vaapiDevice as string) : []),
+    ...hardwareDecodeArgs(job.mediaInfo, acceleration),
+    ...encoderDeviceArgs(acceleration),
     "-i",
     job.sourceKey,
     "-map",
@@ -1121,19 +1606,99 @@ export const buildSdrProxyArgs = (
     "0:a:0?",
     "-vf",
     filters,
-    ...sdrProxyOutputTail(job, outputPath, height, hardware),
+    ...sdrProxyOutputTail(job, outputPath, height, acceleration),
   ];
 };
+
+const hdrAcceleration = (hardware: HardwareInput): HardwareAcceleration => {
+  const acceleration = accelerationFrom(hardware);
+  /* The AMF encoders exposed by current Windows ffmpeg builds accept only
+     8-bit NV12. Falling back preserves the HDR rail instead of silently
+     truncating it. VAAPI and NVENC accept P010 and stay on the GPU. */
+  return acceleration.backend === "amf" ? SOFTWARE_ACCELERATION : acceleration;
+};
+
+const hdrLimits = (mediaInfo: MediaInfo): StreamingLimits => {
+  const height = Number(videoStream(mediaInfo)?.height ?? 2160);
+  return streamingLimits(Number.isFinite(height) ? height : 2160, mediaInfo);
+};
+
+const hdrPixelFilter = (
+  mediaInfo: MediaInfo,
+  acceleration: HardwareAcceleration,
+): string =>
+  `${fpsFilter(mediaInfo)},${
+    acceleration.backend === "vaapi"
+      ? "format=p010,hwupload"
+      : "format=yuv420p10le"
+  }`;
+
+const hdrVaapiArgs = (
+  codec: "av1" | "hevc",
+  quality: string,
+  limits: StreamingLimits,
+  acceleration: Extract<HardwareAcceleration, { backend: "vaapi" }>,
+): string[] => [
+  "-c:v",
+  `${codec}_vaapi`,
+  "-low_power",
+  acceleration.lowPower ? "1" : "0",
+  ...vaapiRateControlArgs(quality, limits, acceleration),
+];
+
+const hdrNvencArgs = (
+  codec: "av1" | "hevc",
+  quality: string,
+  limits: StreamingLimits,
+  acceleration: Extract<HardwareAcceleration, { backend: "nvenc" }>,
+): string[] => [
+  "-c:v",
+  `${codec}_nvenc`,
+  ...nvencQualityArgs(quality, limits, acceleration.device),
+];
 
 export const buildHdrAv1Args = (
   job: TranscodeJob,
   outputPath: string,
+  hardware: HardwareInput = SOFTWARE_ACCELERATION,
 ): string[] => {
   const video = videoStream(job.mediaInfo);
   const gop = gopSize(job.mediaInfo);
+  const acceleration = hdrAcceleration(hardware);
+  const limits = hdrLimits(job.mediaInfo);
+  const encoderArgs =
+    acceleration.backend === "vaapi"
+      ? [
+          ...hdrVaapiArgs("av1", "28", limits, acceleration),
+          "-profile:v",
+          "main",
+        ]
+      : acceleration.backend === "nvenc"
+        ? [
+            ...hdrNvencArgs("av1", "28", limits, acceleration),
+            "-highbitdepth",
+            "1",
+            "-profile:v",
+            "main",
+          ]
+        : [
+            "-c:v",
+            "libsvtav1",
+            "-preset",
+            "6",
+            "-crf",
+            "28",
+            "-svtav1-params",
+            `keyint=${gop}`,
+            ...rateLimitArgs(limits),
+            "-pix_fmt",
+            "yuv420p10le",
+          ];
   const args = [
     "-hide_banner",
     "-y",
+    ...hardwareDecodeArgs(job.mediaInfo, acceleration),
+    ...encoderDeviceArgs(acceleration),
     "-i",
     job.sourceKey,
     "-map",
@@ -1141,25 +1706,21 @@ export const buildHdrAv1Args = (
     "-map",
     "0:a:0?",
     "-vf",
-    `${fpsFilter(job.mediaInfo)},format=yuv420p10le`,
-    "-c:v",
-    "libsvtav1",
-    "-preset",
-    "6",
-    "-crf",
-    "28",
+    hdrPixelFilter(job.mediaInfo, acceleration),
+    ...encoderArgs,
     "-g",
     String(gop),
-    "-svtav1-params",
-    `keyint=${gop}`,
-    "-pix_fmt",
-    "yuv420p10le",
+    "-keyint_min",
+    String(gop),
+    ...fixedGopArgs(acceleration, gop),
     "-color_primaries",
     asString(video?.color_primaries) ?? "bt2020",
     "-color_trc",
     asString(video?.color_transfer) ?? "smpte2084",
     "-colorspace",
     asString(video?.color_space ?? video?.colorspace) ?? "bt2020nc",
+    "-color_range",
+    sourceRangeTag(video),
     "-c:a",
     "aac",
     "-ac",
@@ -1185,12 +1746,43 @@ export const buildHdrAv1Args = (
 export const buildHdrHevcArgs = (
   job: TranscodeJob,
   outputPath: string,
+  hardware: HardwareInput = SOFTWARE_ACCELERATION,
 ): string[] => {
   const video = videoStream(job.mediaInfo);
   const gop = gopSize(job.mediaInfo);
+  const acceleration = hdrAcceleration(hardware);
+  const limits = hdrLimits(job.mediaInfo);
+  const encoderArgs =
+    acceleration.backend === "vaapi"
+      ? [
+          ...hdrVaapiArgs("hevc", "20", limits, acceleration),
+          "-profile:v",
+          "main10",
+        ]
+      : acceleration.backend === "nvenc"
+        ? [
+            ...hdrNvencArgs("hevc", "20", limits, acceleration),
+            "-profile:v",
+            "main10",
+          ]
+        : [
+            "-c:v",
+            "libx265",
+            "-preset",
+            "medium",
+            "-crf",
+            "20",
+            "-x265-params",
+            `keyint=${gop}:min-keyint=${gop}:scenecut=0`,
+            ...rateLimitArgs(limits),
+            "-pix_fmt",
+            "yuv420p10le",
+          ];
   const args = [
     "-hide_banner",
     "-y",
+    ...hardwareDecodeArgs(job.mediaInfo, acceleration),
+    ...encoderDeviceArgs(acceleration),
     "-i",
     job.sourceKey,
     "-map",
@@ -1198,19 +1790,13 @@ export const buildHdrHevcArgs = (
     "-map",
     "0:a:0?",
     "-vf",
-    `${fpsFilter(job.mediaInfo)},format=yuv420p10le`,
-    "-c:v",
-    "libx265",
-    "-preset",
-    "medium",
-    "-crf",
-    "20",
+    hdrPixelFilter(job.mediaInfo, acceleration),
+    ...encoderArgs,
     "-g",
     String(gop),
-    "-x265-params",
-    `keyint=${gop}:min-keyint=${gop}:scenecut=0`,
-    "-pix_fmt",
-    "yuv420p10le",
+    "-keyint_min",
+    String(gop),
+    ...fixedGopArgs(acceleration, gop),
     "-tag:v",
     "hvc1",
     "-color_primaries",
@@ -1219,6 +1805,8 @@ export const buildHdrHevcArgs = (
     asString(video?.color_transfer) ?? "smpte2084",
     "-colorspace",
     asString(video?.color_space ?? video?.colorspace) ?? "bt2020nc",
+    "-color_range",
+    sourceRangeTag(video),
     "-c:a",
     "aac",
     "-ac",
@@ -1246,12 +1834,13 @@ export const buildOutputArgs = (
   outputPath: string,
   kind: string,
   height = 1080,
+  hardware: HardwareInput = SOFTWARE_ACCELERATION,
 ): string[] =>
   kind === "hdr_av1"
-    ? buildHdrAv1Args(job, outputPath)
+    ? buildHdrAv1Args(job, outputPath, hardware)
     : kind === "hdr_hevc"
-      ? buildHdrHevcArgs(job, outputPath)
-      : buildSdrProxyArgs(job, outputPath, height);
+      ? buildHdrHevcArgs(job, outputPath, hardware)
+      : buildSdrProxyArgs(job, outputPath, height, hardware);
 
 // Rendition plan per asset kind. Primary readiness is per kind: video needs
 // proxy_1080, audio needs something to play, image needs still_tiles or
@@ -1363,7 +1952,9 @@ export const runTranscode = async (
   outputPaths: Array<{ kind: string; path: string; height?: number }>,
   ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg",
   pdftoppm = process.env.PDFTOPPM_PATH ?? "pdftoppm",
+  hardware: HardwareInput = SOFTWARE_ACCELERATION,
 ): Promise<TranscodeRunResult> => {
+  const acceleration = accelerationFrom(hardware);
   const renditions: TranscodeRunResult["renditions"] = [];
   const failures: TranscodeRunResult["failures"] = [];
 
@@ -1388,6 +1979,7 @@ export const runTranscode = async (
         `.tmp-combined-${path.basename(output.path)}`,
       ),
     })),
+    acceleration,
   );
   if (combined) {
     const temps = pending
@@ -1456,16 +2048,57 @@ export const runTranscode = async (
           path.dirname(output.path),
           `.tmp-${path.basename(output.path)}`,
         );
-        const args =
-          sidecarArgs(job, tempPath, output.kind) ??
-          buildOutputArgs(job, tempPath, output.kind, output.height ?? 1080);
-        await runProcess(ffmpeg, args);
+        const argsFor = (selected: HardwareAcceleration): string[] =>
+          sidecarArgs(job, tempPath, output.kind, selected) ??
+          buildOutputArgs(
+            job,
+            tempPath,
+            output.kind,
+            output.height ?? 1080,
+            selected,
+          );
+        const selectedArgs = argsFor(acceleration);
+        const softwareArgs =
+          acceleration.backend === "software"
+            ? selectedArgs
+            : argsFor(SOFTWARE_ACCELERATION);
+        try {
+          await runProcess(ffmpeg, selectedArgs);
+        } catch (error) {
+          if (
+            acceleration.backend === "software" ||
+            selectedArgs.join("\u0000") === softwareArgs.join("\u0000")
+          )
+            throw error;
+          await rm(tempPath, { force: true }).catch(() => undefined);
+          console.warn(
+            `[onelight-worker] ${hardwareAccelerationName(acceleration)} failed for ${output.kind} in job ${job.id}, retrying with software encoding: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          await runProcess(ffmpeg, softwareArgs);
+        }
         await rename(tempPath, output.path);
       }
       const meta: Record<string, unknown> = {
         frame_rate_num: job.mediaInfo.frameRateNum,
         frame_rate_den: job.mediaInfo.frameRateDen,
       };
+      if (job.mediaInfo.sourceTimecodeStart)
+        meta.source_timecode_start = job.mediaInfo.sourceTimecodeStart;
+      if (job.mediaInfo.sourceTimecodeSource)
+        meta.source_timecode_source = job.mediaInfo.sourceTimecodeSource;
+      if (job.mediaInfo.sourceColor)
+        meta.source_color = job.mediaInfo.sourceColor;
+      if (output.kind.startsWith("proxy_"))
+        meta.output_color = {
+          primaries: "bt709",
+          transfer: "bt709",
+          matrix: "bt709",
+          range: "tv",
+        };
+      if (output.kind === "hdr_av1" || output.kind === "hdr_hevc")
+        meta.output_color = job.mediaInfo.sourceColor ?? {};
       if (output.height !== undefined) meta.height = output.height;
       if (output.kind === "sprite")
         meta.vtt_path = await writeSpriteVtt(job, output.path);
@@ -1758,6 +2391,7 @@ const runFfmpegToFile = async (
   argsFor: (tempPath: string) => string[],
   outputPath: string,
   ffmpeg: string,
+  fallbackArgsFor?: (tempPath: string) => string[],
 ): Promise<void> => {
   await mkdir(path.dirname(outputPath), { recursive: true });
   if (await fileReady(outputPath)) return;
@@ -1766,7 +2400,18 @@ const runFfmpegToFile = async (
     `.tmp-${path.basename(outputPath)}`,
   );
   try {
-    await runProcess(ffmpeg, argsFor(tempPath));
+    try {
+      await runProcess(ffmpeg, argsFor(tempPath));
+    } catch (error) {
+      if (!fallbackArgsFor) throw error;
+      await rm(tempPath, { force: true }).catch(() => undefined);
+      console.warn(
+        `[onelight-worker] hardware render failed, retrying in software: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      await runProcess(ffmpeg, fallbackArgsFor(tempPath));
+    }
     await rename(tempPath, outputPath);
   } catch (error) {
     // The GC never reclaims .tmp-* names; clean the half-written temp here so
@@ -1797,10 +2442,36 @@ export const renderWatermark = (
   rate?: { num: number; den: number },
   ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg",
   fontfile = DEFAULT_WATERMARK_FONTFILE,
-): Promise<void> =>
-  runFfmpegToFile(
+  hardware: HardwareInput = SOFTWARE_ACCELERATION,
+  timecode?: string,
+): Promise<void> => {
+  const acceleration = accelerationFrom(hardware);
+  return runFfmpegToFile(
     (tempPath) =>
-      buildWatermarkArgs(source, tempPath, spec, tokens, rate, fontfile),
+      buildWatermarkArgs(
+        source,
+        tempPath,
+        spec,
+        tokens,
+        rate,
+        fontfile,
+        acceleration,
+        timecode,
+      ),
     outputPath,
     ffmpeg,
+    acceleration.backend === "software"
+      ? undefined
+      : (tempPath) =>
+          buildWatermarkArgs(
+            source,
+            tempPath,
+            spec,
+            tokens,
+            rate,
+            fontfile,
+            SOFTWARE_ACCELERATION,
+            timecode,
+          ),
   );
+};

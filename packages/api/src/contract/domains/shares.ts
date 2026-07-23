@@ -1878,12 +1878,49 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
         json: { format: "csv", timecode_base: "free_run" },
       });
       expect(badBase.status).toBe(400);
+      const unknownFilter = await req(
+        h,
+        `/api/v1/shares/${fixture.shareId}/export`,
+        {
+          cookie: seed.admin.cookie,
+          json: {
+            format: "csv",
+            filters: { share_id: "caller-controlled" },
+          },
+        },
+      );
+      expect(unknownFilter.status).toBe(400);
       const missingShare = await req(
         h,
         "/api/v1/shares/01ARZ3NDEKTSV4RRFFQ69G5FAV/export",
         { cookie: seed.admin.cookie, json: { format: "csv" } },
       );
       expect(missingShare.status).toBe(404);
+    });
+
+    it("binds share exports to the share's own asset set", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const fixture = await makeShare(h, seed);
+      const created = await req(h, `/api/v1/shares/${fixture.shareId}/export`, {
+        cookie: seed.admin.cookie,
+        json: { format: "csv", filters: { completed: false } },
+      });
+      expect(created.status).toBe(202);
+      const exported = await json<{ id: string }>(created);
+      const row = (
+        await h.db
+          .select()
+          .from(exportJobs)
+          .where(eq(exportJobs.id, exported.id))
+          .limit(1)
+          .all()
+      )[0];
+      expect(JSON.parse(row?.filtersJson ?? "{}")).toEqual({
+        completed: false,
+        share_id: fixture.shareId,
+        internal: false,
+      });
     });
 
     it("queues project-scoped exports without a share", async () => {

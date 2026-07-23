@@ -11762,7 +11762,32 @@
                   },
                   "filters": {
                     "type": "object",
-                    "additionalProperties": {},
+                    "properties": {
+                      "version_id": {
+                        "type": "string"
+                      },
+                      "author_user_id": {
+                        "type": "string"
+                      },
+                      "internal": {
+                        "type": "boolean"
+                      },
+                      "completed": {
+                        "type": "boolean"
+                      },
+                      "has_annotation": {
+                        "type": "boolean"
+                      },
+                      "frame_in": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "frame_out": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false,
                     "default": {}
                   },
                   "timecode_base": {
@@ -11885,7 +11910,32 @@
                   },
                   "filters": {
                     "type": "object",
-                    "additionalProperties": {},
+                    "properties": {
+                      "version_id": {
+                        "type": "string"
+                      },
+                      "author_user_id": {
+                        "type": "string"
+                      },
+                      "internal": {
+                        "type": "boolean"
+                      },
+                      "completed": {
+                        "type": "boolean"
+                      },
+                      "has_annotation": {
+                        "type": "boolean"
+                      },
+                      "frame_in": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "frame_out": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false,
                     "default": {}
                   },
                   "timecode_base": {

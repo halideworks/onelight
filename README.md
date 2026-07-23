@@ -29,6 +29,20 @@ docker compose -f deploy/docker-compose.yml up --build
 
 Browse to the configured `PUBLIC_URL`, complete first-run setup, create a project, and invite a member. `deploy/Caddyfile.example` shows a TLS-terminating reverse proxy. Production deployments must set an explicit `SECRET_KEY`; compose refuses to start without it.
 
+GPU encoding is opt-in through a Compose override. Intel integrated graphics
+and Intel Arc use Quick Sync through VAAPI:
+
+```sh
+# Set ONELIGHT_RENDER_GID to: getent group render | cut -d: -f3
+docker compose -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.gpu-intel.yml up --build
+```
+
+Use `deploy/docker-compose.gpu-nvidia.yml` for NVIDIA or
+`deploy/docker-compose.gpu-amd.yml` for AMD on Linux. The worker probes the
+real encoder before it accepts jobs. Its `/healthz` response reports the
+selected backend.
+
 ## Development
 
 Requirements: Node 22 or newer and pnpm 9.
