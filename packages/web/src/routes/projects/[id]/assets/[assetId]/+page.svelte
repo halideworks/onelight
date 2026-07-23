@@ -201,11 +201,17 @@
     if (!infoOpen || !selectedVersionId || infoFor === selectedVersionId) return;
     infoFor = selectedVersionId;
     infoDetail = null;
+    /* Guard the async write with the same version token every other load on
+       this page uses: switching versions while this is in flight must not let a
+       stale response paint the wrong version's details. */
+    const token = versionToken;
+    const wantedVersion = selectedVersionId;
     void (async () => {
       try {
-        infoDetail = await api<InfoDetail>(`/api/v1/versions/${selectedVersionId}`);
+        const detail = await api<InfoDetail>(`/api/v1/versions/${wantedVersion}`);
+        if (token === versionToken) infoDetail = detail;
       } catch {
-        infoFor = null;
+        if (token === versionToken) infoFor = null;
       }
     })();
   };

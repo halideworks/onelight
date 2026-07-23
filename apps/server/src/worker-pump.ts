@@ -820,6 +820,16 @@ const processJob = async (
   for (const rendition of state.result.renditions) {
     const key = path.relative(blobRoot, rendition.key).replaceAll("\\", "/");
     const info = await stat(rendition.key);
+    /* A 0-byte output is not a rendition. ffmpeg can exit 0 with an empty file
+       on a frameless or degenerate source (a poster/sprite of a 0-duration or
+       image-as-video input); registering it would reference a broken blob the
+       GC then keeps forever and the player draws as a broken frame. Skip it. */
+    if (info.size === 0) {
+      console.warn(
+        `[onelight] rendition ${rendition.kind} for version ${version.id} was 0 bytes; skipping.`,
+      );
+      continue;
+    }
     const meta = { ...rendition.meta };
     const vttPath =
       typeof meta.vtt_path === "string" ? meta.vtt_path : undefined;

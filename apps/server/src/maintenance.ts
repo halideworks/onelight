@@ -577,6 +577,22 @@ const purgeTrashedAssets = async (
     }
     // The row is gone: now it is safe to free the media and the sessions.
     for (const key of blobKeys) await deleteBlobQuietly(store, key);
+    /* Give the freed bytes back to the project's counter. It is only ever
+       incremented on upload, so without this it drifts upward forever and a
+       project's reported storage climbs past what is actually on disk. MAX(0,..)
+       guards against a pre-existing over-count going negative. */
+    const freedBytes = versions.reduce(
+      (total, version) => total + (version.size ?? 0),
+      0,
+    );
+    if (freedBytes > 0)
+      await db
+        .update(projects)
+        .set({
+          storageBytes: sql`MAX(0, ${projects.storageBytes} - ${freedBytes})`,
+        })
+        .where(eq(projects.id, row.asset.projectId))
+        .run();
     await deleteUploadSessionsById(
       db,
       versions.map((version) => version.uploadSessionId),
