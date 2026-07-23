@@ -644,8 +644,16 @@
   };
   const onScrubKeydown = (event: KeyboardEvent): void => {
     if (seekLocked) return;
-    if (event.key === 'ArrowLeft') { event.preventDefault(); event.stopPropagation(); step(-1); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); step(1); }
+    const take = (): void => { event.preventDefault(); event.stopPropagation(); };
+    const last = durationFrames && durationFrames > 0 ? durationFrames - 1 : frame;
+    /* The full slider contract a screen-reader user expects: arrows step a
+       frame, Page keys jump a second, Home/End reach the ends. */
+    if (event.key === 'ArrowLeft') { take(); step(-1); }
+    else if (event.key === 'ArrowRight') { take(); step(1); }
+    else if (event.key === 'PageDown') { take(); step(-Math.round(rate.num / rate.den) || -24); }
+    else if (event.key === 'PageUp') { take(); step(Math.round(rate.num / rate.den) || 24); }
+    else if (event.key === 'Home') { take(); jumpTo(0); }
+    else if (event.key === 'End') { take(); jumpTo(last); }
   };
 
   /* Auto heuristic: the highest rung whose height does not exceed the stage
@@ -1210,6 +1218,19 @@
     stalled = false;
   };
 
+  /* A media load that fails -- a rendition that 404s, a proxy that never
+     finished -- fires `error`, never `waiting`/`stalled`, so without this the
+     picture just froze on the poster with the transport looking normal and no
+     word to the reviewer. The message clears when a new source starts loading
+     (onloadstart) or any frame arrives. */
+  let loadError = $state(false);
+  const noteMediaError = (): void => {
+    clearStall();
+    /* readyState 0 with an error is a real failure; a spurious error event
+       after some data arrived (e.g. a benign abort on src swap) is not. */
+    if (!video || video.readyState === 0) loadError = true;
+  };
+
   /* One seek in flight at a time; the newest target waits for it. Assigning
      currentTime while the previous seek is still decoding CANCELS it, so a
      scrub throttled to one seek per animation frame still starved the decoder:
@@ -1592,7 +1613,9 @@
           ontimeupdate={handleTimeUpdate}
           onloadedmetadata={handleLoadedMetadata}
           onseeked={handleSeeked}
-          onloadeddata={() => { pictureIn = true; }}
+          onloadstart={() => { loadError = false; }}
+          onloadeddata={() => { pictureIn = true; loadError = false; }}
+          onerror={noteMediaError}
           onplay={() => { playRefused = false; onplaystate?.(true); }}
           onpause={() => onplaystate?.(false)}
           onended={handleEnded}
@@ -1622,7 +1645,9 @@
         ontimeupdate={hasRvfc ? undefined : handleTimeUpdate}
         onloadedmetadata={handleLoadedMetadata}
         onseeked={handleSeeked}
-        onloadeddata={() => { pictureIn = true; }}
+        onloadstart={() => { loadError = false; }}
+        onloadeddata={() => { pictureIn = true; loadError = false; }}
+        onerror={noteMediaError}
         onwaiting={noteStall}
         onstalled={noteStall}
         oncanplay={clearStall}
@@ -1751,7 +1776,15 @@
           {/if}
         </div>
       {/if}
-      {#if stalled && !isAudio}
+      {#if loadError}
+        <!-- A failed load: say so and offer the one action that helps, rather
+             than freezing on the poster. Retrying re-points the element at the
+             same source; a rendition that has since finished then plays. -->
+        <div class="loadfail" role="alert">
+          <span>This media could not be loaded.</span>
+          <button type="button" onclick={() => { loadError = false; video?.load(); }}>Retry</button>
+        </div>
+      {:else if stalled && !isAudio}
         <!-- The decoder is waiting on bytes; say so instead of freezing
              silently. Neutral hairline ring, nothing tinted near the frame. -->
         <div class="buffering" aria-hidden="true"><span class="ring"></span></div>
@@ -2086,6 +2119,7 @@
           aria-valuemin="0"
           aria-valuemax={durationFrames - 1}
           aria-valuenow={frame}
+          aria-valuetext={timecode ?? `frame ${String(frame)}`}
           tabindex="0"
           onpointerdown={onScrubDown}
           onpointermove={onScrubMove}
@@ -2332,6 +2366,30 @@
     z-index: 6;
     animation: buffer-in 200ms ease both;
   }
+  /* Load failure: centred over the frame, neutral, with the one useful action. */
+  .loadfail {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    z-index: 6;
+    background: rgba(10, 10, 10, 0.72);
+    color: var(--n-800, #c4c4c4);
+    font-size: var(--text-13, 13px);
+    animation: buffer-in 200ms ease both;
+  }
+  .loadfail button {
+    padding: 7px 16px;
+    background: var(--n-200, #232323);
+    color: var(--n-900, #e9e9e9);
+    border: 1px solid var(--n-400, #3d3d3d);
+    border-radius: var(--radius, 3px);
+    font: inherit;
+  }
+  .loadfail button:hover { background: var(--n-300, #2e2e2e); }
   .watermark {
     position: absolute;
     inset: 0;

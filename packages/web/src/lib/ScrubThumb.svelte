@@ -107,6 +107,8 @@
     opacity: 1;
     transition: opacity 280ms ease;
   }
+  /* A poster that 404'd: hide the broken glyph and let the ink ground stand. */
+  img:global([data-failed]) { visibility: hidden; }
   @media (prefers-reduced-motion: reduce) {
     img { opacity: 1; }
     img:global([data-arrived]) { transition: none; }

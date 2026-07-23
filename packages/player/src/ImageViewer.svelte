@@ -126,9 +126,11 @@
   });
 
   /* A new source is a new picture: measurements and the fade start over. */
+  let loadFailed = $state(false);
   $effect(() => {
     void src;
     arrived = false;
+    loadFailed = false;
     naturalWidth = 0;
     naturalHeight = 0;
   });
@@ -138,6 +140,12 @@
     naturalWidth = picture.naturalWidth;
     naturalHeight = picture.naturalHeight;
     arrived = true;
+    loadFailed = false;
+  };
+  /* A still that 404s fires error, not load, so without this the pane sat
+     blank at opacity:0 with no word to the reviewer. */
+  const handleError = (): void => {
+    loadFailed = true;
   };
 
   /* ---- pointer ---- */
@@ -460,6 +468,7 @@
         {alt}
         draggable="false"
         onload={handleLoad}
+        onerror={handleError}
       />
       {#if compareSrc && compareMode === 'slider'}
         <!-- The previous version, revealed to the left of the wipe. -->
@@ -516,6 +525,9 @@
         </div>
       {/if}
     </div>
+    {#if loadFailed}
+      <div class="loadfail" role="alert">This image could not be loaded.</div>
+    {/if}
     {#if compareSrc && compareMode === 'slider'}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="wipebar" onpointerdown={startWipe}>
@@ -633,6 +645,7 @@
     transition: opacity 220ms ease;
   }
   .picture.arrived { opacity: 1; }
+  .loadfail { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 10px 16px; background: var(--n-150, #1c1c1c); color: var(--n-800, #c4c4c4); border-radius: var(--radius, 3px); font-size: var(--text-13, 13px); z-index: 6; }
   .picture.pixelated { image-rendering: pixelated; }
   .wipe { position: absolute; inset: 0; overflow: hidden; }
   .wipe .picture { position: absolute; top: 0; left: 0; height: 100%; width: auto; max-width: none; opacity: 1; }

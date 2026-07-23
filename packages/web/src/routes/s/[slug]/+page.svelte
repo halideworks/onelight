@@ -103,6 +103,8 @@
   let viewerEmail = $state('');
   let viewerIdentity = $state<{ name: string | null; email: string | null } | null>(null);
   let bodyText = $state('');
+  /* In-flight guard for the composer: one post at a time (see addComment). */
+  let posting = $state(false);
   let locked = $state(false);
   let error = $state('');
   let currentFrame = $state(0);
@@ -928,7 +930,12 @@
 
   const addComment = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
+    /* One post at a time. A client double-tapping "Post note" on a slow link
+       otherwise landed two identical notes; the id-dedupe below only catches a
+       poll echo of the SAME id. */
+    if (posting) return;
     if (!selected || !bodyText.trim()) return;
+    posting = true;
     const drawing = pendingDrawing;
     const anchorFrame = drawing
       ? drawing.frame
@@ -945,17 +952,25 @@
       closeNoteRange();
       /* Files ride the new note; a failure names the file and keeps it on
          the composer for another try. */
+      /* The note exists on the server now; an attachment failure must not
+         abandon it into the catch and make the client re-post a duplicate.
+         Collect failures, commit the note, and name what did not attach. */
       const uploaded: CommentAttachment[] = [];
+      const failedNames: string[] = [];
       for (const file of pendingFiles) {
-        const form = new FormData();
-        form.set('file', file);
-        const response = await fetch(`/api/v1/s/${slug}/comments/${created.id}/attachments`, {
-          method: 'POST',
-          body: form
-        });
-        if (!response.ok) throw new Error(`${file.name} could not be attached.`);
-        const row = (await response.json()) as { id: string };
-        uploaded.push({ id: row.id, filename: file.name, size: file.size, content_type: file.type });
+        try {
+          const form = new FormData();
+          form.set('file', file);
+          const response = await fetch(`/api/v1/s/${slug}/comments/${created.id}/attachments`, {
+            method: 'POST',
+            body: form
+          });
+          if (!response.ok) throw new Error(`${file.name} could not be attached.`);
+          const row = (await response.json()) as { id: string };
+          uploaded.push({ id: row.id, filename: file.name, size: file.size, content_type: file.type });
+        } catch {
+          failedNames.push(file.name);
+        }
       }
       created.attachments = uploaded;
       /* The note I just wrote is mine by definition; the wire only says so
@@ -965,16 +980,18 @@
       /* A poll may already have delivered this comment. */
       if (!comments.some((existing) => existing.id === created.id)) comments = [...comments, created];
       bodyText = '';
-      error = '';
+      error = failedNames.length
+        ? `Note posted, but ${failedNames.join(', ')} could not be attached.`
+        : '';
       if (drawing) {
         player?.clearDrawing();
         stills?.clearDrawing();
         pendingDrawing = null;
       }
     } catch (caught) {
-      error = caught instanceof Error && caught.message.includes('attached')
-        ? caught.message
-        : messageFrom(caught, 'The comment could not be added.');
+      error = messageFrom(caught, 'The comment could not be added.');
+    } finally {
+      posting = false;
     }
   };
 
@@ -1456,7 +1473,7 @@
               </div>
             {/if}
             <div class="post-row">
-              <button type="submit" class="post">{showtime ? 'Post note' : 'Comment'}</button>
+              <button type="submit" class="post" disabled={!bodyText.trim() || posting}>{showtime ? 'Post note' : 'Comment'}</button>
               <button type="button" class="quiet attach" onclick={() => attachInput?.click()}>
                 <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L4 7.5" /></svg>
                 Attach

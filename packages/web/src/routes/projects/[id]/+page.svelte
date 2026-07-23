@@ -2780,6 +2780,7 @@
   .rowthumb { flex: none; width: 44px; height: 26px; border-radius: 2px; overflow: hidden; background: var(--ink-200); }
   .rowthumb img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; }
   .rowthumb img:global([data-arrived]) { opacity: 1; transition: opacity 280ms ease; }
+  .rowthumb img:global([data-failed]) { visibility: hidden; }
   .card { display: grid; gap: 8px; padding: 8px; margin: -8px; border-radius: var(--radius-lg); }
   .card:hover { background: var(--ink-100); }
   .card.picked { background: var(--ink-200); }

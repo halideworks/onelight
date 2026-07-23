@@ -100,6 +100,8 @@
   let error = $state('');
   let comments = $state<Comment[]>([]);
   let bodyText = $state('');
+  /* In-flight guard for the composer: one post at a time (see addComment). */
+  let posting = $state(false);
   let commentError = $state('');
   let currentFrame = $state(0);
   let player = $state<Player | null>(null);
@@ -1256,8 +1258,13 @@
 
   const addComment = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
+    /* One post at a time. Enter submits, and holding or double-tapping it (or a
+       slow connection) otherwise fired the POST twice and landed two identical
+       notes -- the id-dedupe below only catches SSE echoes of the SAME id. */
+    if (posting) return;
     const versionId = selectedVersionId;
     if (!versionId || !bodyText.trim()) return;
+    posting = true;
     const drawing = pendingDrawing;
     const parent = replyTo;
     /* A reply belongs to its parent's moment, not the playhead: it inherits the
@@ -1281,17 +1288,26 @@
           ...(mentionIds.length ? { mentions: mentionIds } : {})
         }
       );
+      /* The comment now exists on the server. An attachment that fails must
+         NOT throw us into the catch below and abandon it -- that left the note
+         posted-but-invisible and the user re-posted a duplicate. Collect the
+         failures, commit the note either way, and report what did not attach. */
       const uploaded: NonNullable<Comment['attachments']> = [];
+      const failedNames: string[] = [];
       for (const file of pendingFiles) {
-        const form = new FormData();
-        form.set('file', file);
-        const response = await fetch(`/api/v1/comments/${created.id}/attachments`, {
-          method: 'POST',
-          body: form
-        });
-        if (!response.ok) throw new Error(`${file.name} could not be attached.`);
-        const row = (await response.json()) as { id: string };
-        uploaded.push({ id: row.id, filename: file.name, size: file.size, content_type: file.type });
+        try {
+          const form = new FormData();
+          form.set('file', file);
+          const response = await fetch(`/api/v1/comments/${created.id}/attachments`, {
+            method: 'POST',
+            body: form
+          });
+          if (!response.ok) throw new Error(`${file.name} could not be attached.`);
+          const row = (await response.json()) as { id: string };
+          uploaded.push({ id: row.id, filename: file.name, size: file.size, content_type: file.type });
+        } catch {
+          failedNames.push(file.name);
+        }
       }
       created.attachments = uploaded;
       pendingFiles = [];
@@ -1303,7 +1319,9 @@
       bodyText = '';
       frameOverride = null;
       replyTo = null;
-      commentError = '';
+      commentError = failedNames.length
+        ? `Note posted, but ${failedNames.join(', ')} could not be attached.`
+        : '';
       picked = [];
       mentionQuery = null;
       if (drawing) {
@@ -1312,6 +1330,8 @@
       }
     } catch (caught) {
       commentError = messageFrom(caught, 'The comment could not be added.');
+    } finally {
+      posting = false;
     }
   };
 
@@ -1929,7 +1949,7 @@
                   <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 4.5l-5 5a1.8 1.8 0 002.5 2.5l5.5-5.5a3 3 0 00-4.2-4.2L4 7.5" /></svg>
                 </button>
                 <input bind:this={attachInput} type="file" class="attachinput" multiple accept="application/pdf,image/*" onchange={attachPicked} />
-                <button type="submit" class="primary" disabled={!bodyText.trim()}>{replyTo ? 'Reply' : 'Add note'}</button>
+                <button type="submit" class="primary" disabled={!bodyText.trim() || posting}>{replyTo ? 'Reply' : 'Add note'}</button>
               </span>
             </div>
           </form>
