@@ -1,6 +1,22 @@
-import type { ColorPlaybackMode, PlayerColorContract } from "./options.js";
+import type { ColorSelfCheckResult } from "./color-self-check.js";
+import type { PlayerColorContract } from "./options.js";
 
-export const COLOR_PLAYBACK_MODE_KEY = "onelight.color-playback-mode";
+export const COLOR_CHECK_SCOPE =
+  "Digital scope only. This checks tagged BT.709 decode through sRGB canvas readback. It does not test native video composition, ColorSync or ICC transforms, the GPU output path, or the display. A pass is not display calibration.";
+
+export type ColorCheckState = "checking" | "passed" | "warning" | "unavailable";
+
+export type ColorCheckPresentation = {
+  label: string;
+  state: ColorCheckState;
+  summary: string;
+  detail: string;
+};
+
+type ColorCheckResultSummary = Pick<
+  ColorSelfCheckResult,
+  "outcome" | "stage" | "deviation" | "failure"
+>;
 
 const stringOrNull = (value: unknown): string | null =>
   typeof value === "string" && value.length > 0 ? value : null;
@@ -42,28 +58,40 @@ export const renditionColorContracts = (
   output: colorContractFrom(meta?.output_color),
 });
 
-export const readColorPlaybackMode = (
-  storage: Pick<Storage, "getItem"> | null,
-): ColorPlaybackMode => {
-  if (!storage) return "automatic";
-  try {
-    const value = storage.getItem(COLOR_PLAYBACK_MODE_KEY);
-    return value === "native" || value === "reference" ? value : "automatic";
-  } catch {
-    return "automatic";
-  }
-};
-
-export const writeColorPlaybackMode = (
-  storage: Pick<Storage, "setItem"> | null,
-  mode: ColorPlaybackMode,
-): void => {
-  if (!storage) return;
-  try {
-    storage.setItem(COLOR_PLAYBACK_MODE_KEY, mode);
-  } catch {
-    // The selected mode remains active for this page when storage is blocked.
-  }
+export const colorCheckPresentation = (
+  result: ColorCheckResultSummary | null,
+): ColorCheckPresentation => {
+  if (!result)
+    return {
+      label: "Checking decode",
+      state: "checking",
+      summary: "Running",
+      detail: "The decode-to-canvas check is still running.",
+    };
+  if (result.outcome === "pass")
+    return {
+      label: "Decode check passed",
+      state: "passed",
+      summary: "Passed at canvas readback",
+      detail: "No decode-to-canvas discrepancy was measured.",
+    };
+  if (result.outcome === "warning")
+    return {
+      label: "Decode check warning",
+      state: "warning",
+      summary: `Warning: ${result.deviation} deviation`,
+      detail:
+        result.failure ??
+        `Decoded BT.709 test pixels exceeded the readback tolerance with a ${result.deviation} deviation.`,
+    };
+  return {
+    label: "Decode check unavailable",
+    state: "unavailable",
+    summary: `Unavailable at ${result.stage}`,
+    detail:
+      result.failure ??
+      "The browser could not complete the decode-to-canvas check.",
+  };
 };
 
 export const colorContractValue = (value: string | null): string =>

@@ -49,6 +49,12 @@ the sampled browser path agrees with the encoded reference at the point where
 canvas readback occurs. Apple explicitly recommends test patterns and
 front-of-screen measurement for judging the complete display path.
 
+Product language must preserve that boundary. A successful check is a decode
+and canvas-readback pass, not "color verified." It must not imply that native
+video composition, ColorSync, an ICC transform, GPU output, or the physical
+display was measured. Playback-mode controls must also remain hidden until
+there are genuinely different native and reference backends to select.
+
 ### 3. `VideoFrame.colorSpace` is evidence, not authority
 
 WebCodecs exposes primaries, transfer, matrix, and full-range state on each
@@ -216,4 +222,3 @@ mediabunny -> VideoDecoder -> raw I420/NV12 copy -> WebGL2 shader -> sRGB canvas
 The native path remains automatic and universal. Reference mode is a bounded
 SDR instrument with an explicit preflight, deterministic conversion, automatic
 fallback, and no guessed browser compensation.
-

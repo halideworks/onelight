@@ -1,12 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  COLOR_PLAYBACK_MODE_KEY,
+  COLOR_CHECK_SCOPE,
+  colorCheckPresentation,
   colorContractFrom,
   colorContractValue,
   colorMaximumDelta,
-  readColorPlaybackMode,
   renditionColorContracts,
-  writeColorPlaybackMode,
 } from "./color-playback.js";
 
 describe("color playback presentation", () => {
@@ -54,30 +53,53 @@ describe("color playback presentation", () => {
     expect(colorMaximumDelta(null)).toBe("Not measured");
   });
 
-  it("stores only supported playback preferences", () => {
-    const setItem = vi.fn();
-    writeColorPlaybackMode({ setItem }, "native");
-    expect(setItem).toHaveBeenCalledWith(COLOR_PLAYBACK_MODE_KEY, "native");
-
-    expect(readColorPlaybackMode({ getItem: () => "reference" })).toBe(
-      "reference",
-    );
-    expect(readColorPlaybackMode({ getItem: () => "future" })).toBe(
-      "automatic",
-    );
-    expect(readColorPlaybackMode(null)).toBe("automatic");
+  it("describes a pass as decode readback, not color verification", () => {
+    expect(
+      colorCheckPresentation({
+        outcome: "pass",
+        stage: "complete",
+        deviation: "none",
+        failure: null,
+      }),
+    ).toEqual({
+      label: "Decode check passed",
+      state: "passed",
+      summary: "Passed at canvas readback",
+      detail: "No decode-to-canvas discrepancy was measured.",
+    });
+    expect(COLOR_CHECK_SCOPE).toContain("A pass is not display calibration.");
+    expect(COLOR_CHECK_SCOPE).toContain("ColorSync or ICC transforms");
   });
 
-  it("survives storage access failures", () => {
-    const storage = {
-      getItem: () => {
-        throw new Error("blocked");
-      },
-      setItem: () => {
-        throw new Error("blocked");
-      },
-    };
-    expect(readColorPlaybackMode(storage)).toBe("automatic");
-    expect(() => writeColorPlaybackMode(storage, "automatic")).not.toThrow();
+  it("distinguishes warning, unavailable, and in-flight states", () => {
+    expect(colorCheckPresentation(null)).toMatchObject({
+      label: "Checking decode",
+      state: "checking",
+    });
+    expect(
+      colorCheckPresentation({
+        outcome: "warning",
+        stage: "complete",
+        deviation: "transfer",
+        failure: null,
+      }),
+    ).toMatchObject({
+      label: "Decode check warning",
+      state: "warning",
+      summary: "Warning: transfer deviation",
+    });
+    expect(
+      colorCheckPresentation({
+        outcome: "unsupported",
+        stage: "canvas",
+        deviation: "unclassified",
+        failure: "Canvas readback is unavailable.",
+      }),
+    ).toEqual({
+      label: "Decode check unavailable",
+      state: "unavailable",
+      summary: "Unavailable at canvas",
+      detail: "Canvas readback is unavailable.",
+    });
   });
 });

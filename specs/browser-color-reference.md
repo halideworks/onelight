@@ -108,7 +108,7 @@ client hints beyond what the server already receives, or display identifiers.
 
 ### 3.3 Preference
 
-Add a workspace-local player preference:
+The production reference player will add a browser-local preference:
 
 ```ts
 type ColorPlaybackMode = "automatic" | "native" | "reference";
@@ -120,6 +120,13 @@ type ColorPlaybackMode = "automatic" | "native" | "reference";
 - `reference`: request reference mode and fall back with an explicit reason.
 
 The preference is local to the browser. It is not synced into review data.
+
+Supersession, 2026-07-23: do not expose or persist this preference until the
+reference picture backend is integrated. Automatic and Native both selected
+the native video element during BCR-T04, so presenting them as distinct choices
+was misleading. The dormant control, type, storage key, and persistence code
+were removed. Add the preference with BCR-T08 and activate Automatic behavior
+only when BCR-T10 can perform a real same-frame fallback.
 
 ## 4. Components
 
@@ -360,9 +367,10 @@ The review instrument stays neutral grey.
 
 Add one compact state beside rendition quality:
 
-- `Color verified`
-- `Color warning`
-- `Reference color`
+- `Decode check passed`
+- `Decode check warning`
+- `Decode check unavailable`
+- `Reference renderer`, after the renderer is integrated
 - `Native HDR`
 
 The control uses text plus a simple geometric status mark, not color alone.
@@ -370,13 +378,15 @@ Activating it opens a value-step panel with:
 
 - active path
 - source and rendition primaries, transfer, matrix, and range
-- self-check result and measured maximum delta
-- reason for any fallback
-- a short statement that browser verification is not display calibration
-- Automatic, Native, and Reference choices where supported
+- decode-to-sRGB-canvas result and measured maximum readback delta
+- diagnostic detail for a warning or unsupported path
+- an explicit statement that the check does not measure native video
+  composition, ColorSync or ICC transforms, GPU output, or the display
+- Automatic, Native, and Reference choices only after their backends differ
 
-No browser recommendation is hard-coded. If a path warns, state what was
-measured and offer reference mode when available.
+Never label a canvas-readback pass as color verification or calibration. No
+browser recommendation is hard-coded. If a path warns, state what was measured
+and offer reference mode only when it is available.
 
 ## 7. Tests
 
@@ -434,7 +444,7 @@ platform class. It does not weaken the pixel tolerances.
 | BCR-T01 | Extract shared color oracle | Existing QA output is byte-identical and parity test passes. |
 | BCR-T02 | Add the tiny product self-check clip and runner | All three CI engines return the expected pass or exact pinned warning. |
 | BCR-T03 | Extend structured playback diagnostics | Auth, share scope, rate limits, strict schema, and privacy fields are contract-tested. |
-| BCR-T04 | Add neutral self-check UI | Desktop, tablet, and phone screenshots match section 24 and keyboard focus is complete. |
+| BCR-T04 | Add neutral decode-readback UI | Desktop, tablet, and phone screenshots match section 24, keyboard focus is complete, and the copy does not claim display verification. |
 | BCR-T05 | Prototype mediabunny and VideoDecoder worker | Exact frame timestamps, cancellation, and six-frame resource cap pass. |
 | BCR-T06 | Implement raw I420 and NV12 copy | Decoded metadata is checked and no RGB browser conversion occurs. |
 | BCR-T07 | Implement WebGL2 color renderer | CPU vectors and all browser oracle patches pass within 1/255. |
@@ -447,4 +457,3 @@ platform class. It does not weaken the pixel tolerances.
 Do not start BCR-T07 until BCR-T05 and BCR-T06 prove that each target engine
 can return raw planes with trustworthy timestamps and metadata. Do not enable
 automatic reference mode until BCR-T11 is recorded.
-

@@ -13,11 +13,11 @@
   } from './color-self-check.js';
   import type { ColorSelfCheckDiagnostic, ColorSelfCheckResult } from './color-self-check.js';
   import {
+    COLOR_CHECK_SCOPE,
+    colorCheckPresentation,
     colorContractValue,
     colorMaximumDelta,
-    readColorPlaybackMode,
-    renditionColorContracts,
-    writeColorPlaybackMode
+    renditionColorContracts
   } from './color-playback.js';
   import {
     SUPPORTED_RATES,
@@ -50,7 +50,6 @@
     PlayerRendition,
     ShuttleAudioDiagnostic,
     ShuttleAudioSources,
-    ColorPlaybackMode,
     SurroundMode,
     WatermarkOverlay
   } from './options.js';
@@ -771,41 +770,8 @@
       ? `Native browser video, ${RUNG_LABELS[activeRendition.kind] ?? activeRendition.kind} rendition`
       : 'Native browser video'
   );
-  const colorStatusLabel = $derived.by((): string => {
-    if (!colorSelfCheckResult) return 'Checking color';
-    return colorSelfCheckResult.outcome === 'pass' ? 'Color verified' : 'Color warning';
-  });
-  const colorStatusState = $derived(
-    colorSelfCheckResult?.outcome === 'pass'
-      ? 'verified'
-      : colorSelfCheckResult
-        ? 'warning'
-        : 'checking'
-  );
-  const colorCheckSummary = $derived.by((): string => {
-    if (!colorSelfCheckResult) return 'Native playback self-check is running.';
-    if (colorSelfCheckResult.outcome === 'pass') return 'Passed';
-    if (colorSelfCheckResult.outcome === 'warning')
-      return `Warning, ${colorSelfCheckResult.deviation} deviation`;
-    return `Unavailable at ${colorSelfCheckResult.stage}`;
-  });
-  const colorFallbackReason = $derived.by((): string => {
-    if (!colorSelfCheckResult || colorSelfCheckResult.outcome === 'pass') return 'None';
-    if (colorSelfCheckResult.failure) return colorSelfCheckResult.failure;
-    if (colorSelfCheckResult.outcome === 'warning')
-      return `The native decode exceeded the reference tolerance with a ${colorSelfCheckResult.deviation} deviation.`;
-    return 'The browser could not complete the native playback self-check.';
-  });
+  const colorCheck = $derived(colorCheckPresentation(colorSelfCheckResult));
   let colorPanelOpen = $state(false);
-  let colorPlaybackMode = $state<ColorPlaybackMode>('automatic');
-  $effect(() => {
-    const stored = readColorPlaybackMode(typeof localStorage === 'undefined' ? null : localStorage);
-    colorPlaybackMode = stored === 'reference' ? 'automatic' : stored;
-  });
-  const setColorPlaybackMode = (mode: Exclude<ColorPlaybackMode, 'reference'>): void => {
-    colorPlaybackMode = mode;
-    writeColorPlaybackMode(typeof localStorage === 'undefined' ? null : localStorage, mode);
-  };
 
   /* Rendition switching preserves the current frame: capture frame and play
      state, swap src, then loadedmetadata seeks back into the frame and
@@ -2461,28 +2427,28 @@
         <button
           type="button"
           class="color-state"
-          data-state={colorStatusState}
+          data-state={colorCheck.state}
           aria-expanded={colorPanelOpen}
           aria-controls="color-status-panel"
           onclick={() => { colorPanelOpen = !colorPanelOpen; }}
         >
           <span class="color-status-mark" aria-hidden="true"></span>
-          {colorStatusLabel}
+          {colorCheck.label}
         </button>
       {/if}
       {/if}
     </div>
     {#if chrome === 'full' && !isAudio && colorPanelOpen}
-      <section class="color-panel" id="color-status-panel" aria-label="Color playback status">
+      <section class="color-panel" id="color-status-panel" aria-label="Browser decode check">
         <div class="color-panel-head">
           <div>
-            <span class="color-panel-kicker">Color playback</span>
-            <strong>{colorStatusLabel}</strong>
+            <span class="color-panel-kicker">Digital decode readback</span>
+            <strong>{colorCheck.label}</strong>
           </div>
           <button
             type="button"
             class="color-panel-close"
-            aria-label="Close color playback status"
+            aria-label="Close browser decode check"
             onclick={() => { colorPanelOpen = false; }}
           >Close</button>
         </div>
@@ -2524,38 +2490,23 @@
             <dd>{colorContractValue(activeColorContracts.output?.range ?? null)}</dd>
           </div>
           <div class="color-fact">
-            <dt>Self-check</dt>
-            <dd>{colorCheckSummary}</dd>
+            <dt>Digital check</dt>
+            <dd>{colorCheck.summary}</dd>
           </div>
           <div class="color-fact">
-            <dt>Maximum delta</dt>
+            <dt>Readback delta</dt>
             <dd>{colorMaximumDelta(colorSelfCheckResult?.patchMaxDelta ?? null)}</dd>
           </div>
           <div class="color-fact full">
-            <dt>Fallback reason</dt>
-            <dd>{colorFallbackReason}</dd>
+            <dt>Diagnostic detail</dt>
+            <dd>{colorCheck.detail}</dd>
           </div>
         </dl>
         {#if activeColorContracts.source?.assumption}
           <p class="color-assumption">{activeColorContracts.source.assumption}</p>
         {/if}
-        <div class="color-mode">
-          <span class="ctl-label" id="color-mode-label">Playback mode</span>
-          <div class="seg" role="group" aria-labelledby="color-mode-label">
-            <button
-              type="button"
-              aria-pressed={colorPlaybackMode === 'automatic'}
-              onclick={() => setColorPlaybackMode('automatic')}
-            >Automatic</button>
-            <button
-              type="button"
-              aria-pressed={colorPlaybackMode === 'native'}
-              onclick={() => setColorPlaybackMode('native')}
-            >Native</button>
-          </div>
-        </div>
-        <p class="color-calibration">
-          This verifies the browser playback path against known pixels. It does not calibrate the display.
+        <p class="color-scope">
+          {COLOR_CHECK_SCOPE}
         </p>
       </section>
     {/if}
@@ -2975,7 +2926,7 @@
     flex: none;
     background: var(--n-700, #9a9a9a);
   }
-  .color-state[data-state='verified'] .color-status-mark {
+  .color-state[data-state='passed'] .color-status-mark {
     border-radius: 50%;
     background: var(--n-900, #e9e9e9);
   }
@@ -2986,6 +2937,10 @@
   .color-state[data-state='checking'] .color-status-mark {
     background: transparent;
     box-shadow: inset 0 0 0 1px var(--n-600, #737373);
+  }
+  .color-state[data-state='unavailable'] .color-status-mark {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--n-700, #9a9a9a);
   }
   .color-panel {
     margin-top: 8px;
@@ -3053,13 +3008,7 @@
     color: var(--n-700, #9a9a9a);
     font-size: 13px;
   }
-  .color-mode {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-top: 12px;
-  }
-  .color-calibration {
+  .color-scope {
     margin: 12px 0 0;
     color: var(--n-700, #9a9a9a);
     font-size: 13px;
@@ -3114,6 +3063,7 @@
     .transport-row.settings > * { flex: none; }
     .transport-row.settings .seg button { padding-inline: 8px; }
     .transport-row.settings .grow { display: none; }
+    .transport-row.settings .color-state { order: -1; }
     .ctl-label { white-space: nowrap; }
     .color-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }

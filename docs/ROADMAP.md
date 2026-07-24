@@ -729,9 +729,12 @@ BT.709 clip is parity-checked against independently sampled YUV planes, and
 Chromium reproduces the oracle through the actual product runner. Strict
 color-path diagnostics reach the existing authenticated and share endpoints
 without exposing pixels or device identifiers. The neutral review instrument
-shows the active rendition color contracts, measured maximum delta, and any
-fallback reason at desktop, tablet, and phone widths. Reference mode is not
-offered before it exists.
+shows the active rendition color contracts, measured canvas-readback delta,
+and diagnostic detail at desktop, tablet, and phone widths. It calls the
+result a decode check and states that native composition, ColorSync and ICC
+transforms, GPU output, and the physical display were not measured. The
+nonfunctional Automatic and Native preference was removed. Reference controls
+will not appear before a real reference backend exists.
 
 BCR-T05 is complete. The minified mediabunny worker is a separately loaded
 302,501-byte chunk. Integer-frame mapping round-trips WebCodecs microsecond

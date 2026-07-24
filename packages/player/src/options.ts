@@ -9,8 +9,6 @@ export type PlayerRendition = {
   meta?: Record<string, unknown>;
 };
 
-export type ColorPlaybackMode = "automatic" | "native" | "reference";
-
 export type PlayerColorContract = {
   primaries: string | null;
   transfer: string | null;
