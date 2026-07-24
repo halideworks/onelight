@@ -44,7 +44,6 @@ import {
   sidecarArgs,
   spriteInterval,
   streamingLimits,
-  webCodecString,
   writeSpriteVtt,
 } from "./media.js";
 
@@ -89,23 +88,6 @@ describe("probe normalization", () => {
     expect(args).not.toContain("-show_entries");
   });
 
-  it("derives RFC codec strings from the encoded stream contract", () => {
-    expect(
-      webCodecString({ codec_name: "h264", profile: "High", level: 42 }),
-    ).toBe("avc1.64002A");
-    expect(
-      webCodecString({ codec_name: "hevc", profile: "Main 10", level: 153 }),
-    ).toBe("hvc1.2.4.L153.B0");
-    expect(
-      webCodecString({
-        codec_name: "av1",
-        profile: "Main",
-        level: 13,
-        pix_fmt: "yuv420p10le",
-      }),
-    ).toBe("av01.0.13M.10");
-  });
-
   it("builds a complete playable contract from the encoded file probe", () => {
     expect(
       playableRenditionMetadata(
@@ -134,11 +116,13 @@ describe("probe normalization", () => {
             assumed: false,
           },
         }),
+        "avc1.640c28",
       ),
     ).toMatchObject({
       frame_rate_num: 24000,
       frame_rate_den: 1001,
-      codec: "avc1.64002A",
+      codec: "avc1.640c28",
+      codec_contract_version: 2,
       coded_width: 1920,
       coded_height: 1080,
       height: 1080,

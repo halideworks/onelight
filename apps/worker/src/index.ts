@@ -10,6 +10,7 @@ import type { MediaInfo, TranscodeJob } from "@onelight/core";
 import {
   DEFAULT_WATERMARK_FONTFILE,
   SOFTWARE_ACCELERATION,
+  exactWebCodecString,
   extractStill,
   hardwareAccelerationName,
   playableRenditionMetadata,
@@ -162,7 +163,10 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
       const meta =
         body.kind === "still"
           ? { frame: body.frame }
-          : playableRenditionMetadata(await probeFile(body.output_path));
+          : playableRenditionMetadata(
+              await probeFile(body.output_path),
+              await exactWebCodecString(body.output_path),
+            );
       const complete = {
         job_id: body.job_id,
         status: "complete",

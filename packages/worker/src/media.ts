@@ -3,6 +3,7 @@ import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { encodePeaks } from "@onelight/core";
 import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
+import { ALL_FORMATS, FilePathSource, Input } from "mediabunny";
 
 export interface ProbeDocument {
   format?: Record<string, unknown>;
@@ -359,47 +360,32 @@ const positiveProbeNumber = (value: unknown): number | undefined => {
   return Number.isFinite(result) && result > 0 ? result : undefined;
 };
 
-const avcProfileByte = (profile: string): number | undefined => {
-  const normalized = profile.toLowerCase();
-  if (normalized.includes("baseline")) return 0x42;
-  if (normalized.includes("main")) return 0x4d;
-  if (normalized.includes("high 10")) return 0x6e;
-  if (normalized.includes("high")) return 0x64;
-  return undefined;
-};
-
-const hexByte = (value: number): string =>
-  Math.max(0, Math.min(255, Math.round(value)))
-    .toString(16)
-    .padStart(2, "0")
-    .toUpperCase();
-
-export const webCodecString = (
-  video: Record<string, unknown>,
-): string | undefined => {
-  const codec = asString(video.codec_name)?.toLowerCase();
-  const profile = asString(video.profile) ?? "";
-  const level = positiveProbeNumber(video.level);
-  if (codec === "h264" && level) {
-    const profileByte = avcProfileByte(profile);
-    if (profileByte !== undefined)
-      return `avc1.${hexByte(profileByte)}00${hexByte(level)}`;
+/* ffprobe's profile and level fields do not contain the AVC compatibility
+   byte, or the equivalent HEVC and AV1 constraint fields. Constructing an RFC
+   codec string from those fields silently changed avc1.640c28 into
+   avc1.640028 on Intel VAAPI output. Read the decoder configuration from the
+   actual container instead, using the same parser as the browser worker. */
+export const exactWebCodecString = async (source: string): Promise<string> => {
+  const input = new Input({
+    formats: ALL_FORMATS,
+    source: new FilePathSource(source),
+  });
+  try {
+    const track = await input.getPrimaryVideoTrack();
+    const config = track ? await track.getDecoderConfig() : null;
+    if (!config?.codec)
+      throw new Error(
+        "Playable rendition container did not provide a WebCodecs codec string.",
+      );
+    return config.codec;
+  } finally {
+    input.dispose();
   }
-  if (codec === "hevc" && level)
-    return `hvc1.2.4.L${String(Math.round(level))}.B0`;
-  if (codec === "av1" && level) {
-    const bitDepth =
-      asString(video.pix_fmt)?.includes("10") ||
-      asString(video.bits_per_raw_sample) === "10"
-        ? "10"
-        : "08";
-    return `av01.0.${String(Math.round(level)).padStart(2, "0")}M.${bitDepth}`;
-  }
-  return undefined;
 };
 
 export const playableRenditionMetadata = (
   mediaInfo: MediaInfo,
+  exactCodec: string,
 ): Record<string, unknown> => {
   const video = videoStream(mediaInfo);
   const frameRateNum = positiveProbeNumber(mediaInfo.frameRateNum);
@@ -408,20 +394,20 @@ export const playableRenditionMetadata = (
     throw new Error(
       "Playable rendition probe did not return video color or frame-rate metadata.",
     );
-  const codec = webCodecString(video);
   const codedWidth = positiveProbeNumber(video.width);
   const codedHeight = positiveProbeNumber(video.height);
   const bitRate =
     positiveProbeNumber(video.bit_rate) ??
     positiveProbeNumber(mediaInfo.format.bit_rate);
-  if (!codec || !codedWidth || !codedHeight || !bitRate)
+  if (!exactCodec || !codedWidth || !codedHeight || !bitRate)
     throw new Error(
       "Playable rendition probe did not return a complete codec contract.",
     );
   return {
     frame_rate_num: Math.round(frameRateNum),
     frame_rate_den: Math.round(frameRateDen),
-    codec,
+    codec: exactCodec,
+    codec_contract_version: 2,
     coded_width: Math.round(codedWidth),
     coded_height: Math.round(codedHeight),
     height: Math.round(codedHeight),
@@ -2196,7 +2182,13 @@ export const runTranscode = async (
         output.kind === "hdr_hevc"
       ) {
         const outputInfo = await probeFile(output.path, ffprobe);
-        Object.assign(meta, playableRenditionMetadata(outputInfo));
+        Object.assign(
+          meta,
+          playableRenditionMetadata(
+            outputInfo,
+            await exactWebCodecString(output.path),
+          ),
+        );
         if (output.kind === "hdr_av1" || output.kind === "hdr_hevc")
           meta.hdr_metadata_type = hdrMetadataType(
             outputInfo.sourceColor?.sideData ?? [],

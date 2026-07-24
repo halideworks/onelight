@@ -144,7 +144,7 @@ describe("shuttle audio reconciliation", () => {
       expect(queued).toHaveLength(1);
       expect(queued[0]).toMatchObject({
         kind: "transcode",
-        idempotencyKey: "reference-audio:v2:version-audio",
+        idempotencyKey: "reference-audio:v3:version-audio",
         status: "queued",
         priority: -10,
       });
@@ -197,6 +197,51 @@ describe("shuttle audio reconciliation", () => {
           },
         ])
         .run();
+      await db
+        .insert(renditions)
+        .values({
+          id: "proxy-1080",
+          versionId: "version-audio",
+          kind: "proxy_1080",
+          blobKey: "renditions/version-audio/proxy_1080.mp4",
+          metaJson: JSON.stringify({
+            frame_rate_num: 24000,
+            frame_rate_den: 1001,
+            height: 1080,
+          }),
+          createdAt: 3,
+        })
+        .run();
+      await db.update(jobs).set({ status: "complete", finishedAt: 20 }).run();
+      expect(await sweepShuttleAudioJobs(db)).toBe(1);
+      expect((await db.select().from(jobs).all())[0]).toMatchObject({
+        status: "queued",
+        finishedAt: null,
+      });
+
+      await db
+        .update(renditions)
+        .set({
+          metaJson: JSON.stringify({
+            frame_rate_num: 24000,
+            frame_rate_den: 1001,
+            codec: "avc1.640c28",
+            codec_contract_version: 2,
+            coded_width: 1920,
+            coded_height: 1080,
+            bit_rate: 4500000,
+            output_color: {
+              primaries: "bt709",
+              transfer: "bt709",
+              matrix: "bt709",
+              range: "tv",
+              chromaLocation: "left",
+            },
+          }),
+        })
+        .where(eq(renditions.id, "proxy-1080"))
+        .run();
+      await db.update(jobs).set({ status: "complete", finishedAt: 30 }).run();
       expect(await sweepShuttleAudioJobs(db)).toBe(0);
     } finally {
       sqlite.close();
@@ -294,7 +339,7 @@ describe("shuttle audio reconciliation", () => {
 
       expect(await sweepShuttleAudioJobs(db)).toBe(1);
       expect((await db.select().from(jobs).all())[0]).toMatchObject({
-        idempotencyKey: "reference-audio:v2:version-100",
+        idempotencyKey: "reference-audio:v3:version-100",
         status: "queued",
       });
     } finally {
@@ -433,7 +478,7 @@ describe("watermark reconciliation", () => {
       expect(queued).toHaveLength(1);
       expect(queued[0]).toMatchObject({
         kind: "watermark",
-        idempotencyKey: "watermark:v2:version-1:share-1:spec-1",
+        idempotencyKey: "watermark:v3:version-1:share-1:spec-1",
         status: "queued",
       });
 
@@ -445,6 +490,7 @@ describe("watermark reconciliation", () => {
             frame_rate_num: 24,
             frame_rate_den: 1,
             codec: "avc1.64002A",
+            codec_contract_version: 2,
             coded_width: 1920,
             coded_height: 1080,
             bit_rate: 4500000,

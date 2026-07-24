@@ -781,7 +781,9 @@ request, no main-thread task over 50 ms and seek p95 under 250 ms.
 
 Reference playback is now deployment-safe for existing libraries. Watermarked
 share sources record their complete probed codec, dimensions, bitrate, rational
-rate and output color contract, and old incomplete rows are re-rendered. Audio
+rate and output color contract, and old incomplete rows are re-rendered. Codec
+strings come from the encoded container's decoder configuration, not an
+ffprobe profile approximation that omits AVC and HEVC constraint fields. Audio
 sidecar backfill traverses the entire ready catalog in stable batches instead
 of repeatedly checking a fixed first page. The player keeps its Playback
 selector visible outside diagnostics, explains exactly why Reference is

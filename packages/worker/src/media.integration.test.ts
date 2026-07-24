@@ -9,7 +9,12 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { extractStill, probeFile, runProcess } from "./media.js";
+import {
+  exactWebCodecString,
+  extractStill,
+  probeFile,
+  runProcess,
+} from "./media.js";
 
 const ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg";
 const ffprobe = process.env.FFPROBE_PATH ?? "ffprobe";
@@ -47,6 +52,18 @@ describe.skipIf(!hasFfmpeg)("media integration (real ffmpeg)", () => {
       // ~1s; ffmpeg may land a frame either side, so allow a small window.
       expect(Number(info.format.duration)).toBeGreaterThan(0.8);
       expect(Number(info.format.duration)).toBeLessThan(1.3);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the exact WebCodecs string from the encoded container", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "onelight-mi-"));
+    try {
+      const source = await makeClip(dir);
+      await expect(exactWebCodecString(source)).resolves.toMatch(
+        /^avc1\.[0-9a-f]{6}$/i,
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

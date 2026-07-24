@@ -115,6 +115,7 @@ const completePlayableRenditionMeta = (
 ): boolean => {
   const color = recordValue(meta.output_color);
   return Boolean(
+    meta.codec_contract_version === 2 &&
     positiveInteger(meta.frame_rate_num) &&
     positiveInteger(meta.frame_rate_den) &&
     positiveInteger(meta.coded_width) &&
@@ -614,7 +615,7 @@ export const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
         })
       )
         continue;
-      const idempotencyKey = `watermark:v2:${row.version.id}:${share.id}:${specHash}`;
+      const idempotencyKey = `watermark:v3:${row.version.id}:${share.id}:${specHash}`;
       const proxy = (
         await db
           .select()
@@ -720,6 +721,13 @@ export const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
 const SHUTTLE_AUDIO_SWEEP_INTERVAL_MS = 30_000;
 const SHUTTLE_AUDIO_SWEEP_LIMIT = 4;
 const SHUTTLE_AUDIO_SCAN_BATCH = 100;
+const PLAYABLE_VIDEO_KINDS: Array<typeof renditions.$inferSelect.kind> = [
+  "proxy_540",
+  "proxy_1080",
+  "proxy_2160",
+  "hdr_av1",
+  "hdr_hevc",
+];
 
 export const sweepShuttleAudioJobs = async (db: AppDb): Promise<number> => {
   let enqueued = 0;
@@ -765,23 +773,38 @@ export const sweepShuttleAudioJobs = async (db: AppDb): Promise<number> => {
         row.asset.kind === "video"
           ? ["reference_audio_1x", "shuttle_audio_2x", "shuttle_audio_4x"]
           : ["shuttle_audio_2x", "shuttle_audio_4x"];
+      const existingRenditions = await db
+        .select({ kind: renditions.kind, metaJson: renditions.metaJson })
+        .from(renditions)
+        .where(
+          and(
+            eq(renditions.versionId, row.version.id),
+            isNull(renditions.shareId),
+            inArray(renditions.kind, [
+              ...requiredKinds,
+              ...PLAYABLE_VIDEO_KINDS,
+            ]),
+          ),
+        )
+        .all();
       const existingKinds = new Set(
-        (
-          await db
-            .select({ kind: renditions.kind })
-            .from(renditions)
-            .where(
-              and(
-                eq(renditions.versionId, row.version.id),
-                isNull(renditions.shareId),
-                inArray(renditions.kind, requiredKinds),
-              ),
-            )
-            .all()
-        ).map((rendition) => rendition.kind),
+        existingRenditions.map((rendition) => rendition.kind),
       );
-      if (requiredKinds.every((kind) => existingKinds.has(kind))) continue;
-      const idempotencyKey = `reference-audio:v2:${row.version.id}`;
+      const playableRows = existingRenditions.filter((rendition) =>
+        PLAYABLE_VIDEO_KINDS.includes(rendition.kind),
+      );
+      const videoContractsComplete =
+        row.asset.kind !== "video" ||
+        (playableRows.length > 0 &&
+          playableRows.every((rendition) =>
+            completePlayableRenditionMeta(parseObject(rendition.metaJson)),
+          ));
+      if (
+        requiredKinds.every((kind) => existingKinds.has(kind)) &&
+        videoContractsComplete
+      )
+        continue;
+      const idempotencyKey = `reference-audio:v3:${row.version.id}`;
       const existingJob = (
         await db
           .select({ id: jobs.id, status: jobs.status })
@@ -1075,21 +1098,51 @@ const processJob = async (
       const vttInfo = await stat(path.join(blobRoot, vttKey));
       meta.vtt_size = vttInfo.size;
     }
-    await db
-      .insert(renditions)
-      .values({
-        id: new UlidGenerator().ulid(),
-        versionId: version.id,
-        kind: rendition.kind as typeof renditions.$inferInsert.kind,
-        blobKey: key,
-        metaJson: JSON.stringify(meta),
-        size: info.size,
-        checksumSha256: await sha256File(rendition.key),
-        shareId: null,
-        createdAt: Date.now(),
-      })
-      .onConflictDoNothing()
-      .run();
+    const checksumSha256 = await sha256File(rendition.key);
+    const existingRendition = (
+      await db
+        .select({ id: renditions.id })
+        .from(renditions)
+        .where(
+          and(
+            eq(renditions.versionId, version.id),
+            eq(
+              renditions.kind,
+              rendition.kind as typeof renditions.$inferSelect.kind,
+            ),
+            isNull(renditions.shareId),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (existingRendition) {
+      await db
+        .update(renditions)
+        .set({
+          blobKey: key,
+          metaJson: JSON.stringify(meta),
+          size: info.size,
+          checksumSha256,
+        })
+        .where(eq(renditions.id, existingRendition.id))
+        .run();
+    } else {
+      await db
+        .insert(renditions)
+        .values({
+          id: new UlidGenerator().ulid(),
+          versionId: version.id,
+          kind: rendition.kind as typeof renditions.$inferInsert.kind,
+          blobKey: key,
+          metaJson: JSON.stringify(meta),
+          size: info.size,
+          checksumSha256,
+          shareId: null,
+          createdAt: Date.now(),
+        })
+        .run();
+    }
   }
   // Primary readiness is per asset kind: only a missing primary rendition
   // fails the job; secondary failures are reported above and do not.
