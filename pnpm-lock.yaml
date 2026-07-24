@@ -178,6 +178,9 @@ importers:
       '@onelight/core':
         specifier: workspace:*
         version: link:../core
+      mediabunny:
+        specifier: ^1.50.8
+        version: 1.50.8
       svelte:
         specifier: ^5.56.7
         version: 5.56.7(@typescript-eslint/types@8.63.0)

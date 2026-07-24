@@ -9,3 +9,5 @@ export * from "./transport-state.js";
 export * from "./color-oracle.js";
 export * from "./color-playback.js";
 export * from "./color-self-check.js";
+export * from "./reference/frame-window.js";
+export * from "./reference/protocol.js";

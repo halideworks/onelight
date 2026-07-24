@@ -731,9 +731,18 @@ color-path diagnostics reach the existing authenticated and share endpoints
 without exposing pixels or device identifiers. The neutral review instrument
 shows the active rendition color contracts, measured maximum delta, and any
 fallback reason at desktop, tablet, and phone widths. Reference mode is not
-offered before it exists. The next stage is BCR-T05, the isolated mediabunny
-and VideoDecoder worker prototype with exact timestamp, cancellation, and
-six-frame resource-cap gates.
+offered before it exists.
+
+BCR-T05 is complete. The minified mediabunny worker is a separately loaded
+302,501-byte chunk. Integer-frame mapping round-trips WebCodecs microsecond
+timestamps at every supported rational rate, stale seek and playback
+generations cannot publish results, decode feeding observes queue pressure,
+and the retained window closes anything outside two frames behind through
+three ahead. Chromium passes the real worker and transferable-plane test.
+Windows Firefox reaches the next gate but exposes decoded H.264 as `BGRX`,
+not I420 or NV12. The worker rejects that exact format before `copyTo`, so
+there is no hidden browser RGB conversion. BCR-T06 remains open on the
+cross-engine raw-plane matrix, and automatic reference mode remains blocked.
 
 ## Full application hardening audit (2026-07-23)
 

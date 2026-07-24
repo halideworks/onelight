@@ -143,6 +143,27 @@ and its tolerances are never widened, and any drift in the pinned bytes
 (including WebKit fixing itself) fails the run until the pin is
 re-derived or deleted. The full analysis is recorded with the table.
 
+### color-self-check.spec.ts (Playwright chromium + firefox; webkit when installed)
+
+Runs the product's tiny committed BT.709 clip through the literal
+`runColorSelfCheck` implementation. The test covers the detached muted video,
+explicit sRGB canvas, all oracle patches, and exact engine classification.
+Firefox requires seek completion plus muted playback before its first
+`requestVideoFrameCallback`; otherwise it can callback while a detached frame
+is still black. That ordering is product code and is tested without an engine
+exception.
+
+### reference-decoder.spec.ts (Playwright chromium + firefox)
+
+Bundles the mediabunny and `VideoDecoder` prototype as a separate minified
+worker, currently 302,501 bytes. Chromium proves exact rational timestamp
+mapping, cancellation of a stale 4x play generation, transferable raw planes,
+and the six-open-frame cap. On Windows, Playwright Firefox decodes the same
+tagged H.264 frame as `BGRX`. The worker rejects that exact format because an
+RGB `copyTo` would make the browser's conversion part of the reference path.
+The platform-scoped test pins the rejection while BCR-T06 remains open. It
+does not widen the accepted I420 or NV12 contract.
+
 ### hdr-tonemap.spec.ts (Node only, ffmpeg + ffprobe)
 
 Runs the product's literal `HDR_TONEMAP_FILTER` string (imported from

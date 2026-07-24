@@ -35,6 +35,26 @@ const bundleHarness = async (): Promise<void> => {
     path.join(qaRoot, "src", "harness.html"),
     path.join(harnessDir, "harness.html"),
   );
+  /* The reference decoder stays in a separately loaded worker chunk. Its
+     bundle gate prevents the native player path from paying for mediabunny. */
+  await build({
+    entryPoints: [
+      path.join(
+        repoRoot,
+        "packages",
+        "player",
+        "src",
+        "reference",
+        "decoder.worker.ts",
+      ),
+    ],
+    bundle: true,
+    format: "esm",
+    minify: true,
+    target: ["chrome110", "firefox115", "safari16"],
+    outfile: path.join(harnessDir, "reference-decoder.worker.js"),
+    logLevel: "silent",
+  });
 };
 
 export default async function setup(): Promise<void> {
