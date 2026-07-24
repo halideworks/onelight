@@ -723,6 +723,18 @@ video plane. The SDR tonemapped proxy remains the default otherwise. Automatic
 reference mode is blocked on cross-engine pixel, frame, memory, recovery, and
 real Safari/Windows performance gates.
 
+The first implementation slice is complete: BCR-T01 through BCR-T04. The QA
+bars and product self-check now share one canonical oracle, the tiny embedded
+BT.709 clip is parity-checked against independently sampled YUV planes, and
+Chromium reproduces the oracle through the actual product runner. Strict
+color-path diagnostics reach the existing authenticated and share endpoints
+without exposing pixels or device identifiers. The neutral review instrument
+shows the active rendition color contracts, measured maximum delta, and any
+fallback reason at desktop, tablet, and phone widths. Reference mode is not
+offered before it exists. The next stage is BCR-T05, the isolated mediabunny
+and VideoDecoder worker prototype with exact timestamp, cancellation, and
+six-frame resource-cap gates.
+
 ## Full application hardening audit (2026-07-23)
 
 The v1 app was audited across authorization, public contracts, upload and

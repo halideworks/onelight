@@ -14,6 +14,7 @@ import {
   fixturesDir,
   harnessDir,
   qaRoot,
+  repoRoot,
 } from "./capabilities.js";
 import { synthesizeFixtures } from "./fixtures.js";
 
@@ -48,6 +49,17 @@ export default async function setup(): Promise<void> {
       "[qa] fixtures: not synthesized (ffmpeg/ffprobe not on PATH); media suites will skip",
     );
   }
+  await copyFile(
+    path.join(
+      repoRoot,
+      "packages",
+      "web",
+      "static",
+      "media",
+      "color-check-bt709.mp4",
+    ),
+    path.join(fixturesDir, "color-check-bt709.mp4"),
+  );
   await bundleHarness();
   await writeFile(envPath, JSON.stringify(env, null, 2), "utf8");
 }

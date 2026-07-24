@@ -5,6 +5,7 @@
   import Slider from '@onelight/player/Slider.svelte';
   import { parseSpriteVtt } from '@onelight/player';
   import type {
+    ColorSelfCheckDiagnostic,
     FrameAnnotation,
     PendingDrawing,
     PlayerRendition,
@@ -14,6 +15,7 @@
     TimelineMarker,
     WatermarkOverlay
   } from '@onelight/player';
+  import { version as appVersion } from '$app/environment';
   import { page } from '$app/state';
   import { copyText } from '$lib/clipboard.js';
   import { replaceState } from '$app/navigation';
@@ -67,7 +69,7 @@
       id: string;
       media_info: Record<string, unknown>;
       renditions: Array<{ kind: string; meta: Record<string, unknown> }>;
-      sources: Array<{ kind: string; url: string }>;
+      sources: Array<{ kind: string; url: string; meta: Record<string, unknown> }>;
       sidecars?: {
         sprite?: { url: string; vtt_url: string | null } | null;
         peaks?: { url: string } | null;
@@ -543,7 +545,8 @@
       /* The detail carries the playable ladder (watermark-aware) directly. */
       previewRenditions = (version?.sources ?? []).map((source) => ({
         kind: source.kind,
-        url: source.url
+        url: source.url,
+        meta: source.meta
       }));
       if (version?.watermark === 'processing') watermarkPending = true;
       /* Sidecar lanes: peaks stretch as an image, the sprite VTT carries the
@@ -1244,6 +1247,7 @@
           shuttleAudio={previewShuttleAudio}
           filmstrip={previewFilmstrip}
           waveformUrl={previewWaveformUrl}
+          colorCheckBuildId={appVersion}
           captionsSrc={previewCaptionsUrl ?? undefined}
           allowDrawing={share.allow_comments}
           drawDefaultColor={inkChoice ?? myInk}
@@ -1274,6 +1278,15 @@
             if (noteRange) rangeArming = false;
           }}
           onshuttleaudiodiagnostic={(diagnostic: ShuttleAudioDiagnostic) => {
+            const assetId = selected?.id;
+            if (assetId)
+              void apiPost<void>(
+                `/api/v1/s/${slug}/assets/${assetId}/playback-diagnostics`,
+                diagnostic,
+                { redirectOn401: false, keepalive: true }
+              ).catch(() => undefined);
+          }}
+          oncolorselfcheckdiagnostic={(diagnostic: ColorSelfCheckDiagnostic) => {
             const assetId = selected?.id;
             if (assetId)
               void apiPost<void>(

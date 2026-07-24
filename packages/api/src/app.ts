@@ -7179,6 +7179,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         url: string;
         size: number;
         height: number | null;
+        meta: Record<string, unknown>;
       }> = [];
       let watermarkState: "ready" | "processing" | null = null;
       const heightOf = (meta: Record<string, unknown>): number | null =>
@@ -7197,6 +7198,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             ),
             size: burned.size,
             height: heightOf(parseJsonObject(burned.metaJson)),
+            meta: parseJsonObject(burned.metaJson),
           });
       } else if (env.blobStore) {
         for (const rendition of versionRenditions as Array<
@@ -7213,6 +7215,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             ),
             size: rendition.size,
             height: heightOf(parseJsonObject(rendition.metaJson)),
+            meta: parseJsonObject(rendition.metaJson),
           });
         }
       }
@@ -7455,7 +7458,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     );
     if (!asset?.currentVersionId) throw errors.notFound();
     await hitRateLimit(
-      `share_playback_diagnostic:${projection.share.id}:${projection.viewer.viewerKey}`,
+      `share_playback_diagnostic:${projection.share.id}:${projection.viewer.viewerKey}:${asset.currentVersionId}`,
       12,
       5 * 60 * 1000,
     );

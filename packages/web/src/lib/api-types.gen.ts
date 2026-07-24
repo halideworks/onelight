@@ -8263,6 +8263,9 @@ export interface paths {
                                     url: string;
                                     size: number;
                                     height: number | null;
+                                    meta: {
+                                        [key: string]: unknown;
+                                    };
                                 }[];
                                 sidecars: {
                                     sprite: {
@@ -8630,7 +8633,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Record an automatic JKL shuttle-audio fallback diagnostic for an authorized share viewer. */
+        /** Record an automatic playback or color-path diagnostic for an authorized share viewer. */
         post: {
             parameters: {
                 query?: never;
@@ -8644,6 +8647,54 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
+                        /** @constant */
+                        kind: "shuttle_audio";
+                        /** @enum {string} */
+                        reason: "source_missing" | "sidecar_element_missing" | "main_element_missing" | "play_rejected" | "media_error" | "sidecar_ended_early" | "sidecar_clock_stalled" | "source_removed" | "sidecar_started" | "sidecar_clock_advancing";
+                        /** @enum {number} */
+                        rate: 0 | 2 | 4;
+                        main_ready_state: number | null;
+                        main_network_state: number | null;
+                        main_playback_rate: number | null;
+                        main_current_time: number | null;
+                        main_paused: boolean | null;
+                        main_muted: boolean | null;
+                        main_volume?: number | null;
+                        sidecar_ready_state: number | null;
+                        sidecar_network_state: number | null;
+                        sidecar_current_time: number | null;
+                        sidecar_duration?: number | null;
+                        sidecar_paused: boolean | null;
+                        sidecar_muted?: boolean | null;
+                        sidecar_volume?: number | null;
+                        sidecar_source_present?: boolean;
+                        sidecar_media_error: number | null;
+                        document_visibility?: ("hidden" | "visible" | "prerender") | null;
+                        online?: boolean | null;
+                        failure: string | null;
+                    } | {
+                        /** @constant */
+                        kind: "color_self_check";
+                        /** @enum {string} */
+                        outcome: "pass" | "warning" | "unsupported";
+                        /** @enum {string} */
+                        stage: "load" | "decode" | "canvas" | "readback" | "compare" | "complete";
+                        /** @enum {string} */
+                        engine_family: "chromium" | "firefox" | "webkit" | "unknown";
+                        engine_major: number | null;
+                        /** @enum {string} */
+                        platform_class: "mac" | "windows" | "linux" | "mobile" | "unknown";
+                        /** @enum {string} */
+                        canvas_color_space: "srgb" | "display-p3" | "unknown";
+                        patch_max_delta: [
+                            number,
+                            number,
+                            number
+                        ] | null;
+                        failed_patches: string[];
+                        elapsed_ms: number;
+                        failure: string | null;
+                    } | {
                         /** @enum {string} */
                         reason: "source_missing" | "sidecar_element_missing" | "main_element_missing" | "play_rejected" | "media_error" | "sidecar_ended_early" | "sidecar_clock_stalled" | "source_removed" | "sidecar_started" | "sidecar_clock_advancing";
                         /** @enum {number} */
@@ -13181,7 +13232,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Record an automatic JKL shuttle-audio fallback diagnostic for a project member. */
+        /** Record an automatic playback or color-path diagnostic for a project member. */
         post: {
             parameters: {
                 query?: never;
@@ -13194,6 +13245,54 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
+                        /** @constant */
+                        kind: "shuttle_audio";
+                        /** @enum {string} */
+                        reason: "source_missing" | "sidecar_element_missing" | "main_element_missing" | "play_rejected" | "media_error" | "sidecar_ended_early" | "sidecar_clock_stalled" | "source_removed" | "sidecar_started" | "sidecar_clock_advancing";
+                        /** @enum {number} */
+                        rate: 0 | 2 | 4;
+                        main_ready_state: number | null;
+                        main_network_state: number | null;
+                        main_playback_rate: number | null;
+                        main_current_time: number | null;
+                        main_paused: boolean | null;
+                        main_muted: boolean | null;
+                        main_volume?: number | null;
+                        sidecar_ready_state: number | null;
+                        sidecar_network_state: number | null;
+                        sidecar_current_time: number | null;
+                        sidecar_duration?: number | null;
+                        sidecar_paused: boolean | null;
+                        sidecar_muted?: boolean | null;
+                        sidecar_volume?: number | null;
+                        sidecar_source_present?: boolean;
+                        sidecar_media_error: number | null;
+                        document_visibility?: ("hidden" | "visible" | "prerender") | null;
+                        online?: boolean | null;
+                        failure: string | null;
+                    } | {
+                        /** @constant */
+                        kind: "color_self_check";
+                        /** @enum {string} */
+                        outcome: "pass" | "warning" | "unsupported";
+                        /** @enum {string} */
+                        stage: "load" | "decode" | "canvas" | "readback" | "compare" | "complete";
+                        /** @enum {string} */
+                        engine_family: "chromium" | "firefox" | "webkit" | "unknown";
+                        engine_major: number | null;
+                        /** @enum {string} */
+                        platform_class: "mac" | "windows" | "linux" | "mobile" | "unknown";
+                        /** @enum {string} */
+                        canvas_color_space: "srgb" | "display-p3" | "unknown";
+                        patch_max_delta: [
+                            number,
+                            number,
+                            number
+                        ] | null;
+                        failed_patches: string[];
+                        elapsed_ms: number;
+                        failure: string | null;
+                    } | {
                         /** @enum {string} */
                         reason: "source_missing" | "sidecar_element_missing" | "main_element_missing" | "play_rejected" | "media_error" | "sidecar_ended_early" | "sidecar_clock_stalled" | "source_removed" | "sidecar_started" | "sidecar_clock_advancing";
                         /** @enum {number} */

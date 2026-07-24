@@ -952,6 +952,43 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
         });
         expect(record.request_id).toEqual(expect.any(String));
         expect(JSON.stringify(record)).not.toContain(fixture.slug);
+        const colorDiagnostic = {
+          kind: "color_self_check",
+          outcome: "pass",
+          stage: "complete",
+          engine_family: "chromium",
+          engine_major: 149,
+          platform_class: "windows",
+          canvas_color_space: "srgb",
+          patch_max_delta: [1, 1, 2],
+          failed_patches: [],
+          elapsed_ms: 32,
+          failure: null,
+        };
+        const colorResponse = await req(
+          h,
+          `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/playback-diagnostics`,
+          {
+            method: "POST",
+            cookie: viewer.cookie,
+            origin: true,
+            json: colorDiagnostic,
+          },
+        );
+        expect(colorResponse.status).toBe(204);
+        const colorRecord = JSON.parse(
+          String(warning.mock.calls.at(-1)?.[0]).slice(
+            "[onelight-playback-diagnostic] ".length,
+          ),
+        ) as Record<string, unknown>;
+        expect(colorRecord).toMatchObject({
+          scope: "share",
+          share_id: fixture.shareId,
+          asset_id: fixture.assetId,
+          version_id: expect.any(String),
+          ...colorDiagnostic,
+        });
+        expect(JSON.stringify(colorRecord)).not.toContain(fixture.slug);
         const anonymous = await req(
           h,
           `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/playback-diagnostics`,

@@ -3,8 +3,8 @@
 This package holds the credibility-critical verification suites from design
 doc section 21: the WebCodecs frame-accuracy ground truth, the golden-frame
 color QC, and the tmcd timecode round-trip. All fixtures are synthesized
-with ffmpeg at test time into `qa/.artifacts/` (gitignored); nothing binary
-is ever committed.
+with ffmpeg at test time into `qa/.artifacts/` (gitignored). The sole committed
+media fixture is the 4.4 KiB product color self-check described below.
 
 ## Running
 
@@ -67,6 +67,21 @@ Plus:
   uniform, and cross-checked against the analytic RP 219 nominals within
   3/255 at synthesis time, so a broken fixture fails before any browser
   sees it.
+- `packages/web/static/media/color-check-bt709.mp4`: the product self-check
+  counterpart to the generated bars fixture. It is a 0.5 second, two-keyframe
+  H.264 file, 1280x720 yuv420p, BT.709 limited range, without audio. The parity
+  suite decodes its YUV planes through the independent fixture analyzer and
+  requires the same rectangles, bytes, and tolerances as the generated QA
+  oracle.
+
+The committed self-check clip was generated with:
+
+```
+ffmpeg -hide_banner -y -f lavfi -i "smptehdbars=s=1280x720:r=4:d=0.5" -vf format=yuv420p -frames:v 2 -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -g 1 -keyint_min 1 -sc_threshold 0 -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -movflags +faststart packages/web/static/media/color-check-bt709.mp4
+```
+
+SHA-256:
+`697e236ea7dbd0d3661bd8c9799231ce4dfa8534cc8da21be3524996b918b1fd`.
 
 ## What each suite proves
 

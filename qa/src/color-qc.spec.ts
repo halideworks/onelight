@@ -19,6 +19,11 @@
 
 import { chromium, firefox, webkit } from "playwright";
 import type { BrowserType } from "playwright";
+import {
+  COLOR_ORACLE_PATCHES,
+  compareColorOracle,
+  type ColorTriplet,
+} from "../../packages/player/src/color-oracle.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { artifactsDir, readEnvironment, skipReason } from "./capabilities.js";
 import type { FixtureManifest } from "./fixtures.js";
@@ -61,7 +66,7 @@ const engines: Array<{
    the reference. */
 const PINNED_DECODE_DEVIATIONS: Record<
   string,
-  Record<string, [number, number, number]> | undefined
+  Record<string, ColorTriplet> | undefined
 > = {
   "webkit-linux": {
     white75: [188, 188, 188],
@@ -79,6 +84,7 @@ describe.skipIf(fixturesMissing !== undefined)(
 
     beforeAll(async () => {
       manifest = await readManifest();
+      expect(manifest.bars.patches).toEqual(COLOR_ORACLE_PATCHES);
       server = await startStaticServer(artifactsDir);
     });
 
@@ -118,7 +124,7 @@ describe.skipIf(fixturesMissing !== undefined)(
             await page.evaluate(([frame]) => window.qa.seekAndRead(frame), [
               60,
             ] as const);
-            const rects = manifest.bars.patches.map((patch) => ({
+            const rects = COLOR_ORACLE_PATCHES.map((patch) => ({
               name: patch.name,
               ...patch.rect,
             }));
@@ -126,48 +132,16 @@ describe.skipIf(fixturesMissing !== undefined)(
               ([patchRects]) => window.qa.readPatches(patchRects),
               [rects] as const,
             );
-            /* Collect every out-of-tolerance channel before failing, so a
-               deviation reads as a full vector across the patch set (a
-               uniform level shift, a matrix confusion, and a gamma bend
-               all look different across patches but identical on the
-               first failing channel alone). */
             const pins =
               PINNED_DECODE_DEVIATIONS[`${engine.name}-${process.platform}`];
-            const failures: string[] = [];
-            for (const patch of manifest.bars.patches) {
-              const reading = readings.find(
-                (entry) => entry.name === patch.name,
-              );
-              expect(reading, `patch ${patch.name} missing`).toBeDefined();
-              if (!reading) continue;
-              const pinned = pins?.[patch.name];
-              if (pinned) {
-                /* A pinned patch must match its recorded deviation byte for
-                   byte; drift in either direction is a decoder change that
-                   demands re-deriving the pin. */
-                if (
-                  reading.rgb[0] !== pinned[0] ||
-                  reading.rgb[1] !== pinned[1] ||
-                  reading.rgb[2] !== pinned[2]
-                )
-                  failures.push(
-                    `${patch.name}: got ${reading.rgb.join(",")}, pinned deviation ${pinned.join(",")} (reference ${patch.srgb.join(",")}); the ${engine.name} decoder changed, re-derive or delete the pin`,
-                  );
-                continue;
-              }
-              for (let channel = 0; channel < 3; channel += 1) {
-                const got = reading.rgb[channel] ?? -1;
-                const want = patch.srgb[channel] ?? -1;
-                const tolerance = patch.tolerance[channel] ?? 0;
-                if (Math.abs(got - want) > tolerance)
-                  failures.push(
-                    `${patch.name} channel ${channel}: got ${reading.rgb.join(",")}, reference ${patch.srgb.join(",")} (nominal ${patch.nominal.join(",")}, tolerance ${tolerance})`,
-                  );
-              }
-            }
+            const result = compareColorOracle(
+              readings,
+              pins ? { pinned: pins } : {},
+            );
+            const failures = result.failures.map((failure) => failure.message);
             expect(
               failures,
-              `${engine.name} out-of-tolerance patches:\n${failures.join("\n")}`,
+              `${engine.name} out-of-tolerance patches (${result.deviation}):\n${failures.join("\n")}`,
             ).toEqual([]);
           } finally {
             await browser.close();

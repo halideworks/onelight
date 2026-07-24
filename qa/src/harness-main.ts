@@ -8,6 +8,10 @@ import {
   frameAtMediaTime,
   mediaTimeInsideFrame,
 } from "../../packages/player/src/frame-clock.js";
+import {
+  COLOR_SELF_CHECK_CLIP_SHA256,
+  runColorSelfCheck,
+} from "../../packages/player/src/color-self-check.js";
 import { configurePlaybackRate } from "../../packages/player/src/transport-state.js";
 import { decodeStripe } from "./stripe.js";
 import type {
@@ -240,5 +244,12 @@ const harness: QaHarness = {
   webcodecsRead,
   readPatches,
   probeShuttleAudio,
+  runColorSelfCheck: (url, buildId) =>
+    runColorSelfCheck({
+      buildId,
+      clipUrl: url,
+      clipHash: COLOR_SELF_CHECK_CLIP_SHA256,
+      storage: null,
+    }),
 };
 window.qa = harness;

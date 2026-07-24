@@ -303,6 +303,67 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       }
     });
 
+    it("records strict color self-check diagnostics without pixel or device data", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const diagnostic = {
+        kind: "color_self_check",
+        outcome: "warning",
+        stage: "complete",
+        engine_family: "webkit",
+        engine_major: 27,
+        platform_class: "mac",
+        canvas_color_space: "srgb",
+        patch_max_delta: [3, 5, 3],
+        failed_patches: ["white75", "yellow75"],
+        elapsed_ms: 48,
+        failure: null,
+      };
+      try {
+        const accepted = await req(
+          h,
+          `/api/v1/versions/${seed.media.versionId}/playback-diagnostics`,
+          {
+            method: "POST",
+            cookie: seed.commenter.cookie,
+            json: diagnostic,
+          },
+        );
+        expect(accepted.status).toBe(204);
+        const record = JSON.parse(
+          String(warning.mock.calls[0]?.[0]).slice(
+            "[onelight-playback-diagnostic] ".length,
+          ),
+        ) as Record<string, unknown>;
+        expect(record).toMatchObject({
+          scope: "project",
+          actor_id: seed.commenter.id,
+          version_id: seed.media.versionId,
+          ...diagnostic,
+        });
+        expect(JSON.stringify(record)).not.toContain("gpu_adapter");
+        expect(JSON.stringify(record)).not.toContain("patch_pixels");
+
+        const privateFields = await req(
+          h,
+          `/api/v1/versions/${seed.media.versionId}/playback-diagnostics`,
+          {
+            method: "POST",
+            cookie: seed.commenter.cookie,
+            json: {
+              ...diagnostic,
+              gpu_adapter: "specific device",
+              patch_pixels: [[1, 2, 3]],
+            },
+          },
+        );
+        expect(privateFields.status).toBe(400);
+      } finally {
+        warning.mockRestore();
+      }
+    });
+
     it("completes comments and records the completing user", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

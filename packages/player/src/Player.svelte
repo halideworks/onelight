@@ -6,6 +6,20 @@
     mediaTimeInsideFrame
   } from './frame-clock.js';
   import {
+    claimColorSelfCheckDiagnostic,
+    colorSelfCheckDiagnostic,
+    detectBrowserIdentity,
+    runColorSelfCheck
+  } from './color-self-check.js';
+  import type { ColorSelfCheckDiagnostic, ColorSelfCheckResult } from './color-self-check.js';
+  import {
+    colorContractValue,
+    colorMaximumDelta,
+    readColorPlaybackMode,
+    renditionColorContracts,
+    writeColorPlaybackMode
+  } from './color-playback.js';
+  import {
     SUPPORTED_RATES,
     formatTimecode,
     isDropFrameRate,
@@ -36,6 +50,7 @@
     PlayerRendition,
     ShuttleAudioDiagnostic,
     ShuttleAudioSources,
+    ColorPlaybackMode,
     SurroundMode,
     WatermarkOverlay
   } from './options.js';
@@ -49,6 +64,7 @@
     durationFrames = null,
     markers = [],
     renditions = [],
+    colorMetadata = undefined,
     shuttleAudio = null,
     allowDrawing = false,
     drawDefaultColor = undefined,
@@ -68,7 +84,9 @@
     onshare = undefined,
     onrangechange = undefined,
     oncopytimecode = undefined,
-    onshuttleaudiodiagnostic = undefined
+    onshuttleaudiodiagnostic = undefined,
+    colorCheckBuildId = 'onelight',
+    oncolorselfcheckdiagnostic = undefined
   }: {
     src: string;
     rate?: { num: number; den: number };
@@ -78,6 +96,9 @@
     durationFrames?: number | null;
     markers?: TimelineMarker[];
     renditions?: PlayerRendition[];
+    /* Exact source and output color tags for the current playable file. The
+       active rendition's meta takes precedence when a ladder is available. */
+    colorMetadata?: Record<string, unknown> | undefined;
     shuttleAudio?: ShuttleAudioSources | null;
     allowDrawing?: boolean;
     /* The author's own ink (annotationInkFor them): the default drawing and
@@ -128,6 +149,12 @@
     onshuttleaudiodiagnostic?:
       | ((diagnostic: ShuttleAudioDiagnostic) => void)
       | undefined;
+    /* Build identity invalidates the local color result when the deployed
+       player changes. The clip hash and browser identity complete the key. */
+    colorCheckBuildId?: string;
+    oncolorselfcheckdiagnostic?:
+      | ((diagnostic: ColorSelfCheckDiagnostic) => void)
+      | undefined;
   } = $props();
   /* The element that plays. A video for footage, an audio element for a mix:
      everything the transport does (play, pause, currentTime, playbackRate,
@@ -135,6 +162,30 @@
      the picture element explicitly. */
   let video: HTMLMediaElement | undefined = $state();
   const isAudio = $derived(kind === 'audio');
+  let colorSelfCheckResult = $state<ColorSelfCheckResult | null>(null);
+  let colorCheckGeneration = 0;
+  $effect(() => {
+    const buildId = colorCheckBuildId;
+    if (
+      isAudio ||
+      !buildId ||
+      typeof window === 'undefined' ||
+      typeof navigator === 'undefined'
+    )
+      return;
+    const generation = ++colorCheckGeneration;
+    colorSelfCheckResult = null;
+    const identity = detectBrowserIdentity(navigator.userAgent, navigator.platform);
+    void runColorSelfCheck({ buildId, identity }).then((result) => {
+      if (generation !== colorCheckGeneration) return;
+      colorSelfCheckResult = result;
+      if (claimColorSelfCheckDiagnostic(result.versionKey))
+        oncolorselfcheckdiagnostic?.(colorSelfCheckDiagnostic(result, identity));
+    });
+    return () => {
+      if (generation === colorCheckGeneration) colorCheckGeneration += 1;
+    };
+  });
   /* The playing element when it has a picture, and nothing when it does not. */
   const pictureElement = (): HTMLVideoElement | null =>
     video && 'videoWidth' in video ? (video as HTMLVideoElement) : null;
@@ -692,7 +743,7 @@
      lowest is used. Evaluated when the ladder or the selection changes, not
      continuously on resize, so playback does not flap between rungs while a
      window is dragged. */
-  const autoRungUrl = (): string | null => {
+  const autoRung = (): PlayerRendition | null => {
     const first = ladder[0];
     if (!first) return null;
     const ratio = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
@@ -701,15 +752,59 @@
     for (const rung of ladder) {
       if ((RUNG_HEIGHTS[rung.kind] ?? Infinity) <= bound) choice = rung;
     }
-    return choice.url;
+    return choice;
   };
 
-  const resolveSrc = (): string => {
+  const activeRendition = $derived.by((): PlayerRendition | null => {
     if (quality !== 'auto') {
       const pick = ladder.find((rung) => rung.kind === quality);
-      if (pick) return pick.url;
+      if (pick) return pick;
     }
-    return autoRungUrl() ?? src;
+    return autoRung();
+  });
+  const resolveSrc = (): string => activeRendition?.url ?? src;
+  const activeColorContracts = $derived(
+    renditionColorContracts(activeRendition?.meta ?? colorMetadata)
+  );
+  const activeColorPath = $derived(
+    activeRendition
+      ? `Native browser video, ${RUNG_LABELS[activeRendition.kind] ?? activeRendition.kind} rendition`
+      : 'Native browser video'
+  );
+  const colorStatusLabel = $derived.by((): string => {
+    if (!colorSelfCheckResult) return 'Checking color';
+    return colorSelfCheckResult.outcome === 'pass' ? 'Color verified' : 'Color warning';
+  });
+  const colorStatusState = $derived(
+    colorSelfCheckResult?.outcome === 'pass'
+      ? 'verified'
+      : colorSelfCheckResult
+        ? 'warning'
+        : 'checking'
+  );
+  const colorCheckSummary = $derived.by((): string => {
+    if (!colorSelfCheckResult) return 'Native playback self-check is running.';
+    if (colorSelfCheckResult.outcome === 'pass') return 'Passed';
+    if (colorSelfCheckResult.outcome === 'warning')
+      return `Warning, ${colorSelfCheckResult.deviation} deviation`;
+    return `Unavailable at ${colorSelfCheckResult.stage}`;
+  });
+  const colorFallbackReason = $derived.by((): string => {
+    if (!colorSelfCheckResult || colorSelfCheckResult.outcome === 'pass') return 'None';
+    if (colorSelfCheckResult.failure) return colorSelfCheckResult.failure;
+    if (colorSelfCheckResult.outcome === 'warning')
+      return `The native decode exceeded the reference tolerance with a ${colorSelfCheckResult.deviation} deviation.`;
+    return 'The browser could not complete the native playback self-check.';
+  });
+  let colorPanelOpen = $state(false);
+  let colorPlaybackMode = $state<ColorPlaybackMode>('automatic');
+  $effect(() => {
+    const stored = readColorPlaybackMode(typeof localStorage === 'undefined' ? null : localStorage);
+    colorPlaybackMode = stored === 'reference' ? 'automatic' : stored;
+  });
+  const setColorPlaybackMode = (mode: Exclude<ColorPlaybackMode, 'reference'>): void => {
+    colorPlaybackMode = mode;
+    writeColorPlaybackMode(typeof localStorage === 'undefined' ? null : localStorage, mode);
   };
 
   /* Rendition switching preserves the current frame: capture frame and play
@@ -2362,8 +2457,108 @@
           {/each}
         </div>
       {/if}
+      {#if !isAudio}
+        <button
+          type="button"
+          class="color-state"
+          data-state={colorStatusState}
+          aria-expanded={colorPanelOpen}
+          aria-controls="color-status-panel"
+          onclick={() => { colorPanelOpen = !colorPanelOpen; }}
+        >
+          <span class="color-status-mark" aria-hidden="true"></span>
+          {colorStatusLabel}
+        </button>
+      {/if}
       {/if}
     </div>
+    {#if chrome === 'full' && !isAudio && colorPanelOpen}
+      <section class="color-panel" id="color-status-panel" aria-label="Color playback status">
+        <div class="color-panel-head">
+          <div>
+            <span class="color-panel-kicker">Color playback</span>
+            <strong>{colorStatusLabel}</strong>
+          </div>
+          <button
+            type="button"
+            class="color-panel-close"
+            aria-label="Close color playback status"
+            onclick={() => { colorPanelOpen = false; }}
+          >Close</button>
+        </div>
+        <dl class="color-facts">
+          <div class="color-fact wide">
+            <dt>Active path</dt>
+            <dd>{activeColorPath}</dd>
+          </div>
+          <div class="color-fact">
+            <dt>Source primaries</dt>
+            <dd>{colorContractValue(activeColorContracts.source?.primaries ?? null)}</dd>
+          </div>
+          <div class="color-fact">
+            <dt>Rendition primaries</dt>
+            <dd>{colorContractValue(activeColorContracts.output?.primaries ?? null)}</dd>
+          </div>
+          <div class="color-fact">
+            <dt>Source transfer</dt>
+            <dd>{colorContractValue(activeColorContracts.source?.transfer ?? null)}</dd>
+          </div>
+          <div class="color-fact">
+            <dt>Rendition transfer</dt>
+            <dd>{colorContractValue(activeColorContracts.output?.transfer ?? null)}</dd>
+          </div>
+          <div class="color-fact">
+            <dt>Source matrix</dt>
+            <dd>{colorContractValue(activeColorContracts.source?.matrix ?? null)}</dd>
+          </div>
+          <div class="color-fact">
+            <dt>Rendition matrix</dt>
+            <dd>{colorContractValue(activeColorContracts.output?.matrix ?? null)}</dd>
+          </div>
+          <div class="color-fact">
+            <dt>Source range</dt>
+            <dd>{colorContractValue(activeColorContracts.source?.range ?? null)}</dd>
+          </div>
+          <div class="color-fact">
+            <dt>Rendition range</dt>
+            <dd>{colorContractValue(activeColorContracts.output?.range ?? null)}</dd>
+          </div>
+          <div class="color-fact">
+            <dt>Self-check</dt>
+            <dd>{colorCheckSummary}</dd>
+          </div>
+          <div class="color-fact">
+            <dt>Maximum delta</dt>
+            <dd>{colorMaximumDelta(colorSelfCheckResult?.patchMaxDelta ?? null)}</dd>
+          </div>
+          <div class="color-fact full">
+            <dt>Fallback reason</dt>
+            <dd>{colorFallbackReason}</dd>
+          </div>
+        </dl>
+        {#if activeColorContracts.source?.assumption}
+          <p class="color-assumption">{activeColorContracts.source.assumption}</p>
+        {/if}
+        <div class="color-mode">
+          <span class="ctl-label" id="color-mode-label">Playback mode</span>
+          <div class="seg" role="group" aria-labelledby="color-mode-label">
+            <button
+              type="button"
+              aria-pressed={colorPlaybackMode === 'automatic'}
+              onclick={() => setColorPlaybackMode('automatic')}
+            >Automatic</button>
+            <button
+              type="button"
+              aria-pressed={colorPlaybackMode === 'native'}
+              onclick={() => setColorPlaybackMode('native')}
+            >Native</button>
+          </div>
+        </div>
+        <p class="color-calibration">
+          This verifies the browser playback path against known pixels. It does not calibrate the display.
+        </p>
+      </section>
+    {/if}
     {/if}
     {#if durationFrames !== null && durationFrames !== undefined && durationFrames > 0}
       {#if chrome === 'simple'}
@@ -2768,6 +2963,107 @@
      picture, so drawings stay on the footage. */
   .stage:fullscreen { width: 100vw; height: 100vh; }
   .transport-row.settings { margin-top: 10px; justify-content: flex-start; }
+  .color-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    white-space: nowrap;
+  }
+  .color-status-mark {
+    width: 9px;
+    height: 9px;
+    flex: none;
+    background: var(--n-700, #9a9a9a);
+  }
+  .color-state[data-state='verified'] .color-status-mark {
+    border-radius: 50%;
+    background: var(--n-900, #e9e9e9);
+  }
+  .color-state[data-state='warning'] .color-status-mark {
+    transform: rotate(45deg);
+    background: var(--n-800, #c4c4c4);
+  }
+  .color-state[data-state='checking'] .color-status-mark {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--n-600, #737373);
+  }
+  .color-panel {
+    margin-top: 8px;
+    padding: 14px;
+    border-radius: var(--radius, 3px);
+    background: var(--n-100, #141414);
+    color: var(--n-800, #c4c4c4);
+  }
+  .color-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+  }
+  .color-panel-head > div {
+    display: grid;
+    gap: 3px;
+  }
+  .color-panel-head strong {
+    color: var(--n-900, #e9e9e9);
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .color-panel-kicker {
+    color: var(--n-700, #9a9a9a);
+    font-size: 13px;
+  }
+  .color-panel-close {
+    padding: 5px 9px;
+    background: var(--n-150, #1c1c1c);
+  }
+  .color-facts {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 2px;
+    margin: 0;
+  }
+  .color-fact {
+    min-width: 0;
+    padding: 10px;
+    background: var(--n-150, #1c1c1c);
+  }
+  .color-fact.wide {
+    grid-column: span 2;
+  }
+  .color-fact.full {
+    grid-column: 1 / -1;
+  }
+  .color-fact dt {
+    margin-bottom: 4px;
+    color: var(--n-600, #737373);
+    font-size: 13px;
+  }
+  .color-fact dd {
+    margin: 0;
+    color: var(--n-800, #c4c4c4);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+  .color-assumption {
+    margin: 10px 0 0;
+    padding: 10px;
+    background: var(--n-150, #1c1c1c);
+    color: var(--n-700, #9a9a9a);
+    font-size: 13px;
+  }
+  .color-mode {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .color-calibration {
+    margin: 12px 0 0;
+    color: var(--n-700, #9a9a9a);
+    font-size: 13px;
+  }
   .grow { flex: 1; }
   .readout { display: grid; text-align: center; gap: 2px; }
   .tc { font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
@@ -2819,6 +3115,7 @@
     .transport-row.settings .seg button { padding-inline: 8px; }
     .transport-row.settings .grow { display: none; }
     .ctl-label { white-space: nowrap; }
+    .color-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 
   /* Phone. The desktop deck is a ~460px three-column instrument; at 390 its
@@ -2889,6 +3186,9 @@
     .transport-row.settings > * { flex: none; }
     .transport-row.settings .grow { display: none; }
     .ctl-label { white-space: nowrap; }
+    .color-panel { padding: 10px; }
+    .color-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .color-fact.wide { grid-column: 1 / -1; }
   }
   /* The touch volume: a vertical slider in a small shelf above the sound
      button (the inline 3px slider is unusable under a thumb, but loudness

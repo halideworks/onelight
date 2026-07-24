@@ -380,7 +380,7 @@ const patchFromRun = (
   return { name, rect, srgb, nominal, tolerance: patchTolerance(yuv) };
 };
 
-export const analyzeBars = async (barsPath: string): Promise<ColorPatch[]> => {
+const decodeBarsPlanes = async (barsPath: string): Promise<Buffer> => {
   const rawPath = path.join(fixturesDir, "bars-frame0.yuv");
   /* Dump the decoded frame as planar 4:4:4 YUV: no RGB conversion happens
      in ffmpeg at all, so the reference sRGB values come exclusively from
@@ -403,6 +403,37 @@ export const analyzeBars = async (barsPath: string): Promise<ColorPatch[]> => {
   const planes = await readFile(rawPath);
   if (planes.length !== WIDTH * HEIGHT * 3)
     throw new Error(`Unexpected raw frame size ${planes.length}.`);
+  return planes;
+};
+
+export const analyzeBarsAtPatches = async (
+  barsPath: string,
+  patches: readonly {
+    name: string;
+    rect: { x: number; y: number; w: number; h: number };
+    nominal: readonly [number, number, number];
+  }[],
+): Promise<ColorPatch[]> => {
+  const planes = await decodeBarsPlanes(barsPath);
+  return patches.map((patch) => {
+    const yuv = regionAverage(planes, patch.rect);
+    const srgb = yuvToSrgb(yuv);
+    if (!closeRgb(srgb, [...patch.nominal], 3))
+      throw new Error(
+        `Bars patch ${patch.name}: decoded YUV ${yuv.join(",")} converts to ${srgb.join(",")}, disagreeing with RP 219 nominal ${patch.nominal.join(",")}; fixture synthesis is broken.`,
+      );
+    return {
+      name: patch.name,
+      rect: { ...patch.rect },
+      srgb,
+      nominal: [...patch.nominal],
+      tolerance: patchTolerance(yuv),
+    };
+  });
+};
+
+export const analyzeBars = async (barsPath: string): Promise<ColorPatch[]> => {
+  const planes = await decodeBarsPlanes(barsPath);
 
   /* Pattern 1 (the 75 percent bars plus 40 percent grey columns) occupies
      the top 7/12 of the frame; sample its vertical middle. */

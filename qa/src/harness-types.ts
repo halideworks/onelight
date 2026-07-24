@@ -1,6 +1,8 @@
 /* Types shared between the browser harness bundle and the Playwright specs
    that drive it via page.evaluate. */
 
+import type { ColorSelfCheckResult } from "../../packages/player/src/color-self-check.js";
+
 export interface HarnessRate {
   num: number;
   den: number;
@@ -61,6 +63,10 @@ export interface QaHarness {
     url: string,
     playbackRate: number,
   ): Promise<ShuttleAudioReading>;
+  runColorSelfCheck(
+    url: string,
+    buildId: string,
+  ): Promise<ColorSelfCheckResult>;
 }
 
 declare global {

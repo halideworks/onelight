@@ -13139,13 +13139,18 @@
                                       "type": "null"
                                     }
                                   ]
+                                },
+                                "meta": {
+                                  "type": "object",
+                                  "additionalProperties": {}
                                 }
                               },
                               "required": [
                                 "kind",
                                 "url",
                                 "size",
-                                "height"
+                                "height",
+                                "meta"
                               ],
                               "additionalProperties": false
                             }
@@ -14020,7 +14025,7 @@
     },
     "/api/v1/s/{slug}/assets/{assetId}/playback-diagnostics": {
       "post": {
-        "summary": "Record an automatic JKL shuttle-audio fallback diagnostic for an authorized share viewer.",
+        "summary": "Record an automatic playback or color-path diagnostic for an authorized share viewer.",
         "parameters": [
           {
             "name": "slug",
@@ -14044,237 +14049,613 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "reason": {
-                    "type": "string",
-                    "enum": [
-                      "source_missing",
-                      "sidecar_element_missing",
-                      "main_element_missing",
-                      "play_rejected",
-                      "media_error",
-                      "sidecar_ended_early",
-                      "sidecar_clock_stalled",
-                      "source_removed",
-                      "sidecar_started",
-                      "sidecar_clock_advancing"
-                    ]
-                  },
-                  "rate": {
-                    "type": "number",
-                    "enum": [
-                      0,
-                      2,
-                      4
-                    ]
-                  },
-                  "main_ready_state": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 4
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "shuttle_audio"
                       },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "main_network_state": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 3
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "main_playback_rate": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 16
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "main_current_time": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "main_paused": {
-                    "type": [
-                      "boolean",
-                      "null"
-                    ]
-                  },
-                  "main_muted": {
-                    "type": [
-                      "boolean",
-                      "null"
-                    ]
-                  },
-                  "main_volume": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "sidecar_ready_state": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 4
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "sidecar_network_state": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 3
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "sidecar_current_time": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "sidecar_duration": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "sidecar_paused": {
-                    "type": [
-                      "boolean",
-                      "null"
-                    ]
-                  },
-                  "sidecar_muted": {
-                    "type": [
-                      "boolean",
-                      "null"
-                    ]
-                  },
-                  "sidecar_volume": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "sidecar_source_present": {
-                    "type": "boolean"
-                  },
-                  "sidecar_media_error": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 4
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "document_visibility": {
-                    "anyOf": [
-                      {
+                      "reason": {
                         "type": "string",
                         "enum": [
-                          "hidden",
-                          "visible",
-                          "prerender"
+                          "source_missing",
+                          "sidecar_element_missing",
+                          "main_element_missing",
+                          "play_rejected",
+                          "media_error",
+                          "sidecar_ended_early",
+                          "sidecar_clock_stalled",
+                          "source_removed",
+                          "sidecar_started",
+                          "sidecar_clock_advancing"
                         ]
                       },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "online": {
-                    "type": [
-                      "boolean",
-                      "null"
-                    ]
-                  },
-                  "failure": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "maxLength": 1000
+                      "rate": {
+                        "type": "number",
+                        "enum": [
+                          0,
+                          2,
+                          4
+                        ]
                       },
-                      {
-                        "type": "null"
+                      "main_ready_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_network_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 3
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_playback_rate": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 16
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_current_time": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_paused": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "main_muted": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "main_volume": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_ready_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_network_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 3
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_current_time": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_duration": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_paused": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "sidecar_muted": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "sidecar_volume": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_source_present": {
+                        "type": "boolean"
+                      },
+                      "sidecar_media_error": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 4
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "document_visibility": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "hidden",
+                              "visible",
+                              "prerender"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "online": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "failure": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
-                    ]
+                    },
+                    "required": [
+                      "kind",
+                      "reason",
+                      "rate",
+                      "main_ready_state",
+                      "main_network_state",
+                      "main_playback_rate",
+                      "main_current_time",
+                      "main_paused",
+                      "main_muted",
+                      "sidecar_ready_state",
+                      "sidecar_network_state",
+                      "sidecar_current_time",
+                      "sidecar_paused",
+                      "sidecar_media_error",
+                      "failure"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "color_self_check"
+                      },
+                      "outcome": {
+                        "type": "string",
+                        "enum": [
+                          "pass",
+                          "warning",
+                          "unsupported"
+                        ]
+                      },
+                      "stage": {
+                        "type": "string",
+                        "enum": [
+                          "load",
+                          "decode",
+                          "canvas",
+                          "readback",
+                          "compare",
+                          "complete"
+                        ]
+                      },
+                      "engine_family": {
+                        "type": "string",
+                        "enum": [
+                          "chromium",
+                          "firefox",
+                          "webkit",
+                          "unknown"
+                        ]
+                      },
+                      "engine_major": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 10000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "platform_class": {
+                        "type": "string",
+                        "enum": [
+                          "mac",
+                          "windows",
+                          "linux",
+                          "mobile",
+                          "unknown"
+                        ]
+                      },
+                      "canvas_color_space": {
+                        "type": "string",
+                        "enum": [
+                          "srgb",
+                          "display-p3",
+                          "unknown"
+                        ]
+                      },
+                      "patch_max_delta": {
+                        "anyOf": [
+                          {
+                            "type": "array",
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "items": [
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 255
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 255
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 255
+                              }
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "failed_patches": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9_]{1,64}$"
+                        },
+                        "maxItems": 32
+                      },
+                      "elapsed_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 60000
+                      },
+                      "failure": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "outcome",
+                      "stage",
+                      "engine_family",
+                      "engine_major",
+                      "platform_class",
+                      "canvas_color_space",
+                      "patch_max_delta",
+                      "failed_patches",
+                      "elapsed_ms",
+                      "failure"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": "string",
+                        "enum": [
+                          "source_missing",
+                          "sidecar_element_missing",
+                          "main_element_missing",
+                          "play_rejected",
+                          "media_error",
+                          "sidecar_ended_early",
+                          "sidecar_clock_stalled",
+                          "source_removed",
+                          "sidecar_started",
+                          "sidecar_clock_advancing"
+                        ]
+                      },
+                      "rate": {
+                        "type": "number",
+                        "enum": [
+                          0,
+                          2,
+                          4
+                        ]
+                      },
+                      "main_ready_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_network_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 3
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_playback_rate": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 16
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_current_time": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_paused": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "main_muted": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "main_volume": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_ready_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_network_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 3
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_current_time": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_duration": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_paused": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "sidecar_muted": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "sidecar_volume": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_source_present": {
+                        "type": "boolean"
+                      },
+                      "sidecar_media_error": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 4
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "document_visibility": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "hidden",
+                              "visible",
+                              "prerender"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "online": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "failure": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "reason",
+                      "rate",
+                      "main_ready_state",
+                      "main_network_state",
+                      "main_playback_rate",
+                      "main_current_time",
+                      "main_paused",
+                      "main_muted",
+                      "sidecar_ready_state",
+                      "sidecar_network_state",
+                      "sidecar_current_time",
+                      "sidecar_paused",
+                      "sidecar_media_error",
+                      "failure"
+                    ],
+                    "additionalProperties": false
                   }
-                },
-                "required": [
-                  "reason",
-                  "rate",
-                  "main_ready_state",
-                  "main_network_state",
-                  "main_playback_rate",
-                  "main_current_time",
-                  "main_paused",
-                  "main_muted",
-                  "sidecar_ready_state",
-                  "sidecar_network_state",
-                  "sidecar_current_time",
-                  "sidecar_paused",
-                  "sidecar_media_error",
-                  "failure"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           }
@@ -21786,7 +22167,7 @@
     },
     "/api/v1/versions/{id}/playback-diagnostics": {
       "post": {
-        "summary": "Record an automatic JKL shuttle-audio fallback diagnostic for a project member.",
+        "summary": "Record an automatic playback or color-path diagnostic for a project member.",
         "parameters": [
           {
             "name": "id",
@@ -21802,237 +22183,613 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "reason": {
-                    "type": "string",
-                    "enum": [
-                      "source_missing",
-                      "sidecar_element_missing",
-                      "main_element_missing",
-                      "play_rejected",
-                      "media_error",
-                      "sidecar_ended_early",
-                      "sidecar_clock_stalled",
-                      "source_removed",
-                      "sidecar_started",
-                      "sidecar_clock_advancing"
-                    ]
-                  },
-                  "rate": {
-                    "type": "number",
-                    "enum": [
-                      0,
-                      2,
-                      4
-                    ]
-                  },
-                  "main_ready_state": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 4
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "shuttle_audio"
                       },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "main_network_state": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 3
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "main_playback_rate": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 16
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "main_current_time": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "main_paused": {
-                    "type": [
-                      "boolean",
-                      "null"
-                    ]
-                  },
-                  "main_muted": {
-                    "type": [
-                      "boolean",
-                      "null"
-                    ]
-                  },
-                  "main_volume": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "sidecar_ready_state": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 4
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "sidecar_network_state": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 3
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "sidecar_current_time": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "sidecar_duration": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "sidecar_paused": {
-                    "type": [
-                      "boolean",
-                      "null"
-                    ]
-                  },
-                  "sidecar_muted": {
-                    "type": [
-                      "boolean",
-                      "null"
-                    ]
-                  },
-                  "sidecar_volume": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "sidecar_source_present": {
-                    "type": "boolean"
-                  },
-                  "sidecar_media_error": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 4
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "document_visibility": {
-                    "anyOf": [
-                      {
+                      "reason": {
                         "type": "string",
                         "enum": [
-                          "hidden",
-                          "visible",
-                          "prerender"
+                          "source_missing",
+                          "sidecar_element_missing",
+                          "main_element_missing",
+                          "play_rejected",
+                          "media_error",
+                          "sidecar_ended_early",
+                          "sidecar_clock_stalled",
+                          "source_removed",
+                          "sidecar_started",
+                          "sidecar_clock_advancing"
                         ]
                       },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "online": {
-                    "type": [
-                      "boolean",
-                      "null"
-                    ]
-                  },
-                  "failure": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "maxLength": 1000
+                      "rate": {
+                        "type": "number",
+                        "enum": [
+                          0,
+                          2,
+                          4
+                        ]
                       },
-                      {
-                        "type": "null"
+                      "main_ready_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_network_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 3
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_playback_rate": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 16
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_current_time": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_paused": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "main_muted": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "main_volume": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_ready_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_network_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 3
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_current_time": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_duration": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_paused": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "sidecar_muted": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "sidecar_volume": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_source_present": {
+                        "type": "boolean"
+                      },
+                      "sidecar_media_error": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 4
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "document_visibility": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "hidden",
+                              "visible",
+                              "prerender"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "online": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "failure": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
-                    ]
+                    },
+                    "required": [
+                      "kind",
+                      "reason",
+                      "rate",
+                      "main_ready_state",
+                      "main_network_state",
+                      "main_playback_rate",
+                      "main_current_time",
+                      "main_paused",
+                      "main_muted",
+                      "sidecar_ready_state",
+                      "sidecar_network_state",
+                      "sidecar_current_time",
+                      "sidecar_paused",
+                      "sidecar_media_error",
+                      "failure"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "color_self_check"
+                      },
+                      "outcome": {
+                        "type": "string",
+                        "enum": [
+                          "pass",
+                          "warning",
+                          "unsupported"
+                        ]
+                      },
+                      "stage": {
+                        "type": "string",
+                        "enum": [
+                          "load",
+                          "decode",
+                          "canvas",
+                          "readback",
+                          "compare",
+                          "complete"
+                        ]
+                      },
+                      "engine_family": {
+                        "type": "string",
+                        "enum": [
+                          "chromium",
+                          "firefox",
+                          "webkit",
+                          "unknown"
+                        ]
+                      },
+                      "engine_major": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 10000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "platform_class": {
+                        "type": "string",
+                        "enum": [
+                          "mac",
+                          "windows",
+                          "linux",
+                          "mobile",
+                          "unknown"
+                        ]
+                      },
+                      "canvas_color_space": {
+                        "type": "string",
+                        "enum": [
+                          "srgb",
+                          "display-p3",
+                          "unknown"
+                        ]
+                      },
+                      "patch_max_delta": {
+                        "anyOf": [
+                          {
+                            "type": "array",
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "items": [
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 255
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 255
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 255
+                              }
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "failed_patches": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9_]{1,64}$"
+                        },
+                        "maxItems": 32
+                      },
+                      "elapsed_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 60000
+                      },
+                      "failure": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "outcome",
+                      "stage",
+                      "engine_family",
+                      "engine_major",
+                      "platform_class",
+                      "canvas_color_space",
+                      "patch_max_delta",
+                      "failed_patches",
+                      "elapsed_ms",
+                      "failure"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": "string",
+                        "enum": [
+                          "source_missing",
+                          "sidecar_element_missing",
+                          "main_element_missing",
+                          "play_rejected",
+                          "media_error",
+                          "sidecar_ended_early",
+                          "sidecar_clock_stalled",
+                          "source_removed",
+                          "sidecar_started",
+                          "sidecar_clock_advancing"
+                        ]
+                      },
+                      "rate": {
+                        "type": "number",
+                        "enum": [
+                          0,
+                          2,
+                          4
+                        ]
+                      },
+                      "main_ready_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_network_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 3
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_playback_rate": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 16
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_current_time": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "main_paused": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "main_muted": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "main_volume": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_ready_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_network_state": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 3
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_current_time": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_duration": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_paused": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "sidecar_muted": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "sidecar_volume": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sidecar_source_present": {
+                        "type": "boolean"
+                      },
+                      "sidecar_media_error": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 4
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "document_visibility": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "hidden",
+                              "visible",
+                              "prerender"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "online": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "failure": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "reason",
+                      "rate",
+                      "main_ready_state",
+                      "main_network_state",
+                      "main_playback_rate",
+                      "main_current_time",
+                      "main_paused",
+                      "main_muted",
+                      "sidecar_ready_state",
+                      "sidecar_network_state",
+                      "sidecar_current_time",
+                      "sidecar_paused",
+                      "sidecar_media_error",
+                      "failure"
+                    ],
+                    "additionalProperties": false
                   }
-                },
-                "required": [
-                  "reason",
-                  "rate",
-                  "main_ready_state",
-                  "main_network_state",
-                  "main_playback_rate",
-                  "main_current_time",
-                  "main_paused",
-                  "main_muted",
-                  "sidecar_ready_state",
-                  "sidecar_network_state",
-                  "sidecar_current_time",
-                  "sidecar_paused",
-                  "sidecar_media_error",
-                  "failure"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           }

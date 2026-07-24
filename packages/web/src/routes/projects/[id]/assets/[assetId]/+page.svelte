@@ -6,6 +6,7 @@
   import { annotationInkFor } from '@onelight/player';
   import { formatTimecode, timecodeFromFrames } from '@onelight/core';
   import type {
+    ColorSelfCheckDiagnostic,
     FrameAnnotation,
     PendingDrawing,
     PlayerRendition,
@@ -14,6 +15,7 @@
     SpriteCue,
     TimelineMarker
   } from '@onelight/player';
+  import { version as appVersion } from '$app/environment';
   import { page } from '$app/state';
   import { copyText } from '$lib/clipboard.js';
   import { dismissable } from '$lib/dismiss.js';
@@ -544,7 +546,7 @@
         .filter((candidate) => ['proxy_540', 'proxy_1080', 'proxy_2160'].includes(candidate.kind))
         .flatMap((candidate) => {
           const url = urlForRendition(candidate);
-          return url ? [{ kind: candidate.kind, url }] : [];
+          return url ? [{ kind: candidate.kind, url, meta: candidate.meta }] : [];
         });
       const shuttle2x = items.find((candidate) => candidate.kind === 'shuttle_audio_2x');
       const shuttle4x = items.find((candidate) => candidate.kind === 'shuttle_audio_4x');
@@ -1727,6 +1729,7 @@
             {shuttleAudio}
             {filmstrip}
             {waveformUrl}
+            colorCheckBuildId={appVersion}
             captionsSrc={captionsUrl ?? undefined}
             allowDrawing
             drawDefaultColor={annotationInkFor(auth.user?.id ?? null)}
@@ -1743,6 +1746,15 @@
             onrangechange={(range) => { playerRange = range; }}
             oncopytimecode={copyText}
             onshuttleaudiodiagnostic={(diagnostic: ShuttleAudioDiagnostic) => {
+              const versionId = selectedVersionId;
+              if (versionId)
+                void apiPost<void>(
+                  `/api/v1/versions/${versionId}/playback-diagnostics`,
+                  diagnostic,
+                  { keepalive: true }
+                ).catch(() => undefined);
+            }}
+            oncolorselfcheckdiagnostic={(diagnostic: ColorSelfCheckDiagnostic) => {
               const versionId = selectedVersionId;
               if (versionId)
                 void apiPost<void>(

@@ -6,6 +6,18 @@
 export type PlayerRendition = {
   kind: string;
   url: string;
+  meta?: Record<string, unknown>;
+};
+
+export type ColorPlaybackMode = "automatic" | "native" | "reference";
+
+export type PlayerColorContract = {
+  primaries: string | null;
+  transfer: string | null;
+  matrix: string | null;
+  range: string | null;
+  assumed: boolean;
+  assumption: string | null;
 };
 
 /* Time-compressed audio generated for accelerated forward shuttle. Each file

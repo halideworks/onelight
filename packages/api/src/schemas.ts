@@ -61,6 +61,76 @@ const commentBody = z.object({
    cannot see the project silently instead of rejecting the comment. */
 const mentionList = z.array(z.string()).max(20).optional();
 
+const shuttlePlaybackDiagnostic = z
+  .object({
+    kind: z.literal("shuttle_audio"),
+    reason: z.enum([
+      "source_missing",
+      "sidecar_element_missing",
+      "main_element_missing",
+      "play_rejected",
+      "media_error",
+      "sidecar_ended_early",
+      "sidecar_clock_stalled",
+      "source_removed",
+      "sidecar_started",
+      "sidecar_clock_advancing",
+    ]),
+    rate: z.union([z.literal(0), z.literal(2), z.literal(4)]),
+    main_ready_state: z.number().int().min(0).max(4).nullable(),
+    main_network_state: z.number().int().min(0).max(3).nullable(),
+    main_playback_rate: z.number().min(0).max(16).nullable(),
+    main_current_time: z.number().min(0).nullable(),
+    main_paused: z.boolean().nullable(),
+    main_muted: z.boolean().nullable(),
+    main_volume: z.number().min(0).max(1).nullable().optional(),
+    sidecar_ready_state: z.number().int().min(0).max(4).nullable(),
+    sidecar_network_state: z.number().int().min(0).max(3).nullable(),
+    sidecar_current_time: z.number().min(0).nullable(),
+    sidecar_duration: z.number().min(0).nullable().optional(),
+    sidecar_paused: z.boolean().nullable(),
+    sidecar_muted: z.boolean().nullable().optional(),
+    sidecar_volume: z.number().min(0).max(1).nullable().optional(),
+    sidecar_source_present: z.boolean().optional(),
+    sidecar_media_error: z.number().int().min(1).max(4).nullable(),
+    document_visibility: z
+      .enum(["hidden", "visible", "prerender"])
+      .nullable()
+      .optional(),
+    online: z.boolean().nullable().optional(),
+    failure: z.string().max(1000).nullable(),
+  })
+  .strict();
+
+const colorPlaybackDiagnostic = z
+  .object({
+    kind: z.literal("color_self_check"),
+    outcome: z.enum(["pass", "warning", "unsupported"]),
+    stage: z.enum([
+      "load",
+      "decode",
+      "canvas",
+      "readback",
+      "compare",
+      "complete",
+    ]),
+    engine_family: z.enum(["chromium", "firefox", "webkit", "unknown"]),
+    engine_major: z.number().int().positive().max(10000).nullable(),
+    platform_class: z.enum(["mac", "windows", "linux", "mobile", "unknown"]),
+    canvas_color_space: z.enum(["srgb", "display-p3", "unknown"]),
+    patch_max_delta: z
+      .tuple([
+        z.number().int().min(0).max(255),
+        z.number().int().min(0).max(255),
+        z.number().int().min(0).max(255),
+      ])
+      .nullable(),
+    failed_patches: z.array(z.string().regex(/^[a-z0-9_]{1,64}$/)).max(32),
+    elapsed_ms: z.number().int().min(0).max(60000),
+    failure: z.string().max(1000).nullable(),
+  })
+  .strict();
+
 export const bodies = {
   setup: z.object({
     workspace_name: z.string().min(1).max(200),
@@ -183,45 +253,17 @@ export const bodies = {
     annotation: z.unknown().optional(),
     pin_xy: z.unknown().optional(),
   }),
-  playbackDiagnostic: z
-    .object({
-      reason: z.enum([
-        "source_missing",
-        "sidecar_element_missing",
-        "main_element_missing",
-        "play_rejected",
-        "media_error",
-        "sidecar_ended_early",
-        "sidecar_clock_stalled",
-        "source_removed",
-        "sidecar_started",
-        "sidecar_clock_advancing",
-      ]),
-      rate: z.union([z.literal(0), z.literal(2), z.literal(4)]),
-      main_ready_state: z.number().int().min(0).max(4).nullable(),
-      main_network_state: z.number().int().min(0).max(3).nullable(),
-      main_playback_rate: z.number().min(0).max(16).nullable(),
-      main_current_time: z.number().min(0).nullable(),
-      main_paused: z.boolean().nullable(),
-      main_muted: z.boolean().nullable(),
-      main_volume: z.number().min(0).max(1).nullable().optional(),
-      sidecar_ready_state: z.number().int().min(0).max(4).nullable(),
-      sidecar_network_state: z.number().int().min(0).max(3).nullable(),
-      sidecar_current_time: z.number().min(0).nullable(),
-      sidecar_duration: z.number().min(0).nullable().optional(),
-      sidecar_paused: z.boolean().nullable(),
-      sidecar_muted: z.boolean().nullable().optional(),
-      sidecar_volume: z.number().min(0).max(1).nullable().optional(),
-      sidecar_source_present: z.boolean().optional(),
-      sidecar_media_error: z.number().int().min(1).max(4).nullable(),
-      document_visibility: z
-        .enum(["hidden", "visible", "prerender"])
-        .nullable()
-        .optional(),
-      online: z.boolean().nullable().optional(),
-      failure: z.string().max(1000).nullable(),
-    })
-    .strict(),
+  playbackDiagnostic: z.union([
+    shuttlePlaybackDiagnostic,
+    colorPlaybackDiagnostic,
+    /* Compatibility with clients deployed before diagnostics became a
+       discriminated contract. The server normalizes the legacy body before
+       logging it, while generated clients use the tagged shape. */
+    shuttlePlaybackDiagnostic.omit({ kind: true }).transform((diagnostic) => ({
+      kind: "shuttle_audio" as const,
+      ...diagnostic,
+    })),
+  ]),
   replyCreate: commentBody.extend({ mentions: mentionList }),
   reactionCreate: z.object({ code: z.string().regex(/^[a-z0-9_]{1,32}$/) }),
   carryForward: z.object({ from_version_id: z.string() }),
@@ -984,6 +1026,7 @@ const shareSource = z.object({
   url: z.string(),
   size: z.number().int(),
   height: z.number().int().nullable(),
+  meta: jsonRecord,
 });
 
 const captionTrack = z.object({
@@ -1677,7 +1720,7 @@ export const routeDocs: Record<string, RouteDoc> = {
   },
   "POST /s/:slug/assets/:assetId/playback-diagnostics": {
     summary:
-      "Record an automatic JKL shuttle-audio fallback diagnostic for an authorized share viewer.",
+      "Record an automatic playback or color-path diagnostic for an authorized share viewer.",
     request: bodies.playbackDiagnostic,
     responses: { "204": noContent },
   },
@@ -1872,7 +1915,7 @@ export const routeDocs: Record<string, RouteDoc> = {
   "GET /versions/:id": { responses: { "200": ok(version) } },
   "POST /versions/:id/playback-diagnostics": {
     summary:
-      "Record an automatic JKL shuttle-audio fallback diagnostic for a project member.",
+      "Record an automatic playback or color-path diagnostic for a project member.",
     request: bodies.playbackDiagnostic,
     responses: { "204": noContent },
   },

@@ -6,3 +6,6 @@ export * from "./options.js";
 export * from "./waveform.js";
 export * from "./image-view.js";
 export * from "./transport-state.js";
+export * from "./color-oracle.js";
+export * from "./color-playback.js";
+export * from "./color-self-check.js";
