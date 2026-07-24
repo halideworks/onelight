@@ -18,9 +18,10 @@ export type PlayerColorContract = {
   assumption: string | null;
 };
 
-/* Time-compressed audio generated for accelerated forward shuttle. Each file
-   plays at 1x while the picture plays at the matching rate. */
+/* Compact clocks for reference playback. Each file plays at 1x while its
+   picture runs at the matching source rate. */
 export type ShuttleAudioSources = {
+  x1?: string | null;
   x2?: string | null;
   x4?: string | null;
 };
@@ -47,6 +48,35 @@ export type ShuttleAudioDiagnostic = {
   document_visibility: "hidden" | "visible" | "prerender" | null;
   online: boolean | null;
   failure: string | null;
+};
+
+export type ColorPlaybackMode = "automatic" | "native" | "reference";
+
+export type ReferencePlaybackDiagnostic = {
+  kind: "reference_playback";
+  outcome: "ready" | "fallback";
+  failure_class:
+    | "decoder_unsupported"
+    | "demux"
+    | "decode"
+    | "metadata_conflict"
+    | "raw_format"
+    | "renderer"
+    | "context_lost"
+    | "allocation"
+    | "starvation"
+    | "timestamp"
+    | "output_order"
+    | "unknown"
+    | null;
+  reason: string | null;
+  frame: number;
+  was_playing: boolean;
+  source_kind: string | null;
+  decoder_preference: "no-preference" | null;
+  buffered_frames: number;
+  document_visibility: "hidden" | "visible" | "prerender" | null;
+  online: boolean | null;
 };
 
 /* Viewing-environment surround (design doc 24.1): the stage background

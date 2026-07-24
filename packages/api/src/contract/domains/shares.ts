@@ -1729,6 +1729,11 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
         const { share } = await json<{ share: { slug: string } }>(created);
         await seedRendition(h, {
           versionId: media.versionId,
+          kind: "reference_audio_1x",
+          content: "reference-clock-audio",
+        });
+        await seedRendition(h, {
+          versionId: media.versionId,
           kind: "proxy_audio",
           content: "aac-proxy",
         });
@@ -1760,7 +1765,11 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
             sidecars: {
               waveform: { url: string; meta: Record<string, unknown> } | null;
               spectrogram: { url: string } | null;
-              shuttle_audio: { x2: string | null; x4: string | null };
+              shuttle_audio: {
+                x1: string | null;
+                x2: string | null;
+                x4: string | null;
+              };
             };
           }>;
         }>(
@@ -1783,6 +1792,11 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
           version?.sidecars.spectrogram?.url ?? "",
         );
         expect(await spectrogram.text()).toBe("spectrogram-png");
+        const reference = await followUrl(
+          h,
+          version?.sidecars.shuttle_audio.x1 ?? "",
+        );
+        expect(await reference.text()).toBe("reference-clock-audio");
         const twice = await followUrl(
           h,
           version?.sidecars.shuttle_audio.x2 ?? "",

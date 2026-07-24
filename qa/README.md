@@ -143,6 +143,12 @@ and its tolerances are never widened, and any drift in the pinned bytes
 (including WebKit fixing itself) fails the run until the pin is
 re-derived or deleted. The full analysis is recorded with the table.
 
+Playwright WebKit 26.5 on Windows leaves most limited-range code values
+unexpanded in canvas readback: black is 12, white is 235, and the chromatic
+rails remain near 16 through 180. Those exact platform bytes are pinned by the
+same rule. This is evidence about the Playwright Windows media stack, not
+macOS Safari.
+
 ### color-self-check.spec.ts (Playwright chromium + firefox; webkit when installed)
 
 Runs the product's tiny committed BT.709 clip through the literal
@@ -153,16 +159,59 @@ Firefox requires seek completion plus muted playback before its first
 is still black. That ordering is product code and is tested without an engine
 exception.
 
+The Windows Playwright WebKit build has no
+`requestVideoFrameCallback`. A detached video cannot provide a bounded
+presented-frame sample there, so the product returns an exact `unsupported`
+result at the decode stage. The attached golden-color harness still plays and
+polls for a drawable frame, which preserves WebKit canvas coverage without
+pretending its current-time fallback is rVFC evidence.
+
 ### reference-decoder.spec.ts (Playwright chromium + firefox)
 
-Bundles the mediabunny and `VideoDecoder` prototype as a separate minified
-worker, currently 302,501 bytes. Chromium proves exact rational timestamp
+Bundles the mediabunny and `VideoDecoder` implementation as a separate minified
+worker, currently 322,844 bytes. Chromium proves exact rational timestamp
 mapping, cancellation of a stale 4x play generation, transferable raw planes,
-and the six-open-frame cap. On Windows, Playwright Firefox decodes the same
-tagged H.264 frame as `BGRX`. The worker rejects that exact format because an
-RGB `copyTo` would make the browser's conversion part of the reference path.
-The platform-scoped test pins the rejection while BCR-T06 remains open. It
+continuous decode across B-frame GOP boundaries, recycled plane-buffer
+correctness, the six-open-frame cap, explicit coded-rectangle copies, and
+bounded plane layouts. The preference matrix records `no-preference`,
+`prefer-hardware`, and
+`prefer-software` separately. On Windows, Playwright Firefox decodes the same
+tagged H.264 frame as `BGRX` for all three. The worker rejects that exact format
+before allocation because an RGB `copyTo` would make the browser's conversion
+part of the reference path. The platform-scoped test pins the rejection. It
 does not widen the accepted I420 or NV12 contract.
+
+### reference-renderer.spec.ts (Playwright chromium + firefox; webkit when installed)
+
+Passes an actual worker-decoded BT.709 frame to the product's WebGL2 renderer.
+The harness repacks the raw I420 planes to NV12 without a color conversion, then
+requires both upload paths to reproduce every committed oracle patch within
+1/255 and to match each other exactly. Headless QA explicitly permits software
+GL for pixel verification. It does not claim hardware acceleration or playback
+performance. A runtime that returns BGRX is rejected before the renderer.
+
+### reference-performance.spec.ts (Playwright chromium + firefox; webkit when installed)
+
+Runs the production `ReferencePictureBackend`, worker and WebGL2 renderer
+against generated 720p and 3840x2160 30 fps fixtures. The probe measures
+requested and presented integer frames, scheduler drops, maximum buffered
+frames, long tasks and seek p95. Default headless tests prove scheduling,
+bounded memory and software-render upload. They never count as acceleration
+evidence.
+
+The default run is a five-second regression probe. Set
+`QA_REFERENCE_SOAK_MS=300000` for the five-minute release measurement. That
+soak still belongs on each named real-device target because Playwright's
+headless graphics stack cannot establish the GPU, display or Safari behavior.
+
+The 4K30 hardware qualification is deliberately strict and opt-in. Run a
+headed browser with `QA_REFERENCE_REQUIRE_HARDWARE=1` and
+`QA_REFERENCE_HEADED=1`. It must reach the final frame with no more than one
+dropped request, a six-frame cache, no main-thread task over 50 ms and seek p95
+under 250 ms. An unavailable hardware path fails that run instead of being
+recorded as a capability skip. Playwright WebKit 26.5 on this Windows host has
+no `VideoDecoder`; the exact unsupported result is pinned, but it is not a
+substitute for current Safari.
 
 ### hdr-tonemap.spec.ts (Node only, ffmpeg + ffprobe)
 

@@ -241,6 +241,38 @@ describe("browser color self-check", () => {
     expect(storage.length).toBe(1);
   });
 
+  it("returns unsupported without waiting when rVFC is unavailable", async () => {
+    const video = new TestVideo();
+    Object.defineProperty(video, "requestVideoFrameCallback", {
+      value: undefined,
+    });
+    video.play = () => new Promise<void>(() => undefined);
+    const { canvas, state } = canvasFor();
+    const result = await runColorSelfCheck(
+      {
+        buildId: "no-rvfc",
+        storage: null,
+        identity: {
+          engineFamily: "webkit",
+          engineMajor: 26,
+          platformClass: "windows",
+        },
+      },
+      {
+        createVideo: () => video as unknown as HTMLVideoElement,
+        createCanvas: () => canvas,
+      },
+    );
+    expect(result).toMatchObject({
+      outcome: "unsupported",
+      stage: "decode",
+    });
+    expect(result.failure).toContain(
+      "requestVideoFrameCallback is unavailable",
+    );
+    expect(state.drawn).toBe(false);
+  });
+
   it("reuses the cache without constructing media resources", async () => {
     const storage = new MemoryStorage();
     const identity = {

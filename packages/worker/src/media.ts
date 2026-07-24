@@ -354,6 +354,60 @@ const videoStream = (
 ): Record<string, unknown> | undefined =>
   mediaInfo.streams.find((stream) => stream.codec_type === "video");
 
+const positiveProbeNumber = (value: unknown): number | undefined => {
+  const result = Number(value);
+  return Number.isFinite(result) && result > 0 ? result : undefined;
+};
+
+const avcProfileByte = (profile: string): number | undefined => {
+  const normalized = profile.toLowerCase();
+  if (normalized.includes("baseline")) return 0x42;
+  if (normalized.includes("main")) return 0x4d;
+  if (normalized.includes("high 10")) return 0x6e;
+  if (normalized.includes("high")) return 0x64;
+  return undefined;
+};
+
+const hexByte = (value: number): string =>
+  Math.max(0, Math.min(255, Math.round(value)))
+    .toString(16)
+    .padStart(2, "0")
+    .toUpperCase();
+
+export const webCodecString = (
+  video: Record<string, unknown>,
+): string | undefined => {
+  const codec = asString(video.codec_name)?.toLowerCase();
+  const profile = asString(video.profile) ?? "";
+  const level = positiveProbeNumber(video.level);
+  if (codec === "h264" && level) {
+    const profileByte = avcProfileByte(profile);
+    if (profileByte !== undefined)
+      return `avc1.${hexByte(profileByte)}00${hexByte(level)}`;
+  }
+  if (codec === "hevc" && level)
+    return `hvc1.2.4.L${String(Math.round(level))}.B0`;
+  if (codec === "av1" && level) {
+    const bitDepth =
+      asString(video.pix_fmt)?.includes("10") ||
+      asString(video.bits_per_raw_sample) === "10"
+        ? "10"
+        : "08";
+    return `av01.0.${String(Math.round(level)).padStart(2, "0")}M.${bitDepth}`;
+  }
+  return undefined;
+};
+
+const hdrMetadataType = (
+  sideData: unknown[],
+): "smpteSt2086" | "smpteSt2094-10" | "smpteSt2094-40" | null => {
+  const value = JSON.stringify(sideData).toLowerCase();
+  if (value.includes("smpte2094-40")) return "smpteSt2094-40";
+  if (value.includes("smpte2094-10")) return "smpteSt2094-10";
+  if (value.includes("mastering display metadata")) return "smpteSt2086";
+  return null;
+};
+
 const sourceTransfer = (mediaInfo: MediaInfo): string | undefined =>
   asString(videoStream(mediaInfo)?.color_transfer) ??
   asString(mediaInfo.format["color_transfer"]);
@@ -1112,7 +1166,11 @@ export const sidecarArgs = (
      decoder out of the rate-changed media element entirely. Chaining atempo
      for 4x avoids the lower-quality sample-skipping path used by large tempo
      factors in older ffmpeg builds. */
-  if (kind === "shuttle_audio_2x" || kind === "shuttle_audio_4x")
+  if (
+    kind === "reference_audio_1x" ||
+    kind === "shuttle_audio_2x" ||
+    kind === "shuttle_audio_4x"
+  )
     return [
       "-hide_banner",
       "-y",
@@ -1121,8 +1179,12 @@ export const sidecarArgs = (
       "-vn",
       "-sn",
       "-dn",
-      "-filter:a",
-      kind === "shuttle_audio_4x" ? "atempo=2,atempo=2" : "atempo=2",
+      ...(kind === "reference_audio_1x"
+        ? []
+        : [
+            "-filter:a",
+            kind === "shuttle_audio_4x" ? "atempo=2,atempo=2" : "atempo=2",
+          ]),
       "-c:a",
       "aac",
       "-profile:a",
@@ -1392,6 +1454,8 @@ export const buildWatermarkArgs = (
     "bt709",
     "-color_range",
     "tv",
+    "-chroma_sample_location",
+    "left",
     "-c:a",
     "copy",
     "-movflags",
@@ -1470,6 +1534,8 @@ const sdrProxyOutputTail = (
     "bt709",
     "-color_range",
     "tv",
+    "-chroma_sample_location",
+    "left",
     "-c:a",
     "aac",
     "-ac",
@@ -1917,6 +1983,7 @@ export const planRenditions = (
   if (audio)
     planned.push(
       { kind: "waveform_data", filename: "waveform.dat" },
+      { kind: "reference_audio_1x", filename: "reference_audio_1x.m4a" },
       { kind: "shuttle_audio_2x", filename: "shuttle_audio_2x.m4a" },
       { kind: "shuttle_audio_4x", filename: "shuttle_audio_4x.m4a" },
     );
@@ -1953,6 +2020,7 @@ export const runTranscode = async (
   ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg",
   pdftoppm = process.env.PDFTOPPM_PATH ?? "pdftoppm",
   hardware: HardwareInput = SOFTWARE_ACCELERATION,
+  ffprobe = process.env.FFPROBE_PATH ?? "ffprobe",
 ): Promise<TranscodeRunResult> => {
   const acceleration = accelerationFrom(hardware);
   const renditions: TranscodeRunResult["renditions"] = [];
@@ -2090,20 +2158,43 @@ export const runTranscode = async (
         meta.source_timecode_source = job.mediaInfo.sourceTimecodeSource;
       if (job.mediaInfo.sourceColor)
         meta.source_color = job.mediaInfo.sourceColor;
-      if (output.kind.startsWith("proxy_"))
-        meta.output_color = {
-          primaries: "bt709",
-          transfer: "bt709",
-          matrix: "bt709",
-          range: "tv",
-        };
-      if (output.kind === "hdr_av1" || output.kind === "hdr_hevc")
-        meta.output_color = job.mediaInfo.sourceColor ?? {};
+      if (
+        COMBINABLE_PROXY_KINDS.includes(output.kind) ||
+        output.kind === "hdr_av1" ||
+        output.kind === "hdr_hevc"
+      ) {
+        const outputInfo = await probeFile(output.path, ffprobe);
+        const outputVideo = videoStream(outputInfo);
+        if (!outputVideo || !outputInfo.sourceColor)
+          throw new Error(
+            "Playable rendition probe did not return video color metadata.",
+          );
+        const codec = webCodecString(outputVideo);
+        const codedWidth = positiveProbeNumber(outputVideo.width);
+        const codedHeight = positiveProbeNumber(outputVideo.height);
+        const bitRate =
+          positiveProbeNumber(outputVideo.bit_rate) ??
+          positiveProbeNumber(outputInfo.format.bit_rate);
+        if (!codec || !codedWidth || !codedHeight || !bitRate)
+          throw new Error(
+            "Playable rendition probe did not return a complete codec contract.",
+          );
+        meta.codec = codec;
+        meta.coded_width = Math.round(codedWidth);
+        meta.coded_height = Math.round(codedHeight);
+        meta.bit_rate = Math.round(bitRate);
+        meta.output_color = outputInfo.sourceColor;
+        if (output.kind === "hdr_av1" || output.kind === "hdr_hevc")
+          meta.hdr_metadata_type = hdrMetadataType(
+            outputInfo.sourceColor.sideData,
+          );
+      }
       if (output.height !== undefined) meta.height = output.height;
       if (output.kind === "sprite")
         meta.vtt_path = await writeSpriteVtt(job, output.path);
       if (output.kind === "shuttle_audio_2x") meta.shuttle_rate = 2;
       if (output.kind === "shuttle_audio_4x") meta.shuttle_rate = 4;
+      if (output.kind === "reference_audio_1x") meta.reference_rate = 1;
       renditions.push({ kind: output.kind, key: output.path, meta });
     } catch (error) {
       const message =

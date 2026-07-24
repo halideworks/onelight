@@ -56,7 +56,20 @@ describe.skipIf(fixturesMissing !== undefined)(
                 `qa-${engine.name}`,
               ] as const,
             );
-            if (engine.name === "webkit" && process.platform === "linux") {
+            if (engine.name === "webkit" && process.platform === "win32") {
+              expect(result).toMatchObject({
+                outcome: "unsupported",
+                stage: "decode",
+                deviation: "unclassified",
+                failedPatches: [],
+              });
+              expect(result.failure).toContain(
+                "requestVideoFrameCallback is unavailable",
+              );
+            } else if (
+              engine.name === "webkit" &&
+              process.platform === "linux"
+            ) {
               expect(result).toMatchObject({
                 outcome: "warning",
                 stage: "complete",

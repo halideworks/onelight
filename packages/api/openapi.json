@@ -13249,6 +13249,12 @@
                               "shuttle_audio": {
                                 "type": "object",
                                 "properties": {
+                                  "x1": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
                                   "x2": {
                                     "type": [
                                       "string",
@@ -13263,6 +13269,7 @@
                                   }
                                 },
                                 "required": [
+                                  "x1",
                                   "x2",
                                   "x4"
                                 ],
@@ -14419,6 +14426,126 @@
                       "failed_patches",
                       "elapsed_ms",
                       "failure"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "reference_playback"
+                      },
+                      "outcome": {
+                        "type": "string",
+                        "enum": [
+                          "ready",
+                          "fallback"
+                        ]
+                      },
+                      "failure_class": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "decoder_unsupported",
+                              "demux",
+                              "decode",
+                              "metadata_conflict",
+                              "raw_format",
+                              "renderer",
+                              "context_lost",
+                              "allocation",
+                              "starvation",
+                              "timestamp",
+                              "output_order",
+                              "unknown"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "reason": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 500
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "frame": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "was_playing": {
+                        "type": "boolean"
+                      },
+                      "source_kind": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 64
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "decoder_preference": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "const": "no-preference"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "buffered_frames": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 6
+                      },
+                      "document_visibility": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "hidden",
+                              "visible",
+                              "prerender"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "online": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "outcome",
+                      "failure_class",
+                      "reason",
+                      "frame",
+                      "was_playing",
+                      "source_kind",
+                      "decoder_preference",
+                      "buffered_frames",
+                      "document_visibility",
+                      "online"
                     ],
                     "additionalProperties": false
                   },
@@ -22553,6 +22680,126 @@
                       "failed_patches",
                       "elapsed_ms",
                       "failure"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "reference_playback"
+                      },
+                      "outcome": {
+                        "type": "string",
+                        "enum": [
+                          "ready",
+                          "fallback"
+                        ]
+                      },
+                      "failure_class": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "decoder_unsupported",
+                              "demux",
+                              "decode",
+                              "metadata_conflict",
+                              "raw_format",
+                              "renderer",
+                              "context_lost",
+                              "allocation",
+                              "starvation",
+                              "timestamp",
+                              "output_order",
+                              "unknown"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "reason": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 500
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "frame": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "was_playing": {
+                        "type": "boolean"
+                      },
+                      "source_kind": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 64
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "decoder_preference": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "const": "no-preference"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "buffered_frames": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 6
+                      },
+                      "document_visibility": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "hidden",
+                              "visible",
+                              "prerender"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "online": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "outcome",
+                      "failure_class",
+                      "reason",
+                      "frame",
+                      "was_playing",
+                      "source_kind",
+                      "decoder_preference",
+                      "buffered_frames",
+                      "document_visibility",
+                      "online"
                     ],
                     "additionalProperties": false
                   },

@@ -360,7 +360,9 @@ export const seedRendition = async (
   /* The extension follows the kind, because the media route falls back to it
      when a kind is not in the content-type map. */
   const extension =
-    options.kind === "proxy_audio" || options.kind?.startsWith("shuttle_audio_")
+    options.kind === "proxy_audio" ||
+    options.kind === "reference_audio_1x" ||
+    options.kind?.startsWith("shuttle_audio_")
       ? "m4a"
       : options.kind === "waveform_data"
         ? "dat"

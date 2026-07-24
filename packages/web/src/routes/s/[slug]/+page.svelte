@@ -9,6 +9,7 @@
     FrameAnnotation,
     PendingDrawing,
     PlayerRendition,
+    ReferencePlaybackDiagnostic,
     ShuttleAudioDiagnostic,
     ShuttleAudioSources,
     SpriteCue,
@@ -75,7 +76,7 @@
         peaks?: { url: string } | null;
         waveform?: { url: string; meta?: Record<string, unknown> } | null;
         spectrogram?: { url: string } | null;
-        shuttle_audio?: { x2: string | null; x4: string | null };
+        shuttle_audio?: { x1: string | null; x2: string | null; x4: string | null };
         captions?: Array<{ language: string; label: string; url: string | null }>;
       } | null;
       watermark: 'ready' | 'processing' | null;
@@ -1287,6 +1288,15 @@
               ).catch(() => undefined);
           }}
           oncolorselfcheckdiagnostic={(diagnostic: ColorSelfCheckDiagnostic) => {
+            const assetId = selected?.id;
+            if (assetId)
+              void apiPost<void>(
+                `/api/v1/s/${slug}/assets/${assetId}/playback-diagnostics`,
+                diagnostic,
+                { redirectOn401: false, keepalive: true }
+              ).catch(() => undefined);
+          }}
+          onreferenceplaybackdiagnostic={(diagnostic: ReferencePlaybackDiagnostic) => {
             const assetId = selected?.id;
             if (assetId)
               void apiPost<void>(

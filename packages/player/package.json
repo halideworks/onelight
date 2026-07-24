@@ -7,6 +7,7 @@
   "exports": {
     ".": "./dist/index.js",
     "./Player.svelte": "./src/Player.svelte",
+    "./ReferenceStage.svelte": "./src/ReferenceStage.svelte",
     "./ImageViewer.svelte": "./src/ImageViewer.svelte",
     "./Slider.svelte": "./src/Slider.svelte"
   },

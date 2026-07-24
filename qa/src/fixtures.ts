@@ -52,7 +52,7 @@ export interface ColorPatch {
 }
 
 /* Bump to invalidate corpora produced by older synthesis code. */
-export const CORPUS_VERSION = 4;
+export const CORPUS_VERSION = 6;
 
 export interface FixtureManifest {
   version: number;
@@ -77,6 +77,13 @@ export interface FixtureManifest {
     patchesFile: string;
     patches: ColorPatch[];
   };
+  reference4k: {
+    file: string;
+    width: number;
+    height: number;
+    rate: QaRate;
+    frames: number;
+  };
 }
 
 const WIDTH = 1280;
@@ -88,6 +95,10 @@ const SHUTTLE_AUDIO_TONE_HZ = 997;
 export const DF_START_TIMECODE = "00:59:55;00";
 export const DF_RATE: QaRate = { num: 30000, den: 1001 };
 const BARS_RATE: QaRate = { num: 25, den: 1 };
+const REFERENCE_4K_WIDTH = 3840;
+const REFERENCE_4K_HEIGHT = 2160;
+const REFERENCE_4K_RATE: QaRate = { num: 30, den: 1 };
+const REFERENCE_4K_SECONDS = 3;
 
 const ffmpegBin = (): string => process.env.FFMPEG_PATH ?? "ffmpeg";
 
@@ -130,6 +141,8 @@ const proxyShapeArgs = (rate: QaRate): string[] => [
   "18",
   "-pix_fmt",
   "yuv420p",
+  "-bf",
+  "3",
   "-g",
   String(gopSize(rate)),
   "-keyint_min",
@@ -177,6 +190,21 @@ export const barsClipArgs = (outputPath: string): string[] => [
   "-vf",
   "format=yuv420p",
   ...proxyShapeArgs(BARS_RATE),
+  outputPath,
+];
+
+export const reference4kClipArgs = (outputPath: string): string[] => [
+  "-hide_banner",
+  "-y",
+  "-f",
+  "lavfi",
+  "-i",
+  `testsrc2=s=${REFERENCE_4K_WIDTH}x${REFERENCE_4K_HEIGHT}:r=${REFERENCE_4K_RATE.num}/${REFERENCE_4K_RATE.den}:d=${REFERENCE_4K_SECONDS}`,
+  "-vf",
+  "format=yuv420p",
+  ...proxyShapeArgs(REFERENCE_4K_RATE),
+  "-preset",
+  "veryfast",
   outputPath,
 ];
 
@@ -491,6 +519,7 @@ const manifestUpToDate = async (): Promise<FixtureManifest | null> => {
       ...manifest.shuttleAudio.sidecars.map((sidecar) => sidecar.file),
       manifest.bars.file,
       manifest.bars.patchesFile,
+      manifest.reference4k.file,
     ];
     if (files.every((file) => existsSync(path.join(fixturesDir, file))))
       return manifest;
@@ -557,6 +586,25 @@ export const synthesizeFixtures = async (
     "utf8",
   );
 
+  const reference4kFile = "reference-4k-30.mp4";
+  log(`[qa] fixtures: synthesizing ${reference4kFile}`);
+  await runProcess(
+    ffmpegBin(),
+    reference4kClipArgs(path.join(fixturesDir, reference4kFile)),
+  );
+  const reference4kProbe = await probeFile(
+    path.join(fixturesDir, reference4kFile),
+  );
+  if (
+    reference4kProbe.frameRateNum !== REFERENCE_4K_RATE.num ||
+    reference4kProbe.frameRateDen !== REFERENCE_4K_RATE.den ||
+    reference4kProbe.durationFrames !==
+      REFERENCE_4K_RATE.num * REFERENCE_4K_SECONDS
+  )
+    throw new Error(
+      `4K reference fixture probed as ${String(reference4kProbe.frameRateNum)}/${String(reference4kProbe.frameRateDen)} with ${String(reference4kProbe.durationFrames)} frames.`,
+    );
+
   const shuttleAudioFile = "shuttle-audio.mp4";
   log(`[qa] fixtures: synthesizing ${shuttleAudioFile}`);
   await runProcess(
@@ -608,6 +656,13 @@ export const synthesizeFixtures = async (
       height: HEIGHT,
       patchesFile,
       patches,
+    },
+    reference4k: {
+      file: reference4kFile,
+      width: REFERENCE_4K_WIDTH,
+      height: REFERENCE_4K_HEIGHT,
+      rate: REFERENCE_4K_RATE,
+      frames: REFERENCE_4K_RATE.num * REFERENCE_4K_SECONDS,
     },
   };
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");

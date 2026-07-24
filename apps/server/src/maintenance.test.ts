@@ -483,6 +483,17 @@ describe("trash purge", () => {
         .insert(renditions)
         .values([
           {
+            id: "sidecar-1",
+            versionId: "version-1",
+            kind: "reference_audio_1x",
+            blobKey: "renditions/version-1/reference_audio_1x.m4a",
+            metaJson: JSON.stringify({ reference_rate: 1 }),
+            size: 10,
+            checksumSha256: "",
+            shareId: null,
+            createdAt: 1_000,
+          },
+          {
             id: "sidecar-2",
             versionId: "version-1",
             kind: "shuttle_audio_2x",
@@ -511,6 +522,7 @@ describe("trash purge", () => {
 
       expect(deleted.sort()).toEqual([
         "originals/shot.mov",
+        "renditions/version-1/reference_audio_1x.m4a",
         "renditions/version-1/shuttle_audio_2x.m4a",
         "renditions/version-1/shuttle_audio_4x.m4a",
         "thumbnails/asset-1.png",

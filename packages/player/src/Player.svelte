@@ -2,6 +2,7 @@
   import {
     frameAtCurrentTime,
     frameAtMediaTime,
+    frameAtReferenceAudioTime,
     frameDuration,
     mediaTimeInsideFrame
   } from './frame-clock.js';
@@ -19,6 +20,7 @@
     colorMaximumDelta,
     renditionColorContracts
   } from './color-playback.js';
+  import { qualifyNativeHdr } from './hdr-selection.js';
   import {
     SUPPORTED_RATES,
     formatTimecode,
@@ -27,6 +29,7 @@
   } from '@onelight/core';
   import AnnotationOverlay from './AnnotationOverlay.svelte';
   import MarkerFace from './MarkerFace.svelte';
+  import ReferenceStage from './ReferenceStage.svelte';
   import Slider from './Slider.svelte';
   import Timeline from './Timeline.svelte';
   import WaveformStage from './WaveformStage.svelte';
@@ -45,9 +48,20 @@
   import type { AnnotationPoint, AnnotationStroke, FrameAnnotation, PendingDrawing } from './annotations.js';
   import { markerInkFor } from './timeline.js';
   import type { TimelineMarker } from './timeline.js';
+  import { captionCuesAtFrame, type PlayerCaptionCue } from './captions.js';
   import type { SpriteCue } from './filmstrip.js';
+  import { ReferencePictureBackend } from './reference/reference-backend.js';
+  import { referenceSourceContract } from './reference/source-contract.js';
+  import { shouldRequestReferencePlayback } from './reference-selection.js';
+  import { untrack } from 'svelte';
   import type {
+    PicturePlaybackRate,
+    ReferenceFailure
+  } from './picture-backend.js';
+  import type {
+    ColorPlaybackMode,
     PlayerRendition,
+    ReferencePlaybackDiagnostic,
     ShuttleAudioDiagnostic,
     ShuttleAudioSources,
     SurroundMode,
@@ -85,7 +99,8 @@
     oncopytimecode = undefined,
     onshuttleaudiodiagnostic = undefined,
     colorCheckBuildId = 'onelight',
-    oncolorselfcheckdiagnostic = undefined
+    oncolorselfcheckdiagnostic = undefined,
+    onreferenceplaybackdiagnostic = undefined
   }: {
     src: string;
     rate?: { num: number; den: number };
@@ -154,6 +169,9 @@
     oncolorselfcheckdiagnostic?:
       | ((diagnostic: ColorSelfCheckDiagnostic) => void)
       | undefined;
+    onreferenceplaybackdiagnostic?:
+      | ((diagnostic: ReferencePlaybackDiagnostic) => void)
+      | undefined;
   } = $props();
   /* The element that plays. A video for footage, an audio element for a mix:
      everything the transport does (play, pause, currentTime, playbackRate,
@@ -188,6 +206,42 @@
   /* The playing element when it has a picture, and nothing when it does not. */
   const pictureElement = (): HTMLVideoElement | null =>
     video && 'videoWidth' in video ? (video as HTMLVideoElement) : null;
+  let referenceStage = $state<ReferenceStage | null>(null);
+  let referenceClock = $state<HTMLAudioElement | null>(null);
+  let referenceBackend: ReferencePictureBackend | null = null;
+  let referenceActive = $state(false);
+  let referenceLoading = $state(false);
+  let referenceFailure = $state<string | null>(null);
+  let referenceNotice = $state(false);
+  let referenceNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+  let referenceClockRate: PicturePlaybackRate = 1;
+  let referenceClockFrame = 0;
+  let referenceClockUrl = '';
+  let referenceClockRaf: number | null = null;
+  let referenceClockHealthTimer: ReturnType<typeof setTimeout> | null = null;
+  let referenceGeneration = 0;
+  let blockedReferenceSource = $state('');
+  const COLOR_PLAYBACK_MODE_KEY = 'onelight.player.colorPlaybackMode';
+  let colorPlaybackMode = $state<ColorPlaybackMode>('automatic');
+  try {
+    const stored = localStorage.getItem(COLOR_PLAYBACK_MODE_KEY);
+    if (stored === 'automatic' || stored === 'native' || stored === 'reference')
+      colorPlaybackMode = stored;
+  } catch {
+    /* Storage is optional. The automatic default remains active. */
+  }
+  $effect(() => {
+    try {
+      localStorage.setItem(COLOR_PLAYBACK_MODE_KEY, colorPlaybackMode);
+    } catch {
+      /* The preference remains live for this page. */
+    }
+  });
+  const selectColorPlaybackMode = (mode: ColorPlaybackMode): void => {
+    blockedReferenceSource = '';
+    referenceFailure = null;
+    colorPlaybackMode = mode;
+  };
   let videoWidth = $state(0);
   let videoHeight = $state(0);
   let frame = $state(0);
@@ -364,13 +418,20 @@
   const renderScope = (): boolean => {
     const target = scopeCanvas;
     const picture = pictureElement();
-    if (!target || !picture || picture.videoWidth === 0) return false;
+    const referencePicture = referenceActive ? referenceStage?.element() : null;
+    if (
+      !target ||
+      (!referencePicture && (!picture || picture.videoWidth === 0))
+    )
+      return false;
     /* Mid-seek the element still presents the old frame; drawing now would
        memoize stale pixels under the new time. Wait for the seek to land. */
-    if (picture.seeking) return false;
+    if (!referencePicture && picture?.seeking) return false;
     if (
-      picture.paused &&
-      picture.currentTime === scopeDrawnAt &&
+      ((!referencePicture &&
+        picture?.paused &&
+        picture.currentTime === scopeDrawnAt) ||
+        (referencePicture && !playing && frame === scopeDrawnAt)) &&
       scopeMode === scopeDrawnMode &&
       target === scopeDrawnOn
     )
@@ -383,14 +444,20 @@
     const sampler = sampleCanvas.getContext('2d', { willReadFrequently: true });
     const ctx = target.getContext('2d');
     if (!sampler || !ctx) return true;
-    sampler.drawImage(picture, 0, 0, SAMPLE_W, SAMPLE_H);
+    sampler.drawImage(
+      referencePicture ?? (picture as HTMLVideoElement),
+      0,
+      0,
+      SAMPLE_W,
+      SAMPLE_H
+    );
     let data: Uint8ClampedArray;
     try {
       data = sampler.getImageData(0, 0, SAMPLE_W, SAMPLE_H).data;
     } catch {
       return true;
     }
-    scopeDrawnAt = picture.currentTime;
+    scopeDrawnAt = referencePicture ? frame : (picture?.currentTime ?? frame);
     scopeDrawnMode = scopeMode;
     scopeDrawnOn = target;
     if (!scopeImage) scopeImage = ctx.createImageData(SCOPE_W, SCOPE_H);
@@ -502,9 +569,42 @@
   /* Captions are off until asked for; the toggle drives the text track's
      mode directly, and a source change re-applies the choice. */
   let captionsOn = $state(false);
+  let captionCues = $state<PlayerCaptionCue[]>([]);
+  const referenceCaptionCues = $derived(
+    referenceActive && captionsOn
+      ? captionCuesAtFrame(captionCues, frame, rate)
+      : []
+  );
+  const cueText = (cue: TextTrackCue): string => {
+    if ('getCueAsHTML' in cue && typeof cue.getCueAsHTML === 'function')
+      return cue.getCueAsHTML().textContent?.trim() ?? '';
+    if ('text' in cue && typeof cue.text === 'string') return cue.text.trim();
+    return '';
+  };
+  const readCaptionCues = (): void => {
+    const track = video?.textTracks?.[0];
+    if (!track?.cues) {
+      captionCues = [];
+      return;
+    }
+    captionCues = Array.from(track.cues)
+      .map((cue): PlayerCaptionCue => ({
+        startTime: cue.startTime,
+        endTime: cue.endTime,
+        text: cueText(cue)
+      }))
+      .filter((cue) => cue.text.length > 0);
+  };
   const applyCaptions = (): void => {
     const track = video?.textTracks?.[0];
-    if (track) track.mode = captionsOn && captionsSrc ? 'showing' : 'disabled';
+    if (!track) return;
+    track.mode =
+      captionsOn && captionsSrc
+        ? referenceActive
+          ? 'hidden'
+          : 'showing'
+        : 'disabled';
+    if (captionsOn && captionsSrc) queueMicrotask(readCaptionCues);
   };
   const toggleCaptions = (): void => {
     captionsOn = !captionsOn;
@@ -513,6 +613,7 @@
   $effect(() => {
     void captionsSrc;
     void captionsOn;
+    void referenceActive;
     applyCaptions();
   });
   /* Fullscreen controls appear on movement and get out of the way again. The
@@ -592,13 +693,66 @@
 
   /* ---- rendition ladder ---- */
   const RUNG_HEIGHTS: Record<string, number> = { proxy_540: 540, proxy_1080: 1080, proxy_2160: 2160 };
-  const RUNG_LABELS: Record<string, string> = { proxy_540: '540', proxy_1080: '1080', proxy_2160: '4K' };
+  const RUNG_LABELS: Record<string, string> = {
+    proxy_540: '540',
+    proxy_1080: '1080',
+    proxy_2160: '4K',
+    hdr_av1: 'HDR',
+    hdr_hevc: 'HDR'
+  };
   const ladder = $derived(
     renditions
       .filter((rendition) => RUNG_HEIGHTS[rendition.kind] !== undefined && rendition.url)
       .slice()
       .sort((a, b) => (RUNG_HEIGHTS[a.kind] ?? 0) - (RUNG_HEIGHTS[b.kind] ?? 0))
   );
+  const hdrRenditions = $derived(
+    renditions.filter(
+      (rendition) =>
+        (rendition.kind === 'hdr_av1' || rendition.kind === 'hdr_hevc') &&
+        rendition.url
+    )
+  );
+  let qualifiedHdrRendition = $state<PlayerRendition | null>(null);
+  let hdrQualificationReason = $state<string | null>(null);
+  let hdrQualificationGeneration = 0;
+  let hdrDisplayGeneration = $state(0);
+  $effect(() => {
+    if (typeof matchMedia === 'undefined') return;
+    const queries = [
+      matchMedia('(video-dynamic-range: high)'),
+      matchMedia('(video-color-gamut: rec2020)')
+    ];
+    const changed = (): void => {
+      hdrDisplayGeneration += 1;
+    };
+    for (const query of queries) query.addEventListener('change', changed);
+    return () => {
+      for (const query of queries) query.removeEventListener('change', changed);
+    };
+  });
+  $effect(() => {
+    void hdrDisplayGeneration;
+    const candidates = [...hdrRenditions].sort(
+      (left, right) =>
+        (left.kind === 'hdr_av1' ? 0 : 1) -
+        (right.kind === 'hdr_av1' ? 0 : 1)
+    );
+    const generation = ++hdrQualificationGeneration;
+    qualifiedHdrRendition = null;
+    hdrQualificationReason = null;
+    void (async () => {
+      for (const candidate of candidates) {
+        const result = await qualifyNativeHdr(candidate);
+        if (generation !== hdrQualificationGeneration) return;
+        hdrQualificationReason = result.reason;
+        if (result.qualified) {
+          qualifiedHdrRendition = candidate;
+          return;
+        }
+      }
+    })();
+  });
   let quality = $state('auto');
   let currentSrc = $state('');
   let pendingRestore: {
@@ -755,6 +909,8 @@
   };
 
   const activeRendition = $derived.by((): PlayerRendition | null => {
+    if (quality === 'hdr' && qualifiedHdrRendition)
+      return qualifiedHdrRendition;
     if (quality !== 'auto') {
       const pick = ladder.find((rung) => rung.kind === quality);
       if (pick) return pick;
@@ -765,13 +921,286 @@
   const activeColorContracts = $derived(
     renditionColorContracts(activeRendition?.meta ?? colorMetadata)
   );
+  const activeReferenceContract = $derived(
+    referenceSourceContract(activeRendition, rate, durationFrames)
+  );
+  const referencePossible = $derived(
+    Boolean(activeReferenceContract && shuttleAudio?.x1)
+  );
+  /* Automatic selection stays fail-closed until the real Safari, Windows
+     Chromium and Windows Firefox hardware matrix in BCR-T11 passes. Manual
+     reference mode still runs the exact same runtime capability checks. */
+  const automaticReferenceQualified = false;
+  const referenceRequested = $derived(
+    shouldRequestReferencePlayback({
+      mode: colorPlaybackMode,
+      selfCheckOutcome: colorSelfCheckResult?.outcome ?? null,
+      available: referencePossible,
+      automaticQualified: automaticReferenceQualified
+    })
+  );
   const activeColorPath = $derived(
-    activeRendition
+    activeRendition?.kind === 'hdr_av1' || activeRendition?.kind === 'hdr_hevc'
+      ? 'Native HDR'
+      : referenceActive
+      ? `Reference renderer, ${RUNG_LABELS[activeRendition?.kind ?? ''] ?? activeRendition?.kind ?? 'proxy'} rendition`
+      : activeRendition
       ? `Native browser video, ${RUNG_LABELS[activeRendition.kind] ?? activeRendition.kind} rendition`
       : 'Native browser video'
   );
   const colorCheck = $derived(colorCheckPresentation(colorSelfCheckResult));
+  const colorStateLabel = $derived(
+    activeRendition?.kind === 'hdr_av1' || activeRendition?.kind === 'hdr_hevc'
+      ? 'Native HDR'
+      : referenceActive
+        ? 'Reference renderer'
+        : colorCheck.label
+  );
   let colorPanelOpen = $state(false);
+  let activeReferenceSource = '';
+
+  const referenceDiagnostic = (
+    outcome: 'ready' | 'fallback',
+    failure: ReferenceFailure | null,
+  ): ReferencePlaybackDiagnostic => ({
+    kind: 'reference_playback',
+    outcome,
+    failure_class: failure?.failureClass ?? null,
+    reason: failure?.reason ?? null,
+    frame: failure?.frame ?? frame,
+    was_playing: failure?.playing ?? playing,
+    source_kind: activeRendition?.kind ?? null,
+    decoder_preference: outcome === 'ready' ? 'no-preference' : null,
+    buffered_frames: referenceBackend?.bufferedFrames.length ?? 0,
+    document_visibility:
+      typeof document === 'undefined' ? null : document.visibilityState,
+    online: typeof navigator === 'undefined' ? null : navigator.onLine
+  });
+
+  const reportReferenceDiagnostic = (
+    outcome: 'ready' | 'fallback',
+    failure: ReferenceFailure | null = null,
+  ): void => {
+    const diagnostic = referenceDiagnostic(outcome, failure);
+    onreferenceplaybackdiagnostic?.(diagnostic);
+    if (typeof window !== 'undefined')
+      window.dispatchEvent(
+        new CustomEvent('onelight:reference-playback-diagnostic', {
+          detail: diagnostic
+        })
+      );
+  };
+
+  const stopReferenceClock = (): void => {
+    if (referenceClockRaf !== null) {
+      cancelAnimationFrame(referenceClockRaf);
+      referenceClockRaf = null;
+    }
+    if (referenceClockHealthTimer !== null) {
+      clearTimeout(referenceClockHealthTimer);
+      referenceClockHealthTimer = null;
+    }
+    referenceClock?.pause();
+  };
+
+  const closeReferenceToNative = (
+    at: number,
+    wasPlaying: boolean,
+    failure: ReferenceFailure | null,
+  ): void => {
+    stopReferenceClock();
+    referenceBackend?.close();
+    referenceBackend = null;
+    referenceActive = false;
+    referenceLoading = false;
+    if (failure) {
+      referenceFailure = failure.reason;
+      referenceNotice = true;
+      if (referenceNoticeTimer !== null) clearTimeout(referenceNoticeTimer);
+      referenceNoticeTimer = setTimeout(() => {
+        referenceNoticeTimer = null;
+        referenceNotice = false;
+      }, 6_000);
+      blockedReferenceSource = activeReferenceSource;
+      reportReferenceDiagnostic('fallback', failure);
+    }
+    activeReferenceSource = '';
+    seekFrame(at);
+    if (!wasPlaying || !video) {
+      forwardSpeed = 0;
+      onplaystate?.(false);
+      return;
+    }
+    const speed: PicturePlaybackRate =
+      forwardSpeed === 2 || forwardSpeed === 4 ? forwardSpeed : 1;
+    forwardSpeed = speed;
+    configurePlaybackRate(video, speed, speed === 1);
+    if (speed === 2 || speed === 4) startShuttleAudio(speed);
+    void video.play().catch((reason: unknown) => {
+      forwardSpeed = 0;
+      stopShuttleAudio();
+      restoreRate();
+      playRefused = true;
+      console.warn('onelight player: native fallback play was refused', reason);
+    });
+  };
+
+  const handleReferenceFailure = (failure: ReferenceFailure): void => {
+    closeReferenceToNative(failure.frame, failure.playing, failure);
+  };
+
+  const activateReference = async (
+    sourceKey: string,
+    contract: NonNullable<typeof activeReferenceContract>,
+    initialFrame: number,
+    generation: number,
+  ): Promise<void> => {
+    referenceLoading = true;
+    referenceFailure = null;
+    referenceNotice = false;
+    let lastRenderedFrame: number | null = null;
+    const frameWaiters = new Map<
+      number,
+      {
+        resolve(): void;
+        reject(reason: Error): void;
+        timer: ReturnType<typeof setTimeout>;
+      }
+    >();
+    const waitForRenderedFrame = (target: number): Promise<void> => {
+      if (lastRenderedFrame === target) return Promise.resolve();
+      return new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          frameWaiters.delete(target);
+          reject(
+            new Error(
+              `Reference renderer did not present frame ${String(target)} in time.`
+            )
+          );
+        }, 5_000);
+        frameWaiters.set(target, { resolve, reject, timer });
+      });
+    };
+    const rejectFrameWaiters = (reason: string): void => {
+      for (const waiter of frameWaiters.values()) {
+        clearTimeout(waiter.timer);
+        waiter.reject(new Error(reason));
+      }
+      frameWaiters.clear();
+    };
+    const backend = new ReferencePictureBackend({
+      render: (planes) => {
+        if (!referenceStage) throw new Error('Reference stage is unavailable.');
+        referenceStage.render(planes);
+      },
+      onReady: (track) => {
+        videoWidth = track.displayWidth;
+        videoHeight = track.displayHeight;
+        if (track.displayWidth > 0 && track.displayHeight > 0)
+          aspect = track.displayWidth / track.displayHeight;
+      },
+      onFrame: (presented) => {
+        lastRenderedFrame = presented;
+        const waiter = frameWaiters.get(presented);
+        if (waiter) {
+          clearTimeout(waiter.timer);
+          frameWaiters.delete(presented);
+          waiter.resolve();
+        }
+        if (referenceActive) {
+          pictureIn = true;
+          clearStall();
+          setFrame(presented);
+        }
+      },
+      onFailure: (failure) => {
+        rejectFrameWaiters(failure.reason);
+        handleReferenceFailure(failure);
+      }
+    });
+    referenceBackend?.close();
+    referenceBackend = backend;
+    try {
+      await backend.load(contract, initialFrame);
+      if (
+        generation !== referenceGeneration ||
+        activeReferenceSource !== sourceKey ||
+        referenceBackend !== backend
+      ) {
+        backend.close();
+        return;
+      }
+      await waitForRenderedFrame(initialFrame);
+      await backend.waitUntilBuffered(initialFrame);
+      const switchFrame = untrack(() => frame);
+      const wasPlaying = untrack(() => playing);
+      video?.pause();
+      stopShuttleAudio();
+      if (lastRenderedFrame !== switchFrame) {
+        backend.seek(switchFrame);
+        await waitForRenderedFrame(switchFrame);
+      }
+      referenceActive = true;
+      referenceLoading = false;
+      pictureIn = true;
+      setFrame(switchFrame);
+      if (wasPlaying) {
+        const speed: PicturePlaybackRate =
+          forwardSpeed === 2 || forwardSpeed === 4 ? forwardSpeed : 1;
+        startReferenceClock(speed, switchFrame);
+      } else {
+        forwardSpeed = 0;
+        syncReferenceClock(1, switchFrame);
+      }
+      reportReferenceDiagnostic('ready');
+    } catch (error) {
+      if (
+        generation !== referenceGeneration ||
+        referenceBackend !== backend
+      )
+        return;
+      handleReferenceFailure({
+        failureClass: 'decoder_unsupported',
+        reason: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+        frame: initialFrame,
+        playing: untrack(() => playing)
+      });
+    }
+  };
+
+  $effect(() => {
+    const contract = activeReferenceContract;
+    const requested = referenceRequested;
+    const clock = shuttleAudio?.x1 ?? null;
+    const sourceKey = contract?.url ?? '';
+    if (
+      !requested ||
+      !contract ||
+      !clock ||
+      sourceKey === blockedReferenceSource
+    ) {
+      if (
+        (referenceActive || referenceLoading) &&
+        (!requested || !contract || !clock)
+      )
+        closeReferenceToNative(untrack(() => frame), untrack(() => playing), null);
+      if (requested && (!contract || !clock))
+        referenceFailure =
+          !clock
+            ? 'The 1x reference audio clock is unavailable for this version.'
+            : 'The rendition metadata is incomplete for reference playback.';
+      return;
+    }
+    if (sourceKey === activeReferenceSource) return;
+    activeReferenceSource = sourceKey;
+    const generation = ++referenceGeneration;
+    void activateReference(
+      sourceKey,
+      contract,
+      untrack(() => frame),
+      generation,
+    );
+  });
 
   /* Rendition switching preserves the current frame: capture frame and play
      state, swap src, then loadedmetadata seeks back into the frame and
@@ -796,7 +1225,7 @@
       playbackRate: video.playbackRate,
       preservesPitch: video.preservesPitch
     };
-    video.pause();
+    video?.pause();
     currentSrc = next;
   });
 
@@ -1207,8 +1636,16 @@
     }
     /* Only forward playback wraps. Seeking onto the last frame by hand, or
        shuttling backwards over it, is not the end of a pass. */
-    if (loop && video && forwardSpeed > 0 && loopEnd !== null && next >= loopEnd) {
-      video.currentTime = mediaTimeInsideFrame(loopStart, rate);
+    if (loop && forwardSpeed > 0 && loopEnd !== null && next >= loopEnd) {
+      if (referenceActive) {
+        syncReferenceClock(
+          forwardSpeed === 2 || forwardSpeed === 4 ? forwardSpeed : 1,
+          loopStart
+        );
+        referenceBackend?.seek(loopStart, true);
+      } else if (video) {
+        video.currentTime = mediaTimeInsideFrame(loopStart, rate);
+      }
     }
   };
 
@@ -1361,6 +1798,15 @@
      verify the presented mediaTime maps to
      the target frame and re-seek once if it does not. */
   const seekFrame = (targetFrame: number): void => {
+    if (referenceActive && referenceBackend) {
+      const next = boundedFrame(targetFrame);
+      referenceBackend.seek(next, true);
+      syncReferenceClock(
+        forwardSpeed === 2 || forwardSpeed === 4 ? forwardSpeed : 1,
+        next
+      );
+      return;
+    }
     if (!video || video.readyState === 0) {
       pendingSeekFrame = boundedFrame(targetFrame);
       return;
@@ -1427,6 +1873,124 @@
      no longer describes what the transport is doing. */
   const restoreRate = (): void => {
     if (video) configurePlaybackRate(video, 1, true);
+  };
+
+  const referenceClockUrlFor = (speed: PicturePlaybackRate): string | null =>
+    speed === 1
+      ? (shuttleAudio?.x1 ?? null)
+      : speed === 2
+        ? (shuttleAudio?.x2 ?? null)
+        : (shuttleAudio?.x4 ?? null);
+
+  const syncReferenceClock = (
+    speed: PicturePlaybackRate,
+    at: number,
+  ): boolean => {
+    const track = referenceClock;
+    const url = referenceClockUrlFor(speed);
+    referenceClockRate = speed;
+    referenceClockFrame = boundedFrame(at);
+    if (!track || !url) return false;
+    if (referenceClockUrl !== url) {
+      referenceClockUrl = url;
+      track.src = url;
+      track.load();
+    }
+    track.playbackRate = 1;
+    track.volume = volume;
+    track.muted = muted;
+    try {
+      track.currentTime =
+        mediaTimeInsideFrame(referenceClockFrame, rate) / speed;
+    } catch {
+      /* Metadata arrival retries the exact integer-frame synchronization. */
+    }
+    return true;
+  };
+
+  const referenceClockTick = (): void => {
+    referenceClockRaf = null;
+    const track = referenceClock;
+    const backend = referenceBackend;
+    if (
+      !referenceActive ||
+      !track ||
+      !backend ||
+      forwardSpeed === 0 ||
+      track.paused
+    )
+      return;
+    let target = boundedFrame(
+      frameAtReferenceAudioTime(track.currentTime, referenceClockRate, rate)
+    );
+    let wrapped = false;
+    if (loop && loopEnd !== null && target >= loopEnd) {
+      target = loopStart;
+      wrapped = true;
+      syncReferenceClock(referenceClockRate, target);
+    }
+    backend.seek(target, wrapped);
+    referenceClockRaf = requestAnimationFrame(referenceClockTick);
+  };
+
+  const startReferenceClock = (
+    speed: PicturePlaybackRate,
+    at: number,
+  ): void => {
+    const track = referenceClock;
+    const backend = referenceBackend;
+    if (!track || !backend || !syncReferenceClock(speed, at)) {
+      handleReferenceFailure({
+        failureClass: 'unknown',
+        reason: `The ${String(speed)}x reference audio clock is unavailable.`,
+        frame: at,
+        playing: true
+      });
+      return;
+    }
+    stopReferenceClock();
+    backend.play(at, speed);
+    void track.play().then(
+      () => {
+        if (
+          !referenceActive ||
+          referenceBackend !== backend ||
+          forwardSpeed !== speed
+        ) {
+          track.pause();
+          return;
+        }
+        onplaystate?.(true);
+        referenceClockRaf = requestAnimationFrame(referenceClockTick);
+        const startedAt = track.currentTime;
+        referenceClockHealthTimer = setTimeout(() => {
+          referenceClockHealthTimer = null;
+          if (
+            referenceActive &&
+            forwardSpeed === speed &&
+            !track.paused &&
+            track.currentTime <= startedAt + 0.1
+          )
+            handleReferenceFailure({
+              failureClass: 'starvation',
+              reason: 'The reference audio clock did not advance after playback started.',
+              frame,
+              playing: true
+            });
+        }, 1_200);
+      },
+      (reason: unknown) => {
+        handleReferenceFailure({
+          failureClass: 'unknown',
+          reason:
+            reason instanceof Error
+              ? `Reference audio play was refused: ${reason.message}`.slice(0, 500)
+              : 'Reference audio play was refused.',
+          frame: at,
+          playing: true
+        });
+      }
+    );
   };
 
   const shuttleUrlFor = (nextRate: 2 | 4): string | null =>
@@ -1622,6 +2186,8 @@
     stopReverse();
     forwardSpeed = 0;
     stopShuttleAudio();
+    stopReferenceClock();
+    referenceBackend?.pause();
     video?.pause();
     restoreRate();
     seekFrame(targetFrame);
@@ -1647,12 +2213,18 @@
   });
 
   const pausePlayback = (): void => {
-    if (!video) return;
+    if (!video && !referenceActive) return;
     cancelPendingRestore();
     stopReverse();
     forwardSpeed = 0;
     stopShuttleAudio();
-    video.pause();
+    if (referenceActive) {
+      stopReferenceClock();
+      referenceBackend?.pause();
+      syncReferenceClock(1, frame);
+      onplaystate?.(false);
+    }
+    video?.pause();
     restoreRate();
   };
 
@@ -1662,11 +2234,23 @@
   let playRefused = $state(false);
 
   const startForward = (shuttle: boolean): void => {
-    if (!video) return;
+    if (!video && !referenceActive) return;
     cancelPendingRestore();
-    const wasPlayingForward = !video.paused && forwardSpeed > 0 && reverseTimer === null;
+    const wasPlayingForward =
+      forwardSpeed > 0 &&
+      reverseTimer === null &&
+      (referenceActive || !video?.paused);
     stopReverse();
     forwardSpeed = shuttle && wasPlayingForward ? Math.min(4, forwardSpeed * 2) : 1;
+    if (referenceActive) {
+      stopShuttleAudio();
+      startReferenceClock(
+        forwardSpeed === 2 || forwardSpeed === 4 ? forwardSpeed : 1,
+        frame
+      );
+      return;
+    }
+    if (!video) return;
     /* Shuttle is varispeed. Direct resampling avoids the browser's
        pitch-preserving time-stretch processor, the only audio path that
        differs from audible 1x playback. */
@@ -1688,16 +2272,25 @@
   /* HTMLMediaElement cannot play backward: reverse shuttle is emulated by a
      stepping timer that seeks back speed frames per frame-duration tick. */
   const playReverse = (): void => {
-    if (!video) return;
+    if (!video && !referenceActive) return;
     cancelPendingRestore();
-    video.pause();
+    video?.pause();
     forwardSpeed = 0;
     stopShuttleAudio();
+    stopReferenceClock();
+    referenceBackend?.pause();
     restoreRate();
     reverseSpeed = reverseSpeed > 0 ? Math.min(4, reverseSpeed * 2) : 1;
     if (reverseTimer === null) {
       reverseTimer = setInterval(
         () => {
+          if (referenceActive && referenceBackend) {
+            const next = Math.max(0, frame - reverseSpeed);
+            referenceBackend.seek(next, true);
+            syncReferenceClock(1, next);
+            if (next === 0) stopReverse();
+            return;
+          }
           if (!video) return;
           const nextTime = video.currentTime - reverseSpeed * frameDuration(rate);
           if (nextTime <= 0) {
@@ -1723,6 +2316,19 @@
      they live in their own overlay, and a poster is the picture, not the
      notes. */
   export function captureFrame(maxWidth = 1280): Promise<Blob | null> {
+    const reference = referenceActive ? referenceStage?.element() : null;
+    if (reference && reference.width > 0 && reference.height > 0) {
+      const scale = Math.min(1, maxWidth / reference.width);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(reference.width * scale));
+      canvas.height = Math.max(1, Math.round(reference.height * scale));
+      const context = canvas.getContext('2d');
+      if (!context) return Promise.resolve(null);
+      context.drawImage(reference, 0, 0, canvas.width, canvas.height);
+      return new Promise((resolve) => {
+        canvas.toBlob((blob) => resolve(blob), 'image/png');
+      });
+    }
     const element = pictureElement();
     if (!element || element.videoWidth === 0) return Promise.resolve(null);
     const scale = Math.min(1, maxWidth / element.videoWidth);
@@ -1872,6 +2478,10 @@
     if (!shuttleTrack) return;
     shuttleTrack.volume = volume;
     shuttleTrack.muted = muted;
+    if (referenceClock) {
+      referenceClock.volume = volume;
+      referenceClock.muted = muted;
+    }
   });
 
   $effect(() => {
@@ -1886,7 +2496,10 @@
   $effect(() => {
     return () => {
       if (reverseTimer !== null) clearInterval(reverseTimer);
+      if (referenceNoticeTimer !== null) clearTimeout(referenceNoticeTimer);
       shuttleTrack?.pause();
+      stopReferenceClock();
+      referenceBackend?.close();
     };
   });
 </script>
@@ -1943,6 +2556,7 @@
       <video
         bind:this={video}
         class:arrived={pictureIn || posterUrl !== null}
+        class:reference-hidden={referenceActive}
         src={currentSrc || src}
         poster={posterUrl ?? undefined}
         muted={muted || shuttleAudioActive}
@@ -1962,9 +2576,76 @@
         onpause={() => { clearStall(); onplaystate?.(false); }}
         onended={handleEnded}
       >
-        <track kind="captions" srclang="en" label="English captions" src={captionsSrc ?? 'data:text/vtt;charset=utf-8,WEBVTT'} />
+        <track
+          kind="captions"
+          srclang="en"
+          label="English captions"
+          src={captionsSrc ?? 'data:text/vtt;charset=utf-8,WEBVTT'}
+          onload={readCaptionCues}
+        />
       </video>
+      <div class="reference-picture" class:active={referenceActive}>
+        <ReferenceStage
+          bind:this={referenceStage}
+          onrenderererror={(reason) => {
+            if (referenceActive || referenceLoading)
+              handleReferenceFailure({
+                failureClass: reason.toLowerCase().includes('context') ? 'context_lost' : 'renderer',
+                reason,
+                frame,
+                playing
+              });
+          }}
+        />
+      </div>
+      {#if referenceCaptionCues.length}
+        <div class="reference-captions" aria-live="off">
+          {#each referenceCaptionCues as cue}
+            <span>{cue.text}</span>
+          {/each}
+        </div>
       {/if}
+      {/if}
+      <audio
+        class="reference-audio"
+        bind:this={referenceClock}
+        preload="auto"
+        aria-hidden="true"
+        onloadedmetadata={() => syncReferenceClock(referenceClockRate, referenceClockFrame)}
+        onerror={() => {
+          if (referenceActive)
+            handleReferenceFailure({
+              failureClass: 'unknown',
+              reason: `Reference audio failed with media error ${String(referenceClock?.error?.code ?? 'unknown')}.`,
+              frame,
+              playing
+            });
+        }}
+        onended={() => {
+          if (!referenceActive) return;
+          if (loop) {
+            startReferenceClock(
+              forwardSpeed === 2 || forwardSpeed === 4 ? forwardSpeed : 1,
+              loopStart
+            );
+          } else if (
+            durationFrames !== null &&
+            durationFrames > 2 &&
+            frame < durationFrames - 2
+          ) {
+            handleReferenceFailure({
+              failureClass: 'starvation',
+              reason: 'The reference audio clock ended before the picture.',
+              frame,
+              playing: true
+            });
+          } else {
+            forwardSpeed = 0;
+            referenceBackend?.pause();
+            onplaystate?.(false);
+          }
+        }}
+      ></audio>
       <audio
         class="shuttle-audio"
         bind:this={shuttleTrack}
@@ -1983,6 +2664,11 @@
             fallbackShuttleAudio('sidecar_ended_early');
         }}
       ></audio>
+      {#if referenceNotice}
+        <div class="reference-notice" role="status">
+          Reference renderer unavailable. Native playback resumed.
+        </div>
+      {/if}
       <AnnotationOverlay
         strokes={canvasStrokes}
         width={isAudio ? boxSize.width : videoWidth}
@@ -2421,6 +3107,16 @@
               {RUNG_LABELS[rung.kind] ?? rung.kind}
             </button>
           {/each}
+          {#if qualifiedHdrRendition}
+            <button
+              type="button"
+              aria-pressed={quality === 'hdr'}
+              onclick={() => {
+                selectColorPlaybackMode('native');
+                quality = 'hdr';
+              }}
+            >HDR</button>
+          {/if}
         </div>
       {/if}
       {#if !isAudio}
@@ -2433,7 +3129,7 @@
           onclick={() => { colorPanelOpen = !colorPanelOpen; }}
         >
           <span class="color-status-mark" aria-hidden="true"></span>
-          {colorCheck.label}
+          {colorStateLabel}
         </button>
       {/if}
       {/if}
@@ -2443,7 +3139,7 @@
         <div class="color-panel-head">
           <div>
             <span class="color-panel-kicker">Digital decode readback</span>
-            <strong>{colorCheck.label}</strong>
+            <strong>{colorStateLabel}</strong>
           </div>
           <button
             type="button"
@@ -2452,6 +3148,25 @@
             onclick={() => { colorPanelOpen = false; }}
           >Close</button>
         </div>
+        {#if referencePossible}
+          <div class="playback-mode" role="group" aria-label="Color playback path">
+            <button
+              type="button"
+              aria-pressed={colorPlaybackMode === 'automatic'}
+              onclick={() => { selectColorPlaybackMode('automatic'); }}
+            >Automatic</button>
+            <button
+              type="button"
+              aria-pressed={colorPlaybackMode === 'native'}
+              onclick={() => { selectColorPlaybackMode('native'); }}
+            >Native</button>
+            <button
+              type="button"
+              aria-pressed={colorPlaybackMode === 'reference'}
+              onclick={() => { selectColorPlaybackMode('reference'); }}
+            >Reference</button>
+          </div>
+        {/if}
         <dl class="color-facts">
           <div class="color-fact wide">
             <dt>Active path</dt>
@@ -2504,6 +3219,22 @@
         </dl>
         {#if activeColorContracts.source?.assumption}
           <p class="color-assumption">{activeColorContracts.source.assumption}</p>
+        {/if}
+        {#if
+          referencePossible &&
+          colorPlaybackMode === 'automatic' &&
+          colorSelfCheckResult?.outcome === 'warning' &&
+          !automaticReferenceQualified
+        }
+          <p class="color-assumption">
+            Automatic remains on native playback until this platform class passes the sustained hardware matrix. Reference can still be selected explicitly.
+          </p>
+        {/if}
+        {#if referenceFailure}
+          <p class="color-assumption" role="status">{referenceFailure} Native playback is active at the same frame.</p>
+        {/if}
+        {#if hdrRenditions.length && !qualifiedHdrRendition && hdrQualificationReason}
+          <p class="color-assumption">Native HDR is unavailable: {hdrQualificationReason} The SDR proxy remains active.</p>
         {/if}
         <p class="color-scope">
           {COLOR_CHECK_SCOPE}
@@ -2678,6 +3409,51 @@
     align-self: center;
   }
   video { display: block; width: 100%; height: auto; background: #000000; }
+  video.reference-hidden { visibility: hidden; }
+  .reference-picture {
+    position: absolute;
+    inset: 0;
+    visibility: hidden;
+    background: #000000;
+  }
+  .reference-picture.active { visibility: visible; }
+  .reference-captions {
+    position: absolute;
+    left: 8%;
+    right: 8%;
+    bottom: 7%;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    pointer-events: none;
+  }
+  .reference-captions span {
+    max-width: 100%;
+    padding: 2px 6px;
+    background: rgba(0, 0, 0, 0.78);
+    color: #ffffff;
+    font-family: Switzer, system-ui, sans-serif;
+    font-size: clamp(13px, 2.2cqi, 24px);
+    line-height: 1.22;
+    text-align: center;
+    white-space: pre-wrap;
+  }
+  .reference-audio, .shuttle-audio { display: none; }
+  .reference-notice {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    z-index: 5;
+    max-width: calc(100% - 24px);
+    padding: 6px 9px;
+    background: rgba(28, 28, 28, 0.94);
+    color: var(--n-800, #c4c4c4);
+    font-size: 13px;
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
   /* The floating text entry: bare type on the footage, no box furniture --
      what is typed is what the note will burn. */
   .textdraft { position: absolute; transform: none; min-width: 40px; max-width: 70%; border: 0; border-radius: 3px; background: rgba(10, 10, 10, 0.55); padding: 2px 6px; font-family: Switzer, system-ui, sans-serif; font-weight: 600; outline: 1px dashed rgba(233, 233, 233, 0.5); z-index: 3; }
@@ -2972,6 +3748,20 @@
   .color-panel-close {
     padding: 5px 9px;
     background: var(--n-150, #1c1c1c);
+  }
+  .playback-mode {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-bottom: 10px;
+  }
+  .playback-mode button {
+    padding: 6px 10px;
+    background: var(--n-150, #1c1c1c);
+  }
+  .playback-mode button[aria-pressed='true'] {
+    background: var(--n-300, #2e2e2e);
+    color: var(--n-900, #e9e9e9);
   }
   .color-facts {
     display: grid;

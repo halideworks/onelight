@@ -12,6 +12,12 @@ import {
   COLOR_SELF_CHECK_CLIP_SHA256,
   runColorSelfCheck,
 } from "../../packages/player/src/color-self-check.js";
+import { ReferenceGlRenderer } from "../../packages/player/src/reference/gl-renderer.js";
+import { ReferencePictureBackend } from "../../packages/player/src/reference/reference-backend.js";
+import type {
+  ExpectedTrack,
+  PlaneTransfer,
+} from "../../packages/player/src/reference/protocol.js";
 import { configurePlaybackRate } from "../../packages/player/src/transport-state.js";
 import { decodeStripe } from "./stripe.js";
 import type {
@@ -19,6 +25,8 @@ import type {
   PatchReading,
   PatchRect,
   QaHarness,
+  ReferenceRenderReadings,
+  ReferencePlaybackProbe,
   SeekReading,
   ShuttleAudioReading,
   WebCodecsReading,
@@ -72,6 +80,58 @@ const seekAndRead = (frame: number): Promise<SeekReading> =>
     });
     video.currentTime = mediaTimeInsideFrame(frame, rate);
   });
+
+const seekForCanvas = (frame: number): Promise<void> => {
+  if (typeof video.requestVideoFrameCallback === "function")
+    return seekAndRead(frame).then(() => undefined);
+  return new Promise((resolve, reject) => {
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+    };
+    const onSeeked = (): void => {
+      cleanup();
+      const deadline = performance.now() + 15_000;
+      const poll = (): void => {
+        const image = drawVideoFrame();
+        for (let offset = 0; offset < image.data.length; offset += 4)
+          if (
+            (image.data[offset] ?? 0) > 0 ||
+            (image.data[offset + 1] ?? 0) > 0 ||
+            (image.data[offset + 2] ?? 0) > 0
+          ) {
+            video.pause();
+            resolve();
+            return;
+          }
+        if (performance.now() >= deadline) {
+          video.pause();
+          reject(
+            new Error(`video frame stayed black for frame ${String(frame)}`),
+          );
+          return;
+        }
+        setTimeout(poll, 8);
+      };
+      void video.play().then(poll, (error: unknown) => {
+        video.pause();
+        reject(error instanceof Error ? error : new Error(String(error)));
+      });
+    };
+    const onError = (): void => {
+      cleanup();
+      reject(new Error(`video seek failed for frame ${String(frame)}`));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`seeked did not fire for frame ${String(frame)}`));
+    }, 15_000);
+    video.addEventListener("seeked", onSeeked, { once: true });
+    video.addEventListener("error", onError, { once: true });
+    video.currentTime = mediaTimeInsideFrame(frame, rate);
+  });
+};
 
 /* WebCodecs path: mediabunny demuxes the MP4 and drives VideoDecoder; the
    sink returns the decoded frame whose presentation interval contains the
@@ -133,7 +193,14 @@ const webcodecsRead = async (
 
 const readPatches = (rects: PatchRect[]): Promise<PatchReading[]> => {
   const image = drawVideoFrame();
-  const readings = rects.map((rect) => {
+  return Promise.resolve(readPatchesFromImage(image, rects));
+};
+
+const readPatchesFromImage = (
+  image: ImageData,
+  rects: PatchRect[],
+): PatchReading[] =>
+  rects.map((rect) => {
     let red = 0;
     let green = 0;
     let blue = 0;
@@ -154,8 +221,157 @@ const readPatches = (rects: PatchRect[]): Promise<PatchReading[]> => {
       ] as [number, number, number],
     };
   });
-  return Promise.resolve(readings);
+
+const tightPlane = (
+  source: PlaneTransfer,
+  plane: number,
+  width: number,
+  height: number,
+  bytesPerPixel: number,
+): Uint8Array => {
+  const layout = source.layout[plane];
+  if (!layout) throw new Error(`Reference plane ${plane} is missing.`);
+  const result = new Uint8Array(width * height * bytesPerPixel);
+  const input = new Uint8Array(source.buffer);
+  const rowBytes = width * bytesPerPixel;
+  for (let row = 0; row < height; row += 1) {
+    const start = layout.offset + row * layout.stride;
+    result.set(input.subarray(start, start + rowBytes), row * rowBytes);
+  }
+  return result;
 };
+
+const referenceVariants = (
+  source: PlaneTransfer,
+): { i420: PlaneTransfer; nv12: PlaneTransfer } => {
+  const width = source.codedRect.width;
+  const height = source.codedRect.height;
+  const chromaWidth = Math.ceil(width / 2);
+  const chromaHeight = Math.ceil(height / 2);
+  const y = tightPlane(source, 0, width, height, 1);
+  let u: Uint8Array;
+  let v: Uint8Array;
+  if (source.format === "I420") {
+    u = tightPlane(source, 1, chromaWidth, chromaHeight, 1);
+    v = tightPlane(source, 2, chromaWidth, chromaHeight, 1);
+  } else {
+    const uv = tightPlane(source, 1, chromaWidth, chromaHeight, 2);
+    u = new Uint8Array(chromaWidth * chromaHeight);
+    v = new Uint8Array(chromaWidth * chromaHeight);
+    for (let index = 0; index < u.length; index += 1) {
+      u[index] = uv[index * 2] ?? 128;
+      v[index] = uv[index * 2 + 1] ?? 128;
+    }
+  }
+
+  const i420Buffer = new Uint8Array(y.length + u.length + v.length);
+  i420Buffer.set(y, 0);
+  i420Buffer.set(u, y.length);
+  i420Buffer.set(v, y.length + u.length);
+  const nv12Buffer = new Uint8Array(y.length + u.length * 2);
+  nv12Buffer.set(y, 0);
+  for (let index = 0; index < u.length; index += 1) {
+    nv12Buffer[y.length + index * 2] = u[index] ?? 128;
+    nv12Buffer[y.length + index * 2 + 1] = v[index] ?? 128;
+  }
+
+  return {
+    i420: {
+      ...source,
+      format: "I420",
+      buffer: i420Buffer.buffer,
+      layout: [
+        { offset: 0, stride: width },
+        { offset: y.length, stride: chromaWidth },
+        { offset: y.length + u.length, stride: chromaWidth },
+      ],
+    },
+    nv12: {
+      ...source,
+      format: "NV12",
+      buffer: nv12Buffer.buffer,
+      layout: [
+        { offset: 0, stride: width },
+        { offset: y.length, stride: chromaWidth * 2 },
+      ],
+    },
+  };
+};
+
+const referenceCanvas = document.createElement("canvas");
+let referenceRenderer: ReferenceGlRenderer | undefined;
+
+const renderReference = (
+  planes: PlaneTransfer,
+  rects: PatchRect[],
+): PatchReading[] => {
+  referenceRenderer ??= new ReferenceGlRenderer(referenceCanvas, {
+    requireAcceleration: false,
+  });
+  referenceRenderer.render(planes);
+  canvas.width = referenceCanvas.width;
+  canvas.height = referenceCanvas.height;
+  context.drawImage(referenceCanvas, 0, 0);
+  return readPatchesFromImage(
+    context.getImageData(0, 0, canvas.width, canvas.height),
+    rects,
+  );
+};
+
+const renderReferenceVariants = (
+  planes: PlaneTransfer,
+  rects: PatchRect[],
+): Promise<ReferenceRenderReadings> => {
+  const variants = referenceVariants(planes);
+  return Promise.resolve({
+    sourceFormat: planes.format,
+    i420: renderReference(variants.i420, rects),
+    nv12: renderReference(variants.nv12, rects),
+  });
+};
+
+const probeReferenceContextLoss = (planes: PlaneTransfer): Promise<string> => {
+  const lossCanvas = document.createElement("canvas");
+  const lossRenderer = new ReferenceGlRenderer(lossCanvas, {
+    requireAcceleration: false,
+  });
+  const extension = lossRenderer.gl.getExtension("WEBGL_lose_context");
+  if (!extension) {
+    lossRenderer.close();
+    return Promise.resolve("WEBGL_lose_context is unavailable.");
+  }
+  return new Promise<string>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      lossRenderer.close();
+      reject(new Error("Reference context-loss event timed out."));
+    }, 3_000);
+    lossCanvas.addEventListener(
+      "webglcontextlost",
+      (event) => {
+        event.preventDefault();
+        window.clearTimeout(timer);
+        try {
+          lossRenderer.render(planes);
+          reject(
+            new Error("Reference rendering continued after context loss."),
+          );
+        } catch (error) {
+          resolve(error instanceof Error ? error.message : String(error));
+        } finally {
+          lossRenderer.close();
+        }
+      },
+      { once: true },
+    );
+    extension.loseContext();
+  });
+};
+
+/*
+ * Browser-native patch reads stay separate from reference rendering. The
+ * latter only draws an already rendered sRGB canvas into this 2D readback
+ * canvas, so no browser YUV conversion re-enters the reference path.
+ */
 
 const waitForEvent = (
   target: EventTarget,
@@ -238,12 +454,151 @@ const probeShuttleAudio = async (
   }
 };
 
+const percentile95 = (values: readonly number[]): number => {
+  if (!values.length) return 0;
+  const ordered = [...values].sort((left, right) => left - right);
+  return (
+    ordered[
+      Math.min(ordered.length - 1, Math.ceil(ordered.length * 0.95) - 1)
+    ] ?? 0
+  );
+};
+
+const probeReferencePlayback = async (
+  workerUrl: string,
+  clipUrl: string,
+  expected: ExpectedTrack,
+  durationMs: number,
+  renderMode: "hardware" | "software" | "none" = "hardware",
+  playbackRate: 1 | 2 | 4 = 1,
+): Promise<ReferencePlaybackProbe> => {
+  let maximumBufferedFrames = 0;
+  let maximumLongTaskMs = 0;
+  const presented = new Set<number>();
+  const requestedFrames = new Set<number>();
+  const requestedAt = new Map<number, number>();
+  const latencies: number[] = [];
+  let firstFrameResolve: (() => void) | null = null;
+  let failureReject: ((reason: Error) => void) | null = null;
+  let terminalFailure: Error | null = null;
+  const firstFrame = new Promise<void>((resolve, reject) => {
+    firstFrameResolve = resolve;
+    failureReject = reject;
+  });
+  let renderer: ReferenceGlRenderer | null = null;
+  const observer =
+    typeof PerformanceObserver !== "undefined" &&
+    PerformanceObserver.supportedEntryTypes.includes("longtask")
+      ? new PerformanceObserver((list) => {
+          for (const entry of list.getEntries())
+            maximumLongTaskMs = Math.max(maximumLongTaskMs, entry.duration);
+        })
+      : null;
+  const backend = new ReferencePictureBackend(
+    {
+      render: (planes) => {
+        if (renderMode === "none") return;
+        renderer ??= new ReferenceGlRenderer(referenceCanvas, {
+          requireAcceleration: renderMode === "hardware",
+        });
+        renderer.render(planes);
+      },
+      onFrame: (frame) => {
+        presented.add(frame);
+        maximumBufferedFrames = Math.max(
+          maximumBufferedFrames,
+          backend.bufferedFrames.length,
+        );
+        const requested = requestedAt.get(frame);
+        if (requested !== undefined) {
+          latencies.push(performance.now() - requested);
+          requestedAt.delete(frame);
+        }
+        firstFrameResolve?.();
+        firstFrameResolve = null;
+      },
+      onFailure: (failure) => {
+        terminalFailure = new Error(
+          `${failure.reason} Requested [${[...requestedFrames].join(",")}]. Presented [${[...presented].sort((left, right) => left - right).join(",")}].`,
+        );
+        failureReject?.(terminalFailure);
+        failureReject = null;
+      },
+    },
+    {
+      workerFactory: () => new Worker(workerUrl, { type: "module" }),
+      starvationMs: 1_500,
+    },
+  );
+  try {
+    await backend.load({ url: clipUrl, expected }, 0);
+    await firstFrame;
+    await backend.waitUntilBuffered(0);
+    observer?.observe({ entryTypes: ["longtask"] });
+    backend.play(0, playbackRate);
+    const started = performance.now();
+    let lastRequested = -1;
+    await new Promise<void>((resolve) => {
+      const tick = (): void => {
+        const elapsed = performance.now() - started;
+        const target = Math.min(
+          (expected.durationFrames ?? Number.MAX_SAFE_INTEGER) - 1,
+          Math.floor(
+            ((elapsed * expected.frameRate.num) /
+              (1000 * expected.frameRate.den)) *
+              playbackRate,
+          ),
+        );
+        if (target !== lastRequested) {
+          lastRequested = target;
+          requestedFrames.add(target);
+          requestedAt.set(target, performance.now());
+          backend.seek(target);
+        }
+        if (elapsed >= durationMs) {
+          resolve();
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    const elapsedMs = performance.now() - started;
+    if (terminalFailure) throw new Error(String(terminalFailure));
+    const expectedFrames = Math.max(1, lastRequested + 1);
+    const missingRequestedFrames = [...requestedFrames].filter(
+      (frame) => !presented.has(frame),
+    );
+    return {
+      elapsedMs,
+      expectedFrames,
+      requestedFrames: requestedFrames.size,
+      clockSkippedFrames: Math.max(0, expectedFrames - requestedFrames.size),
+      presentedFrames: presented.size,
+      lastPresentedFrame: Math.max(-1, ...presented),
+      droppedFrames: missingRequestedFrames.length,
+      missingRequestedFrames,
+      maximumBufferedFrames,
+      maximumLongTaskMs,
+      seekP95Ms: percentile95(latencies),
+    };
+  } finally {
+    observer?.disconnect();
+    backend.close();
+    (renderer as ReferenceGlRenderer | null)?.close();
+  }
+};
+
 const harness: QaHarness = {
   loadClip,
   seekAndRead,
+  seekForCanvas,
   webcodecsRead,
   readPatches,
+  renderReferenceVariants,
+  probeReferenceContextLoss,
   probeShuttleAudio,
+  probeReferencePlayback,
   runColorSelfCheck: (url, buildId) =>
     runColorSelfCheck({
       buildId,

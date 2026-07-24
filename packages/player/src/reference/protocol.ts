@@ -2,6 +2,7 @@ export const FRAME_WINDOW_BEHIND = 2;
 export const FRAME_WINDOW_AHEAD = 3;
 export const MAX_OPEN_FRAMES = FRAME_WINDOW_BEHIND + 1 + FRAME_WINDOW_AHEAD;
 export const MAX_DECODE_QUEUE = 6;
+export const MAX_PLANE_BUFFERS = 8;
 
 export type ReferenceRate = {
   num: number;
@@ -15,6 +16,16 @@ export type ReferenceColorContract = {
   range: "tv" | "pc";
 };
 
+export type ReferenceHardwareAcceleration =
+  "no-preference" | "prefer-hardware" | "prefer-software";
+
+export type ReferenceChromaLocation = "left" | "center" | "topleft";
+
+export type ReferenceOpenStage =
+  | "fetching rendition metadata"
+  | "reading track contract"
+  | "qualifying WebCodecs";
+
 export type ExpectedTrack = {
   frameRate: ReferenceRate;
   durationFrames: number | null;
@@ -22,6 +33,7 @@ export type ExpectedTrack = {
   codedHeight: number | null;
   codec: string | null;
   outputColor: ReferenceColorContract;
+  outputChromaLocation: ReferenceChromaLocation;
 };
 
 export type DecodedTrack = {
@@ -32,8 +44,10 @@ export type DecodedTrack = {
   displayWidth: number;
   displayHeight: number;
   codec: string;
+  decoderPreference: ReferenceHardwareAcceleration;
   firstTimestampUs: number;
   color: ReferenceColorContract;
+  chromaLocation: ReferenceChromaLocation;
 };
 
 export type PlaneLayoutTransfer = {
@@ -49,6 +63,12 @@ export type PlaneTransfer = {
   codedHeight: number;
   displayWidth: number;
   displayHeight: number;
+  codedRect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
   visibleRect: {
     x: number;
     y: number;
@@ -58,6 +78,7 @@ export type PlaneTransfer = {
   timestampUs: number;
   durationUs: number | null;
   color: ReferenceColorContract;
+  chromaLocation: ReferenceChromaLocation;
 };
 
 export type DecoderCommand =
@@ -66,6 +87,7 @@ export type DecoderCommand =
       generation: number;
       url: string;
       expected: ExpectedTrack;
+      hardwareAcceleration?: ReferenceHardwareAcceleration;
     }
   | { type: "seek"; generation: number; frame: number }
   | {
@@ -74,10 +96,17 @@ export type DecoderCommand =
       frame: number;
       rate: 1 | 2 | 4;
     }
+  | { type: "release"; generation: number; buffer: ArrayBuffer }
   | { type: "pause"; generation: number }
   | { type: "close"; generation: number };
 
 export type DecoderEvent =
+  | {
+      type: "opening";
+      generation: number;
+      stage: ReferenceOpenStage;
+      detail?: string;
+    }
   | { type: "ready"; generation: number; track: DecodedTrack }
   | {
       type: "frame";
@@ -85,6 +114,7 @@ export type DecoderEvent =
       frame: number;
       planes: PlaneTransfer;
     }
+  | { type: "window"; generation: number; target: number }
   | { type: "stalled"; generation: number; frame: number }
   | { type: "unsupported"; generation: number; reason: string }
   | { type: "error"; generation: number; reason: string };

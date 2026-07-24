@@ -10,6 +10,7 @@
     FrameAnnotation,
     PendingDrawing,
     PlayerRendition,
+    ReferencePlaybackDiagnostic,
     ShuttleAudioDiagnostic,
     ShuttleAudioSources,
     SpriteCue,
@@ -543,14 +544,20 @@
       if (token !== versionToken) return;
       captionsUrl = listing.captions?.find((track) => track.url)?.url ?? null;
       renditionOptions = items
-        .filter((candidate) => ['proxy_540', 'proxy_1080', 'proxy_2160'].includes(candidate.kind))
+        .filter((candidate) =>
+          ['proxy_540', 'proxy_1080', 'proxy_2160', 'hdr_av1', 'hdr_hevc'].includes(
+            candidate.kind
+          )
+        )
         .flatMap((candidate) => {
           const url = urlForRendition(candidate);
           return url ? [{ kind: candidate.kind, url, meta: candidate.meta }] : [];
         });
+      const reference1x = items.find((candidate) => candidate.kind === 'reference_audio_1x');
       const shuttle2x = items.find((candidate) => candidate.kind === 'shuttle_audio_2x');
       const shuttle4x = items.find((candidate) => candidate.kind === 'shuttle_audio_4x');
       shuttleAudio = {
+        x1: reference1x ? urlForRendition(reference1x) : null,
         x2: shuttle2x ? urlForRendition(shuttle2x) : null,
         x4: shuttle4x ? urlForRendition(shuttle4x) : null
       };
@@ -1755,6 +1762,15 @@
                 ).catch(() => undefined);
             }}
             oncolorselfcheckdiagnostic={(diagnostic: ColorSelfCheckDiagnostic) => {
+              const versionId = selectedVersionId;
+              if (versionId)
+                void apiPost<void>(
+                  `/api/v1/versions/${versionId}/playback-diagnostics`,
+                  diagnostic,
+                  { keepalive: true }
+                ).catch(() => undefined);
+            }}
+            onreferenceplaybackdiagnostic={(diagnostic: ReferencePlaybackDiagnostic) => {
               const versionId = selectedVersionId;
               if (versionId)
                 void apiPost<void>(

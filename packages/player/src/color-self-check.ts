@@ -467,6 +467,10 @@ const performColorSelfCheck = async (
       );
 
     stage = "decode";
+    if (typeof video.requestVideoFrameCallback !== "function")
+      throw new Error(
+        "requestVideoFrameCallback is unavailable for a bounded native-path sample.",
+      );
     const seeked = waitForEvent(
       video,
       "seeked",
@@ -477,8 +481,9 @@ const performColorSelfCheck = async (
     video.currentTime = SAMPLE_TIME_SECONDS;
     await seeked;
     const presented = waitForPresentedFrame(video, options.timeoutMs);
-    await video.play();
-    await presented;
+    const pendingForever = new Promise<void>(() => undefined);
+    const playbackFailure = video.play().then(() => pendingForever);
+    await Promise.race([presented, playbackFailure]);
     video.pause();
 
     stage = "canvas";

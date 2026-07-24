@@ -47,7 +47,8 @@ const engines: Array<{
   { name: "webkit", type: webkit },
 ];
 
-/* Known engine decode deviations, pinned EXACTLY (2026-07-17).
+/* Known engine decode deviations, pinned EXACTLY (measured 2026-07-17 and
+   2026-07-24).
 
    Playwright WebKit on Linux decodes video through its bundled
    GStreamer/GL path, not a macOS media stack, and reads the 75 percent
@@ -57,6 +58,11 @@ const engines: Array<{
    stacked on a chroma coefficient error. Chromium and Firefox are exact
    on the same clip, and real Safari (VideoToolbox/ColorSync) does not
    share this path; it stays on the manual QC pass per qa/README.md.
+
+   Playwright WebKit 26.5 on Windows also uses a non-Safari media stack. Its
+   canvas readback leaves most limited-range values unexpanded: black reads
+   near 12, white at 235, and chromatic endpoints remain near 16 through 180.
+   Those bytes are pinned separately below.
 
    The reference and its tolerances are NOT widened. Each pinned patch
    must reproduce these bytes exactly: if a WebKit or GStreamer update
@@ -68,6 +74,17 @@ const PINNED_DECODE_DEVIATIONS: Record<
   string,
   Record<string, ColorTriplet> | undefined
 > = {
+  "webkit-win32": {
+    white75: [180, 180, 180],
+    yellow75: [180, 180, 15],
+    cyan75: [16, 180, 179],
+    green75: [16, 180, 15],
+    magenta75: [180, 16, 181],
+    red75: [180, 16, 16],
+    blue75: [16, 16, 180],
+    black0: [12, 12, 12],
+    white100: [235, 235, 235],
+  },
   "webkit-linux": {
     white75: [188, 188, 188],
     yellow75: [188, 186, 0],
@@ -121,7 +138,7 @@ describe.skipIf(fixturesMissing !== undefined)(
             );
             /* Land mid-clip so the reading never depends on first-frame
                presentation edge cases; every bars frame is identical. */
-            await page.evaluate(([frame]) => window.qa.seekAndRead(frame), [
+            await page.evaluate(([frame]) => window.qa.seekForCanvas(frame), [
               60,
             ] as const);
             const rects = COLOR_ORACLE_PATCHES.map((patch) => ({

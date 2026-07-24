@@ -13,14 +13,14 @@ This work ships in four independently releasable stages:
 3. Production SDR reference mode with audio, transport, and fallback.
 4. HDR capability tightening and a later controlled-HDR research gate.
 
-The first production reference renderer supports the existing 8-bit BT.709
-limited-range H.264 review proxy at up to 1920x1080. It does not promise:
+The first production reference renderer supports 8-bit BT.709 limited-range
+H.264 review proxies through 4096x2160 at 30 fps. It does not promise:
 
 - display calibration
 - deterministic native HDR
 - Dolby Vision or HDR10+ rendering
 - arbitrary ICC profiles
-- 4K or high-frame-rate reference playback before measurement
+- resolutions above 4K or frame rates above 30 fps before measurement
 - DRM media
 - a per-browser gamma correction table
 
@@ -190,7 +190,16 @@ Messages into the worker:
 
 ```ts
 type DecoderCommand =
-  | { type: "open"; generation: number; url: string; expected: ExpectedTrack }
+  | {
+      type: "open";
+      generation: number;
+      url: string;
+      expected: ExpectedTrack;
+      hardwareAcceleration?:
+        | "no-preference"
+        | "prefer-hardware"
+        | "prefer-software";
+    }
   | { type: "seek"; generation: number; frame: number }
   | { type: "play"; generation: number; frame: number; rate: 1 | 2 | 4 }
   | { type: "pause"; generation: number }
@@ -233,9 +242,13 @@ For each frame:
 
 1. Check `frame.colorSpace` against rendition output metadata.
 2. Reject null or conflicting primaries, transfer, matrix, or range.
-3. Call `allocationSize()` and `copyTo()` without an RGB format.
-4. Transfer ArrayBuffers and exact plane layouts to the main thread.
-5. Close the `VideoFrame` after the copy completes.
+3. Copy the explicit coded rectangle with `allocationSize()` and `copyTo()`
+   without an RGB format.
+4. Require exactly three bounded, non-overlapping planes for I420 or two for
+   NV12, with valid offsets and strides.
+5. Transfer ArrayBuffers, exact plane layouts, coded and visible rectangles,
+   and the server-probed chroma location to the main thread.
+6. Close the `VideoFrame` after the copy completes.
 
 The worker may reuse a bounded buffer pool. The pool may hold no more than the
 six-frame window plus two buffers in flight.
@@ -279,6 +292,11 @@ The WebGL and CPU results may differ by at most 1/255 per SDR output channel.
 Do not use `UNPACK_COLORSPACE_CONVERSION_WEBGL` as the correctness mechanism.
 Raw numeric plane textures contain no browser-decoded RGB to correct.
 
+The production renderer requests a high-performance WebGL2 context and fails
+when the browser reports a major performance caveat. Headless QA may explicitly
+allow software GL to verify shader pixels. A passing software-GL test is never
+reported as evidence of hardware acceleration or playback performance.
+
 ### 4.6 Player integration and clock
 
 Keep `Player.svelte` responsible for transport state, not decode mechanics.
@@ -287,7 +305,7 @@ Add a `PictureBackend` interface:
 ```ts
 interface PictureBackend {
   load(source: SourceContract, frame: number): Promise<void>;
-  seek(frame: number): void;
+  seek(frame: number, discontinuity?: boolean): void;
   play(frame: number, rate: 1 | 2 | 4): void;
   pause(): void;
   close(): void;
@@ -420,9 +438,12 @@ one integrated Intel GPU Windows machine.
 
 ### 7.3 Performance gates
 
-Measure after warm-up on a 1080p H.264 BT.709 proxy:
+Measure after warm-up on 1080p and 4K H.264 BT.709 proxies:
 
 - 24 and 30 fps: no systematic dropped frames over five minutes
+- 4096x2160 at 30 fps: no more than one dropped requested frame over the
+  bounded qualification clip, no steady-state main-thread task over 50 ms,
+  and seek p95 under 250 ms on the named hardware
 - 60 fps prototype gate: no more than 1 percent dropped frames before enabling
   production support
 - no steady-state main-thread task over 50 ms
@@ -451,9 +472,53 @@ platform class. It does not weaken the pixel tolerances.
 | BCR-T08 | Integrate reference picture backend | Step, seek, loop, marks, annotations, rendition switch, and fullscreen pass unchanged. |
 | BCR-T09 | Add 1x reference audio sidecar | Normal playback and existing pitch-corrected J/K/L remain audible and synchronized. |
 | BCR-T10 | Add automatic fallback and diagnostics | Every listed failure lands on native playback at the same frame without retry loops. |
-| BCR-T11 | Run performance and real-browser matrix | 1080p gates pass on macOS Safari and Windows Chromium/Firefox, including Intel graphics. |
+| BCR-T11 | Run performance and real-browser matrix | 1080p soak and 4K30 qualification gates pass on macOS Safari and Windows Chromium/Firefox, including Intel graphics. |
 | BCR-T12 | Harden HDR rendition gating | Unsupported or non-HDR displays receive SDR; qualified native HDR remains opt-in and labeled. |
 
-Do not start BCR-T07 until BCR-T05 and BCR-T06 prove that each target engine
-can return raw planes with trustworthy timestamps and metadata. Do not enable
-automatic reference mode until BCR-T11 is recorded.
+Implementation status, 2026-07-24:
+
+- BCR-T01 through BCR-T10 and BCR-T12 are implemented and covered by unit,
+  contract, browser-pixel, frame-accuracy, fallback and resource-cap tests.
+- The forward worker retains one packet iterator across adjacent playback
+  windows. Random seeks and discontinuities still reset to the verified prior
+  key packet. It does not flush between bounded forward windows. Completed raw
+  planes are delivered incrementally in presentation order. Decoded
+  `VideoFrame` copies are bounded at six concurrent frames; copied raw-plane
+  storage is bounded at eight reusable buffers.
+- Playback waits for a bounded initial runway before starting its audio clock.
+  Normal clock progression does not cancel in-flight decode work, while seeks,
+  source changes, loop wraps and reverse motion invalidate the old generation.
+- The accepted production source contract is explicit through 4096x2160 at 30
+  fps. A synthesized 3840x2160 30 fps B-frame fixture exercises scheduling,
+  worker continuity, buffer recycling and WebGL upload. The strict hardware
+  gate is opt-in with `QA_REFERENCE_REQUIRE_HARDWARE=1`; headless software
+  results are functional evidence only.
+- The 1x, 2x and 4x AAC-LC sidecars are navigation clocks, not reference media.
+  Their blobs follow the same rendition foreign-key cascade, project deletion,
+  trash purge and orphan reconciliation paths as the video proxy.
+- Captions in reference mode are selected from the browser-parsed WebVTT cue
+  list by the current integer source-frame interval. The hidden native video
+  no longer makes captions disappear.
+- Automatic reference selection remains disabled. The explicit Reference
+  choice runs the complete runtime preflight and failure recovery, but BCR-T11
+  requires sustained hardware measurements on the named real devices before a
+  platform class can be selected automatically.
+
+Supersession, 2026-07-24: the original universal BCR-T07 start gate assumed
+that decoder preference could recover raw YUV on every engine. Measured
+Playwright 1.61.1 results on Windows disprove that assumption. Chromium returns
+I420 for `no-preference` and `prefer-software`, while `prefer-hardware` rejects
+the configuration. Firefox returns BGRX for all three preferences, matching
+Mozilla bug 1969762. WebCodecs permits RGB output conversion but provides no
+BGRX-to-I420 or BGRX-to-NV12 copy option. Converting that BGRX output back to
+YUV would launder the browser conversion rather than create a reference path.
+Playwright WebKit 26.5 on Windows has neither `VideoDecoder` nor
+`requestVideoFrameCallback`; the product self-check returns a bounded
+`unsupported` result instead of waiting for a presentation callback that
+cannot occur. Its separate attached-video canvas bytes are pinned by platform.
+
+BCR-T07 may therefore be implemented and pixel-qualified only after the
+runtime preflight returns native I420 or NV12. A runtime returning RGB remains
+on native playback. Browser names are not used as the capability decision.
+Automatic reference selection still requires BCR-T11, including current Safari
+and Windows Intel graphics measurements at both the 1080p soak and 4K30 target.

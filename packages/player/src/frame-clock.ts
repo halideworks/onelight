@@ -42,6 +42,22 @@ export const mediaTimeInsideFrame = (frame: number, rate: FrameRate): number =>
 
 export const frameDuration = (rate: FrameRate): number => rate.den / rate.num;
 
+/* Reference playback uses a 1x, 2x, or 4x sidecar as its media clock. Convert
+   the browser clock to integer microseconds first, then do the rate arithmetic
+   with integers so long playback does not accumulate floating point drift. */
+export const frameAtReferenceAudioTime = (
+  currentTime: number,
+  playbackRate: 1 | 2 | 4,
+  rate: FrameRate,
+): number => {
+  if (!Number.isFinite(currentTime) || currentTime <= 0) return 0;
+  const microseconds = BigInt(Math.round(currentTime * 1_000_000));
+  const numerator = microseconds * BigInt(playbackRate) * BigInt(rate.num);
+  const denominator = 1_000_000n * BigInt(rate.den);
+  const value = Number(numerator / denominator);
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+};
+
 export const verifyFrame = (
   mediaTime: number,
   expectedFrame: number,

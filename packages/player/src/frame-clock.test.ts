@@ -3,6 +3,7 @@ import {
   SEEK_POSITION_IN_FRAME,
   frameAtCurrentTime,
   frameAtMediaTime,
+  frameAtReferenceAudioTime,
   frameDuration,
   mediaTimeInsideFrame,
   verifyFrame,
@@ -110,5 +111,18 @@ describe("player frame clock", () => {
     const rate = { num: 24, den: 1 };
     expect(frameAtMediaTime(-1, rate)).toBe(0);
     expect(frameAtCurrentTime(-1, rate)).toBe(0);
+  });
+
+  it("maps every reference audio rate to the same source frame", () => {
+    const rate = { num: 24000, den: 1001 };
+    const sourceFrame = 107892;
+    const sourceTime = (sourceFrame * rate.den) / rate.num;
+    expect(frameAtReferenceAudioTime(sourceTime, 1, rate)).toBe(sourceFrame);
+    expect(frameAtReferenceAudioTime(sourceTime / 2, 2, rate)).toBe(
+      sourceFrame,
+    );
+    expect(frameAtReferenceAudioTime(sourceTime / 4, 4, rate)).toBe(
+      sourceFrame,
+    );
   });
 });

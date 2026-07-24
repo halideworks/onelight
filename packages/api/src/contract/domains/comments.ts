@@ -364,6 +364,60 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       }
     });
 
+    it("records bounded reference fallback diagnostics without device data", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const diagnostic = {
+        kind: "reference_playback",
+        outcome: "fallback",
+        failure_class: "raw_format",
+        reason: "Decoded frame format BGRX is not I420 or NV12.",
+        frame: 240,
+        was_playing: true,
+        source_kind: "proxy_1080",
+        decoder_preference: null,
+        buffered_frames: 3,
+        document_visibility: "visible",
+        online: true,
+      };
+      try {
+        const accepted = await req(
+          h,
+          `/api/v1/versions/${seed.media.versionId}/playback-diagnostics`,
+          {
+            method: "POST",
+            cookie: seed.commenter.cookie,
+            json: diagnostic,
+          },
+        );
+        expect(accepted.status).toBe(204);
+        const record = JSON.parse(
+          String(warning.mock.calls[0]?.[0]).slice(
+            "[onelight-playback-diagnostic] ".length,
+          ),
+        ) as Record<string, unknown>;
+        expect(record).toMatchObject({
+          scope: "project",
+          actor_id: seed.commenter.id,
+          version_id: seed.media.versionId,
+          ...diagnostic,
+        });
+        const privateField = await req(
+          h,
+          `/api/v1/versions/${seed.media.versionId}/playback-diagnostics`,
+          {
+            method: "POST",
+            cookie: seed.commenter.cookie,
+            json: { ...diagnostic, gpu_name: "specific device" },
+          },
+        );
+        expect(privateField.status).toBe(400);
+      } finally {
+        warning.mockRestore();
+      }
+    });
+
     it("completes comments and records the completing user", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

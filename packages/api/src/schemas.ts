@@ -102,6 +102,37 @@ const shuttlePlaybackDiagnostic = z
   })
   .strict();
 
+const referencePlaybackDiagnostic = z
+  .object({
+    kind: z.literal("reference_playback"),
+    outcome: z.enum(["ready", "fallback"]),
+    failure_class: z
+      .enum([
+        "decoder_unsupported",
+        "demux",
+        "decode",
+        "metadata_conflict",
+        "raw_format",
+        "renderer",
+        "context_lost",
+        "allocation",
+        "starvation",
+        "timestamp",
+        "output_order",
+        "unknown",
+      ])
+      .nullable(),
+    reason: z.string().max(500).nullable(),
+    frame: z.number().int().nonnegative(),
+    was_playing: z.boolean(),
+    source_kind: z.string().max(64).nullable(),
+    decoder_preference: z.literal("no-preference").nullable(),
+    buffered_frames: z.number().int().min(0).max(6),
+    document_visibility: z.enum(["hidden", "visible", "prerender"]).nullable(),
+    online: z.boolean().nullable(),
+  })
+  .strict();
+
 const colorPlaybackDiagnostic = z
   .object({
     kind: z.literal("color_self_check"),
@@ -256,6 +287,7 @@ export const bodies = {
   playbackDiagnostic: z.union([
     shuttlePlaybackDiagnostic,
     colorPlaybackDiagnostic,
+    referencePlaybackDiagnostic,
     /* Compatibility with clients deployed before diagnostics became a
        discriminated contract. The server normalizes the legacy body before
        logging it, while generated clients use the tagged shape. */
@@ -1048,8 +1080,9 @@ const shareSidecars = z.object({
   /* Log-frequency spectrogram, rendered as luminance for the client to
      colour. */
   spectrogram: z.object({ url: z.string() }).nullable(),
-  /* Pitch-corrected, time-compressed audio for 2x and 4x JKL playback. */
+  /* A compact 1x reference clock and pitch-corrected 2x and 4x JKL audio. */
   shuttle_audio: z.object({
+    x1: z.string().nullable(),
     x2: z.string().nullable(),
     x4: z.string().nullable(),
   }),

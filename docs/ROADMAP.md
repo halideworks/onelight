@@ -736,16 +736,67 @@ transforms, GPU output, and the physical display were not measured. The
 nonfunctional Automatic and Native preference was removed. Reference controls
 will not appear before a real reference backend exists.
 
-BCR-T05 is complete. The minified mediabunny worker is a separately loaded
-302,501-byte chunk. Integer-frame mapping round-trips WebCodecs microsecond
+BCR-T05 and BCR-T06 are complete. The minified mediabunny worker is a separately
+loaded 322,844-byte chunk. Integer-frame mapping round-trips WebCodecs microsecond
 timestamps at every supported rational rate, stale seek and playback
 generations cannot publish results, decode feeding observes queue pressure,
 and the retained window closes anything outside two frames behind through
-three ahead. Chromium passes the real worker and transferable-plane test.
-Windows Firefox reaches the next gate but exposes decoded H.264 as `BGRX`,
-not I420 or NV12. The worker rejects that exact format before `copyTo`, so
-there is no hidden browser RGB conversion. BCR-T06 remains open on the
-cross-engine raw-plane matrix, and automatic reference mode remains blocked.
+three ahead. Raw copies use the explicit coded rectangle and validate format,
+color metadata, chroma location, plane count, offset, stride, overlap, and
+buffer bounds before transfer. Chromium returns I420 under `no-preference` and
+`prefer-software`; its `prefer-hardware` configuration is rejected. Windows
+Firefox exposes BGRX under all three preferences, matching Mozilla bug 1969762.
+The worker rejects RGB before allocation, so there is no hidden browser
+conversion. Capability is decided per decoded generation, not by browser name.
+
+The BCR-T07 through BCR-T10 implementation is now integrated into the player.
+CPU vectors cover BT.601, BT.709, and BT.2020 non-constant-luminance matrices,
+limited and full range, endpoints, 40 percent grey, and all 75 percent
+primaries and secondaries. The production WebGL2 path uploads R8 I420 or
+R8/RG8 NV12 planes, performs explicit range and BT.709 matrix conversion,
+accounts for coded and visible rectangles plus chroma location, and targets an
+sRGB drawing buffer. Chromium renders both layouts from the decoded fixture
+within 1/255 of every oracle patch. Windows Firefox correctly remains outside
+the renderer because its decoder returned BGRX.
+
+The reference canvas now shares the review frame box with annotations,
+watermarks, captions, scopes, rendition switching and fullscreen. A dedicated
+AAC-LC 1x sidecar is the exact rational master clock at normal speed, while the
+2x and 4x sidecars preserve pitch for J/K/L. The worker keeps a continuous
+packet cursor during forward playback instead of seeking to and decoding the
+same GOP for every six-frame refill. It does not flush at refill boundaries,
+delivers completed plane copies incrementally in order, and reuses returned
+exact-size buffers. It retains at most six live decoded frames and eight copied
+plane buffers, cancels only on real discontinuities, and falls back at the same
+integer frame on every decoder, metadata, raw-plane, renderer, context,
+allocation, timestamp, ordering or starvation failure. One bounded structured
+diagnostic reaches the server without pixels, filenames or device identity.
+
+The production source contract now targets 4096x2160 through 30 fps. A
+synthesized 3840x2160 30 fps B-frame fixture covers continuous worker decode,
+the six-frame scheduler, raw-buffer recycling and WebGL upload. Default
+headless runs provide functional evidence. A headed opt-in gate requires the
+hardware-capable path to reach the final 4K30 frame with at most one dropped
+request, no main-thread task over 50 ms and seek p95 under 250 ms.
+
+BCR-T12 is also implemented fail-closed. Native HDR is opt-in and appears only
+when the stored output probe has an exact codec, dimensions, bitrate, rational
+rate and agreeing source/output color metadata, Media Capabilities reports that
+exact path supported and smooth, and the live display reports both high dynamic
+range and Rec.2020. Display capability changes immediately re-run the gate.
+Otherwise the BT.709 SDR proxy remains active.
+
+The full media run is green: 38 checks across 11 files, including 19 focused
+reference checks for decoder, renderer, scheduler, 4x transport and 4K30.
+Playwright WebKit 26.5 is installed but exposes neither `VideoDecoder` nor
+`requestVideoFrameCallback`; its Windows canvas path also leaves limited-range
+values largely unexpanded. Windows Firefox returns BGRX; headless Chromium
+does not expose hardware-capable WebGL2. Those exact capability outcomes and
+pixel bytes are pinned. Real Safari and the Windows Intel graphics target are
+not available here. BCR-T11 therefore remains the release gate. Automatic
+mode stays on native playback until the sustained 1080p and 4K30 real-device
+matrix passes; explicit Reference mode remains available where the runtime
+raw-plane and renderer preflight succeeds.
 
 ## Full application hardening audit (2026-07-23)
 

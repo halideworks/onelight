@@ -222,3 +222,91 @@ mediabunny -> VideoDecoder -> raw I420/NV12 copy -> WebGL2 shader -> sRGB canvas
 The native path remains automatic and universal. Reference mode is a bounded
 SDR instrument with an explicit preflight, deterministic conversion, automatic
 fallback, and no guessed browser compensation.
+
+## Raw-plane qualification, 2026-07-24
+
+The first worker prototype exposed a platform result that needed to be
+separated from both product policy and test-runner behavior. On Windows with
+Playwright 1.61.1, the same tagged H.264 fixture produced:
+
+| Engine | no-preference | prefer-hardware | prefer-software |
+|---|---|---|---|
+| Chromium | I420 | configuration rejected | I420 |
+| Firefox | BGRX | BGRX | BGRX |
+
+`hardwareAcceleration` is only a WebCodecs hint. It does not prove that decode
+used a GPU, and a user agent may reject or ignore it. Forcing
+`prefer-hardware` would disable the working Chromium configuration on this
+machine without making Firefox raw-plane capable.
+
+The Firefox result matches Mozilla bug 1969762, which records H.264 output
+changing from NV12 or I420 to BGRX on Windows. The WebCodecs `copyTo` conversion
+formats are RGBA, RGBX, BGRA, and BGRX. There is no API request that converts a
+BGRX `VideoFrame` to native I420 or NV12. An RGB-to-YUV round trip would retain
+the browser's disputed conversion and must not be called a reference path.
+
+The implementation consequently qualifies each decoded generation at runtime:
+
+- Native I420 and NV12 continue to the numeric-plane renderer.
+- Any RGB format is rejected before buffer allocation or `copyTo`.
+- Missing or conflicting color metadata is rejected.
+- Plane count, offsets, strides, overlap, and buffer bounds are validated.
+- Decoder preference is recorded as a preference, never as measured hardware
+  use.
+- Native playback remains the fallback for an unsupported generation.
+
+This is a capability gate, not a permanent Firefox exclusion. A Gecko build
+that returns trustworthy raw planes will pass without a product change.
+
+## Integrated reference path, 2026-07-24
+
+Supersession, 2026-07-24: the first production target was expanded after the
+1080p path passed its functional gates. The accepted source contract now runs
+through 4096x2160 at 30 fps. Resolutions above 4K and rates above 30 fps remain
+outside the production contract until separately measured. The 1080p
+five-minute soak remains a baseline, and 4K30 adds a strict headed hardware
+qualification on each release platform.
+
+The production player now carries both picture backends. Native HTML video
+remains loaded behind the reference canvas so a failed reference generation can
+return to the same integer frame without another network acquisition. Reference
+mode uses:
+
+- the server-probed proxy contract as the expected decode contract
+- mediabunny packet iteration and WebCodecs decode in a module worker
+- a continuous packet cursor for adjacent playback windows
+- six concurrent decoded-frame copies and no more than eight raw-plane buffers
+- incremental ordered plane delivery and worker-side exact-size buffer reuse
+- the audited I420 or NV12 WebGL2 path
+- a 1x AAC-LC source clock at normal speed and the existing 2x/4x clocks for
+  pitch-corrected J/K/L
+
+The clock maps audio time through integer microseconds and the exact rational
+source rate. The canvas is asked for only the named integer frame. Caption cues,
+annotations, marker seeks, loop marks, scopes, rendition switches and
+fullscreen all consume that same player frame state.
+
+Every unsupported configuration or runtime failure is a normal capability
+result. The player captures the frame and play state, closes worker and GL
+resources, seeks the already-loaded native path to that frame, resumes only
+when playback was active, displays one neutral notice, and sends one bounded
+diagnostic to the existing authorized server endpoint. A failed source
+generation cannot retry itself.
+
+The remaining boundary is measurement, not another guessed compensation.
+Headless Chromium on this Windows host does not provide hardware-capable
+WebGL2, so it can verify pixels but cannot prove sustained GPU playback.
+Playwright Firefox exposes BGRX and is rejected before rendering. Playwright
+WebKit 26.5 on Windows exposes neither `VideoDecoder` nor
+`requestVideoFrameCallback`; its attached canvas path also preserves most
+limited-range code values instead of expanding them. These are exact
+capability and pixel findings for Playwright, not macOS Safari. Real Safari,
+Windows Chromium and Firefox on the target Intel graphics machine, the
+five-minute 1080p soak and strict 4K30 qualification remain the BCR-T11 release
+matrix. Automatic reference selection stays off until those measurements
+exist.
+
+Primary sources:
+
+- [W3C WebCodecs](https://www.w3.org/TR/webcodecs/)
+- [Mozilla bug 1969762: H.264 VideoDecoder default format changed](https://bugzilla.mozilla.org/show_bug.cgi?id=1969762)

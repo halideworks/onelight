@@ -124,6 +124,17 @@ const renditionsHaveShuttleAudioKinds = async (
   return Boolean(row?.sql?.includes("shuttle_audio_4x"));
 };
 
+const renditionsHaveReferenceAudioKind = async (
+  binding: D1Database,
+): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'renditions'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("reference_audio_1x"));
+};
+
 const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -445,6 +456,18 @@ export const d1Migrations: D1Migration[] = [
     applied: renditionsHaveShuttleAudioKinds,
     statements: [
       "CREATE TABLE renditions_new (\n  id TEXT PRIMARY KEY,\n  version_id TEXT NOT NULL REFERENCES asset_versions(id) ON DELETE CASCADE,\n  kind TEXT NOT NULL CHECK (kind IN ('proxy_2160','proxy_1080','proxy_540','hdr_hevc','hdr_av1','proxy_audio','shuttle_audio_2x','shuttle_audio_4x','audio_peaks','waveform_data','spectrogram','sprite','poster','pdf_pages','still_tiles','watermarked')),\n  blob_key TEXT NOT NULL,\n  meta_json TEXT NOT NULL DEFAULT '{}',\n  size INTEGER NOT NULL DEFAULT 0,\n  checksum_sha256 TEXT NOT NULL DEFAULT '',\n  share_id TEXT,\n  created_at INTEGER NOT NULL\n)",
+      "INSERT INTO renditions_new (id, version_id, kind, blob_key, meta_json, size, checksum_sha256, share_id, created_at)\nSELECT id, version_id, kind, blob_key, meta_json, size, checksum_sha256, share_id, created_at FROM renditions",
+      "DROP TABLE renditions",
+      "ALTER TABLE renditions_new RENAME TO renditions",
+      "CREATE UNIQUE INDEX renditions_base_uq ON renditions(version_id, kind) WHERE share_id IS NULL",
+      "CREATE UNIQUE INDEX renditions_share_uq ON renditions(version_id, kind, share_id) WHERE share_id IS NOT NULL",
+    ],
+  },
+  {
+    name: "0025_reference_audio.sql",
+    applied: renditionsHaveReferenceAudioKind,
+    statements: [
+      "CREATE TABLE renditions_new (\n  id TEXT PRIMARY KEY,\n  version_id TEXT NOT NULL REFERENCES asset_versions(id) ON DELETE CASCADE,\n  kind TEXT NOT NULL CHECK (kind IN ('proxy_2160','proxy_1080','proxy_540','hdr_hevc','hdr_av1','proxy_audio','reference_audio_1x','shuttle_audio_2x','shuttle_audio_4x','audio_peaks','waveform_data','spectrogram','sprite','poster','pdf_pages','still_tiles','watermarked')),\n  blob_key TEXT NOT NULL,\n  meta_json TEXT NOT NULL DEFAULT '{}',\n  size INTEGER NOT NULL DEFAULT 0,\n  checksum_sha256 TEXT NOT NULL DEFAULT '',\n  share_id TEXT,\n  created_at INTEGER NOT NULL\n)",
       "INSERT INTO renditions_new (id, version_id, kind, blob_key, meta_json, size, checksum_sha256, share_id, created_at)\nSELECT id, version_id, kind, blob_key, meta_json, size, checksum_sha256, share_id, created_at FROM renditions",
       "DROP TABLE renditions",
       "ALTER TABLE renditions_new RENAME TO renditions",

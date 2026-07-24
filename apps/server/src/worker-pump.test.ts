@@ -141,7 +141,7 @@ describe("shuttle audio reconciliation", () => {
       expect(queued).toHaveLength(1);
       expect(queued[0]).toMatchObject({
         kind: "transcode",
-        idempotencyKey: "shuttle-audio:v1:version-audio",
+        idempotencyKey: "reference-audio:v2:version-audio",
         status: "queued",
         priority: -10,
       });
@@ -155,6 +155,13 @@ describe("shuttle audio reconciliation", () => {
       await db
         .insert(renditions)
         .values([
+          {
+            id: "rendition-1x",
+            versionId: "version-audio",
+            kind: "reference_audio_1x",
+            blobKey: "renditions/version-audio/reference_audio_1x.m4a",
+            createdAt: 3,
+          },
           {
             id: "rendition-2x",
             versionId: "version-audio",

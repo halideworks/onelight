@@ -5845,6 +5845,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     hdr_av1: "video/mp4",
     watermarked: "video/mp4",
     proxy_audio: "audio/mp4",
+    reference_audio_1x: "audio/mp4",
     shuttle_audio_2x: "audio/mp4",
     shuttle_audio_4x: "audio/mp4",
     poster: "image/png",
@@ -7160,7 +7161,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const watermarked = shareIsWatermarked(share);
     /* proxy_audio rides the same list: for an audio asset it is the whole
        ladder, and a room that can play a video source can play this one. */
-    const proxyKinds = ["proxy_540", "proxy_1080", "proxy_2160", "proxy_audio"];
+    const proxyKinds = [
+      "proxy_540",
+      "proxy_1080",
+      "proxy_2160",
+      "hdr_av1",
+      "hdr_hevc",
+      "proxy_audio",
+    ];
     const items = [];
     for (const version of visibleVersions) {
       const versionRenditions = await env.db
@@ -7232,6 +7240,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       const spectrogramRendition = (
         versionRenditions as Array<typeof renditions.$inferSelect>
       ).find((rendition) => rendition.kind === "spectrogram");
+      const reference1xRendition = (
+        versionRenditions as Array<typeof renditions.$inferSelect>
+      ).find((rendition) => rendition.kind === "reference_audio_1x");
       const shuttle2xRendition = (
         versionRenditions as Array<typeof renditions.$inferSelect>
       ).find((rendition) => rendition.kind === "shuttle_audio_2x");
@@ -7295,6 +7306,15 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               }
             : null,
         shuttle_audio: {
+          x1:
+            reference1xRendition && env.blobStore
+              ? await publicMediaUrl(
+                  share,
+                  asset.id,
+                  version.id,
+                  reference1xRendition.blobKey,
+                )
+              : null,
           x2:
             shuttle2xRendition && env.blobStore
               ? await publicMediaUrl(

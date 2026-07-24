@@ -211,6 +211,7 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
       ffmpeg,
       process.env.PDFTOPPM_PATH ?? "pdftoppm",
       hardwareAcceleration,
+      process.env.FFPROBE_PATH ?? "ffprobe",
     );
     const complete = {
       job_id: body.job_id,

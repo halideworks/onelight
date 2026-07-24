@@ -672,6 +672,10 @@ export const sweepShuttleAudioJobs = async (db: AppDb): Promise<number> => {
       )
     )
       continue;
+    const requiredKinds: Array<typeof renditions.$inferSelect.kind> =
+      row.asset.kind === "video"
+        ? ["reference_audio_1x", "shuttle_audio_2x", "shuttle_audio_4x"]
+        : ["shuttle_audio_2x", "shuttle_audio_4x"];
     const existingKinds = new Set(
       (
         await db
@@ -681,21 +685,14 @@ export const sweepShuttleAudioJobs = async (db: AppDb): Promise<number> => {
             and(
               eq(renditions.versionId, row.version.id),
               isNull(renditions.shareId),
-              inArray(renditions.kind, [
-                "shuttle_audio_2x",
-                "shuttle_audio_4x",
-              ]),
+              inArray(renditions.kind, requiredKinds),
             ),
           )
           .all()
       ).map((rendition) => rendition.kind),
     );
-    if (
-      existingKinds.has("shuttle_audio_2x") &&
-      existingKinds.has("shuttle_audio_4x")
-    )
-      continue;
-    const idempotencyKey = `shuttle-audio:v1:${row.version.id}`;
+    if (requiredKinds.every((kind) => existingKinds.has(kind))) continue;
+    const idempotencyKey = `reference-audio:v2:${row.version.id}`;
     const existingJob = (
       await db
         .select({ id: jobs.id, status: jobs.status })
@@ -983,15 +980,19 @@ const processJob = async (
   );
   if (
     payload.secondary_only === "shuttle_audio" &&
-    (!produced.has("shuttle_audio_2x") || !produced.has("shuttle_audio_4x"))
+    ((assetKind === "video" && !produced.has("reference_audio_1x")) ||
+      !produced.has("shuttle_audio_2x") ||
+      !produced.has("shuttle_audio_4x"))
   ) {
-    const shuttleFailure = failures.find((failure) =>
-      failure.kind.startsWith("shuttle_audio_"),
+    const shuttleFailure = failures.find(
+      (failure) =>
+        failure.kind === "reference_audio_1x" ||
+        failure.kind.startsWith("shuttle_audio_"),
     );
     throw new Error(
       shuttleFailure
-        ? `Shuttle audio ${shuttleFailure.kind} failed: ${shuttleFailure.error}`
-        : "Pitch-corrected shuttle audio was not produced.",
+        ? `Reference audio ${shuttleFailure.kind} failed: ${shuttleFailure.error}`
+        : "Reference and pitch-corrected shuttle audio were not produced.",
     );
   }
   const primaries = primaryRenditionKinds(assetKind);

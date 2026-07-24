@@ -43,6 +43,7 @@ import {
   sidecarArgs,
   spriteInterval,
   streamingLimits,
+  webCodecString,
   writeSpriteVtt,
 } from "./media.js";
 
@@ -85,6 +86,23 @@ describe("probe normalization", () => {
     expect(args).toContain("-show_format");
     expect(args).toContain("-show_streams");
     expect(args).not.toContain("-show_entries");
+  });
+
+  it("derives RFC codec strings from the encoded stream contract", () => {
+    expect(
+      webCodecString({ codec_name: "h264", profile: "High", level: 42 }),
+    ).toBe("avc1.64002A");
+    expect(
+      webCodecString({ codec_name: "hevc", profile: "Main 10", level: 153 }),
+    ).toBe("hvc1.2.4.L153.B0");
+    expect(
+      webCodecString({
+        codec_name: "av1",
+        profile: "Main",
+        level: 13,
+        pix_fmt: "yuv420p10le",
+      }),
+    ).toBe("av01.0.13M.10");
   });
 
   it("prefers avg_frame_rate and does not flag rounding differences as VFR", () => {
@@ -1165,6 +1183,7 @@ describe("rendition planning per asset kind", () => {
       "poster",
       "sprite",
       "waveform_data",
+      "reference_audio_1x",
       "shuttle_audio_2x",
       "shuttle_audio_4x",
     ]);
@@ -1299,7 +1318,12 @@ describe("audio sidecars", () => {
     expect(args?.[args.length - 1]).toBe("/out/proxy_audio.m4a");
   });
 
-  it("encodes pitch-corrected 2x and 4x shuttle sidecars", () => {
+  it("encodes the compact 1x clock and pitch-corrected shuttle sidecars", () => {
+    const reference = sidecarArgs(
+      jobOf(audioInfo()),
+      "/out/reference_audio_1x.m4a",
+      "reference_audio_1x",
+    );
     const twice = sidecarArgs(
       jobOf(audioInfo()),
       "/out/shuttle_audio_2x.m4a",
@@ -1310,9 +1334,10 @@ describe("audio sidecars", () => {
       "/out/shuttle_audio_4x.m4a",
       "shuttle_audio_4x",
     );
+    expect(reference).not.toContain("-filter:a");
     expect(flag(twice ?? [], "-filter:a")).toBe("atempo=2");
     expect(flag(fourTimes ?? [], "-filter:a")).toBe("atempo=2,atempo=2");
-    for (const args of [twice, fourTimes]) {
+    for (const args of [reference, twice, fourTimes]) {
       expect(args).toContain("-vn");
       expect(flag(args ?? [], "-c:a")).toBe("aac");
       expect(flag(args ?? [], "-profile:a")).toBe("aac_low");

@@ -8285,6 +8285,7 @@ export interface paths {
                                         url: string;
                                     } | null;
                                     shuttle_audio: {
+                                        x1: string | null;
                                         x2: string | null;
                                         x4: string | null;
                                     };
@@ -8694,6 +8695,20 @@ export interface paths {
                         failed_patches: string[];
                         elapsed_ms: number;
                         failure: string | null;
+                    } | {
+                        /** @constant */
+                        kind: "reference_playback";
+                        /** @enum {string} */
+                        outcome: "ready" | "fallback";
+                        failure_class: ("decoder_unsupported" | "demux" | "decode" | "metadata_conflict" | "raw_format" | "renderer" | "context_lost" | "allocation" | "starvation" | "timestamp" | "output_order" | "unknown") | null;
+                        reason: string | null;
+                        frame: number;
+                        was_playing: boolean;
+                        source_kind: string | null;
+                        decoder_preference: "no-preference" | null;
+                        buffered_frames: number;
+                        document_visibility: ("hidden" | "visible" | "prerender") | null;
+                        online: boolean | null;
                     } | {
                         /** @enum {string} */
                         reason: "source_missing" | "sidecar_element_missing" | "main_element_missing" | "play_rejected" | "media_error" | "sidecar_ended_early" | "sidecar_clock_stalled" | "source_removed" | "sidecar_started" | "sidecar_clock_advancing";
@@ -13292,6 +13307,20 @@ export interface paths {
                         failed_patches: string[];
                         elapsed_ms: number;
                         failure: string | null;
+                    } | {
+                        /** @constant */
+                        kind: "reference_playback";
+                        /** @enum {string} */
+                        outcome: "ready" | "fallback";
+                        failure_class: ("decoder_unsupported" | "demux" | "decode" | "metadata_conflict" | "raw_format" | "renderer" | "context_lost" | "allocation" | "starvation" | "timestamp" | "output_order" | "unknown") | null;
+                        reason: string | null;
+                        frame: number;
+                        was_playing: boolean;
+                        source_kind: string | null;
+                        decoder_preference: "no-preference" | null;
+                        buffered_frames: number;
+                        document_visibility: ("hidden" | "visible" | "prerender") | null;
+                        online: boolean | null;
                     } | {
                         /** @enum {string} */
                         reason: "source_missing" | "sidecar_element_missing" | "main_element_missing" | "play_rejected" | "media_error" | "sidecar_ended_early" | "sidecar_clock_stalled" | "source_removed" | "sidecar_started" | "sidecar_clock_advancing";
