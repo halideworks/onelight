@@ -105,6 +105,8 @@ describe.skipIf(fixtureReason !== undefined)(
             expect(result.maximumBufferedFrames).toBeLessThanOrEqual(
               MAX_OPEN_FRAMES,
             );
+            expect(result.openMs).toBeLessThan(1_500);
+            expect(result.startupMs).toBeLessThan(2_500);
             expect(result.clockSkippedFrames).toBe(0);
             expect(result.droppedFrames).toBeLessThanOrEqual(1);
             expect(result.presentedFrames).toBeGreaterThan(100);
@@ -265,6 +267,8 @@ describe.skipIf(fixtureReason !== undefined)(
         console.log(
           `[qa] reference scheduler chromium 4K30: ${JSON.stringify(result)}`,
         );
+        expect(result.openMs).toBeLessThan(1_500);
+        expect(result.startupMs).toBeLessThan(3_000);
         expect(result.expectedFrames).toBe(manifest.reference4k.frames);
         expect(result.requestedFrames).toBe(manifest.reference4k.frames);
         expect(result.presentedFrames).toBeGreaterThanOrEqual(60);
@@ -380,6 +384,90 @@ describe.skipIf(fixtureReason !== undefined)(
         expect(result.maximumBufferedFrames).toBeLessThanOrEqual(
           MAX_OPEN_FRAMES,
         );
+      } finally {
+        await browser.close();
+      }
+    });
+
+    it("chromium coalesces rapid Reference scrubbing and settles on the exact frame", async () => {
+      const browserReason = fixtureReason
+        ? undefined
+        : skipReason(env, ["chromium"]);
+      if (browserReason) return;
+      const browser = await chromium.launch();
+      try {
+        const page = await browser.newPage();
+        await page.goto(`${server.baseUrl}/harness/harness.html`);
+        await page.waitForFunction(() => window.qa !== undefined);
+        const result = await page.evaluate(
+          ([workerUrl, clipUrl, expected]) =>
+            window.qa.probeReferenceScrub(
+              workerUrl,
+              clipUrl,
+              expected,
+              1_000,
+              "software",
+            ),
+          [
+            `${server.baseUrl}/harness/reference-decoder.worker.js`,
+            `${server.baseUrl}/fixtures/${manifest.bars.file}`,
+            expectedFor(manifest),
+          ] as const,
+        );
+        console.log(`[qa] reference scrub chromium: ${JSON.stringify(result)}`);
+        expect(result.requestedFrames).toBeGreaterThan(40);
+        expect(result.presentedFrames).toBeGreaterThanOrEqual(8);
+        expect(result.finalPresentedFrame).toBe(result.finalTargetFrame);
+        expect(result.settleMs).toBeLessThan(750);
+        expect(result.maximumPresentationGapMs).toBeLessThan(250);
+        expect(result.maximumBufferedFrames).toBeLessThanOrEqual(
+          MAX_OPEN_FRAMES,
+        );
+        expect(result.maximumLongTaskMs).toBeLessThanOrEqual(50);
+      } finally {
+        await browser.close();
+      }
+    });
+
+    it("chromium keeps 4K 30 fps Reference scrubbing responsive", async () => {
+      const browserReason = fixtureReason
+        ? undefined
+        : skipReason(env, ["chromium"]);
+      if (browserReason) return;
+      const browser = await chromium.launch();
+      try {
+        const page = await browser.newPage();
+        await page.goto(`${server.baseUrl}/harness/harness.html`);
+        await page.waitForFunction(() => window.qa !== undefined);
+        const result = await page.evaluate(
+          ([workerUrl, clipUrl, expected]) =>
+            window.qa.probeReferenceScrub(
+              workerUrl,
+              clipUrl,
+              expected,
+              1_000,
+              "software",
+            ),
+          [
+            `${server.baseUrl}/harness/reference-decoder.worker.js`,
+            `${server.baseUrl}/fixtures/${manifest.reference4k.file}`,
+            expected4kFor(manifest),
+          ] as const,
+        );
+        console.log(
+          `[qa] reference scrub chromium 4K30: ${JSON.stringify(result)}`,
+        );
+        expect(result.requestedFrames).toBeGreaterThanOrEqual(12);
+        expect(result.presentedFrames).toBeGreaterThanOrEqual(
+          Math.floor(result.requestedFrames * 0.75),
+        );
+        expect(result.finalPresentedFrame).toBe(result.finalTargetFrame);
+        expect(result.settleMs).toBeLessThan(1_500);
+        expect(result.maximumPresentationGapMs).toBeLessThan(300);
+        expect(result.maximumBufferedFrames).toBeLessThanOrEqual(
+          MAX_OPEN_FRAMES,
+        );
+        expect(result.maximumLongTaskMs).toBeLessThanOrEqual(50);
       } finally {
         await browser.close();
       }

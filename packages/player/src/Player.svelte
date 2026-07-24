@@ -226,12 +226,35 @@
   let referenceClockHealthTimer: ReturnType<typeof setTimeout> | null = null;
   let referenceGeneration = 0;
   let blockedReferenceSource = $state('');
+  let nativePictureReady = $state(false);
+  let referencePrepared = $state(false);
+  let referencePreparing = false;
+  let referenceSwitching = false;
+  let referencePreparationStartedAt: number | null = null;
+  let referencePreparationMs: number | null = null;
+  let referenceRequestStartedAt: number | null = null;
+  let referencePreparedBeforeRequest = false;
+  type ReferenceFrameWaiter = {
+    resolve(): void;
+    reject(reason: Error): void;
+    timer: ReturnType<typeof setTimeout>;
+  };
+  type PreparedReference = {
+    generation: number;
+    backend: ReferencePictureBackend;
+    frameWaiters: Map<number, ReferenceFrameWaiter>;
+    lastRenderedFrame: number | null;
+  };
+  let preparedReference: PreparedReference | null = null;
   const COLOR_PLAYBACK_MODE_KEY = 'onelight.player.colorPlaybackMode';
   let colorPlaybackMode = $state<ColorPlaybackMode>('automatic');
   try {
     const stored = localStorage.getItem(COLOR_PLAYBACK_MODE_KEY);
-    if (stored === 'automatic' || stored === 'native' || stored === 'reference')
+    if (stored === 'automatic' || stored === 'native' || stored === 'reference') {
       colorPlaybackMode = stored;
+      if (stored === 'reference')
+        referenceRequestStartedAt = performance.now();
+    }
   } catch {
     /* Storage is optional. The automatic default remains active. */
   }
@@ -245,6 +268,13 @@
   const selectColorPlaybackMode = (mode: ColorPlaybackMode): void => {
     blockedReferenceSource = '';
     referenceFailure = null;
+    if (mode === 'reference') {
+      referenceRequestStartedAt = performance.now();
+      referencePreparedBeforeRequest = referencePrepared;
+    } else {
+      referenceRequestStartedAt = null;
+      referencePreparedBeforeRequest = false;
+    }
     colorPlaybackMode = mode;
   };
   let videoWidth = $state(0);
@@ -781,6 +811,7 @@
   $effect(() => {
     void (currentSrc || src);
     pictureIn = false;
+    nativePictureReady = false;
   });
 
   /* ---- the presentation scrub (simple chrome's seek bar) ---- */
@@ -828,6 +859,15 @@
       jumpTo(target);
     }
   };
+  let pictureScrubBackend: ReferencePictureBackend | null = null;
+  const beginPictureScrub = (): void => {
+    pictureScrubBackend = referenceActive ? referenceBackend : null;
+    pictureScrubBackend?.beginScrub();
+  };
+  const endPictureScrub = (): void => {
+    pictureScrubBackend?.endScrub();
+    pictureScrubBackend = null;
+  };
   const scrubSeek = (event: PointerEvent): void => {
     if (!scrubEl || !durationFrames || durationFrames < 2) return;
     const box = scrubEl.getBoundingClientRect();
@@ -858,6 +898,7 @@
       return;
     }
     scrubbing = true;
+    beginPictureScrub();
     scrubSeek(event);
   };
   const onScrubMove = (event: PointerEvent): void => {
@@ -889,6 +930,7 @@
     if (scrubRaf !== null) cancelAnimationFrame(scrubRaf);
     scrubRaf = null;
     scrubApply();
+    endPictureScrub();
   };
   const onScrubKeydown = (event: KeyboardEvent): void => {
     if (seekLocked) return;
@@ -975,7 +1017,9 @@
       ? 'Native HDR'
       : referenceActive
         ? 'Reference renderer'
-        : colorCheck.label
+        : referenceLoading
+          ? 'Preparing reference'
+          : colorCheck.label
   );
   let colorPanelOpen = $state(false);
   let activeReferenceSource = '';
@@ -993,6 +1037,16 @@
     source_kind: activeRendition?.kind ?? null,
     decoder_preference: outcome === 'ready' ? 'no-preference' : null,
     buffered_frames: referenceBackend?.bufferedFrames.length ?? 0,
+    preparation_ms:
+      referencePreparationMs ??
+      (referencePreparationStartedAt === null
+        ? null
+        : Math.round(performance.now() - referencePreparationStartedAt)),
+    switch_ms:
+      referenceRequestStartedAt === null
+        ? null
+        : Math.round(performance.now() - referenceRequestStartedAt),
+    prepared_before_request: referencePreparedBeforeRequest,
     document_visibility:
       typeof document === 'undefined' ? null : document.visibilityState,
     online: typeof navigator === 'undefined' ? null : navigator.onLine
@@ -1024,16 +1078,26 @@
     referenceClock?.pause();
   };
 
+  const disposeReferencePreparation = (): void => {
+    referenceBackend?.close();
+    referenceBackend = null;
+    preparedReference = null;
+    referencePrepared = false;
+    referencePreparing = false;
+    referenceSwitching = false;
+    referenceLoading = false;
+    activeReferenceSource = '';
+  };
+
   const closeReferenceToNative = (
     at: number,
     wasPlaying: boolean,
     failure: ReferenceFailure | null,
   ): void => {
     stopReferenceClock();
-    referenceBackend?.close();
-    referenceBackend = null;
+    const failedSource = activeReferenceSource;
+    disposeReferencePreparation();
     referenceActive = false;
-    referenceLoading = false;
     if (failure) {
       referenceFailure = failure.reason;
       referenceNotice = true;
@@ -1042,10 +1106,9 @@
         referenceNoticeTimer = null;
         referenceNotice = false;
       }, 6_000);
-      blockedReferenceSource = activeReferenceSource;
+      blockedReferenceSource = failedSource;
       reportReferenceDiagnostic('fallback', failure);
     }
-    activeReferenceSource = '';
     seekFrame(at);
     if (!wasPlaying || !video) {
       forwardSpeed = 0;
@@ -1067,100 +1130,88 @@
   };
 
   const handleReferenceFailure = (failure: ReferenceFailure): void => {
+    if (!referenceActive && !untrack(() => referenceRequested)) {
+      stopReferenceClock();
+      const failedSource = activeReferenceSource;
+      disposeReferencePreparation();
+      blockedReferenceSource = failedSource;
+      reportReferenceDiagnostic('fallback', failure);
+      return;
+    }
     closeReferenceToNative(failure.frame, failure.playing, failure);
   };
 
-  const activateReference = async (
-    sourceKey: string,
-    contract: NonNullable<typeof activeReferenceContract>,
-    initialFrame: number,
-    generation: number,
+  const rejectReferenceFrameWaiters = (
+    preparation: PreparedReference,
+    reason: string,
+  ): void => {
+    for (const waiter of preparation.frameWaiters.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error(reason));
+    }
+    preparation.frameWaiters.clear();
+  };
+
+  const waitForReferenceFrame = (
+    preparation: PreparedReference,
+    target: number,
   ): Promise<void> => {
-    referenceLoading = true;
-    referenceFailure = null;
-    referenceNotice = false;
-    let lastRenderedFrame: number | null = null;
-    const frameWaiters = new Map<
-      number,
-      {
-        resolve(): void;
-        reject(reason: Error): void;
-        timer: ReturnType<typeof setTimeout>;
-      }
-    >();
-    const waitForRenderedFrame = (target: number): Promise<void> => {
-      if (lastRenderedFrame === target) return Promise.resolve();
-      return new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          frameWaiters.delete(target);
-          reject(
-            new Error(
-              `Reference renderer did not present frame ${String(target)} in time.`
-            )
-          );
-        }, 5_000);
-        frameWaiters.set(target, { resolve, reject, timer });
-      });
-    };
-    const rejectFrameWaiters = (reason: string): void => {
-      for (const waiter of frameWaiters.values()) {
-        clearTimeout(waiter.timer);
-        waiter.reject(new Error(reason));
-      }
-      frameWaiters.clear();
-    };
-    const backend = new ReferencePictureBackend({
-      render: (planes) => {
-        if (!referenceStage) throw new Error('Reference stage is unavailable.');
-        referenceStage.render(planes);
-      },
-      onReady: (track) => {
-        videoWidth = track.displayWidth;
-        videoHeight = track.displayHeight;
-        if (track.displayWidth > 0 && track.displayHeight > 0)
-          aspect = track.displayWidth / track.displayHeight;
-      },
-      onFrame: (presented) => {
-        lastRenderedFrame = presented;
-        const waiter = frameWaiters.get(presented);
-        if (waiter) {
-          clearTimeout(waiter.timer);
-          frameWaiters.delete(presented);
-          waiter.resolve();
-        }
-        if (referenceActive) {
-          pictureIn = true;
-          clearStall();
-          setFrame(presented);
-        }
-      },
-      onFailure: (failure) => {
-        rejectFrameWaiters(failure.reason);
-        handleReferenceFailure(failure);
-      }
+    if (preparation.lastRenderedFrame === target) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        preparation.frameWaiters.delete(target);
+        reject(
+          new Error(
+            `Reference renderer did not present frame ${String(target)} in time.`
+          )
+        );
+      }, 3_000);
+      preparation.frameWaiters.set(target, { resolve, reject, timer });
     });
-    referenceBackend?.close();
-    referenceBackend = backend;
+  };
+
+  const switchToPreparedReference = async (
+    preparation: PreparedReference,
+  ): Promise<void> => {
+    if (
+      referenceActive ||
+      referenceSwitching ||
+      !referencePrepared ||
+      preparedReference !== preparation
+    )
+      return;
+    referenceSwitching = true;
+    referenceLoading = true;
     try {
-      await backend.load(contract, initialFrame);
-      if (
-        generation !== referenceGeneration ||
-        activeReferenceSource !== sourceKey ||
-        referenceBackend !== backend
-      ) {
-        backend.close();
-        return;
+      let switchFrame = untrack(() => frame);
+      if (preparation.lastRenderedFrame !== switchFrame) {
+        preparation.backend.seek(switchFrame);
+        await waitForReferenceFrame(preparation, switchFrame);
       }
-      await waitForRenderedFrame(initialFrame);
-      await backend.waitUntilBuffered(initialFrame);
-      const switchFrame = untrack(() => frame);
+      if (
+        preparation !== preparedReference ||
+        preparation.generation !== referenceGeneration ||
+        !untrack(() => referenceRequested)
+      )
+        return;
       const wasPlaying = untrack(() => playing);
       video?.pause();
       stopShuttleAudio();
-      if (lastRenderedFrame !== switchFrame) {
-        backend.seek(switchFrame);
-        await waitForRenderedFrame(switchFrame);
+      /* Native playback remains visible while the hidden renderer catches
+         up. Pause only for the final exact-frame handoff, then correct the
+         rare frame that advanced during the first decode. */
+      const pausedFrame = untrack(() => frame);
+      if (pausedFrame !== switchFrame) {
+        switchFrame = pausedFrame;
+        preparation.backend.seek(switchFrame);
+        await waitForReferenceFrame(preparation, switchFrame);
       }
+      if (
+        preparation !== preparedReference ||
+        preparation.generation !== referenceGeneration ||
+        !untrack(() => referenceRequested)
+      )
+        return;
       referenceActive = true;
       referenceLoading = false;
       pictureIn = true;
@@ -1176,8 +1227,113 @@
       reportReferenceDiagnostic('ready');
     } catch (error) {
       if (
+        preparation !== preparedReference ||
+        preparation.generation !== referenceGeneration
+      )
+        return;
+      handleReferenceFailure({
+        failureClass: 'decoder_unsupported',
+        reason: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+        frame: untrack(() => frame),
+        playing: untrack(() => playing)
+      });
+    } finally {
+      referenceSwitching = false;
+      if (!referenceActive) referenceLoading = false;
+    }
+  };
+
+  const prepareReference = async (
+    sourceKey: string,
+    contract: NonNullable<typeof activeReferenceContract>,
+    initialFrame: number,
+    generation: number,
+    requested: boolean,
+  ): Promise<void> => {
+    referencePreparing = true;
+    referenceLoading = requested;
+    referencePreparationStartedAt = performance.now();
+    referencePreparationMs = null;
+    referenceFailure = null;
+    referenceNotice = false;
+    referencePrepared = false;
+    const referenceAudioUrl = shuttleAudio?.x1;
+    if (
+      sourceHasAudio &&
+      referenceClock &&
+      referenceAudioUrl &&
+      referenceClockUrl !== referenceAudioUrl
+    ) {
+      referenceClockUrl = referenceAudioUrl;
+      referenceClock.src = referenceAudioUrl;
+      referenceClock.load();
+    }
+    let preparation: PreparedReference;
+    const backend = new ReferencePictureBackend({
+      render: (planes) => {
+        if (!referenceStage) throw new Error('Reference stage is unavailable.');
+        referenceStage.render(planes);
+      },
+      onReady: (track) => {
+        videoWidth = track.displayWidth;
+        videoHeight = track.displayHeight;
+        if (track.displayWidth > 0 && track.displayHeight > 0)
+          aspect = track.displayWidth / track.displayHeight;
+      },
+      onFrame: (presented) => {
+        preparation.lastRenderedFrame = presented;
+        const waiter = preparation.frameWaiters.get(presented);
+        if (waiter) {
+          clearTimeout(waiter.timer);
+          preparation.frameWaiters.delete(presented);
+          waiter.resolve();
+        }
+        if (referenceActive) {
+          pictureIn = true;
+          clearStall();
+          setFrame(presented);
+        }
+      },
+      onFailure: (failure) => {
+        rejectReferenceFrameWaiters(preparation, failure.reason);
+        handleReferenceFailure(failure);
+      }
+    });
+    preparation = {
+      generation,
+      backend,
+      frameWaiters: new Map(),
+      lastRenderedFrame: null
+    };
+    referenceBackend?.close();
+    referenceBackend = backend;
+    preparedReference = preparation;
+    try {
+      await backend.load(contract, initialFrame);
+      if (
         generation !== referenceGeneration ||
-        referenceBackend !== backend
+        activeReferenceSource !== sourceKey ||
+        referenceBackend !== backend ||
+        preparedReference !== preparation
+      ) {
+        backend.close();
+        return;
+      }
+      await waitForReferenceFrame(preparation, initialFrame);
+      await backend.waitUntilBuffered(initialFrame);
+      referencePreparationMs = Math.round(
+        performance.now() - (referencePreparationStartedAt ?? performance.now())
+      );
+      referencePreparing = false;
+      referencePrepared = true;
+      referenceLoading = false;
+      if (untrack(() => referenceRequested))
+        await switchToPreparedReference(preparation);
+    } catch (error) {
+      if (
+        generation !== referenceGeneration ||
+        referenceBackend !== backend ||
+        preparedReference !== preparation
       )
         return;
       handleReferenceFailure({
@@ -1194,17 +1350,28 @@
     const requested = referenceRequested;
     const clockReady = !sourceHasAudio || Boolean(shuttleAudio?.x1);
     const sourceKey = contract?.url ?? '';
+    const nativeSourceReady =
+      nativePictureReady &&
+      Boolean(sourceKey) &&
+      (currentSrc || src) === sourceKey;
+    const shouldPrepare =
+      nativeSourceReady &&
+      (requested || colorPlaybackMode === 'automatic');
+    if (!requested && referenceActive) {
+      closeReferenceToNative(untrack(() => frame), untrack(() => playing), null);
+      return;
+    }
     if (
-      !requested ||
       !contract ||
       !clockReady ||
       sourceKey === blockedReferenceSource
     ) {
-      if (
-        (referenceActive || referenceLoading) &&
-        (!requested || !contract || !clockReady)
-      )
-        closeReferenceToNative(untrack(() => frame), untrack(() => playing), null);
+      if (!requested || !contract || !clockReady) {
+        if (referenceActive)
+          closeReferenceToNative(untrack(() => frame), untrack(() => playing), null);
+        else if (referenceLoading || referencePreparing || referencePrepared)
+          disposeReferencePreparation();
+      }
       if (requested && (!contract || !clockReady))
         referenceFailure =
           !clockReady
@@ -1212,14 +1379,34 @@
             : 'The rendition metadata is incomplete for reference playback.';
       return;
     }
-    if (sourceKey === activeReferenceSource) return;
+    if (!shouldPrepare) {
+      if (referenceActive)
+        closeReferenceToNative(untrack(() => frame), untrack(() => playing), null);
+      else if (referencePreparing || referencePrepared)
+        disposeReferencePreparation();
+      referenceLoading = requested;
+      return;
+    }
+    if (referenceActive && sourceKey !== activeReferenceSource) {
+      referenceRequestStartedAt = performance.now();
+      referencePreparedBeforeRequest = false;
+      closeReferenceToNative(untrack(() => frame), untrack(() => playing), null);
+    }
+    if (sourceKey === activeReferenceSource) {
+      if (requested && referencePrepared && preparedReference)
+        void switchToPreparedReference(preparedReference);
+      else if (requested && referencePreparing)
+        referenceLoading = true;
+      return;
+    }
     activeReferenceSource = sourceKey;
     const generation = ++referenceGeneration;
-    void activateReference(
+    void prepareReference(
       sourceKey,
       contract,
       untrack(() => frame),
       generation,
+      requested,
     );
   });
 
@@ -1242,7 +1429,10 @@
        playback was running before the first swap. */
     pendingRestore ??= {
       frame,
-      playing: !video.paused,
+      /* `playing` is the transport's source of truth. In Reference mode the
+         native element is intentionally paused, so video.paused would lose a
+         live forward shuttle when a quality change swaps the hidden source. */
+      playing,
       playbackRate: video.playbackRate,
       preservesPitch: video.preservesPitch
     };
@@ -2228,7 +2418,7 @@
     forwardSpeed = 0;
     stopShuttleAudio();
     stopReferenceClock();
-    referenceBackend?.pause();
+    if (referenceActive) referenceBackend?.pause();
     video?.pause();
     restoreRate();
     seekFrame(targetFrame);
@@ -2607,7 +2797,11 @@
         onloadedmetadata={handleLoadedMetadata}
         onseeked={handleSeeked}
         onloadstart={() => { loadError = false; }}
-        onloadeddata={() => { pictureIn = true; loadError = false; }}
+        onloadeddata={() => {
+          pictureIn = true;
+          nativePictureReady = true;
+          loadError = false;
+        }}
         onerror={noteMediaError}
         onwaiting={noteStall}
         onstalled={noteStall}
@@ -3388,6 +3582,8 @@
           disabled={seekLocked}
           {rangeArmed}
           onseek={jumpTo}
+          onscrubstart={beginPictureScrub}
+          onscrubend={endPictureScrub}
           onmarkerselect={handleMarkerSelect}
           onrangeclick={rangeClicked}
           onrangedrag={rangeDragged}

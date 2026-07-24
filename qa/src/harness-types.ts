@@ -61,6 +61,8 @@ export interface ShuttleAudioReading {
 }
 
 export interface ReferencePlaybackProbe {
+  openMs: number;
+  startupMs: number;
   elapsedMs: number;
   expectedFrames: number;
   requestedFrames: number;
@@ -72,6 +74,18 @@ export interface ReferencePlaybackProbe {
   maximumBufferedFrames: number;
   maximumLongTaskMs: number;
   seekP95Ms: number;
+}
+
+export interface ReferenceScrubProbe {
+  elapsedMs: number;
+  requestedFrames: number;
+  presentedFrames: number;
+  finalTargetFrame: number;
+  finalPresentedFrame: number;
+  settleMs: number;
+  maximumPresentationGapMs: number;
+  maximumBufferedFrames: number;
+  maximumLongTaskMs: number;
 }
 
 export interface QaHarness {
@@ -101,6 +115,13 @@ export interface QaHarness {
     renderMode?: "hardware" | "software" | "none",
     playbackRate?: 1 | 2 | 4,
   ): Promise<ReferencePlaybackProbe>;
+  probeReferenceScrub(
+    workerUrl: string,
+    clipUrl: string,
+    expected: ExpectedTrack,
+    durationMs: number,
+    renderMode?: "hardware" | "software" | "none",
+  ): Promise<ReferenceScrubProbe>;
   runColorSelfCheck(
     url: string,
     buildId: string,

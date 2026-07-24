@@ -90,6 +90,7 @@ export type DecoderCommand =
       hardwareAcceleration?: ReferenceHardwareAcceleration;
     }
   | { type: "seek"; generation: number; frame: number }
+  | { type: "scrub"; generation: number; frame: number }
   | {
       type: "play";
       generation: number;

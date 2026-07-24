@@ -8707,6 +8707,9 @@ export interface paths {
                         source_kind: string | null;
                         decoder_preference: "no-preference" | null;
                         buffered_frames: number;
+                        preparation_ms?: number | null;
+                        switch_ms?: number | null;
+                        prepared_before_request?: boolean;
                         document_visibility: ("hidden" | "visible" | "prerender") | null;
                         online: boolean | null;
                     } | {
@@ -13319,6 +13322,9 @@ export interface paths {
                         source_kind: string | null;
                         decoder_preference: "no-preference" | null;
                         buffered_frames: number;
+                        preparation_ms?: number | null;
+                        switch_ms?: number | null;
+                        prepared_before_request?: boolean;
                         document_visibility: ("hidden" | "visible" | "prerender") | null;
                         online: boolean | null;
                     } | {

@@ -323,6 +323,17 @@ audio clock using the exact rational rate. rVFC remains native mode's presented
 frame source. Pausing or seeking synchronizes both backends to the same integer
 frame before control returns.
 
+Pointer scrubbing has a separate bounded scheduler. The playhead follows the
+pointer once per animation frame, independently of decode latency. The
+reference backend allows one decode window to finish, keeps only the newest
+pending target, presents the nearest cached frame while moving, and requests
+the exact integer frame when the gesture ends. Forward scrub requests reuse
+the verified packet iterator and copy only the requested frame instead of a
+six-frame playback window. Reversals and the final release reset from the
+verified prior key packet. The WebGL renderer alternates between two persistent
+YUV texture banks so a 4K upload does not overwrite textures still sampled by
+the previous draw.
+
 The reference backend must preserve:
 
 - J, K, L semantics and audible 2x and 4x sidecars
@@ -429,6 +440,8 @@ Extend `pnpm qa` across Chromium, Firefox, and Playwright WebKit:
   existing rates
 - source swap, seek storm, context loss, and device loss recover without a
   stale frame
+- rapid scrub storms coalesce to the newest target and settle on the exact
+  release frame
 - all `VideoFrame` instances close and the six-frame cap holds
 - accessibility and keyboard transport remain unchanged
 
@@ -440,6 +453,8 @@ one integrated Intel GPU Windows machine.
 
 Measure after warm-up on 1080p and 4K H.264 BT.709 proxies:
 
+- cold local-fixture open under 1.5 seconds and first six-frame runway under
+  2.5 seconds at 1080p, 3 seconds at 4K30
 - 24 and 30 fps: no systematic dropped frames over five minutes
 - 4096x2160 at 30 fps: no more than one dropped requested frame over the
   bounded qualification clip, no steady-state main-thread task over 50 ms,
@@ -452,6 +467,12 @@ Measure after warm-up on 1080p and 4K H.264 BT.709 proxies:
 - seek to a frame in the active GOP p95 under 80 ms
 - seek outside the active GOP p95 under 250 ms on the reference Windows Intel
   machine and Apple Silicon Mac
+- a one-second 1080p scrub presents at least eight picture updates, has no
+  presentation gap over 250 ms, and settles on the exact release frame within
+  750 ms
+- a one-second 4K30 scrub presents at least 75 percent of the display ticks
+  available to the test, has no presentation gap over 300 ms, no task over
+  50 ms, and settles on the exact release frame within 1.5 seconds
 - reference bundle increase reported before merge and code split from the
   default review route
 
@@ -480,14 +501,22 @@ Implementation status, 2026-07-24:
 - BCR-T01 through BCR-T10 and BCR-T12 are implemented and covered by unit,
   contract, browser-pixel, frame-accuracy, fallback and resource-cap tests.
 - The forward worker retains one packet iterator across adjacent playback
-  windows. Random seeks and discontinuities still reset to the verified prior
-  key packet. It does not flush between bounded forward windows. Completed raw
+  windows and forward scrub samples. Random seeks, reverse scrubs and final
+  release still reset to the verified prior key packet. It does not flush
+  between bounded forward windows or forward scrub samples. Scrubbing copies
+  one exact plane and coalesces all pending targets to the newest. Completed raw
   planes are delivered incrementally in presentation order. Decoded
   `VideoFrame` copies are bounded at six concurrent frames; copied raw-plane
   storage is bounded at eight reusable buffers.
 - Playback waits for a bounded initial runway before starting its audio clock.
   Normal clock progression does not cancel in-flight decode work, while seeks,
   source changes, loop wraps and reverse motion invalidate the old generation.
+- Automatic mode prepares the reference worker, first six-frame runway and 1x
+  audio clock in the background after the native picture arrives. The native
+  picture remains visible and playable through preparation and hidden catch-up;
+  it pauses only for the final exact-frame handoff. Explicit Native mode does
+  not spend those resources. Structured diagnostics include preparation time,
+  click-to-handoff time and whether preparation completed before the click.
 - The accepted production source contract is explicit through 4096x2160 at 30
   fps. A synthesized 3840x2160 30 fps B-frame fixture exercises scheduling,
   worker continuity, buffer recycling and WebGL upload. The strict hardware

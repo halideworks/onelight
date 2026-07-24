@@ -171,6 +171,61 @@ describe("reference picture backend", () => {
     });
   });
 
+  it("coalesces a scrub to the newest target and settles exactly on release", async () => {
+    const worker = new TestWorker();
+    const render = vi.fn<(planes: PlaneTransfer, frame: number) => void>();
+    const backend = await openBackend(worker, render);
+    const openingSeek = worker.commands.at(-1);
+    expect(openingSeek?.type).toBe("seek");
+    const openingGeneration = openingSeek?.generation ?? 0;
+    const commandsBeforeScrub = worker.commands.length;
+
+    backend.beginScrub();
+    backend.pause();
+    backend.seek(20, true);
+    backend.seek(40, true);
+    backend.seek(60, true);
+    expect(worker.commands).toHaveLength(commandsBeforeScrub);
+
+    for (let frame = 8; frame <= 13; frame += 1)
+      worker.emit({
+        type: "frame",
+        generation: openingGeneration,
+        frame,
+        planes: planes(frame),
+      });
+    worker.emit({
+      type: "window",
+      generation: openingGeneration,
+      target: 10,
+    });
+    expect(worker.commands.at(-1)).toMatchObject({
+      type: "scrub",
+      frame: 60,
+    });
+    const latestGeneration = worker.commands.at(-1)?.generation ?? 0;
+
+    backend.seek(75, true);
+    backend.seek(90, true);
+    backend.endScrub();
+    expect(worker.commands.at(-1)).toMatchObject({
+      type: "seek",
+      frame: 90,
+    });
+    expect(worker.commands.at(-1)?.generation).toBeGreaterThan(
+      latestGeneration,
+    );
+
+    const finalGeneration = worker.commands.at(-1)?.generation ?? 0;
+    worker.emit({
+      type: "frame",
+      generation: finalGeneration,
+      frame: 90,
+      planes: planes(90),
+    });
+    expect(render.mock.calls.at(-1)?.[1]).toBe(90);
+  });
+
   it("returns evicted plane buffers to the worker pool", async () => {
     const worker = new TestWorker();
     await openBackend(worker, vi.fn());

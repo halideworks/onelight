@@ -25,8 +25,9 @@ import type {
   PatchReading,
   PatchRect,
   QaHarness,
-  ReferenceRenderReadings,
   ReferencePlaybackProbe,
+  ReferenceRenderReadings,
+  ReferenceScrubProbe,
   SeekReading,
   ShuttleAudioReading,
   WebCodecsReading,
@@ -531,9 +532,12 @@ const probeReferencePlayback = async (
     },
   );
   try {
+    const startupStarted = performance.now();
     await backend.load({ url: clipUrl, expected }, 0);
+    const openMs = performance.now() - startupStarted;
     await firstFrame;
     await backend.waitUntilBuffered(0);
+    const startupMs = performance.now() - startupStarted;
     observer?.observe({ entryTypes: ["longtask"] });
     backend.play(0, playbackRate);
     const started = performance.now();
@@ -570,6 +574,8 @@ const probeReferencePlayback = async (
       (frame) => !presented.has(frame),
     );
     return {
+      openMs,
+      startupMs,
       elapsedMs,
       expectedFrames,
       requestedFrames: requestedFrames.size,
@@ -589,6 +595,138 @@ const probeReferencePlayback = async (
   }
 };
 
+const probeReferenceScrub = async (
+  workerUrl: string,
+  clipUrl: string,
+  expected: ExpectedTrack,
+  durationMs: number,
+  renderMode: "hardware" | "software" | "none" = "hardware",
+): Promise<ReferenceScrubProbe> => {
+  const durationFrames = expected.durationFrames;
+  if (durationFrames === null || durationFrames < 2)
+    throw new Error("Reference scrub probe requires a bounded timeline.");
+  let maximumBufferedFrames = 0;
+  let maximumLongTaskMs = 0;
+  let lastPresentedFrame = -1;
+  let firstFrameResolve: (() => void) | null = null;
+  let failureReject: ((reason: Error) => void) | null = null;
+  let finalResolve: (() => void) | null = null;
+  let finalTarget = durationFrames - 1;
+  let measuring = false;
+  const presentationTimes: number[] = [];
+  const requested = new Set<number>();
+  const firstFrame = new Promise<void>((resolve, reject) => {
+    firstFrameResolve = resolve;
+    failureReject = reject;
+  });
+  const finalFrame = new Promise<void>((resolve) => {
+    finalResolve = resolve;
+  });
+  let renderer: ReferenceGlRenderer | null = null;
+  const observer =
+    typeof PerformanceObserver !== "undefined" &&
+    PerformanceObserver.supportedEntryTypes.includes("longtask")
+      ? new PerformanceObserver((list) => {
+          for (const entry of list.getEntries())
+            maximumLongTaskMs = Math.max(maximumLongTaskMs, entry.duration);
+        })
+      : null;
+  const backend = new ReferencePictureBackend(
+    {
+      render: (planes) => {
+        if (renderMode === "none") return;
+        renderer ??= new ReferenceGlRenderer(referenceCanvas, {
+          requireAcceleration: renderMode === "hardware",
+        });
+        renderer.render(planes);
+      },
+      onFrame: (frame) => {
+        lastPresentedFrame = frame;
+        maximumBufferedFrames = Math.max(
+          maximumBufferedFrames,
+          backend.bufferedFrames.length,
+        );
+        if (measuring) presentationTimes.push(performance.now());
+        if (frame === finalTarget) finalResolve?.();
+        firstFrameResolve?.();
+        firstFrameResolve = null;
+      },
+      onFailure: (failure) => {
+        failureReject?.(new Error(failure.reason));
+        failureReject = null;
+      },
+    },
+    {
+      workerFactory: () => new Worker(workerUrl, { type: "module" }),
+      seekTimeoutMs: 3_000,
+    },
+  );
+  try {
+    await backend.load({ url: clipUrl, expected }, 0);
+    await firstFrame;
+    await backend.waitUntilBuffered(0);
+    observer?.observe({ entryTypes: ["longtask"] });
+    backend.beginScrub();
+    backend.pause();
+    measuring = true;
+    const started = performance.now();
+    await new Promise<void>((resolve) => {
+      const tick = (): void => {
+        const elapsed = performance.now() - started;
+        const phase = Math.min(1, elapsed / durationMs);
+        const target = Math.round(phase * (durationFrames - 1));
+        requested.add(target);
+        backend.seek(target, true);
+        if (phase >= 1) {
+          resolve();
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    finalTarget = durationFrames - 1;
+    const releasedAt = performance.now();
+    backend.seek(finalTarget, true);
+    backend.endScrub();
+    if (lastPresentedFrame !== finalTarget)
+      await Promise.race([
+        finalFrame,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(
+            () => reject(new Error("Reference scrub did not settle in time.")),
+            3_000,
+          ),
+        ),
+      ]);
+    const settledAt = performance.now();
+    measuring = false;
+    const scrubPresentationTimes = presentationTimes.filter(
+      (time) => time <= releasedAt,
+    );
+    const cadenceTimes = [started, ...scrubPresentationTimes, releasedAt];
+    const gaps = cadenceTimes
+      .slice(1)
+      .map((time, index) => time - (cadenceTimes[index] ?? time));
+    return {
+      elapsedMs: releasedAt - started,
+      requestedFrames: requested.size,
+      presentedFrames: scrubPresentationTimes.length,
+      finalTargetFrame: finalTarget,
+      finalPresentedFrame: lastPresentedFrame,
+      settleMs: settledAt - releasedAt,
+      maximumPresentationGapMs: Math.max(0, ...gaps),
+      maximumBufferedFrames,
+      maximumLongTaskMs,
+    };
+  } finally {
+    measuring = false;
+    observer?.disconnect();
+    backend.close();
+    (renderer as ReferenceGlRenderer | null)?.close();
+  }
+};
+
 const harness: QaHarness = {
   loadClip,
   seekAndRead,
@@ -599,6 +737,7 @@ const harness: QaHarness = {
   probeReferenceContextLoss,
   probeShuttleAudio,
   probeReferencePlayback,
+  probeReferenceScrub,
   runColorSelfCheck: (url, buildId) =>
     runColorSelfCheck({
       buildId,

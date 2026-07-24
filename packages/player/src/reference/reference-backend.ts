@@ -80,6 +80,7 @@ export class ReferencePictureBackend implements PictureBackend {
   #rate: PicturePlaybackRate = 1;
   #windowPending = false;
   #windowTarget: number | null = null;
+  #scrubbing = false;
   #loadWaiter: LoadWaiter | null = null;
   #openStage = "starting decoder worker";
   #starvationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -184,11 +185,17 @@ export class ReferencePictureBackend implements PictureBackend {
       duration === null
         ? Math.max(0, Math.round(frame))
         : Math.min(duration - 1, Math.max(0, Math.round(frame)));
-    if (discontinuity) this.#presentedFrame = null;
+    if (discontinuity && !this.#scrubbing) this.#presentedFrame = null;
     const cached = this.#frames.get(this.#desiredFrame);
     if (cached) {
       this.#present(this.#desiredFrame, cached);
       this.#prefetchIfNeeded();
+      return;
+    }
+    if (this.#scrubbing) {
+      this.#presentNearestScrubFrame();
+      if (!this.#windowPending)
+        this.#requestWindow(this.#desiredFrame, "scrub");
       return;
     }
     if (
@@ -202,7 +209,28 @@ export class ReferencePictureBackend implements PictureBackend {
     this.#armStarvation();
   }
 
+  beginScrub(): void {
+    if (this.#failed) return;
+    this.#scrubbing = true;
+    this.#playing = false;
+    this.#clearStarvation();
+  }
+
+  endScrub(): void {
+    if (!this.#scrubbing) return;
+    this.#scrubbing = false;
+    if (this.#failed || !this.#worker || !this.#track) return;
+    const cached = this.#frames.get(this.#desiredFrame);
+    if (cached) {
+      this.#present(this.#desiredFrame, cached);
+      return;
+    }
+    if (!this.#windowPending || this.#windowTarget !== this.#desiredFrame)
+      this.#requestWindow(this.#desiredFrame, "seek");
+  }
+
   play(frame: number, rate: PicturePlaybackRate): void {
+    this.#scrubbing = false;
     this.#playing = true;
     this.#rate = rate;
     this.seek(frame);
@@ -210,9 +238,10 @@ export class ReferencePictureBackend implements PictureBackend {
 
   pause(): void {
     this.#playing = false;
+    this.#clearStarvation();
+    if (this.#scrubbing) return;
     this.#presentedPlanes = null;
     this.#presentedFrame = null;
-    this.#clearStarvation();
     this.#clearSeekTimer();
     if (!this.#worker) return;
     this.#post({ type: "pause", generation: this.#nextGeneration() });
@@ -242,6 +271,7 @@ export class ReferencePictureBackend implements PictureBackend {
     this.#windowPending = false;
     this.#windowTarget = null;
     this.#playing = false;
+    this.#scrubbing = false;
   }
 
   #nextGeneration(): number {
@@ -253,22 +283,23 @@ export class ReferencePictureBackend implements PictureBackend {
     this.#worker?.postMessage(command);
   }
 
-  #requestWindow(frame: number, type: "seek" | "play"): void {
+  #requestWindow(frame: number, type: "seek" | "play" | "scrub"): void {
     if (!this.#worker) return;
+    const generation = this.#nextGeneration();
     this.#windowPending = true;
     this.#windowTarget = frame;
     this.#clearSeekTimer();
     this.#seekTimer = setTimeout(() => {
       this.#seekTimer = null;
-      if (!this.#frames.has(this.#desiredFrame))
+      if (generation === this.#generation && !this.#frames.has(frame))
         this.#fail(
-          `Reference decode stalled before frame ${String(this.#desiredFrame)}.`,
+          `Reference decode stalled before frame ${String(frame)}.`,
           false,
         );
     }, this.#seekTimeoutMs);
     this.#post({
       type,
-      generation: this.#nextGeneration(),
+      generation,
       frame,
       ...(type === "play" ? { rate: this.#rate } : {}),
     } as DecoderCommand);
@@ -326,6 +357,8 @@ export class ReferencePictureBackend implements PictureBackend {
       } else {
         this.#armStarvation();
       }
+      if (this.#scrubbing && !this.#frames.has(this.#desiredFrame))
+        this.#requestWindow(this.#desiredFrame, "scrub");
       return;
     }
     if (event.type === "stalled") {
@@ -376,6 +409,11 @@ export class ReferencePictureBackend implements PictureBackend {
   } | null {
     const exact = this.#frames.get(this.#desiredFrame);
     if (exact) return { frame: this.#desiredFrame, planes: exact };
+    if (this.#scrubbing) {
+      const frame = this.#nearestBufferedFrame();
+      const planes = frame === null ? undefined : this.#frames.get(frame);
+      return frame !== null && planes ? { frame, planes } : null;
+    }
     if (!this.#playing) return null;
     const frame = this.bufferedFrames
       .filter(
@@ -387,6 +425,26 @@ export class ReferencePictureBackend implements PictureBackend {
     if (frame === undefined) return null;
     const planes = this.#frames.get(frame);
     return planes ? { frame, planes } : null;
+  }
+
+  #nearestBufferedFrame(): number | null {
+    let nearest: number | null = null;
+    let distance = Number.POSITIVE_INFINITY;
+    for (const frame of this.#frames.keys()) {
+      const candidateDistance = Math.abs(frame - this.#desiredFrame);
+      if (candidateDistance < distance) {
+        nearest = frame;
+        distance = candidateDistance;
+      }
+    }
+    return nearest;
+  }
+
+  #presentNearestScrubFrame(): void {
+    const frame = this.#nearestBufferedFrame();
+    if (frame === null) return;
+    const planes = this.#frames.get(frame);
+    if (planes) this.#present(frame, planes);
   }
 
   #trimFrames(): void {

@@ -793,6 +793,26 @@ current private user or share viewer still has access; downloads remain
 fail-closed, and current watermark policy is rechecked before a share source is
 served.
 
+Reference startup no longer begins at the user's click. Once the native first
+frame is available, Automatic mode prepares the separately loaded decoder
+worker, the first bounded frame runway and the 1x audio clock behind the native
+picture. Selecting Reference reuses that state; if the playhead moved, the
+hidden renderer catches up while native playback stays visible, then pauses
+only for the exact-frame handoff. Explicit Native mode performs no background
+decode. The media QA now records cold open and first-runway latency with hard
+1080p and 4K30 ceilings, while server diagnostics record preparation time,
+click-to-handoff time and whether the renderer was already prepared.
+
+Reference scrubbing now has its own measured path. Timeline handles follow the
+pointer at the display tick even when decode is behind. The backend never
+restarts a decode window for every pointer event: it completes one bounded
+operation, retains only the newest target, reuses the packet iterator while the
+gesture moves forward, and copies only the exact scrub frame. Release issues
+one exact integer-frame settle. The 4K WebGL path alternates two persistent YUV
+texture banks to remove upload contention with the previous draw. QA measures
+1080p and 4K30 scrub cadence, largest presentation gap, exact settle latency,
+resource caps and long tasks.
+
 BCR-T12 is also implemented fail-closed. Native HDR is opt-in and appears only
 when the stored output probe has an exact codec, dimensions, bitrate, rational
 rate and agreeing source/output color metadata, Media Capabilities reports that
@@ -800,7 +820,7 @@ exact path supported and smooth, and the live display reports both high dynamic
 range and Rec.2020. Display capability changes immediately re-run the gate.
 Otherwise the BT.709 SDR proxy remains active.
 
-The full media run is green: 38 checks across 11 files, including 19 focused
+The full media run is green: 40 checks across 11 files, including 21 focused
 reference checks for decoder, renderer, scheduler, 4x transport and 4K30.
 Playwright WebKit 26.5 is installed but exposes neither `VideoDecoder` nor
 `requestVideoFrameCallback`; its Windows canvas path also leaves limited-range

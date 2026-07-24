@@ -378,6 +378,9 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
         source_kind: "proxy_1080",
         decoder_preference: null,
         buffered_frames: 3,
+        preparation_ms: 842,
+        switch_ms: 17,
+        prepared_before_request: true,
         document_visibility: "visible",
         online: true,
       };
@@ -403,6 +406,20 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
           version_id: seed.media.versionId,
           ...diagnostic,
         });
+        const legacyDiagnostic: Record<string, unknown> = { ...diagnostic };
+        delete legacyDiagnostic.preparation_ms;
+        delete legacyDiagnostic.switch_ms;
+        delete legacyDiagnostic.prepared_before_request;
+        const legacyAccepted = await req(
+          h,
+          `/api/v1/versions/${seed.media.versionId}/playback-diagnostics`,
+          {
+            method: "POST",
+            cookie: seed.commenter.cookie,
+            json: legacyDiagnostic,
+          },
+        );
+        expect(legacyAccepted.status).toBe(204);
         const privateField = await req(
           h,
           `/api/v1/versions/${seed.media.versionId}/playback-diagnostics`,

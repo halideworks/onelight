@@ -25,6 +25,8 @@
     disabled = false,
     rangeArmed = false,
     onseek = undefined,
+    onscrubstart = undefined,
+    onscrubend = undefined,
     onmarkerselect = undefined,
     onrangeclick = undefined,
     onrangedrag = undefined,
@@ -47,6 +49,8 @@
        gesture without arming anything. */
     rangeArmed?: boolean;
     onseek?: ((frame: number) => void) | undefined;
+    onscrubstart?: (() => void) | undefined;
+    onscrubend?: (() => void) | undefined;
     onmarkerselect?: ((markerId: string, frame: number) => void) | undefined;
     /* A press that never travelled. The ordering rule is the player's. */
     onrangeclick?: ((frame: number) => void) | undefined;
@@ -235,6 +239,7 @@
       return;
     }
     scrubbing = true;
+    onscrubstart?.();
     seekFromEvent(event);
   };
 
@@ -253,7 +258,7 @@
     }
     if (!scrubbing) return;
     if (event.buttons === 0) {
-      scrubbing = false;
+      endGesture(event);
       return;
     }
     seekFromEvent(event);
@@ -266,6 +271,7 @@
       if (scrubRaf !== null) cancelAnimationFrame(scrubRaf);
       scrubRaf = null;
       applyScrub();
+      onscrubend?.();
     }
     scrubbing = false;
     const paint = painting;
@@ -283,6 +289,7 @@
     scrubRaf = null;
     scrubTarget = null;
     scrubPreview = null;
+    if (scrubbing) onscrubend?.();
     scrubbing = false;
     painting = null;
     onrangedone?.();

@@ -194,22 +194,28 @@ type SrgbWebGlContext = WebGL2RenderingContext & {
   drawingBufferColorSpace?: PredefinedColorSpace;
 };
 
+type TextureBank = readonly [WebGLTexture, WebGLTexture, WebGLTexture];
+type TextureAllocation = {
+  width: number;
+  height: number;
+  bytesPerPixel: 1 | 2;
+};
+
 export class ReferenceGlRenderer {
   readonly canvas: HTMLCanvasElement;
   readonly gl: WebGL2RenderingContext;
   private readonly glProgram: WebGLProgram;
   private readonly vertexArray: WebGLVertexArrayObject;
-  private readonly textures: readonly [
-    WebGLTexture,
-    WebGLTexture,
-    WebGLTexture,
-  ];
+  private readonly textureBanks: readonly [TextureBank, TextureBank];
   private readonly uniforms: RendererUniforms;
-  private readonly textureAllocations: Array<{
-    width: number;
-    height: number;
-    bytesPerPixel: 1 | 2;
-  } | null> = [null, null, null];
+  private readonly textureAllocations: [
+    Array<TextureAllocation | null>,
+    Array<TextureAllocation | null>,
+  ] = [
+    [null, null, null],
+    [null, null, null],
+  ];
+  private activeTextureBank = 0;
   private closed = false;
   private contextLost = false;
 
@@ -250,7 +256,10 @@ export class ReferenceGlRenderer {
       );
     }
     this.vertexArray = vertexArray;
-    this.textures = [texture(gl), texture(gl), texture(gl)];
+    this.textureBanks = [
+      [texture(gl), texture(gl), texture(gl)],
+      [texture(gl), texture(gl), texture(gl)],
+    ];
     this.uniforms = {
       isNv12: uniform(gl, this.glProgram, "is_nv12"),
       sourceOffset: uniform(gl, this.glProgram, "source_offset"),
@@ -281,6 +290,7 @@ export class ReferenceGlRenderer {
   };
 
   private uploadPlane(
+    bank: number,
     unit: number,
     source: PlaneTransfer,
     layout: PlaneLayoutTransfer,
@@ -297,11 +307,12 @@ export class ReferenceGlRenderer {
       source.buffer.byteLength,
     );
     gl.activeTexture(gl.TEXTURE0 + unit);
-    gl.bindTexture(gl.TEXTURE_2D, this.textures[unit] ?? null);
+    gl.bindTexture(gl.TEXTURE_2D, this.textureBanks[bank]?.[unit] ?? null);
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, span.rowLength);
     const pixels = new Uint8Array(source.buffer, layout.offset, span.length);
     const format = bytesPerPixel === 1 ? gl.RED : gl.RG;
-    const allocation = this.textureAllocations[unit];
+    const allocations = this.textureAllocations[bank];
+    const allocation = allocations?.[unit];
     if (
       !allocation ||
       allocation.width !== width ||
@@ -319,7 +330,7 @@ export class ReferenceGlRenderer {
         gl.UNSIGNED_BYTE,
         null,
       );
-      this.textureAllocations[unit] = { width, height, bytesPerPixel };
+      if (allocations) allocations[unit] = { width, height, bytesPerPixel };
     }
     gl.texSubImage2D(
       gl.TEXTURE_2D,
@@ -367,17 +378,49 @@ export class ReferenceGlRenderer {
         "Reference frame plane layouts are incomplete.",
       );
 
-    this.uploadPlane(0, source, yLayout, width, height, 1);
+    /*
+     * Upload into the texture bank the previous draw is not sampling. Updating
+     * the same 4K textures in place can make the browser wait for the prior
+     * draw to retire before accepting 12 MB of new YUV data. Alternating two
+     * persistent banks removes that read-after-write synchronization point
+     * while keeping allocation bounded.
+     */
+    const textureBank = this.activeTextureBank === 0 ? 1 : 0;
+    this.uploadPlane(textureBank, 0, source, yLayout, width, height, 1);
     if (source.format === "I420") {
       const vLayout = source.layout[2];
       if (!vLayout)
         throw new UnsupportedReferenceRendererError(
           "Reference I420 V plane layout is missing.",
         );
-      this.uploadPlane(1, source, chromaLayout, chromaWidth, chromaHeight, 1);
-      this.uploadPlane(2, source, vLayout, chromaWidth, chromaHeight, 1);
+      this.uploadPlane(
+        textureBank,
+        1,
+        source,
+        chromaLayout,
+        chromaWidth,
+        chromaHeight,
+        1,
+      );
+      this.uploadPlane(
+        textureBank,
+        2,
+        source,
+        vLayout,
+        chromaWidth,
+        chromaHeight,
+        1,
+      );
     } else
-      this.uploadPlane(1, source, chromaLayout, chromaWidth, chromaHeight, 2);
+      this.uploadPlane(
+        textureBank,
+        1,
+        source,
+        chromaLayout,
+        chromaWidth,
+        chromaHeight,
+        2,
+      );
 
     const gl = this.gl;
     const parameters = yuvConversionParameters(matrix, source.color.range);
@@ -419,6 +462,7 @@ export class ReferenceGlRenderer {
     gl.uniform1f(this.uniforms.kr, parameters.kr);
     gl.uniform1f(this.uniforms.kb, parameters.kb);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    this.activeTextureBank = textureBank;
 
     const error = gl.getError();
     if (error !== gl.NO_ERROR)
@@ -431,7 +475,8 @@ export class ReferenceGlRenderer {
     if (this.closed) return;
     this.closed = true;
     this.canvas.removeEventListener("webglcontextlost", this.onContextLost);
-    for (const item of this.textures) this.gl.deleteTexture(item);
+    for (const bank of this.textureBanks)
+      for (const item of bank) this.gl.deleteTexture(item);
     this.gl.deleteVertexArray(this.vertexArray);
     this.gl.deleteProgram(this.glProgram);
   }

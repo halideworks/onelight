@@ -128,6 +128,9 @@ const referencePlaybackDiagnostic = z
     source_kind: z.string().max(64).nullable(),
     decoder_preference: z.literal("no-preference").nullable(),
     buffered_frames: z.number().int().min(0).max(6),
+    preparation_ms: z.number().int().min(0).max(60000).nullable().optional(),
+    switch_ms: z.number().int().min(0).max(60000).nullable().optional(),
+    prepared_before_request: z.boolean().optional(),
     document_visibility: z.enum(["hidden", "visible", "prerender"]).nullable(),
     online: z.boolean().nullable(),
   })

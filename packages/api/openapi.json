@@ -14512,6 +14512,33 @@
                         "minimum": 0,
                         "maximum": 6
                       },
+                      "preparation_ms": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 60000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "switch_ms": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 60000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "prepared_before_request": {
+                        "type": "boolean"
+                      },
                       "document_visibility": {
                         "anyOf": [
                           {
@@ -22765,6 +22792,33 @@
                         "type": "integer",
                         "minimum": 0,
                         "maximum": 6
+                      },
+                      "preparation_ms": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 60000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "switch_ms": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 60000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "prepared_before_request": {
+                        "type": "boolean"
                       },
                       "document_visibility": {
                         "anyOf": [

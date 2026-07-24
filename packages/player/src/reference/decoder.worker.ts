@@ -135,6 +135,12 @@ const resetDecoder = (state: OpenState): void => {
 };
 
 const clearPlaneState = (): void => {
+  for (const plane of planes.values())
+    if (
+      plane.buffer.byteLength > 0 &&
+      recycledBuffers.length < MAX_PLANE_BUFFERS
+    )
+      recycledBuffers.push(plane.buffer);
   planes.clear();
   emittedFrames.clear();
 };
@@ -254,7 +260,11 @@ const handleDecodedFrame = (frame: VideoFrame): void => {
         ) {
           planes.set(index, copied);
           emitPlanes(current.generation, current.first, current.last);
-        }
+        } else if (
+          copied.buffer.byteLength > 0 &&
+          recycledBuffers.length < MAX_PLANE_BUFFERS
+        )
+          recycledBuffers.push(copied.buffer);
       })
       .catch((error: unknown) => {
         failOperation(
@@ -351,7 +361,7 @@ const waitForDecoderDrain = async (
 const decodeWindow = async (
   generation: number,
   target: number,
-  mode: "seek" | "play",
+  mode: "seek" | "play" | "scrub",
 ): Promise<void> => {
   const state = openState;
   if (!state) {
@@ -376,23 +386,37 @@ const decodeWindow = async (
     return;
   }
 
-  const first = Math.max(0, target - FRAME_WINDOW_BEHIND);
-  const canContinue =
+  const first =
+    mode === "scrub" ? target : Math.max(0, target - FRAME_WINDOW_BEHIND);
+  const canContinuePlayback =
     mode === "play" &&
     state.playIterator !== null &&
     state.playTarget !== null &&
     target >= state.playTarget &&
     target - state.playTarget <= MAX_OPEN_FRAMES * 2 &&
     (planes.has(first) || emittedFrames.has(first));
+  const canContinueScrub =
+    mode === "scrub" &&
+    state.playIterator !== null &&
+    state.playTarget !== null &&
+    target > state.playTarget &&
+    target - state.playTarget <= MAX_OPEN_FRAMES * 4;
+  const canContinue = canContinuePlayback || canContinueScrub;
   if (!canContinue) cancelDecode();
   const last =
-    state.track.durationFrames === null
-      ? target + FRAME_WINDOW_AHEAD
-      : Math.min(state.track.durationFrames - 1, target + FRAME_WINDOW_AHEAD);
+    mode === "scrub"
+      ? target
+      : state.track.durationFrames === null
+        ? target + FRAME_WINDOW_AHEAD
+        : Math.min(state.track.durationFrames - 1, target + FRAME_WINDOW_AHEAD);
   const retainThrough =
-    state.track.durationFrames === null
-      ? last + 2
-      : Math.min(state.track.durationFrames - 1, last + 2);
+    mode === "scrub"
+      ? state.track.durationFrames === null
+        ? target + 2
+        : Math.min(state.track.durationFrames - 1, target + 2)
+      : state.track.durationFrames === null
+        ? last + 2
+        : Math.min(state.track.durationFrames - 1, last + 2);
   operation = {
     generation,
     target,
@@ -422,7 +446,7 @@ const decodeWindow = async (
           "No keyframe is available before the requested frame.",
         );
       iterator = state.packetSink.packets(keyPacket)[Symbol.asyncIterator]();
-      if (mode === "play") state.playIterator = iterator;
+      if (mode === "play" || mode === "scrub") state.playIterator = iterator;
     }
 
     let crossedWindowBoundary = false;
@@ -461,9 +485,10 @@ const decodeWindow = async (
 
     /*
      * VideoDecoder.flush() makes the next chunk require a key frame. A
-     * continuous window therefore waits for the last requested output while
-     * leaving the decoder configured and its packet iterator intact. Random
-     * seeks and end of stream flush, then deliberately abandon that iterator.
+     * continuous playback and forward scrubbing therefore wait for the last
+     * requested output while leaving the decoder configured and their packet
+     * iterator intact. Random seeks and end of stream flush, then deliberately
+     * abandon that iterator.
      */
     if (mode === "seek" || reachedEnd) await state.decoder.flush();
     const current = operation;
@@ -481,7 +506,17 @@ const decodeWindow = async (
       return;
     }
     emitPlanes(generation, first, last);
-    if (mode === "play" && !reachedEnd) state.playTarget = target;
+    for (const [frame, plane] of planes)
+      if (frame < first) {
+        planes.delete(frame);
+        if (
+          plane.buffer.byteLength > 0 &&
+          recycledBuffers.length < MAX_PLANE_BUFFERS
+        )
+          recycledBuffers.push(plane.buffer);
+      }
+    if ((mode === "play" || mode === "scrub") && !reachedEnd)
+      state.playTarget = target;
     else {
       state.playIterator = null;
       state.playTarget = null;
@@ -679,6 +714,9 @@ const handleCommand = (command: DecoderCommand): void => {
       break;
     case "seek":
       void decodeWindow(command.generation, command.frame, "seek");
+      break;
+    case "scrub":
+      void decodeWindow(command.generation, command.frame, "scrub");
       break;
     case "play":
       void decodeWindow(command.generation, command.frame, "play");
