@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
+import { SignJWT } from "jose";
 import {
   assetVersions,
   exportJobs,
@@ -1544,20 +1545,119 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
           versionId: fixture.versionId,
           kind: "watermarked",
           shareId: fixture.shareId,
-          meta: { spec_hash: hash },
+          meta: {
+            spec_hash: hash,
+            frame_rate_num: 24,
+            frame_rate_den: 1,
+            codec: "avc1.64002A",
+            coded_width: 1920,
+            coded_height: 1080,
+            height: 1080,
+            bit_rate: 4500000,
+            output_color: {
+              primaries: "bt709",
+              transfer: "bt709",
+              matrix: "bt709",
+              range: "tv",
+              chromaLocation: "left",
+            },
+          },
           content: "burned-ladder",
         });
         const ready = await json<{
           versions: Array<{
-            sources: Array<{ kind: string; url: string }>;
+            sources: Array<{
+              kind: string;
+              url: string;
+              meta: Record<string, unknown>;
+            }>;
             watermark: string | null;
           }>;
         }>(await req(h, detailPath, { cookie: viewer.cookie }));
         expect(ready.versions[0]?.watermark).toBe("ready");
         const sources = ready.versions[0]?.sources ?? [];
         expect(sources.map((source) => source.kind)).toEqual(["watermarked"]);
+        expect(sources[0]?.meta).toMatchObject({
+          codec: "avc1.64002A",
+          coded_width: 1920,
+          coded_height: 1080,
+          output_color: {
+            primaries: "bt709",
+            transfer: "bt709",
+            matrix: "bt709",
+            range: "tv",
+            chromaLocation: "left",
+          },
+        });
         const fetched = await fetchUrl(h, sources[0]?.url ?? "");
         expect(await fetched.text()).toBe("burned-ladder");
+      },
+    );
+
+    ctx.itBlob(
+      "reauthorizes expired share playback without bypassing current watermark policy",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const fixture = await makeShare(h, seed, {
+          passphrase: "open-sesame-1",
+        });
+        const proxy = await seedRendition(h, {
+          versionId: fixture.versionId,
+          content: "long-session-share-proxy",
+        });
+        const viewer = await accessShare(h, fixture.slug, {
+          name: "Client",
+          passphrase: "open-sesame-1",
+        });
+        const now = Math.floor(Date.now() / 1000);
+        const expired = async (blobKey: string) =>
+          new SignJWT({
+            share_id: fixture.shareId,
+            asset_id: fixture.assetId,
+            version_id: fixture.versionId,
+            blob_key: blobKey,
+          })
+            .setProtectedHeader({ alg: "HS256" })
+            .setIssuedAt(now - 120)
+            .setExpirationTime(now - 60)
+            .sign(new TextEncoder().encode(h.config.SECRET_KEY));
+        const mediaPath = (token: string) =>
+          `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}/media/file?token=${encodeURIComponent(token)}`;
+        const proxyToken = await expired(proxy.blobKey);
+        const recovered = await req(h, mediaPath(proxyToken), {
+          cookie: viewer.cookie,
+        });
+        expect(recovered.status).toBe(200);
+        expect(await recovered.text()).toBe("long-session-share-proxy");
+        expect((await req(h, mediaPath(proxyToken))).status).toBe(401);
+
+        await req(h, `/api/v1/shares/${fixture.shareId}`, {
+          method: "PATCH",
+          cookie: seed.admin.cookie,
+          json: { watermark_spec: { text: "CURRENT POLICY" } },
+        });
+        expect(
+          (
+            await req(h, mediaPath(proxyToken), {
+              cookie: viewer.cookie,
+            })
+          ).status,
+        ).toBe(401);
+        const hash = await specHashOf(h, fixture.shareId);
+        const burned = await seedRendition(h, {
+          versionId: fixture.versionId,
+          kind: "watermarked",
+          shareId: fixture.shareId,
+          meta: { spec_hash: hash },
+          content: "current-burned-file",
+        });
+        const burnedToken = await expired(burned.blobKey);
+        const burnedResponse = await req(h, mediaPath(burnedToken), {
+          cookie: viewer.cookie,
+        });
+        expect(burnedResponse.status).toBe(200);
+        expect(await burnedResponse.text()).toBe("current-burned-file");
       },
     );
   });

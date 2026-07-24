@@ -12,6 +12,7 @@ import {
   SOFTWARE_ACCELERATION,
   extractStill,
   hardwareAccelerationName,
+  playableRenditionMetadata,
   probeFile,
   renderWatermark,
   runTranscode,
@@ -158,6 +159,10 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
           body.timecode,
         );
       }
+      const meta =
+        body.kind === "still"
+          ? { frame: body.frame }
+          : playableRenditionMetadata(await probeFile(body.output_path));
       const complete = {
         job_id: body.job_id,
         status: "complete",
@@ -165,7 +170,7 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
           {
             kind: body.kind === "still" ? "still" : "watermarked",
             key: body.output_path,
-            meta: body.kind === "still" ? { frame: body.frame } : {},
+            meta,
           },
         ],
         failures: [],

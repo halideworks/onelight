@@ -35,6 +35,7 @@ import {
   peaksPcmArgs,
   peaksSamplesPerPixel,
   planRenditions,
+  playableRenditionMetadata,
   posterSeekSeconds,
   primaryRenditionKinds,
   probeArgs,
@@ -103,6 +104,53 @@ describe("probe normalization", () => {
         pix_fmt: "yuv420p10le",
       }),
     ).toBe("av01.0.13M.10");
+  });
+
+  it("builds a complete playable contract from the encoded file probe", () => {
+    expect(
+      playableRenditionMetadata(
+        mediaInfoOf({
+          format: { bit_rate: "4500000" },
+          streams: [
+            {
+              codec_type: "video",
+              codec_name: "h264",
+              profile: "High",
+              level: 42,
+              width: 1920,
+              height: 1080,
+            },
+          ],
+          sourceColor: {
+            primaries: "bt709",
+            transfer: "bt709",
+            matrix: "bt709",
+            range: "tv",
+            chromaLocation: "left",
+            pixelFormat: "yuv420p",
+            bitsPerRawSample: "8",
+            fieldOrder: "progressive",
+            sideData: [],
+            assumed: false,
+          },
+        }),
+      ),
+    ).toMatchObject({
+      frame_rate_num: 24000,
+      frame_rate_den: 1001,
+      codec: "avc1.64002A",
+      coded_width: 1920,
+      coded_height: 1080,
+      height: 1080,
+      bit_rate: 4500000,
+      output_color: {
+        primaries: "bt709",
+        transfer: "bt709",
+        matrix: "bt709",
+        range: "tv",
+        chromaLocation: "left",
+      },
+    });
   });
 
   it("prefers avg_frame_rate and does not flag rounding differences as VFR", () => {

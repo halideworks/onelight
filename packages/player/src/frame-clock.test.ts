@@ -4,6 +4,7 @@ import {
   frameAtCurrentTime,
   frameAtMediaTime,
   frameAtReferenceAudioTime,
+  frameAtReferenceWallTime,
   frameDuration,
   mediaTimeInsideFrame,
   verifyFrame,
@@ -124,5 +125,13 @@ describe("player frame clock", () => {
     expect(frameAtReferenceAudioTime(sourceTime / 4, 4, rate)).toBe(
       sourceFrame,
     );
+  });
+
+  it("advances silent reference playback from an exact start frame", () => {
+    const rate = { num: 24000, den: 1001 };
+    expect(frameAtReferenceWallTime(100, 1001, 1, rate)).toBe(124);
+    expect(frameAtReferenceWallTime(100, 1001, 2, rate)).toBe(148);
+    expect(frameAtReferenceWallTime(100, 1001, 4, rate)).toBe(196);
+    expect(frameAtReferenceWallTime(100, 0, 4, rate)).toBe(100);
   });
 });

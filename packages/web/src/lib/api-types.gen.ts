@@ -13443,6 +13443,7 @@ export interface paths {
                                 label: string;
                                 url: string | null;
                             }[];
+                            has_audio: boolean;
                         };
                     };
                 };

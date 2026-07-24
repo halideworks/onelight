@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
+import { SignJWT } from "jose";
 import { crc32cBase64 } from "@onelight/core";
-import { jobs, projectEvents, uploadSessions } from "@onelight/db/schema";
+import {
+  assetVersions,
+  jobs,
+  projectEvents,
+  uploadSessions,
+} from "@onelight/db/schema";
 import {
   assertSnakeCaseKeys,
   errorCode,
@@ -926,6 +932,18 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
         projectId: seed.project.id,
         userId: seed.admin.id,
       });
+      await h.db
+        .update(assetVersions)
+        .set({
+          mediaInfoJson: JSON.stringify({
+            streams: [
+              { codec_type: "video" },
+              { codec_type: "audio", codec_name: "aac" },
+            ],
+          }),
+        })
+        .where(eq(assetVersions.id, media.versionId))
+        .run();
       const rendition = await seedRendition(h, { versionId: media.versionId });
       const response = await req(
         h,
@@ -935,12 +953,54 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
       expect(response.status).toBe(200);
       const body = await json<{
         items: Array<{ id: string; kind: string; url: string | null }>;
+        has_audio: boolean;
       }>(response);
+      expect(body.has_audio).toBe(true);
       const item = body.items.find((entry) => entry.id === rendition.id);
       expect(item?.kind).toBe("proxy_1080");
       if (ctx.caps.blob) expect(item?.url).toContain("token=");
       else expect(item?.url).toBeNull();
     });
+
+    ctx.itBlob(
+      "reauthorizes an expired playback URL against the active member session",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const media = await seedAssetVersion(h, {
+          workspaceId: seed.workspaceId,
+          projectId: seed.project.id,
+          userId: seed.admin.id,
+        });
+        const rendition = await seedRendition(h, {
+          versionId: media.versionId,
+          content: "long-session-proxy",
+        });
+        const now = Math.floor(Date.now() / 1000);
+        const token = await new SignJWT({
+          version_id: media.versionId,
+          blob_key: rendition.blobKey,
+        })
+          .setProtectedHeader({ alg: "HS256" })
+          .setIssuedAt(now - 120)
+          .setExpirationTime(now - 60)
+          .sign(new TextEncoder().encode(h.config.SECRET_KEY));
+        const key = rendition.blobKey
+          .split("/")
+          .map(encodeURIComponent)
+          .join("/");
+        const path = `/api/v1/media/${key}?token=${encodeURIComponent(token)}`;
+        const recovered = await req(h, path, { cookie: seed.viewer.cookie });
+        expect(recovered.status).toBe(200);
+        expect(await recovered.text()).toBe("long-session-proxy");
+        const signedOut = await req(h, path);
+        expect(signedOut.status).toBe(401);
+        const foreign = await req(h, path, {
+          cookie: seed.other.admin.cookie,
+        });
+        expect(foreign.status).toBe(404);
+      },
+    );
   });
 
   describe("jobs", () => {

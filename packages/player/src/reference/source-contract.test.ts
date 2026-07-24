@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { referenceSourceContract } from "./source-contract.js";
+import {
+  referenceSourceAvailability,
+  referenceSourceContract,
+} from "./source-contract.js";
 
 const rendition = {
   kind: "proxy_1080",
@@ -74,6 +77,38 @@ describe("reference source contract", () => {
         100,
       ),
     ).toBeNull();
+  });
+
+  it("accepts a burned watermark rendition with the same complete contract", () => {
+    expect(
+      referenceSourceContract(
+        { ...rendition, kind: "watermarked" },
+        { num: 24000, den: 1001 },
+        100,
+      ),
+    ).not.toBeNull();
+  });
+
+  it("reports why a rendition is unavailable", () => {
+    expect(
+      referenceSourceAvailability(
+        {
+          ...rendition,
+          kind: "watermarked",
+          meta: {
+            frame_rate_num: 24000,
+            frame_rate_den: 1001,
+            width: 1920,
+            height: 1080,
+          },
+        },
+        { num: 24000, den: 1001 },
+        100,
+      ),
+    ).toEqual({
+      contract: null,
+      reason: "The rendition is missing its complete output color contract.",
+    });
   });
 
   it("accepts 4K through 30 fps and fails closed above that scope", () => {

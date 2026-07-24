@@ -3,6 +3,7 @@
     frameAtCurrentTime,
     frameAtMediaTime,
     frameAtReferenceAudioTime,
+    frameAtReferenceWallTime,
     frameDuration,
     mediaTimeInsideFrame
   } from './frame-clock.js';
@@ -51,7 +52,7 @@
   import { captionCuesAtFrame, type PlayerCaptionCue } from './captions.js';
   import type { SpriteCue } from './filmstrip.js';
   import { ReferencePictureBackend } from './reference/reference-backend.js';
-  import { referenceSourceContract } from './reference/source-contract.js';
+  import { referenceSourceAvailability } from './reference/source-contract.js';
   import { shouldRequestReferencePlayback } from './reference-selection.js';
   import { untrack } from 'svelte';
   import type {
@@ -79,6 +80,7 @@
     renditions = [],
     colorMetadata = undefined,
     shuttleAudio = null,
+    sourceHasAudio = true,
     allowDrawing = false,
     drawDefaultColor = undefined,
     chrome = 'full',
@@ -114,6 +116,7 @@
        active rendition's meta takes precedence when a ladder is available. */
     colorMetadata?: Record<string, unknown> | undefined;
     shuttleAudio?: ShuttleAudioSources | null;
+    sourceHasAudio?: boolean;
     allowDrawing?: boolean;
     /* The author's own ink (annotationInkFor them): the default drawing and
        text colour until they pick another. */
@@ -217,6 +220,8 @@
   let referenceClockRate: PicturePlaybackRate = 1;
   let referenceClockFrame = 0;
   let referenceClockUrl = '';
+  let referenceWallStartedAt = 0;
+  let referenceWallStartFrame = 0;
   let referenceClockRaf: number | null = null;
   let referenceClockHealthTimer: ReturnType<typeof setTimeout> | null = null;
   let referenceGeneration = 0;
@@ -692,10 +697,16 @@
       : String(value);
 
   /* ---- rendition ladder ---- */
-  const RUNG_HEIGHTS: Record<string, number> = { proxy_540: 540, proxy_1080: 1080, proxy_2160: 2160 };
+  const RUNG_HEIGHTS: Record<string, number> = {
+    proxy_540: 540,
+    proxy_1080: 1080,
+    watermarked: 1080,
+    proxy_2160: 2160
+  };
   const RUNG_LABELS: Record<string, string> = {
     proxy_540: '540',
     proxy_1080: '1080',
+    watermarked: 'Watermarked',
     proxy_2160: '4K',
     hdr_av1: 'HDR',
     hdr_hevc: 'HDR'
@@ -705,6 +716,9 @@
       .filter((rendition) => RUNG_HEIGHTS[rendition.kind] !== undefined && rendition.url)
       .slice()
       .sort((a, b) => (RUNG_HEIGHTS[a.kind] ?? 0) - (RUNG_HEIGHTS[b.kind] ?? 0))
+  );
+  const qualityLadder = $derived(
+    ladder.filter((rendition) => rendition.kind.startsWith('proxy_'))
   );
   const hdrRenditions = $derived(
     renditions.filter(
@@ -921,11 +935,18 @@
   const activeColorContracts = $derived(
     renditionColorContracts(activeRendition?.meta ?? colorMetadata)
   );
-  const activeReferenceContract = $derived(
-    referenceSourceContract(activeRendition, rate, durationFrames)
+  const activeReferenceAvailability = $derived(
+    referenceSourceAvailability(activeRendition, rate, durationFrames)
+  );
+  const activeReferenceContract = $derived(activeReferenceAvailability.contract);
+  const referenceUnavailableReason = $derived(
+    activeReferenceAvailability.reason ??
+      (sourceHasAudio && !shuttleAudio?.x1
+        ? 'The frame-locked reference audio sidecar is not ready.'
+        : null)
   );
   const referencePossible = $derived(
-    Boolean(activeReferenceContract && shuttleAudio?.x1)
+    Boolean(activeReferenceContract && (!sourceHasAudio || shuttleAudio?.x1))
   );
   /* Automatic selection stays fail-closed until the real Safari, Windows
      Chromium and Windows Firefox hardware matrix in BCR-T11 passes. Manual
@@ -1171,22 +1192,22 @@
   $effect(() => {
     const contract = activeReferenceContract;
     const requested = referenceRequested;
-    const clock = shuttleAudio?.x1 ?? null;
+    const clockReady = !sourceHasAudio || Boolean(shuttleAudio?.x1);
     const sourceKey = contract?.url ?? '';
     if (
       !requested ||
       !contract ||
-      !clock ||
+      !clockReady ||
       sourceKey === blockedReferenceSource
     ) {
       if (
         (referenceActive || referenceLoading) &&
-        (!requested || !contract || !clock)
+        (!requested || !contract || !clockReady)
       )
         closeReferenceToNative(untrack(() => frame), untrack(() => playing), null);
-      if (requested && (!contract || !clock))
+      if (requested && (!contract || !clockReady))
         referenceFailure =
-          !clock
+          !clockReady
             ? 'The 1x reference audio clock is unavailable for this version.'
             : 'The rendition metadata is incomplete for reference playback.';
       return;
@@ -1890,6 +1911,11 @@
     const url = referenceClockUrlFor(speed);
     referenceClockRate = speed;
     referenceClockFrame = boundedFrame(at);
+    if (!sourceHasAudio) {
+      referenceWallStartFrame = referenceClockFrame;
+      referenceWallStartedAt = performance.now();
+      return true;
+    }
     if (!track || !url) return false;
     if (referenceClockUrl !== url) {
       referenceClockUrl = url;
@@ -1914,14 +1940,20 @@
     const backend = referenceBackend;
     if (
       !referenceActive ||
-      !track ||
       !backend ||
       forwardSpeed === 0 ||
-      track.paused
+      (sourceHasAudio && (!track || track.paused))
     )
       return;
     let target = boundedFrame(
-      frameAtReferenceAudioTime(track.currentTime, referenceClockRate, rate)
+      sourceHasAudio && track
+        ? frameAtReferenceAudioTime(track.currentTime, referenceClockRate, rate)
+        : frameAtReferenceWallTime(
+            referenceWallStartFrame,
+            performance.now() - referenceWallStartedAt,
+            referenceClockRate,
+            rate
+          )
     );
     let wrapped = false;
     if (loop && loopEnd !== null && target >= loopEnd) {
@@ -1950,6 +1982,11 @@
     }
     stopReferenceClock();
     backend.play(at, speed);
+    if (!sourceHasAudio) {
+      onplaystate?.(true);
+      referenceClockRaf = requestAnimationFrame(referenceClockTick);
+      return;
+    }
     void track.play().then(
       () => {
         if (
@@ -2096,6 +2133,10 @@
   };
 
   const startShuttleAudio = (nextRate: 2 | 4): void => {
+    if (!sourceHasAudio) {
+      stopShuttleAudio();
+      return;
+    }
     const track = shuttleTrack;
     const media = video;
     const url = shuttleUrlFor(nextRate);
@@ -3098,11 +3139,11 @@
         <button type="button" aria-pressed={surround === 'black'} onclick={() => setSurround('black')}>Black</button>
       </div>
       {/if}
-      {#if ladder.length && !isAudio}
+      {#if qualityLadder.length && !isAudio}
         <span class="ctl-label" id="quality-label">Quality</span>
         <div class="seg" role="group" aria-labelledby="quality-label">
           <button type="button" aria-pressed={quality === 'auto'} onclick={() => { quality = 'auto'; }}>Auto</button>
-          {#each ladder as rung (rung.kind)}
+          {#each qualityLadder as rung (rung.kind)}
             <button type="button" aria-pressed={quality === rung.kind} onclick={() => { quality = rung.kind; }}>
               {RUNG_LABELS[rung.kind] ?? rung.kind}
             </button>
@@ -3120,6 +3161,27 @@
         </div>
       {/if}
       {#if !isAudio}
+        <span class="ctl-label" id="playback-label">Playback</span>
+        <div class="seg" role="group" aria-labelledby="playback-label">
+          <button
+            type="button"
+            aria-pressed={colorPlaybackMode === 'automatic'}
+            onclick={() => { selectColorPlaybackMode('automatic'); }}
+          >Automatic</button>
+          <button
+            type="button"
+            aria-pressed={colorPlaybackMode === 'native'}
+            onclick={() => { selectColorPlaybackMode('native'); }}
+          >Native</button>
+          <button
+            type="button"
+            aria-pressed={colorPlaybackMode === 'reference'}
+            aria-label={referencePossible ? 'Reference playback' : `Reference playback unavailable. ${referenceUnavailableReason ?? ''}`}
+            title={referencePossible ? 'Use the frame-accurate reference renderer' : referenceUnavailableReason ?? 'Reference playback is unavailable.'}
+            disabled={!referencePossible}
+            onclick={() => { selectColorPlaybackMode('reference'); }}
+          >Reference</button>
+        </div>
         <button
           type="button"
           class="color-state"
@@ -3148,25 +3210,6 @@
             onclick={() => { colorPanelOpen = false; }}
           >Close</button>
         </div>
-        {#if referencePossible}
-          <div class="playback-mode" role="group" aria-label="Color playback path">
-            <button
-              type="button"
-              aria-pressed={colorPlaybackMode === 'automatic'}
-              onclick={() => { selectColorPlaybackMode('automatic'); }}
-            >Automatic</button>
-            <button
-              type="button"
-              aria-pressed={colorPlaybackMode === 'native'}
-              onclick={() => { selectColorPlaybackMode('native'); }}
-            >Native</button>
-            <button
-              type="button"
-              aria-pressed={colorPlaybackMode === 'reference'}
-              onclick={() => { selectColorPlaybackMode('reference'); }}
-            >Reference</button>
-          </div>
-        {/if}
         <dl class="color-facts">
           <div class="color-fact wide">
             <dt>Active path</dt>
@@ -3219,6 +3262,11 @@
         </dl>
         {#if activeColorContracts.source?.assumption}
           <p class="color-assumption">{activeColorContracts.source.assumption}</p>
+        {/if}
+        {#if !referencePossible && referenceUnavailableReason}
+          <p class="color-assumption">
+            Reference playback is unavailable: {referenceUnavailableReason}
+          </p>
         {/if}
         {#if
           referencePossible &&
@@ -3748,20 +3796,6 @@
   .color-panel-close {
     padding: 5px 9px;
     background: var(--n-150, #1c1c1c);
-  }
-  .playback-mode {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    margin-bottom: 10px;
-  }
-  .playback-mode button {
-    padding: 6px 10px;
-    background: var(--n-150, #1c1c1c);
-  }
-  .playback-mode button[aria-pressed='true'] {
-    background: var(--n-300, #2e2e2e);
-    color: var(--n-900, #e9e9e9);
   }
   .color-facts {
     display: grid;

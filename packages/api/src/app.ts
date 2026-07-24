@@ -16,7 +16,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
-import { SignJWT, createRemoteJWKSet, jwtVerify } from "jose";
+import { SignJWT, compactVerify, createRemoteJWKSet, jwtVerify } from "jose";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import {
   PALETTES,
@@ -5711,6 +5711,42 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
      the disposition and no call site can get it wrong. */
   const DOWNLOAD_TOKEN_TTL = "12h";
   const DOWNLOAD_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+  const mediaSigningKey = new TextEncoder().encode(env.config.SECRET_KEY);
+
+  const verifyMediaToken = async (
+    token: string,
+  ): Promise<{
+    payload: Record<string, unknown>;
+    expired: boolean;
+  }> => {
+    try {
+      const verified = await jwtVerify(token, mediaSigningKey);
+      return {
+        payload: verified.payload,
+        expired: false,
+      };
+    } catch (error) {
+      if (
+        !error ||
+        typeof error !== "object" ||
+        !("code" in error) ||
+        error.code !== "ERR_JWT_EXPIRED"
+      )
+        throw error;
+      const verified = await compactVerify(token, mediaSigningKey);
+      if (verified.protectedHeader.alg !== "HS256")
+        throw new Error("Media token algorithm is invalid.");
+      const parsed = JSON.parse(
+        new TextDecoder().decode(verified.payload),
+      ) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        throw new Error("Media token payload is invalid.");
+      return {
+        payload: parsed as Record<string, unknown>,
+        expired: true,
+      };
+    }
+  };
 
   const issueMediaToken = async (
     share: typeof shares.$inferSelect,
@@ -5729,7 +5765,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
       .setExpirationTime(disposition ? DOWNLOAD_TOKEN_TTL : "15m")
-      .sign(new TextEncoder().encode(env.config.SECRET_KEY));
+      .sign(mediaSigningKey);
 
   const publicMediaUrl = async (
     share: typeof shares.$inferSelect,
@@ -5778,6 +5814,91 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   const shareIsWatermarked = (share: typeof shares.$inferSelect): boolean =>
     Boolean(share.watermarkSpecJson && share.watermarkSpecHash);
 
+  const authorizeExpiredShareMedia = async (
+    c: Context<{ Variables: Variables }>,
+    share: typeof shares.$inferSelect,
+    assetId: string,
+    payload: Record<string, unknown>,
+    blobKey: string,
+  ): Promise<void> => {
+    if (payload.disposition !== undefined) throw errors.unauthorized();
+    const projection = await publicShare(c, share);
+    if (!projection.viewer) throw errors.unauthorized();
+    const asset = projection.assets.find(
+      (candidate: PublicShareAsset) =>
+        candidate.id === assetId && candidate.deletedAt === null,
+    );
+    const versionId =
+      typeof payload.version_id === "string" ? payload.version_id : undefined;
+    if (
+      !asset ||
+      !versionId ||
+      (!share.showAllVersions && asset.currentVersionId !== versionId)
+    )
+      throw errors.unauthorized();
+    const version = (
+      await env.db
+        .select({ id: assetVersions.id })
+        .from(assetVersions)
+        .where(
+          and(
+            eq(assetVersions.id, versionId),
+            eq(assetVersions.assetId, asset.id),
+            isNull(assetVersions.deletedAt),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (!version) throw errors.unauthorized();
+    if (!shareIsWatermarked(share) || asset.kind !== "video") return;
+
+    const burned = await watermarkedRenditionFor(share, versionId);
+    if (burned?.blobKey === blobKey) return;
+    const versionRenditions = await env.db
+      .select({
+        kind: renditions.kind,
+        blobKey: renditions.blobKey,
+        metaJson: renditions.metaJson,
+      })
+      .from(renditions)
+      .where(
+        and(eq(renditions.versionId, versionId), isNull(renditions.shareId)),
+      )
+      .all();
+    const playableKinds = new Set([
+      "proxy_540",
+      "proxy_1080",
+      "proxy_2160",
+      "hdr_av1",
+      "hdr_hevc",
+      "proxy_audio",
+    ]);
+    if (
+      versionRenditions.some(
+        (rendition) =>
+          !playableKinds.has(rendition.kind) &&
+          (rendition.blobKey === blobKey ||
+            parseJsonObject(rendition.metaJson).vtt_blob_key === blobKey),
+      )
+    )
+      return;
+    const caption = (
+      await env.db
+        .select({ id: captionTracks.id })
+        .from(captionTracks)
+        .where(
+          and(
+            eq(captionTracks.versionId, versionId),
+            eq(captionTracks.blobKey, blobKey),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (!caption) throw errors.unauthorized();
+  };
+
   const attachmentDisposition = (filename: string): string =>
     `attachment; filename="${filename.replace(/[\r\n"]/g, "")}"`;
 
@@ -5823,7 +5944,52 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
       .setExpirationTime(disposition ? DOWNLOAD_TOKEN_TTL : "15m")
-      .sign(new TextEncoder().encode(env.config.SECRET_KEY));
+      .sign(mediaSigningKey);
+
+  const authorizeExpiredPrivateMedia = async (
+    payload: Record<string, unknown>,
+    actor: ActorUser,
+  ): Promise<void> => {
+    if (payload.disposition !== undefined) throw errors.unauthorized();
+    if (typeof payload.version_id === "string") {
+      const row = (
+        await env.db
+          .select({ projectId: assets.projectId })
+          .from(assetVersions)
+          .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+          .where(
+            and(
+              eq(assetVersions.id, payload.version_id),
+              isNull(assetVersions.deletedAt),
+              isNull(assets.deletedAt),
+            ),
+          )
+          .limit(1)
+          .all()
+      )[0];
+      if (!row) throw errors.notFound();
+      await requireProject(row.projectId, actor, "viewer");
+      return;
+    }
+    if (typeof payload.project_id === "string") {
+      await requireProject(payload.project_id, actor, "viewer");
+      return;
+    }
+    if (typeof payload.export_id === "string") {
+      const row = (
+        await env.db
+          .select({ projectId: exportJobs.projectId })
+          .from(exportJobs)
+          .where(eq(exportJobs.id, payload.export_id))
+          .limit(1)
+          .all()
+      )[0];
+      if (!row) throw errors.notFound();
+      await requireProject(row.projectId, actor, "viewer");
+      return;
+    }
+    throw errors.unauthorized();
+  };
 
   const privateMediaUrl = async (
     scope: MediaScope,
@@ -6839,7 +7005,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .select({ asset: assets, link: shareAssets })
       .from(shareAssets)
       .innerJoin(assets, eq(shareAssets.assetId, assets.id))
-      .where(eq(shareAssets.shareId, share.id))
+      .where(and(eq(shareAssets.shareId, share.id), isNull(assets.deletedAt)))
       .orderBy(asc(shareAssets.sortOrder))
       .all();
     return {
@@ -7151,14 +7317,19 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const versions = await env.db
       .select()
       .from(assetVersions)
-      .where(eq(assetVersions.assetId, asset.id))
+      .where(
+        and(
+          eq(assetVersions.assetId, asset.id),
+          isNull(assetVersions.deletedAt),
+        ),
+      )
       .orderBy(desc(assetVersions.versionNo))
       .all();
     const visibleVersions = projection.share.showAllVersions
       ? versions
-      : versions.slice(0, 1);
+      : versions.filter((version) => version.id === asset.currentVersionId);
     const share = projection.share;
-    const watermarked = shareIsWatermarked(share);
+    const watermarked = shareIsWatermarked(share) && asset.kind === "video";
     /* proxy_audio rides the same list: for an audio asset it is the whole
        ladder, and a room that can play a video source can play this one. */
     const proxyKinds = [
@@ -8111,25 +8282,34 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (!token || !env.blobStore) throw errors.unauthorized();
     let blobKey: string;
     let disposition: string | undefined;
+    let payload: Record<string, unknown>;
+    let expired: boolean;
     try {
-      const verified = await jwtVerify(
-        token,
-        new TextEncoder().encode(env.config.SECRET_KEY),
-      );
+      const verified = await verifyMediaToken(token);
+      payload = verified.payload;
+      expired = verified.expired;
       if (
-        verified.payload.share_id !== share.id ||
-        verified.payload.asset_id !== c.req.param("assetId") ||
-        typeof verified.payload.blob_key !== "string"
+        payload.share_id !== share.id ||
+        payload.asset_id !== c.req.param("assetId") ||
+        typeof payload.blob_key !== "string"
       )
         throw new Error("Token claims do not match this share asset.");
-      blobKey = verified.payload.blob_key;
+      blobKey = payload.blob_key;
       // Downloads carry an attachment disposition in the verified claim;
       // it is sanitized again before reaching the header.
-      if (typeof verified.payload.disposition === "string")
-        disposition = sanitizeDisposition(verified.payload.disposition);
+      if (typeof payload.disposition === "string")
+        disposition = sanitizeDisposition(payload.disposition);
     } catch {
       throw errors.unauthorized();
     }
+    if (expired)
+      await authorizeExpiredShareMedia(
+        c,
+        share,
+        c.req.param("assetId"),
+        payload,
+        blobKey,
+      );
     return serveBlob(c, blobKey, disposition);
   });
 
@@ -10611,6 +10791,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .from(renditions)
       .where(eq(renditions.versionId, version.id))
       .all();
+    const mediaInfo = parseJsonObject(version.mediaInfoJson);
+    const streams = Array.isArray(mediaInfo.streams) ? mediaInfo.streams : [];
     return c.json({
       items: await Promise.all(
         rows.map(async (rendition: typeof renditions.$inferSelect) => {
@@ -10641,6 +10823,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         }),
       ),
       captions: await captionsWire(version.id),
+      has_audio: streams.some(
+        (stream) =>
+          stream &&
+          typeof stream === "object" &&
+          !Array.isArray(stream) &&
+          (stream as Record<string, unknown>).codec_type === "audio",
+      ),
     });
   });
 
@@ -11051,23 +11240,26 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const token = c.req.query("token");
     if (!token) throw errors.unauthorized();
     let disposition: string | undefined;
+    let payload: Record<string, unknown>;
+    let expired: boolean;
     try {
-      const verified = await jwtVerify(
-        token,
-        new TextEncoder().encode(env.config.SECRET_KEY),
-      );
+      const verified = await verifyMediaToken(token);
+      payload = verified.payload;
+      expired = verified.expired;
       const scoped =
-        typeof verified.payload.version_id === "string" ||
-        typeof verified.payload.project_id === "string" ||
-        typeof verified.payload.export_id === "string";
-      if (verified.payload.blob_key !== key || !scoped)
+        typeof payload.version_id === "string" ||
+        typeof payload.project_id === "string" ||
+        typeof payload.export_id === "string";
+      if (payload.blob_key !== key || !scoped)
         throw new Error("Token claims do not match this media key.");
       // Content-disposition comes from the verified claim only, sanitized.
-      if (typeof verified.payload.disposition === "string")
-        disposition = sanitizeDisposition(verified.payload.disposition);
+      if (typeof payload.disposition === "string")
+        disposition = sanitizeDisposition(payload.disposition);
     } catch {
       throw errors.unauthorized();
     }
+    if (expired)
+      await authorizeExpiredPrivateMedia(payload, userFromContext(c));
     return serveBlob(c, key, disposition);
   });
 

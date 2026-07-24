@@ -87,6 +87,7 @@
   let source = $state('');
   let renditionOptions = $state<PlayerRendition[]>([]);
   let shuttleAudio = $state<ShuttleAudioSources | null>(null);
+  let sourceHasAudio = $state(true);
   /* The version's generated poster: the player shows it while the first
      frame decodes, so opening an asset is never a black box. */
   let posterUrl = $state<string | null>(null);
@@ -537,12 +538,17 @@
 
   const loadRenditions = async (versionId: string, token: number): Promise<void> => {
     try {
-      const listing = await api<{ items: Rendition[]; captions?: Array<{ url: string | null }> }>(
+      const listing = await api<{
+        items: Rendition[];
+        captions?: Array<{ url: string | null }>;
+        has_audio: boolean;
+      }>(
         `/api/v1/versions/${versionId}/renditions`
       );
       const items = listing.items;
       if (token !== versionToken) return;
       captionsUrl = listing.captions?.find((track) => track.url)?.url ?? null;
+      sourceHasAudio = listing.has_audio;
       renditionOptions = items
         .filter((candidate) =>
           ['proxy_540', 'proxy_1080', 'proxy_2160', 'hdr_av1', 'hdr_hevc'].includes(
@@ -733,6 +739,7 @@
     source = '';
     renditionOptions = [];
     shuttleAudio = null;
+    sourceHasAudio = true;
     filmstrip = null;
     posterUrl = null;
     captionsUrl = null;
@@ -762,7 +769,7 @@
 
   const load = async (id: string): Promise<void> => {
     versionToken += 1;
-    asset = null; versions = []; selectedVersionId = null; source = ''; renditionOptions = []; shuttleAudio = null;
+    asset = null; versions = []; selectedVersionId = null; source = ''; renditionOptions = []; shuttleAudio = null; sourceHasAudio = true;
     filmstrip = null; waveformUrl = null; peaksUrl = null; spectrogramUrl = null; posterUrl = null;
     stillUrl = null; stillPrevUrl = null; rate = null; dropFrame = false; durationFrames = null;
     error = ''; comments = []; commentError = ''; highlightedId = null; pendingDrawing = null;
@@ -1734,6 +1741,7 @@
             {markers}
             renditions={renditionOptions}
             {shuttleAudio}
+            {sourceHasAudio}
             {filmstrip}
             {waveformUrl}
             colorCheckBuildId={appVersion}

@@ -23187,11 +23187,15 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "has_audio": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
                     "items",
-                    "captions"
+                    "captions",
+                    "has_audio"
                   ],
                   "additionalProperties": false
                 }

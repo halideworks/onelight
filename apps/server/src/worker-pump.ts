@@ -102,6 +102,35 @@ const parseObject = (value: string): Record<string, unknown> => {
   }
 };
 
+const recordValue = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const positiveInteger = (value: unknown): boolean =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+const completePlayableRenditionMeta = (
+  meta: Record<string, unknown>,
+): boolean => {
+  const color = recordValue(meta.output_color);
+  return Boolean(
+    positiveInteger(meta.frame_rate_num) &&
+    positiveInteger(meta.frame_rate_den) &&
+    positiveInteger(meta.coded_width) &&
+    positiveInteger(meta.coded_height) &&
+    positiveInteger(meta.bit_rate) &&
+    typeof meta.codec === "string" &&
+    meta.codec.length > 0 &&
+    color &&
+    typeof color.primaries === "string" &&
+    typeof color.transfer === "string" &&
+    typeof color.matrix === "string" &&
+    typeof color.range === "string" &&
+    typeof (color.chroma_location ?? color.chromaLocation) === "string",
+  );
+};
+
 // Mirror of the API's appendProjectEvent row shape (ULID id, type, JSON
 // payload) so the web app can live-update transcode progress over the
 // project event stream. Best effort: a failed event insert never fails the
@@ -409,6 +438,57 @@ const processWatermarkJob = async (
   );
   if (state.status !== "complete")
     throw new Error(state.error ?? "Watermark render failed.");
+  const renderedMeta =
+    state.result?.renditions?.find(
+      (rendition) => rendition.kind === "watermarked",
+    )?.meta ?? null;
+  if (!renderedMeta || !completePlayableRenditionMeta(renderedMeta))
+    throw new Error(
+      "Watermark worker did not return a complete playable rendition contract.",
+    );
+  const sourceRendition = (
+    await db
+      .select({ metaJson: renditions.metaJson })
+      .from(renditions)
+      .where(
+        and(
+          eq(renditions.versionId, versionId),
+          eq(renditions.blobKey, payload.blob_key as string),
+          isNull(renditions.shareId),
+        ),
+      )
+      .limit(1)
+      .all()
+  )[0];
+  const sourceMeta = parseObject(sourceRendition?.metaJson ?? "{}");
+  const registeredMeta: Record<string, unknown> = {
+    ...renderedMeta,
+    spec_hash: specHash,
+  };
+  for (const key of [
+    "source_color",
+    "source_timecode_start",
+    "source_timecode_source",
+  ] as const) {
+    if (sourceMeta[key] !== undefined) registeredMeta[key] = sourceMeta[key];
+  }
+  if (
+    registeredMeta.source_timecode_start === undefined &&
+    version?.sourceTimecodeStart
+  )
+    registeredMeta.source_timecode_start = version.sourceTimecodeStart;
+  const versionMediaInfo = parseObject(version?.mediaInfoJson ?? "{}");
+  if (
+    registeredMeta.source_timecode_source === undefined &&
+    versionMediaInfo.sourceTimecodeSource !== undefined
+  )
+    registeredMeta.source_timecode_source =
+      versionMediaInfo.sourceTimecodeSource;
+  if (
+    registeredMeta.source_color === undefined &&
+    versionMediaInfo.sourceColor !== undefined
+  )
+    registeredMeta.source_color = versionMediaInfo.sourceColor;
   const info = await stat(outputPath);
   const checksum = await sha256File(outputPath);
   const superseded = await db
@@ -444,11 +524,7 @@ const processWatermarkJob = async (
       versionId,
       kind: "watermarked",
       blobKey: outputKey,
-      metaJson: JSON.stringify({
-        spec_hash: specHash,
-        frame_rate_num: rate?.num ?? null,
-        frame_rate_den: rate?.den ?? null,
-      }),
+      metaJson: JSON.stringify(registeredMeta),
       size: info.size,
       checksumSha256: checksum,
       shareId,
@@ -475,7 +551,7 @@ const watermarkSweepLimit = (): number => {
     : DEFAULT_WATERMARK_SWEEP_LIMIT;
 };
 
-const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
+export const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
   const now = Date.now();
   const activeShares = await db
     .select({ share: shares, workspaceId: projects.workspaceId })
@@ -530,12 +606,15 @@ const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
         )
         .all();
       if (
-        existing.some(
-          (rendition) => parseObject(rendition.metaJson).spec_hash === specHash,
-        )
+        existing.some((rendition) => {
+          const meta = parseObject(rendition.metaJson);
+          return (
+            meta.spec_hash === specHash && completePlayableRenditionMeta(meta)
+          );
+        })
       )
         continue;
-      const idempotencyKey = `watermark:${row.version.id}:${share.id}:${specHash}`;
+      const idempotencyKey = `watermark:v2:${row.version.id}:${share.id}:${specHash}`;
       const proxy = (
         await db
           .select()
@@ -579,7 +658,11 @@ const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
           .all()
       )[0];
       if (existingJob) {
-        if (existingJob.status !== "dead" && existingJob.status !== "failed")
+        if (
+          existingJob.status !== "dead" &&
+          existingJob.status !== "failed" &&
+          existingJob.status !== "complete"
+        )
           continue;
         await db
           .update(jobs)
@@ -636,104 +719,139 @@ const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
    output already on disk, so ffmpeg only writes the missing audio files. */
 const SHUTTLE_AUDIO_SWEEP_INTERVAL_MS = 30_000;
 const SHUTTLE_AUDIO_SWEEP_LIMIT = 4;
+const SHUTTLE_AUDIO_SCAN_BATCH = 100;
 
 export const sweepShuttleAudioJobs = async (db: AppDb): Promise<number> => {
-  const candidates = await db
-    .select({
-      version: assetVersions,
-      asset: assets,
-      workspaceId: projects.workspaceId,
-    })
-    .from(assetVersions)
-    .innerJoin(assets, eq(assetVersions.assetId, assets.id))
-    .innerJoin(projects, eq(assets.projectId, projects.id))
-    .where(
-      and(
-        inArray(assets.kind, ["video", "audio"]),
-        eq(assetVersions.transcodeStatus, "ready"),
-        isNull(assetVersions.deletedAt),
-        isNull(assets.deletedAt),
-      ),
-    )
-    .orderBy(asc(assetVersions.createdAt))
-    .limit(100)
-    .all();
   let enqueued = 0;
-  for (const row of candidates) {
-    if (enqueued >= SHUTTLE_AUDIO_SWEEP_LIMIT) break;
-    const mediaInfo = parseObject(row.version.mediaInfoJson);
-    const streams = Array.isArray(mediaInfo.streams) ? mediaInfo.streams : [];
-    if (
-      !streams.some(
-        (stream) =>
-          typeof stream === "object" &&
-          stream !== null &&
-          (stream as Record<string, unknown>).codec_type === "audio",
-      )
-    )
-      continue;
-    const requiredKinds: Array<typeof renditions.$inferSelect.kind> =
-      row.asset.kind === "video"
-        ? ["reference_audio_1x", "shuttle_audio_2x", "shuttle_audio_4x"]
-        : ["shuttle_audio_2x", "shuttle_audio_4x"];
-    const existingKinds = new Set(
-      (
-        await db
-          .select({ kind: renditions.kind })
-          .from(renditions)
-          .where(
-            and(
-              eq(renditions.versionId, row.version.id),
-              isNull(renditions.shareId),
-              inArray(renditions.kind, requiredKinds),
-            ),
-          )
-          .all()
-      ).map((rendition) => rendition.kind),
-    );
-    if (requiredKinds.every((kind) => existingKinds.has(kind))) continue;
-    const idempotencyKey = `reference-audio:v2:${row.version.id}`;
-    const existingJob = (
-      await db
-        .select({ id: jobs.id, status: jobs.status })
-        .from(jobs)
-        .where(eq(jobs.idempotencyKey, idempotencyKey))
-        .limit(1)
-        .all()
-    )[0];
-    if (existingJob) continue;
-    const now = Date.now();
-    await db
-      .insert(jobs)
-      .values({
-        id: new UlidGenerator().ulid(),
-        kind: "transcode",
-        payloadJson: JSON.stringify({
-          blob_key: row.version.originalBlobKey,
-          version_id: row.version.id,
-          asset_id: row.asset.id,
-          project_id: row.asset.projectId,
-          workspace_id: row.workspaceId,
-          secondary_only: "shuttle_audio",
-        }),
-        idempotencyKey,
-        status: "queued",
-        priority: -10,
-        capabilityJson: "{}",
-        maxAttempts: 5,
-        attempts: 0,
-        runAfter: now,
-        createdAt: now,
-        startedAt: null,
-        heartbeatAt: null,
-        leaseExpiresAt: null,
-        finishedAt: null,
-        error: null,
-        workerId: null,
+  let offset = 0;
+  while (enqueued < SHUTTLE_AUDIO_SWEEP_LIMIT) {
+    const candidates = await db
+      .select({
+        version: assetVersions,
+        asset: assets,
+        workspaceId: projects.workspaceId,
       })
-      .onConflictDoNothing()
-      .run();
-    enqueued += 1;
+      .from(assetVersions)
+      .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+      .innerJoin(projects, eq(assets.projectId, projects.id))
+      .where(
+        and(
+          inArray(assets.kind, ["video", "audio"]),
+          eq(assetVersions.transcodeStatus, "ready"),
+          isNull(assetVersions.deletedAt),
+          isNull(assets.deletedAt),
+        ),
+      )
+      .orderBy(asc(assetVersions.createdAt), asc(assetVersions.id))
+      .limit(SHUTTLE_AUDIO_SCAN_BATCH)
+      .offset(offset)
+      .all();
+    if (!candidates.length) break;
+    offset += candidates.length;
+    for (const row of candidates) {
+      if (enqueued >= SHUTTLE_AUDIO_SWEEP_LIMIT) break;
+      const mediaInfo = parseObject(row.version.mediaInfoJson);
+      const streams = Array.isArray(mediaInfo.streams) ? mediaInfo.streams : [];
+      if (
+        !streams.some(
+          (stream) =>
+            typeof stream === "object" &&
+            stream !== null &&
+            (stream as Record<string, unknown>).codec_type === "audio",
+        )
+      )
+        continue;
+      const requiredKinds: Array<typeof renditions.$inferSelect.kind> =
+        row.asset.kind === "video"
+          ? ["reference_audio_1x", "shuttle_audio_2x", "shuttle_audio_4x"]
+          : ["shuttle_audio_2x", "shuttle_audio_4x"];
+      const existingKinds = new Set(
+        (
+          await db
+            .select({ kind: renditions.kind })
+            .from(renditions)
+            .where(
+              and(
+                eq(renditions.versionId, row.version.id),
+                isNull(renditions.shareId),
+                inArray(renditions.kind, requiredKinds),
+              ),
+            )
+            .all()
+        ).map((rendition) => rendition.kind),
+      );
+      if (requiredKinds.every((kind) => existingKinds.has(kind))) continue;
+      const idempotencyKey = `reference-audio:v2:${row.version.id}`;
+      const existingJob = (
+        await db
+          .select({ id: jobs.id, status: jobs.status })
+          .from(jobs)
+          .where(eq(jobs.idempotencyKey, idempotencyKey))
+          .limit(1)
+          .all()
+      )[0];
+      const now = Date.now();
+      const payloadJson = JSON.stringify({
+        blob_key: row.version.originalBlobKey,
+        version_id: row.version.id,
+        asset_id: row.asset.id,
+        project_id: row.asset.projectId,
+        workspace_id: row.workspaceId,
+        secondary_only: "shuttle_audio",
+      });
+      if (existingJob) {
+        if (
+          existingJob.status !== "dead" &&
+          existingJob.status !== "failed" &&
+          existingJob.status !== "complete"
+        )
+          continue;
+        await db
+          .update(jobs)
+          .set({
+            payloadJson,
+            status: "queued",
+            priority: -10,
+            maxAttempts: 5,
+            attempts: 0,
+            runAfter: now,
+            startedAt: null,
+            heartbeatAt: null,
+            leaseExpiresAt: null,
+            finishedAt: null,
+            error: null,
+            workerId: null,
+          })
+          .where(eq(jobs.id, existingJob.id))
+          .run();
+        enqueued += 1;
+        continue;
+      }
+      await db
+        .insert(jobs)
+        .values({
+          id: new UlidGenerator().ulid(),
+          kind: "transcode",
+          payloadJson,
+          idempotencyKey,
+          status: "queued",
+          priority: -10,
+          capabilityJson: "{}",
+          maxAttempts: 5,
+          attempts: 0,
+          runAfter: now,
+          createdAt: now,
+          startedAt: null,
+          heartbeatAt: null,
+          leaseExpiresAt: null,
+          finishedAt: null,
+          error: null,
+          workerId: null,
+        })
+        .onConflictDoNothing()
+        .run();
+      enqueued += 1;
+    }
   }
   return enqueued;
 };

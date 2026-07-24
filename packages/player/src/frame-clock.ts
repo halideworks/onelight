@@ -58,6 +58,29 @@ export const frameAtReferenceAudioTime = (
   return Number.isSafeInteger(value) && value > 0 ? value : 0;
 };
 
+/* Silent footage has no audio element to serve as the reference renderer's
+   media clock. A monotonic elapsed time maps through the same integer
+   microsecond arithmetic as an audio clock, then offsets from the exact frame
+   where playback started. */
+export const frameAtReferenceWallTime = (
+  startFrame: number,
+  elapsedMilliseconds: number,
+  playbackRate: 1 | 2 | 4,
+  rate: FrameRate,
+): number => {
+  const start =
+    Number.isSafeInteger(startFrame) && startFrame > 0 ? startFrame : 0;
+  if (!Number.isFinite(elapsedMilliseconds) || elapsedMilliseconds <= 0)
+    return start;
+  const elapsedMicroseconds = BigInt(Math.round(elapsedMilliseconds * 1_000));
+  const numerator =
+    elapsedMicroseconds * BigInt(playbackRate) * BigInt(rate.num);
+  const denominator = 1_000_000n * BigInt(rate.den);
+  const advanced = Number(numerator / denominator);
+  const value = start + advanced;
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+};
+
 export const verifyFrame = (
   mediaTime: number,
   expectedFrame: number,

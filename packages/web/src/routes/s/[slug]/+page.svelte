@@ -92,6 +92,7 @@
   let previewDurationFrames = $state<number | null>(null);
   let previewRenditions = $state<PlayerRendition[]>([]);
   let previewShuttleAudio = $state<ShuttleAudioSources | null>(null);
+  let previewSourceHasAudio = $state(true);
   let previewFilmstrip = $state<{ url: string; cues: SpriteCue[] } | null>(null);
   let previewWaveformUrl = $state<string | null>(null);
   /* The audio stage's two sidecars: peak data and the spectrogram. */
@@ -519,6 +520,7 @@
     previewDurationFrames = null;
     previewRenditions = [];
     previewShuttleAudio = null;
+    previewSourceHasAudio = true;
     previewFilmstrip = null;
     previewWaveformUrl = null;
     previewPeaksUrl = null;
@@ -540,6 +542,10 @@
       previewRate = rateFrom(detail);
       const version = detail.versions[0];
       const info = version?.media_info ?? {};
+      const streams = Array.isArray(info['streams'])
+        ? (info['streams'] as Array<Record<string, unknown>>)
+        : [];
+      previewSourceHasAudio = streams.some((stream) => stream.codec_type === 'audio');
       previewDropFrame = Boolean(info['drop_frame'] ?? info['dropFrame']);
       const frames = info['duration_frames'] ?? info['durationFrames'];
       if (typeof frames === 'number' && frames > 0) previewDurationFrames = frames;
@@ -623,6 +629,7 @@
     previewDurationFrames = null;
     previewRenditions = [];
     previewShuttleAudio = null;
+    previewSourceHasAudio = true;
     previewFilmstrip = null;
     previewWaveformUrl = null;
     previewPeaksUrl = null;
@@ -1246,6 +1253,7 @@
           {markers}
           renditions={previewRenditions}
           shuttleAudio={previewShuttleAudio}
+          sourceHasAudio={previewSourceHasAudio}
           filmstrip={previewFilmstrip}
           waveformUrl={previewWaveformUrl}
           colorCheckBuildId={appVersion}

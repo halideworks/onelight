@@ -779,6 +779,18 @@ headless runs provide functional evidence. A headed opt-in gate requires the
 hardware-capable path to reach the final 4K30 frame with at most one dropped
 request, no main-thread task over 50 ms and seek p95 under 250 ms.
 
+Reference playback is now deployment-safe for existing libraries. Watermarked
+share sources record their complete probed codec, dimensions, bitrate, rational
+rate and output color contract, and old incomplete rows are re-rendered. Audio
+sidecar backfill traverses the entire ready catalog in stable batches instead
+of repeatedly checking a fixed first page. The player keeps its Playback
+selector visible outside diagnostics, explains exactly why Reference is
+unavailable, and uses a monotonic rational frame clock for genuinely silent
+clips. Expired signed playback URLs can be reauthorized in place only while the
+current private user or share viewer still has access; downloads remain
+fail-closed, and current watermark policy is rechecked before a share source is
+served.
+
 BCR-T12 is also implemented fail-closed. Native HDR is opt-in and appears only
 when the stored output probe has an exact codec, dimensions, bitrate, rational
 rate and agreeing source/output color metadata, Media Capabilities reports that

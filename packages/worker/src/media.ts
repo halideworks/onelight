@@ -398,6 +398,38 @@ export const webCodecString = (
   return undefined;
 };
 
+export const playableRenditionMetadata = (
+  mediaInfo: MediaInfo,
+): Record<string, unknown> => {
+  const video = videoStream(mediaInfo);
+  const frameRateNum = positiveProbeNumber(mediaInfo.frameRateNum);
+  const frameRateDen = positiveProbeNumber(mediaInfo.frameRateDen);
+  if (!video || !mediaInfo.sourceColor || !frameRateNum || !frameRateDen)
+    throw new Error(
+      "Playable rendition probe did not return video color or frame-rate metadata.",
+    );
+  const codec = webCodecString(video);
+  const codedWidth = positiveProbeNumber(video.width);
+  const codedHeight = positiveProbeNumber(video.height);
+  const bitRate =
+    positiveProbeNumber(video.bit_rate) ??
+    positiveProbeNumber(mediaInfo.format.bit_rate);
+  if (!codec || !codedWidth || !codedHeight || !bitRate)
+    throw new Error(
+      "Playable rendition probe did not return a complete codec contract.",
+    );
+  return {
+    frame_rate_num: Math.round(frameRateNum),
+    frame_rate_den: Math.round(frameRateDen),
+    codec,
+    coded_width: Math.round(codedWidth),
+    coded_height: Math.round(codedHeight),
+    height: Math.round(codedHeight),
+    bit_rate: Math.round(bitRate),
+    output_color: mediaInfo.sourceColor,
+  };
+};
+
 const hdrMetadataType = (
   sideData: unknown[],
 ): "smpteSt2086" | "smpteSt2094-10" | "smpteSt2094-40" | null => {
@@ -2164,29 +2196,10 @@ export const runTranscode = async (
         output.kind === "hdr_hevc"
       ) {
         const outputInfo = await probeFile(output.path, ffprobe);
-        const outputVideo = videoStream(outputInfo);
-        if (!outputVideo || !outputInfo.sourceColor)
-          throw new Error(
-            "Playable rendition probe did not return video color metadata.",
-          );
-        const codec = webCodecString(outputVideo);
-        const codedWidth = positiveProbeNumber(outputVideo.width);
-        const codedHeight = positiveProbeNumber(outputVideo.height);
-        const bitRate =
-          positiveProbeNumber(outputVideo.bit_rate) ??
-          positiveProbeNumber(outputInfo.format.bit_rate);
-        if (!codec || !codedWidth || !codedHeight || !bitRate)
-          throw new Error(
-            "Playable rendition probe did not return a complete codec contract.",
-          );
-        meta.codec = codec;
-        meta.coded_width = Math.round(codedWidth);
-        meta.coded_height = Math.round(codedHeight);
-        meta.bit_rate = Math.round(bitRate);
-        meta.output_color = outputInfo.sourceColor;
+        Object.assign(meta, playableRenditionMetadata(outputInfo));
         if (output.kind === "hdr_av1" || output.kind === "hdr_hevc")
           meta.hdr_metadata_type = hdrMetadataType(
-            outputInfo.sourceColor.sideData,
+            outputInfo.sourceColor?.sideData ?? [],
           );
       }
       if (output.height !== undefined) meta.height = output.height;

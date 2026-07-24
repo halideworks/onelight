@@ -1958,6 +1958,7 @@ export const routeDocs: Record<string, RouteDoc> = {
         z.object({
           items: z.array(renditionItem),
           captions: z.array(captionTrack),
+          has_audio: z.boolean(),
         }),
       ),
     },
