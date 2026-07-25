@@ -74,10 +74,12 @@ export type ReferencePlaybackDiagnostic = {
   was_playing: boolean;
   source_kind: string | null;
   decoder_preference:
-    | "no-preference"
-    | "prefer-hardware"
-    | "prefer-software"
-    | null;
+    "no-preference" | "prefer-hardware" | "prefer-software" | null;
+  /* The range and transfer the decoder reported for the frames that were
+     rendered, not the ones the rendition declared. They differ wherever a
+     platform decoder hands back a converted surface. */
+  decoded_range: "tv" | "pc" | null;
+  decoded_transfer: string | null;
   buffered_frames: number;
   preparation_ms: number | null;
   switch_ms: number | null;

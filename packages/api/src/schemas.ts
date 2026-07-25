@@ -126,7 +126,15 @@ const referencePlaybackDiagnostic = z
     frame: z.number().int().nonnegative(),
     was_playing: z.boolean(),
     source_kind: z.string().max(64).nullable(),
-    decoder_preference: z.literal("no-preference").nullable(),
+    decoder_preference: z
+      .enum(["no-preference", "prefer-hardware", "prefer-software"])
+      .nullable(),
+    /* What the decoder actually produced, which a platform decoder is free to
+       state differently from the container: macOS returns limited-range
+       BT.709 as a full-range surface. Recorded so a support question about
+       one engine's picture can be answered from the diagnostic. */
+    decoded_range: z.enum(["tv", "pc"]).nullable().optional(),
+    decoded_transfer: z.string().max(32).nullable().optional(),
     buffered_frames: z.number().int().min(0).max(6),
     preparation_ms: z.number().int().min(0).max(60000).nullable().optional(),
     switch_ms: z.number().int().min(0).max(60000).nullable().optional(),

@@ -1,3 +1,4 @@
+import { isSdrGammaTransfer } from "./color-math.js";
 import type {
   PlaneLayoutTransfer,
   PlaneTransfer,
@@ -37,6 +38,40 @@ export const referenceColorsAgree = (
   actual.transfer === expected.transfer &&
   actual.matrix === expected.matrix &&
   actual.range === expected.range;
+
+/*
+ * Decide whether a decoded frame is the picture the rendition promised, and
+ * return what the renderer must interpret its code values as.
+ *
+ * Primaries and matrix must match: those are the choices a decoder has no
+ * business changing, and disagreement means the frame is not the picture the
+ * contract describes. Range is different. It is a property of the samples the
+ * decoder actually produced, and the decoder is the authority on its own
+ * output: macOS returns limited-range BT.709 as an expanded full-range
+ * surface and says so truthfully. Re-expanding those samples because the
+ * container said "tv" would crush blacks and clip highlights, so the frame's
+ * own range wins, and the transport reports the deviation from the frame it
+ * carries. Transfer is only a label here (see isSdrGammaTransfer), so any SDR
+ * BT.709-family tag is accepted.
+ */
+export const reconcileDecodedColor = (
+  actual: ReferenceColorContract,
+  expected: ReferenceColorContract,
+): ReferenceColorContract => {
+  if (actual.primaries !== expected.primaries)
+    throw new UnsupportedRawPlaneError(
+      `Decoded frame color metadata conflicts with rendition metadata: primaries ${actual.primaries} against ${expected.primaries}.`,
+    );
+  if (actual.matrix !== expected.matrix)
+    throw new UnsupportedRawPlaneError(
+      `Decoded frame color metadata conflicts with rendition metadata: matrix ${actual.matrix} against ${expected.matrix}.`,
+    );
+  if (!isSdrGammaTransfer(actual.transfer))
+    throw new UnsupportedRawPlaneError(
+      `Decoded frame color metadata is outside the SDR BT.709 family: transfer ${actual.transfer}.`,
+    );
+  return actual;
+};
 
 const exactRect = (rect: {
   x: number;
@@ -144,10 +179,7 @@ export const copyRawFramePlanes = async (
     throw new UnsupportedRawPlaneError(
       "Decoded frame color metadata is incomplete.",
     );
-  if (!referenceColorsAgree(color, expectedColor))
-    throw new UnsupportedRawPlaneError(
-      "Decoded frame color metadata conflicts with rendition metadata.",
-    );
+  const renderColor = reconcileDecodedColor(color, expectedColor);
 
   const codedRect = exactRect(
     frame.codedRect ?? {
@@ -195,7 +227,7 @@ export const copyRawFramePlanes = async (
     },
     timestampUs: frame.timestamp,
     durationUs: frame.duration,
-    color,
+    color: renderColor,
     chromaLocation,
   };
 };

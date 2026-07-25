@@ -54,7 +54,10 @@
   import { ReferencePictureBackend } from './reference/reference-backend.js';
   import { referenceSourceAvailability } from './reference/source-contract.js';
   import { shouldRequestReferencePlayback } from './reference-selection.js';
-  import type { ReferenceHardwareAcceleration } from './reference/protocol.js';
+  import type {
+    ReferenceColorContract,
+    ReferenceHardwareAcceleration
+  } from './reference/protocol.js';
   import { resolveDisplayTransfer } from './reference/color-math.js';
   import { untrack } from 'svelte';
   import { classifyReferenceFailure } from './picture-backend.js';
@@ -311,11 +314,39 @@
       /* The preference remains live for this page. */
     }
   });
+  /*
+   * WebKit lifts an element's autoplay restriction only for a play() made
+   * inside a user gesture, and the reference handoff starts its clock long
+   * after the click that asked for it - the worker still has to open the
+   * source and decode a runway. One muted play/pause here, while the gesture
+   * is still live, marks the clock as user-started so that later start is
+   * allowed. It is silent and already paused before anything could be heard;
+   * engines that do not need it are unaffected.
+   */
+  const primeReferenceClock = (): void => {
+    const track = referenceClock;
+    /* Never while the clock is the running transport: the pause half of the
+       priming pair would read as the reviewer stopping playback. */
+    if (!track?.src || referenceActive) return;
+    const muted = track.muted;
+    track.muted = true;
+    void track.play().then(
+      () => {
+        track.pause();
+        track.muted = muted;
+      },
+      () => {
+        track.muted = muted;
+      }
+    );
+  };
+
   const selectColorPlaybackMode = (mode: ColorPlaybackMode): void => {
     clearReferenceRetry();
     blockedReferenceSource = '';
     referenceFailure = null;
     if (mode === 'reference') {
+      primeReferenceClock();
       referenceRequestStartedAt = performance.now();
       referencePreparedBeforeRequest = referencePrepared;
     } else {
@@ -1074,9 +1105,24 @@
      wide-gamut: the composited picture may be oversaturated. Reference still
      runs (the pixels are correct); the panel carries the caution. */
   let referenceUnmanagedWideGamut = $state(false);
+  /* What the decoder handed back for the frames on screen. A platform decoder
+     may return a converted surface (macOS expands limited-range BT.709 into a
+     full-range one), and the renderer follows the frame rather than the
+     container, so the panel states which one it rendered. */
+  let referenceDecodedColor = $state<ReferenceColorContract | null>(null);
+  const referenceDecodedRangeDiffers = $derived(
+    Boolean(
+      referenceActive &&
+        referenceDecodedColor &&
+        activeReferenceContract &&
+        referenceDecodedColor.range !==
+          activeReferenceContract.expected.outputColor.range
+    )
+  );
   $effect(() => {
     if (!referenceActive) {
       referenceUnmanagedWideGamut = false;
+      referenceDecodedColor = null;
       return;
     }
     referenceUnmanagedWideGamut =
@@ -1097,6 +1143,8 @@
     was_playing: failure?.playing ?? playing,
     source_kind: activeRendition?.kind ?? null,
     decoder_preference: outcome === 'ready' ? referenceDecodePreference : null,
+    decoded_range: referenceBackend?.decodedColor?.range ?? null,
+    decoded_transfer: referenceBackend?.decodedColor?.transfer ?? null,
     buffered_frames: referenceBackend?.bufferedFrames.length ?? 0,
     preparation_ms:
       referencePreparationMs ??
@@ -1129,6 +1177,8 @@
           failure_class: diagnostic.failure_class,
           reason: diagnostic.reason,
           decoder_preference: diagnostic.decoder_preference,
+          decoded_range: diagnostic.decoded_range,
+          decoded_transfer: diagnostic.decoded_transfer,
           source_kind: diagnostic.source_kind,
           preparation_ms: diagnostic.preparation_ms
         }
@@ -1340,6 +1390,7 @@
         return;
       referenceActive = true;
       referenceLoading = false;
+      referenceDecodedColor = referenceBackend?.decodedColor ?? null;
       clearReferenceRetry();
       pictureIn = true;
       setFrame(switchFrame);
@@ -2346,6 +2397,22 @@
         }, 1_200);
       },
       (reason: unknown) => {
+        /* An autoplay refusal is the browser declining the clock, not a fault
+           in the picture: surrendering the reference renderer over it would
+           cost the reviewer the thing they asked for. Land on paused truth
+           with the same hint the native path shows, and stay. Every other
+           rejection is a real clock failure and still falls back. */
+        if (reason instanceof DOMException && reason.name === 'NotAllowedError') {
+          forwardSpeed = 0;
+          backend.pause();
+          playRefused = true;
+          onplaystate?.(false);
+          console.warn(
+            'onelight player: reference audio play() was refused',
+            reason
+          );
+          return;
+        }
         handleReferenceFailure({
           failureClass: 'unknown',
           reason:
@@ -3617,6 +3684,12 @@
             <dt>Rendition range</dt>
             <dd>{colorContractValue(activeColorContracts.output?.range ?? null)}</dd>
           </div>
+          {#if referenceActive && referenceDecodedColor}
+            <div class="color-fact">
+              <dt>Decoded range</dt>
+              <dd>{colorContractValue(referenceDecodedColor.range)}</dd>
+            </div>
+          {/if}
           <div class="color-fact">
             <dt>Digital check</dt>
             <dd>{colorCheck.summary}</dd>
@@ -3650,6 +3723,11 @@
         {/if}
         {#if referenceFailure}
           <p class="color-assumption" role="status">{referenceFailure} Native playback is active at the same frame.</p>
+        {/if}
+        {#if referenceDecodedRangeDiffers}
+          <p class="color-assumption">
+            This browser's decoder returned the {colorContractValue(activeReferenceContract?.expected.outputColor.range ?? null)}-range rendition as a {colorContractValue(referenceDecodedColor?.range ?? null)}-range surface. The renderer follows the decoded frame, so the picture is correct; the code values reaching the shader are the decoder's, not the file's.
+          </p>
         {/if}
         {#if referenceUnmanagedWideGamut}
           <p class="color-assumption">This browser cannot declare the renderer's output as sRGB, and this display is wide-gamut: the picture may composite oversaturated. Verify color in a browser with canvas color management.</p>

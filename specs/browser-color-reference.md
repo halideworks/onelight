@@ -586,3 +586,86 @@ Supersession, 2026-07-25: three deltas after the first production incidents.
    engine cannot declare the drawing buffer's color space, a wide-gamut
    display may composite the canvas as device RGB; the value-step panel
    carries that caution.
+
+Supersession, 2026-07-25 (Safari): measured on Safari 26.0.1, macOS 26.0.1,
+Apple Silicon (M3 Ultra), against 1280x720, 1920x1080, 608x1080 and 3840x2160
+BT.709 limited-range H.264 proxies, at `no-preference`, `prefer-hardware` and
+`prefer-software`, on the main thread and in a module worker.
+
+1. The engine qualifies. Every configuration returned `NV12` with tight
+   strides, an exact `copyTo` of the coded rect, and monotonic presentation
+   timestamps. `drawingBufferColorSpace` is available (output is color
+   managed), a strict `failIfMajorPerformanceCaveat` WebGL2 context is
+   granted, and R8 uploads with `UNPACK_ROW_LENGTH` padding read back exactly.
+   `OffscreenCanvas`, `transferControlToOffscreen` and WebGL2-in-worker are
+   all present, so the render-in-worker step has no Safari blocker.
+
+2. The platform decoder range-expands, truthfully (supersedes the section 4.4
+   rule that a frame's color metadata must equal the rendition's). VideoToolbox
+   returns limited-range BT.709 as a full-range surface: its luma matches
+   ffmpeg's `out_range=pc` conversion byte for byte (45/44/47 where the
+   limited-range plane reads 55/54/56), and it reports `fullRange: true` with
+   the sRGB transfer tag macOS uses for BT.709. Requiring equality with the
+   container refused every Safari frame as `metadata_conflict`. The rule is now
+   a reconciliation: primaries and matrix must match, since a decoder changing
+   either means the frame is not the promised picture; the transfer tag is
+   descriptive and any SDR BT.709-family tag is accepted, because the output
+   encoding comes from the display-transfer resolution and never from the
+   frame; and the frame's own range wins, because the decoder is the authority
+   on the samples it produced. Re-expanding an already expanded surface would
+   crush blacks and clip highlights. The deviation is reported in the playback
+   diagnostic (`decoded_range`, `decoded_transfer`) and stated in the
+   value-step panel.
+
+3. The engine emits in decode order (supersedes the section 4.3 assumption
+   behind the `output_order` failure class). WebCodecs specifies
+   presentation-order output and Chromium delivers it; WebKit hands back one
+   frame per fed packet, in the order fed, so a stream with B-frames arrives
+   shuffled. Measured on a worker-produced proxy: a packet's frame runs up to
+   three ahead and two behind its position in the stream. Three consequences,
+   all in the worker: an output below the high-water mark is a fault only past
+   H.264's own reordering ceiling, not on sight; window completeness is now
+   "every frame of the window is emitted, held or being copied" rather than a
+   high-water mark, since a frame past the window end can arrive while earlier
+   ones are still to come; and frames are retained further past the window end
+   (L+8), because completing a window at L requires feeding packets that
+   produce frames as far out as L+5, and their packets are consumed once.
+   Without the last one the following window hunts for frames that can no
+   longer be produced and walks the rest of the source: measured as a 636 ms
+   freeze every GOP before the fix, 115 ms worst case after. A window that
+   stays incomplete well past its own end now stops feeding and lets its
+   emitted prefix stand.
+
+4. Pixels verified on the real engine. The product's own self-check clip,
+   decoded by Safari, copied by the production copy and drawn by the
+   production renderer, reproduces every shared-oracle patch within the
+   oracle's tolerance (worst channel 1/255), and the shader agrees with the
+   CPU vectors to 0/255 on all eleven patches in both the NV12 branch and an
+   I420 conversion of the same picture. The BT.1886 branch matches the CPU
+   `encodeForDisplay` within 1/255 -- its first execution outside Chromium.
+   Playwright WebKit still cannot stand in for this: it has no WebCodecs.
+
+5. Measured on that Mac, 1920x1080 30 fps proxy, production worker plus
+   production backend plus production renderer: cold open 39 ms and first
+   runway 75 ms (gates 1.5 s and 2.5 s); seek outside the active GOP p95
+   67 ms (gate 250 ms); a one-second scrub presents 32 updates with a 44 ms
+   worst gap and settles the exact release frame in 65 ms (gates 8 updates,
+   250 ms, 750 ms); six seconds of 30 fps playback presents 161 of 180 frames
+   with a 33 ms median interval, an 89 ms p95 and a 115 ms worst gap, never
+   out of order and with no failure raised.
+
+   The 11 percent of frames it skips is the one gate this pass does not meet.
+   It is not decode throughput: the backend's buffer stays full at its
+   six-frame cap throughout and the picture stays on the clock for 142 of 181
+   ticks. It is runway depth. The window reaches only three frames ahead, and
+   an engine that emits in decode order needs a few more packets per window to
+   get there, so the refill occasionally arrives one frame late and the
+   transport shows the newest frame it has. Deepening the runway means
+   revisiting the six-frame contract in section 4.3, which is a product
+   decision, not a Safari fix. Main-thread render cost is 7 ms per 1080p frame
+   here, which the OffscreenCanvas step would remove from the budget.
+
+Automatic reference selection stays disabled. BCR-T11 additionally requires
+the sustained measurements (five-minute soak, 4K30 qualification) on this Mac,
+Windows Chromium and Firefox, and an Intel integrated GPU, none of which this
+pass ran.

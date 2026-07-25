@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ReferenceColorContract } from "./protocol.js";
-import { copyRawFramePlanes, UnsupportedRawPlaneError } from "./raw-planes.js";
+import {
+  copyRawFramePlanes,
+  reconcileDecodedColor,
+  UnsupportedRawPlaneError,
+} from "./raw-planes.js";
 
 const BT709_LIMITED: ReferenceColorContract = {
   primaries: "bt709",
@@ -179,6 +183,75 @@ describe("raw reference plane transfer", () => {
     await expect(
       copyRawFramePlanes(incomplete.frame, BT709_LIMITED, "left"),
     ).rejects.toThrow(/incomplete/);
+  });
+
+  /*
+   * Safari 26 on Apple Silicon, measured against 720p, 1080p, 608x1080 and
+   * 2160p BT.709 limited-range proxies at every hardwareAcceleration
+   * preference: VideoToolbox returns NV12 whose luma matches ffmpeg's
+   * full-range conversion byte for byte (45/44/47 where the limited-range
+   * plane reads 55/54/56), tagged fullRange:true and iec61966-2-1. The frame
+   * is the picture the rendition promised, so it must be accepted and
+   * rendered as what it is.
+   */
+  it("accepts a platform-converted surface and keeps the decoder's range", async () => {
+    const stub = frameStub(
+      "NV12",
+      [
+        { offset: 0, stride: 4 },
+        { offset: 16, stride: 4 },
+      ],
+      {
+        colorSpace: {
+          primaries: "bt709",
+          transfer: "iec61966-2-1",
+          matrix: "bt709",
+          fullRange: true,
+        },
+      },
+    );
+
+    const planes = await copyRawFramePlanes(stub.frame, BT709_LIMITED, "left");
+
+    expect(planes.format).toBe("NV12");
+    expect(planes.color).toEqual({
+      primaries: "bt709",
+      transfer: "iec61966-2-1",
+      matrix: "bt709",
+      range: "pc",
+    });
+  });
+
+  it("reconciles a decoded color against the rendition contract", () => {
+    // The decoder's own range and tag survive; they are what the samples are.
+    const converted = {
+      ...BT709_LIMITED,
+      transfer: "iec61966-2-1",
+      range: "pc",
+    } as const;
+    expect(reconcileDecodedColor(converted, BT709_LIMITED)).toEqual(converted);
+    expect(reconcileDecodedColor(BT709_LIMITED, BT709_LIMITED)).toEqual(
+      BT709_LIMITED,
+    );
+    // Matrix and primaries are the decoder's to report, never to change.
+    expect(() =>
+      reconcileDecodedColor(
+        { ...BT709_LIMITED, matrix: "smpte170m" },
+        BT709_LIMITED,
+      ),
+    ).toThrow(/conflicts/);
+    expect(() =>
+      reconcileDecodedColor(
+        { ...BT709_LIMITED, primaries: "bt2020" },
+        BT709_LIMITED,
+      ),
+    ).toThrow(/conflicts/);
+    expect(() =>
+      reconcileDecodedColor(
+        { ...BT709_LIMITED, transfer: "hlg" },
+        BT709_LIMITED,
+      ),
+    ).toThrow(/outside the SDR BT.709 family/);
   });
 
   it("rejects missing, overlapping, short-stride, and out-of-bounds planes", async () => {

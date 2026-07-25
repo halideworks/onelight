@@ -14,6 +14,7 @@ import {
   type DecoderCommand,
   type DecoderEvent,
   type PlaneTransfer,
+  type ReferenceColorContract,
   type ReferenceHardwareAcceleration,
 } from "./protocol.js";
 
@@ -101,6 +102,7 @@ export class ReferencePictureBackend implements PictureBackend {
   #failed = false;
   #presentedPlanes: PlaneTransfer | null = null;
   #presentedFrame: number | null = null;
+  #decodedColor: ReferenceColorContract | null = null;
 
   constructor(
     callbacks: ReferenceBackendCallbacks,
@@ -121,6 +123,13 @@ export class ReferencePictureBackend implements PictureBackend {
 
   get track(): DecodedTrack | null {
     return this.#track;
+  }
+
+  /* The color the decoder actually produced, which is not always the color
+     the container declared: a platform decoder may hand back a range-expanded
+     surface. Reported so the diagnostic says which one was rendered. */
+  get decodedColor(): ReferenceColorContract | null {
+    return this.#decodedColor;
   }
 
   async waitUntilBuffered(
@@ -154,6 +163,7 @@ export class ReferencePictureBackend implements PictureBackend {
     this.#failed = false;
     this.#presentedPlanes = null;
     this.#presentedFrame = null;
+    this.#decodedColor = null;
     this.#openStage = "starting decoder worker";
     const transferableSource = cloneSourceContract(source);
     this.#desiredFrame = frame;
@@ -369,6 +379,7 @@ export class ReferencePictureBackend implements PictureBackend {
       return;
     }
     if (event.type === "frame") {
+      this.#decodedColor = event.planes.color;
       const previous = this.#frames.get(event.frame);
       if (previous && previous !== event.planes) this.#releasePlane(previous);
       this.#frames.set(event.frame, event.planes);

@@ -14535,7 +14535,36 @@
                         "anyOf": [
                           {
                             "type": "string",
-                            "const": "no-preference"
+                            "enum": [
+                              "no-preference",
+                              "prefer-hardware",
+                              "prefer-software"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "decoded_range": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "tv",
+                              "pc"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "decoded_transfer": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 32
                           },
                           {
                             "type": "null"
@@ -22929,7 +22958,36 @@
                         "anyOf": [
                           {
                             "type": "string",
-                            "const": "no-preference"
+                            "enum": [
+                              "no-preference",
+                              "prefer-hardware",
+                              "prefer-software"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "decoded_range": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "tv",
+                              "pc"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "decoded_transfer": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 32
                           },
                           {
                             "type": "null"

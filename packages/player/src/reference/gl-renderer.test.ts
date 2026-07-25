@@ -74,8 +74,9 @@ const makeCanvas = (
     removeEventListener: target.removeEventListener.bind(target),
     dispatchEvent: target.dispatchEvent.bind(target),
   } as unknown as HTMLCanvasElement;
-  (canvas as unknown as { getContext: () => WebGL2RenderingContext }).getContext =
-    () => makeGl(canvas, lost, counters);
+  (
+    canvas as unknown as { getContext: () => WebGL2RenderingContext }
+  ).getContext = () => makeGl(canvas, lost, counters);
   return canvas;
 };
 
@@ -160,6 +161,41 @@ describe("ReferenceGlRenderer context loss recovery", () => {
     renderer.close();
     // Rendering after close is a hard error, never a silent no-op.
     expect(() => renderer.render(sampleFrame())).toThrow(Error);
+  });
+
+  /* Safari 26 hands back exactly this: an NV12 surface the platform decoder
+     range-expanded, tagged with macOS's sRGB transfer convention. Measured on
+     an M3 Ultra against 720p, 1080p, 608x1080 and 2160p BT.709 proxies. */
+  it("renders a platform-converted surface tagged outside BT.709", () => {
+    const canvas = makeCanvas({ value: false }, { builds: 0 });
+    const renderer = new ReferenceGlRenderer(canvas, {
+      requireAcceleration: false,
+    });
+    const converted: PlaneTransfer = {
+      ...sampleFrame(),
+      format: "NV12",
+      layout: [
+        { offset: 0, stride: 4 },
+        { offset: 16, stride: 4 },
+      ],
+      color: {
+        primaries: "bt709",
+        transfer: "iec61966-2-1",
+        matrix: "bt709",
+        range: "pc",
+      },
+    };
+    expect(() => renderer.render(converted)).not.toThrow();
+
+    // A transfer that names different code values, not a display convention,
+    // is still refused.
+    expect(() =>
+      renderer.render({
+        ...converted,
+        color: { ...converted.color, transfer: "pq" },
+      }),
+    ).toThrow(UnsupportedReferenceRendererError);
+    renderer.close();
   });
 
   it("still reports unsupported when WebGL2 is entirely absent", () => {

@@ -1,4 +1,5 @@
 import {
+  isSdrGammaTransfer,
   referenceMatrixFromMetadata,
   yuvConversionParameters,
   type ReferenceDisplayTransfer,
@@ -272,8 +273,7 @@ export class ReferenceGlRenderer {
     this.gl = gl;
     const colorContext = gl as SrgbWebGlContext;
     this.colorManagedOutput = "drawingBufferColorSpace" in colorContext;
-    if (this.colorManagedOutput)
-      colorContext.drawingBufferColorSpace = "srgb";
+    if (this.colorManagedOutput) colorContext.drawingBufferColorSpace = "srgb";
 
     const built = this.buildResources();
     this.glProgram = built.glProgram;
@@ -430,7 +430,14 @@ export class ReferenceGlRenderer {
       throw new ReferenceContextLostError(
         "Reference renderer context was lost.",
       );
-    if (source.color.primaries !== "bt709" || source.color.transfer !== "bt709")
+    /* The frame's transfer tag names a display convention, not a decode step:
+       the shader's output encoding comes from the transfer argument below.
+       Any SDR BT.709-family tag renders identically, which is what lets
+       Safari's "iec61966-2-1" surfaces through. */
+    if (
+      source.color.primaries !== "bt709" ||
+      !isSdrGammaTransfer(source.color.transfer)
+    )
       throw new UnsupportedReferenceRendererError(
         "The reference renderer currently requires BT.709 SDR input.",
       );

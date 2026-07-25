@@ -4,6 +4,49 @@ export const MAX_OPEN_FRAMES = FRAME_WINDOW_BEHIND + 1 + FRAME_WINDOW_AHEAD;
 export const MAX_DECODE_QUEUE = 6;
 export const MAX_PLANE_BUFFERS = 8;
 
+/*
+ * Decode-order delivery.
+ *
+ * WebCodecs specifies presentation-order output and Chromium delivers it, but
+ * WebKit emits one frame per fed packet in the order fed, so a stream with
+ * B-frames arrives shuffled by the codec's reorder depth. Both constants below
+ * exist to absorb that without weakening what they guard.
+ *
+ * MAX_DECODE_REORDER: how far below the highest frame produced so far a later
+ * output may legally sit. H.264's own ceiling on reordering is the bound past
+ * which an output is a fault rather than a reorder.
+ *
+ * RETAIN_REORDER_SLACK: how far past the window's end a decoded frame is still
+ * worth keeping. Completing a window that ends at frame L means feeding every
+ * packet whose frame is at or below L; on our own proxies a packet's frame
+ * runs up to three ahead and two behind its position in the stream, so the
+ * last packet worth feeding still produces frames as far out as L+5. Those
+ * frames are the next window's work and their packets are consumed once.
+ */
+export const MAX_DECODE_REORDER = 16;
+export const RETAIN_REORDER_SLACK = 8;
+
+/* A decoder that reorders within its codec's limits is doing its job; one that
+   hands back a frame from far behind has lost the thread. */
+export const decodeOutputIsOutOfOrder = (
+  frame: number,
+  maxOutputFrame: number | null,
+): boolean =>
+  maxOutputFrame !== null && frame < maxOutputFrame - MAX_DECODE_REORDER;
+
+/* Every frame of the window accounted for. A high-water mark cannot answer
+   this where the decoder emits in decode order, since a frame past the
+   window's end can arrive while earlier ones are still to come. */
+export const decodeWindowIsComplete = (
+  first: number,
+  last: number,
+  accountedFor: (frame: number) => boolean,
+): boolean => {
+  for (let frame = first; frame <= last; frame += 1)
+    if (!accountedFor(frame)) return false;
+  return true;
+};
+
 export type ReferenceRate = {
   num: number;
   den: number;

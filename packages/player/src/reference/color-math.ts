@@ -57,6 +57,28 @@ export const resolveDisplayTransfer = (
   return "bt1886";
 };
 
+/*
+ * Transfer tags an SDR BT.709 surface may legitimately arrive with. A decoded
+ * frame's transfer tag is descriptive, not an instruction: nothing in the
+ * decode path applies it, and the output encoding comes from
+ * resolveDisplayTransfer. Apple's decoders tag BT.709 surfaces
+ * "iec61966-2-1", because macOS treats BT.709 as sRGB, so demanding an exact
+ * "bt709" match refuses every frame Safari produces. "linear", "pq" and "hlg"
+ * describe genuinely different code values and stay rejected.
+ */
+export const isSdrGammaTransfer = (
+  value: string | null | undefined,
+): boolean => {
+  const tag = normalizedTransferTag(value);
+  return (
+    tag === "bt709" ||
+    tag === "rec709" ||
+    tag === "smpte170m" ||
+    tag === "iec6196621" ||
+    tag === "srgb"
+  );
+};
+
 export type ReferenceYuvMatrix = "bt601" | "bt709" | "bt2020-ncl";
 export type ReferenceRgb = readonly [number, number, number];
 export type ReferenceYuv = readonly [number, number, number];

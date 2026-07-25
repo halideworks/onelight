@@ -8710,7 +8710,9 @@ export interface paths {
                         frame: number;
                         was_playing: boolean;
                         source_kind: string | null;
-                        decoder_preference: "no-preference" | null;
+                        decoder_preference: ("no-preference" | "prefer-hardware" | "prefer-software") | null;
+                        decoded_range?: ("tv" | "pc") | null;
+                        decoded_transfer?: string | null;
                         buffered_frames: number;
                         preparation_ms?: number | null;
                         switch_ms?: number | null;
@@ -13334,7 +13336,9 @@ export interface paths {
                         frame: number;
                         was_playing: boolean;
                         source_kind: string | null;
-                        decoder_preference: "no-preference" | null;
+                        decoder_preference: ("no-preference" | "prefer-hardware" | "prefer-software") | null;
+                        decoded_range?: ("tv" | "pc") | null;
+                        decoded_transfer?: string | null;
                         buffered_frames: number;
                         preparation_ms?: number | null;
                         switch_ms?: number | null;

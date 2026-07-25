@@ -9,9 +9,13 @@ import {
 import {
   FRAME_WINDOW_AHEAD,
   FRAME_WINDOW_BEHIND,
+  decodeOutputIsOutOfOrder,
+  decodeWindowIsComplete,
   MAX_DECODE_QUEUE,
+  MAX_DECODE_REORDER,
   MAX_OPEN_FRAMES,
   MAX_PLANE_BUFFERS,
+  RETAIN_REORDER_SLACK,
   referenceFrameAtTimestamp,
   referenceTimestampIsExact,
   timestampForReferenceFrame,
@@ -66,8 +70,9 @@ type DecodeOperation = {
   first: number;
   last: number;
   retainThrough: number;
-  lastOutputFrame: number | null;
+  maxOutputFrame: number | null;
   pendingCopies: Set<Promise<void>>;
+  copyingFrames: Set<number>;
   failed: boolean;
 };
 
@@ -235,11 +240,12 @@ const handleDecodedFrame = (frame: VideoFrame): void => {
       throw new UnsupportedReferenceError(
         "Decoded frame timestamp does not map to an exact rendition frame.",
       );
-    if (current.lastOutputFrame !== null && index < current.lastOutputFrame)
+    if (decodeOutputIsOutOfOrder(index, current.maxOutputFrame))
       throw new UnsupportedReferenceError(
         "Decoded frames arrived outside presentation order.",
       );
-    current.lastOutputFrame = index;
+    if (current.maxOutputFrame === null || index > current.maxOutputFrame)
+      current.maxOutputFrame = index;
     if (
       index < current.first ||
       index > current.retainThrough ||
@@ -293,8 +299,10 @@ const handleDecodedFrame = (frame: VideoFrame): void => {
         frame.close();
         closed = true;
         current.pendingCopies.delete(copy);
+        current.copyingFrames.delete(index);
       });
     current.pendingCopies.add(copy);
+    current.copyingFrames.add(index);
   } catch (error) {
     if (!closed) frame.close();
     failOperation(
@@ -358,6 +366,20 @@ const emitPlanes = (generation: number, first: number, last: number): void => {
   }
 };
 
+/* Sent already, copied and waiting its turn to be sent, or being copied. */
+const windowOutputsComplete = (
+  current: DecodeOperation,
+  last: number,
+): boolean =>
+  decodeWindowIsComplete(
+    current.first,
+    last,
+    (frame) =>
+      emittedFrames.has(frame) ||
+      planes.has(frame) ||
+      current.copyingFrames.has(frame),
+  );
+
 /*
  * Wait until the decoder has output every frame of the window (or run out of
  * queued work and need more input). Deliberately NOT a drain-to-zero: emptying
@@ -373,7 +395,8 @@ const waitForWindowOutputs = async (
   while (
     generation === activeGeneration &&
     state.decoder.state === "configured" &&
-    (operation?.lastOutputFrame ?? -1) < last &&
+    operation !== null &&
+    !windowOutputsComplete(operation, last) &&
     state.decoder.decodeQueueSize > 0
   ) {
     await new Promise<void>((resolve) => {
@@ -416,7 +439,8 @@ const decodeCoarseKeyframe = async (
     first: target,
     last: target,
     retainThrough: target,
-    lastOutputFrame: null,
+    maxOutputFrame: null,
+    copyingFrames: new Set<number>(),
     pendingCopies: new Set(),
     failed: false,
   };
@@ -532,21 +556,20 @@ const decodeWindow = async (
       : state.track.durationFrames === null
         ? target + FRAME_WINDOW_AHEAD
         : Math.min(state.track.durationFrames - 1, target + FRAME_WINDOW_AHEAD);
+  const retainCeiling =
+    (mode === "scrub" ? target : last) + RETAIN_REORDER_SLACK;
   const retainThrough =
-    mode === "scrub"
-      ? state.track.durationFrames === null
-        ? target + 2
-        : Math.min(state.track.durationFrames - 1, target + 2)
-      : state.track.durationFrames === null
-        ? last + 2
-        : Math.min(state.track.durationFrames - 1, last + 2);
+    state.track.durationFrames === null
+      ? retainCeiling
+      : Math.min(state.track.durationFrames - 1, retainCeiling);
   operation = {
     generation,
     target,
     first,
     last,
     retainThrough,
-    lastOutputFrame: null,
+    maxOutputFrame: null,
+    copyingFrames: new Set<number>(),
     pendingCopies: new Set(),
     failed: false,
   };
@@ -584,7 +607,12 @@ const decodeWindow = async (
           operation.failed
         )
           return;
-        if ((operation.lastOutputFrame ?? -1) >= last) break;
+        if (windowOutputsComplete(operation, last)) break;
+        /* A window that stays incomplete well past its own end is chasing a
+           frame the decoder can no longer produce. Feeding on would walk the
+           rest of the source; stop and let the emitted prefix stand, so the
+           transport sees one short window instead of a freeze. */
+        if ((state.maxFedFrame ?? 0) > last + MAX_DECODE_REORDER) break;
       }
       await waitForQueueCapacity(state, generation);
       if (generation !== activeGeneration) return;
@@ -855,7 +883,12 @@ const handleCommand = (command: DecoderCommand): void => {
       );
       break;
     case "play":
-      void decodeWindow(command.generation, command.frame, "play", command.rate);
+      void decodeWindow(
+        command.generation,
+        command.frame,
+        "play",
+        command.rate,
+      );
       break;
     case "pause":
       cancelDecode();

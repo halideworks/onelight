@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   convertYuvCodeToEncodedRgb,
   encodeForDisplay,
+  isSdrGammaTransfer,
   quantizeEncodedRgb,
   referenceMatrixFromMetadata,
   resolveDisplayTransfer,
@@ -185,7 +186,9 @@ describe("display transfer", () => {
     expect(quantizeEncodedRgb(encodeForDisplay([1, 1, 1], "bt1886"))).toEqual([
       255, 255, 255,
     ]);
-    const grey40 = quantizeEncodedRgb(encodeForDisplay([0.4, 0.4, 0.4], "bt1886"));
+    const grey40 = quantizeEncodedRgb(
+      encodeForDisplay([0.4, 0.4, 0.4], "bt1886"),
+    );
     expect(grey40[0]).toBe(94);
     // Every non-endpoint code is darker than the straight sRGB code.
     for (const v of [0.1, 0.2, 0.4, 0.6, 0.8] as const)
@@ -207,5 +210,23 @@ describe("display transfer", () => {
     expect(resolveDisplayTransfer(null, "smpte170m")).toBe("bt1886");
     expect(resolveDisplayTransfer(null, null)).toBe("bt1886");
     expect(resolveDisplayTransfer("garbage", "bt709")).toBe("bt1886");
+  });
+
+  it("treats the SDR gamma tags as one family and nothing else", () => {
+    // The tags real decoders put on a BT.709 SDR surface. Safari reports
+    // "iec61966-2-1" for every H.264 BT.709 proxy it decodes.
+    for (const tag of [
+      "bt709",
+      "BT.709",
+      "rec709",
+      "smpte170m",
+      "iec61966-2-1",
+      "iec61966_2_1",
+      "srgb",
+    ])
+      expect(isSdrGammaTransfer(tag)).toBe(true);
+    // Different code values, not a different name for the same ones.
+    for (const tag of ["pq", "hlg", "linear", "smpte2084", "", null, undefined])
+      expect(isSdrGammaTransfer(tag)).toBe(false);
   });
 });

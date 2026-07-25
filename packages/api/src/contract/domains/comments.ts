@@ -420,6 +420,27 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
           },
         );
         expect(legacyAccepted.status).toBe(204);
+        /* A reference session that reached the software rung, on an engine
+           whose decoder returned a range-converted surface: both are normal
+           outcomes and neither may be rejected. */
+        const escalated = await req(
+          h,
+          `/api/v1/versions/${seed.media.versionId}/playback-diagnostics`,
+          {
+            method: "POST",
+            cookie: seed.commenter.cookie,
+            json: {
+              ...diagnostic,
+              outcome: "ready",
+              failure_class: null,
+              reason: null,
+              decoder_preference: "prefer-software",
+              decoded_range: "pc",
+              decoded_transfer: "iec61966-2-1",
+            },
+          },
+        );
+        expect(escalated.status).toBe(204);
         const privateField = await req(
           h,
           `/api/v1/versions/${seed.media.versionId}/playback-diagnostics`,
