@@ -1350,6 +1350,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
        /assets/:id/thumbnail?v=updated_at from it; no signed URL is needed
        because every internal surface that shows it is already authenticated. */
     has_thumbnail: Boolean(asset.thumbnailBlobKey),
+    /* The editor's reference-render transfer override, or null for auto. The
+       client resolves the effective transfer from this plus the source color
+       tag; viewers receive it read-only. */
+    display_transfer: asset.displayTransfer ?? null,
     deleted_at: asset.deletedAt,
     created_at: asset.createdAt,
     updated_at: asset.updatedAt,
@@ -7531,6 +7535,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         id: version.id,
         version_no: version.versionNo,
         media_info: parseJsonObject(version.mediaInfoJson),
+        /* Source color tags, so the room resolves the same display transfer
+           an editor sees on the project page. Technical file metadata only. */
+        color: parseJsonObject(version.colorJson),
         transcode_status: version.transcodeStatus,
         renditions: versionRenditions.map(
           (rendition: typeof renditions.$inferSelect) => ({
@@ -7551,6 +7558,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         name: asset.name,
         kind: asset.kind,
         status: asset.status,
+        /* The editor's reference-render transfer override, read-only here:
+           the share room must show the same picture the project page does. */
+        display_transfer: asset.displayTransfer ?? null,
       },
       versions: items,
     });
@@ -10422,6 +10432,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         ...(body.tags === undefined
           ? {}
           : { tagsJson: JSON.stringify(body.tags) }),
+        ...(body.display_transfer === undefined
+          ? {}
+          : {
+              displayTransfer:
+                body.display_transfer === "auto"
+                  ? null
+                  : body.display_transfer,
+            }),
         updatedAt: env.clock.now(),
       })
       .where(eq(assets.id, asset.id))

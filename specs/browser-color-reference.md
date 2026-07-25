@@ -551,3 +551,38 @@ runtime preflight returns native I420 or NV12. A runtime returning RGB remains
 on native playback. Browser names are not used as the capability decision.
 Automatic reference selection still requires BCR-T11, including current Safari
 and Windows Intel graphics measurements at both the 1080p soak and 4K30 target.
+
+Supersession, 2026-07-25: three deltas after the first production incidents.
+
+1. Recovery (supersedes the section 4.7 "no retry loop" rule and BCR-T10's
+   acceptance wording). A failed source now advances a bounded escalation
+   ladder instead of latching native on first failure: attempt one runs the
+   platform decoder, a decoder-fault failure class escalates the next attempt
+   to `prefer-software`, and transient classes retry with exponential backoff
+   up to three retries per source. Each retry is its own generation, so the
+   original rule's intent -- no retry storm inside one generation -- stands.
+   Failure classes that indict the media or the environment
+   (`decoder_unsupported`, `metadata_conflict`, `raw_format`) still latch
+   immediately. A hidden tab pauses playback rather than letting a throttled
+   clock starve decode, and an externally paused reference audio clock folds
+   into a transport pause.
+
+2. Display transfer. The renderer's output encoding is now explicit: `srgb`
+   passes decoded BT.709 code values straight to the sRGB canvas (the former
+   behavior), `bt1886` decodes them as pure 2.4 display-referred and re-encodes
+   for the canvas. Resolution order: per-asset editor override (`assets.
+   display_transfer`, editors and managers only, delivered read-only to share
+   viewers), else the source transfer tag (sRGB-family and ~2.2 legacy tags
+   map to `srgb`), else `bt1886` -- the post-production reference default.
+   Changing the transfer repaints the held frame. The QA browser matrix must
+   assert the `bt1886` branch against the CPU `encodeForDisplay` within 1/255
+   per channel, alongside the existing pass-through checks.
+
+3. Chroma reconstruction (clarifies section 4.5). The specified reconstruction
+   is bilinear (GL_LINEAR) with the siting offset derived from the contract's
+   chroma location -- `0.5 / lumaWidth` horizontally for left siting, the
+   analogous half-texel vertically for top-left. Nearest sampling is not used;
+   it would displace chroma by half a pixel on half the samples. Where an
+   engine cannot declare the drawing buffer's color space, a wide-gamut
+   display may composite the canvas as device RGB; the value-step panel
+   carries that caution.

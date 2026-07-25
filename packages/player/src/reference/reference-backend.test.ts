@@ -120,6 +120,37 @@ describe("reference picture backend", () => {
     backend.close();
   });
 
+  it("defaults the decoder to no-preference", async () => {
+    const worker = new TestWorker();
+    const backend = new ReferencePictureBackend(
+      { render: vi.fn() },
+      { workerFactory: () => worker },
+    );
+    backend.load({ url: "/proxy.mp4", expected }, 0).catch(() => undefined);
+    const open = worker.commands[0];
+    expect(open?.type === "open" && open.hardwareAcceleration).toBe(
+      "no-preference",
+    );
+    backend.close();
+  });
+
+  it("forwards an escalated software decode preference to the worker", async () => {
+    const worker = new TestWorker();
+    const backend = new ReferencePictureBackend(
+      { render: vi.fn() },
+      {
+        workerFactory: () => worker,
+        hardwareAcceleration: "prefer-software",
+      },
+    );
+    backend.load({ url: "/proxy.mp4", expected }, 0).catch(() => undefined);
+    const open = worker.commands[0];
+    expect(open?.type === "open" && open.hardwareAcceleration).toBe(
+      "prefer-software",
+    );
+    backend.close();
+  });
+
   it("presents only the exact desired frame and retains at most six", async () => {
     const worker = new TestWorker();
     const render = vi.fn<(planes: PlaneTransfer, frame: number) => void>();
@@ -224,6 +255,96 @@ describe("reference picture backend", () => {
       planes: planes(90),
     });
     expect(render.mock.calls.at(-1)?.[1]).toBe(90);
+  });
+
+  it("marks fast scrub samples coarse and slow ones exact", async () => {
+    const worker = new TestWorker();
+    const backend = await openBackend(worker, vi.fn());
+    backend.beginScrub();
+    backend.pause();
+    // The opening seek's window settles; the gesture's first sample fires
+    // for the held frame and has no predecessor: exact.
+    worker.emit({
+      type: "window",
+      generation: worker.commands.at(-1)?.generation ?? 0,
+      target: 10,
+    });
+    const firstScrub = worker.commands.at(-1);
+    expect(firstScrub).toMatchObject({ type: "scrub", frame: 10 });
+    expect(firstScrub?.type === "scrub" && firstScrub.coarse).toBe(false);
+    worker.emit({
+      type: "frame",
+      generation: firstScrub?.generation ?? 0,
+      frame: 10,
+      planes: planes(10),
+    });
+    worker.emit({
+      type: "window",
+      generation: firstScrub?.generation ?? 0,
+      target: 10,
+    });
+
+    // A big jump between consecutive requests: coarse.
+    backend.seek(60, true);
+    const fastScrub = worker.commands.at(-1);
+    expect(fastScrub).toMatchObject({ type: "scrub", frame: 60 });
+    expect(fastScrub?.type === "scrub" && fastScrub.coarse).toBe(true);
+    worker.emit({
+      type: "frame",
+      generation: fastScrub?.generation ?? 0,
+      frame: 60,
+      planes: planes(60),
+    });
+    worker.emit({
+      type: "window",
+      generation: fastScrub?.generation ?? 0,
+      target: 60,
+    });
+
+    // A small step: exact again.
+    backend.seek(62, true);
+    const slowScrub = worker.commands.at(-1);
+    expect(slowScrub).toMatchObject({ type: "scrub", frame: 62 });
+    expect(slowScrub?.type === "scrub" && slowScrub.coarse).toBe(false);
+
+    // Release with the exact sample already pending for the release frame:
+    // that sample is the settle, nothing further is issued.
+    backend.endScrub();
+    expect(worker.commands.at(-1)).toBe(slowScrub);
+
+    // A release while a COARSE sample is pending must settle exactly.
+    backend.beginScrub();
+    worker.emit({
+      type: "frame",
+      generation: slowScrub?.generation ?? 0,
+      frame: 62,
+      planes: planes(62),
+    });
+    worker.emit({
+      type: "window",
+      generation: slowScrub?.generation ?? 0,
+      target: 62,
+    });
+    backend.seek(30, true);
+    const reversalScrub = worker.commands.at(-1);
+    expect(reversalScrub).toMatchObject({ type: "scrub", frame: 30 });
+    worker.emit({
+      type: "frame",
+      generation: reversalScrub?.generation ?? 0,
+      frame: 30,
+      planes: planes(30),
+    });
+    worker.emit({
+      type: "window",
+      generation: reversalScrub?.generation ?? 0,
+      target: 30,
+    });
+    backend.seek(90, true);
+    const coarsePending = worker.commands.at(-1);
+    expect(coarsePending).toMatchObject({ type: "scrub", frame: 90 });
+    expect(coarsePending?.type === "scrub" && coarsePending.coarse).toBe(true);
+    backend.endScrub();
+    expect(worker.commands.at(-1)).toMatchObject({ type: "seek", frame: 90 });
   });
 
   it("returns evicted plane buffers to the worker pool", async () => {

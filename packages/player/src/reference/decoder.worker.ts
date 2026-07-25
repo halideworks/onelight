@@ -44,7 +44,21 @@ type OpenState = {
   track: DecodedTrack;
   playIterator: AsyncIterator<EncodedPacket> | null;
   playTarget: number | null;
+  /* Highest presentation frame whose packet has been fed to the decoder on
+     the live iterator. A window whose first frame is at or before this mark
+     can continue the warm pipeline: the frame is either already copied or
+     still in flight inside the decoder. */
+  maxFedFrame: number | null;
 };
+
+/*
+ * Backpressure ceiling for decoded-frame copies. Feeding is gated at
+ * MAX_DECODE_QUEUE pending copies, but a decoder releasing its internal
+ * pipeline (a B-frame reorder burst) can momentarily exceed the feed gate
+ * without anything being wrong. Only a runaway well past any real pipeline
+ * depth is treated as a failure instead of a stall.
+ */
+const COPY_BURST_CAP = MAX_OPEN_FRAMES + 10;
 
 type DecodeOperation = {
   generation: number;
@@ -159,6 +173,7 @@ const cancelDecode = (): void => {
   if (openState) {
     openState.playIterator = null;
     openState.playTarget = null;
+    openState.maxFedFrame = null;
     resetDecoder(openState);
   }
 };
@@ -235,7 +250,7 @@ const handleDecodedFrame = (frame: VideoFrame): void => {
       closed = true;
       return;
     }
-    if (current.pendingCopies.size >= MAX_OPEN_FRAMES) {
+    if (current.pendingCopies.size >= COPY_BURST_CAP) {
       frame.close();
       closed = true;
       throw new Error("Decoded-frame copy resource cap exceeded.");
@@ -295,7 +310,13 @@ const waitForQueueCapacity = async (
   generation: number,
 ): Promise<void> => {
   const current = operation;
-  if (current && current.pendingCopies.size >= MAX_DECODE_QUEUE)
+  while (
+    generation === activeGeneration &&
+    current &&
+    operation === current &&
+    !current.failed &&
+    current.pendingCopies.size >= MAX_DECODE_QUEUE
+  )
     await Promise.race(current.pendingCopies);
   while (
     generation === activeGeneration &&
@@ -337,13 +358,22 @@ const emitPlanes = (generation: number, first: number, last: number): void => {
   }
 };
 
-const waitForDecoderDrain = async (
+/*
+ * Wait until the decoder has output every frame of the window (or run out of
+ * queued work and need more input). Deliberately NOT a drain-to-zero: emptying
+ * the decoder's internal pipeline at every window boundary put a refill bubble
+ * into sustained playback several times a second. Waiting on outputs keeps the
+ * pipeline warm across windows; only seeks and end of stream flush.
+ */
+const waitForWindowOutputs = async (
   state: OpenState,
   generation: number,
+  last: number,
 ): Promise<void> => {
   while (
     generation === activeGeneration &&
     state.decoder.state === "configured" &&
+    (operation?.lastOutputFrame ?? -1) < last &&
     state.decoder.decodeQueueSize > 0
   ) {
     await new Promise<void>((resolve) => {
@@ -358,10 +388,91 @@ const waitForDecoderDrain = async (
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 };
 
+/*
+ * One decode per sample: the keyframe at or before the target, presented at
+ * its true frame index. A fast drag across a one-second GOP costs one decode
+ * instead of a walk of up to the whole GOP, so the picture follows the
+ * pointer at display rate even on software decoders. Exactness returns with
+ * the release gesture's normal seek.
+ */
+const decodeCoarseKeyframe = async (
+  generation: number,
+  target: number,
+  state: OpenState,
+): Promise<void> => {
+  cancelDecode();
+  const targetTimestamp =
+    timestampForReferenceFrame(
+      target,
+      state.track.firstTimestampUs,
+      state.track.frameRate,
+    ) / 1_000_000;
+  /* The operation exists before the first await so a failure anywhere in the
+     sample reports through failOperation instead of relying on timers. Its
+     window is re-pointed at the keyframe once that is known. */
+  const current: DecodeOperation = {
+    generation,
+    target,
+    first: target,
+    last: target,
+    retainThrough: target,
+    lastOutputFrame: null,
+    pendingCopies: new Set(),
+    failed: false,
+  };
+  operation = current;
+  try {
+    const keyPacket = await state.packetSink.getKeyPacket(targetTimestamp, {
+      verifyKeyPackets: true,
+    });
+    if (generation !== activeGeneration) return;
+    if (!keyPacket)
+      throw new UnsupportedReferenceError(
+        "No keyframe is available before the requested frame.",
+      );
+    const keyIndex = referenceFrameAtTimestamp(
+      Math.round(keyPacket.timestamp * 1_000_000),
+      state.track.firstTimestampUs,
+      state.track.frameRate,
+    );
+    /* Always re-emit: the transport may have recycled an earlier emission of
+       this keyframe while the pointer was elsewhere. */
+    emittedFrames.delete(keyIndex);
+    current.target = keyIndex;
+    current.first = keyIndex;
+    current.last = keyIndex;
+    current.retainThrough = keyIndex;
+    state.decoder.decode(keyPacket.toEncodedVideoChunk());
+    await state.decoder.flush();
+    await Promise.all(current.pendingCopies);
+    if (
+      generation !== activeGeneration ||
+      operation !== current ||
+      current.failed
+    )
+      return;
+    if (!planes.has(keyIndex) && !emittedFrames.has(keyIndex)) {
+      clearPlaneState();
+      post({ type: "stalled", generation, frame: keyIndex });
+      return;
+    }
+    emitPlanes(generation, keyIndex, keyIndex);
+    post({ type: "window", generation, target: keyIndex });
+  } catch (error) {
+    if (generation !== activeGeneration) return;
+    failOperation(
+      generation,
+      boundedReason(error),
+      error instanceof UnsupportedReferenceError,
+    );
+  }
+};
+
 const decodeWindow = async (
   generation: number,
   target: number,
-  mode: "seek" | "play" | "scrub",
+  mode: "seek" | "play" | "scrub" | "scrub-coarse",
+  rate: 1 | 2 | 4 = 1,
 ): Promise<void> => {
   const state = openState;
   if (!state) {
@@ -386,15 +497,27 @@ const decodeWindow = async (
     return;
   }
 
+  if (mode === "scrub-coarse") {
+    await decodeCoarseKeyframe(generation, target, state);
+    return;
+  }
+
   const first =
     mode === "scrub" ? target : Math.max(0, target - FRAME_WINDOW_BEHIND);
+  /* Continuation is safe when the window's first frame is already copied,
+     already emitted, or still in flight inside the warm decoder pipeline
+     (its packet was fed on the live iterator). The distance cap scales with
+     the shuttle rate: at 4x the clock legitimately advances four frames per
+     tick, and a fixed cap made every hiccup a keyframe re-walk. */
   const canContinuePlayback =
     mode === "play" &&
     state.playIterator !== null &&
     state.playTarget !== null &&
     target >= state.playTarget &&
-    target - state.playTarget <= MAX_OPEN_FRAMES * 2 &&
-    (planes.has(first) || emittedFrames.has(first));
+    target - state.playTarget <= MAX_OPEN_FRAMES * 2 * rate &&
+    (planes.has(first) ||
+      emittedFrames.has(first) ||
+      (state.maxFedFrame !== null && first <= state.maxFedFrame + 1));
   const canContinueScrub =
     mode === "scrub" &&
     state.playIterator !== null &&
@@ -453,7 +576,7 @@ const decodeWindow = async (
     let reachedEnd = false;
     while (true) {
       if (crossedWindowBoundary) {
-        await waitForDecoderDrain(state, generation);
+        await waitForWindowOutputs(state, generation, last);
         if (
           generation !== activeGeneration ||
           !operation ||
@@ -479,6 +602,13 @@ const decodeWindow = async (
       )
         return;
       state.decoder.decode(packet.toEncodedVideoChunk());
+      const fedFrame = referenceFrameAtTimestamp(
+        Math.round(packet.timestamp * 1_000_000),
+        state.track.firstTimestampUs,
+        state.track.frameRate,
+      );
+      if (state.maxFedFrame === null || fedFrame > state.maxFedFrame)
+        state.maxFedFrame = fedFrame;
       if (packetTimeBeyondWindow(packet, state, last))
         crossedWindowBoundary = true;
     }
@@ -520,6 +650,7 @@ const decodeWindow = async (
     else {
       state.playIterator = null;
       state.playTarget = null;
+      state.maxFedFrame = null;
     }
     for (const emitted of emittedFrames)
       if (emitted < first - MAX_OPEN_FRAMES) emittedFrames.delete(emitted);
@@ -682,6 +813,7 @@ const finishOpen = async (
     track: decodedTrack,
     playIterator: null,
     playTarget: null,
+    maxFedFrame: null,
   };
   post({ type: "ready", generation, track: decodedTrack });
 };
@@ -716,10 +848,14 @@ const handleCommand = (command: DecoderCommand): void => {
       void decodeWindow(command.generation, command.frame, "seek");
       break;
     case "scrub":
-      void decodeWindow(command.generation, command.frame, "scrub");
+      void decodeWindow(
+        command.generation,
+        command.frame,
+        command.coarse ? "scrub-coarse" : "scrub",
+      );
       break;
     case "play":
-      void decodeWindow(command.generation, command.frame, "play");
+      void decodeWindow(command.generation, command.frame, "play", command.rate);
       break;
     case "pause":
       cancelDecode();

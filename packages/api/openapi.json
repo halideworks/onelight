@@ -8671,6 +8671,20 @@
                     "has_thumbnail": {
                       "type": "boolean"
                     },
+                    "display_transfer": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "srgb",
+                            "bt1886"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "deleted_at": {
                       "anyOf": [
                         {
@@ -8700,6 +8714,7 @@
                     "description",
                     "tags",
                     "has_thumbnail",
+                    "display_transfer",
                     "deleted_at",
                     "created_at",
                     "updated_at"
@@ -13060,13 +13075,28 @@
                             "approved",
                             "changes_requested"
                           ]
+                        },
+                        "display_transfer": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "srgb",
+                                "bt1886"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
                         "id",
                         "name",
                         "kind",
-                        "status"
+                        "status",
+                        "display_transfer"
                       ],
                       "additionalProperties": false
                     },
@@ -13082,6 +13112,10 @@
                             "type": "integer"
                           },
                           "media_info": {
+                            "type": "object",
+                            "additionalProperties": {}
+                          },
+                          "color": {
                             "type": "object",
                             "additionalProperties": {}
                           },
@@ -13331,6 +13365,7 @@
                           "id",
                           "version_no",
                           "media_info",
+                          "color",
                           "transcode_status",
                           "renditions",
                           "sources",
@@ -20270,6 +20305,20 @@
                           "has_thumbnail": {
                             "type": "boolean"
                           },
+                          "display_transfer": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "srgb",
+                                  "bt1886"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "deleted_at": {
                             "anyOf": [
                               {
@@ -20456,6 +20505,7 @@
                           "description",
                           "tags",
                           "has_thumbnail",
+                          "display_transfer",
                           "deleted_at",
                           "created_at",
                           "updated_at",
@@ -20604,6 +20654,20 @@
                           "has_thumbnail": {
                             "type": "boolean"
                           },
+                          "display_transfer": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "srgb",
+                                  "bt1886"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "deleted_at": {
                             "anyOf": [
                               {
@@ -20639,6 +20703,7 @@
                           "description",
                           "tags",
                           "has_thumbnail",
+                          "display_transfer",
                           "deleted_at",
                           "created_at",
                           "updated_at",
@@ -20774,6 +20839,20 @@
                     "has_thumbnail": {
                       "type": "boolean"
                     },
+                    "display_transfer": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "srgb",
+                            "bt1886"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "deleted_at": {
                       "anyOf": [
                         {
@@ -20803,6 +20882,7 @@
                     "description",
                     "tags",
                     "has_thumbnail",
+                    "display_transfer",
                     "deleted_at",
                     "created_at",
                     "updated_at"
@@ -20904,6 +20984,14 @@
                       "maxLength": 100
                     },
                     "maxItems": 100
+                  },
+                  "display_transfer": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "srgb",
+                      "bt1886"
+                    ]
                   }
                 },
                 "additionalProperties": false
@@ -20974,6 +21062,20 @@
                     "has_thumbnail": {
                       "type": "boolean"
                     },
+                    "display_transfer": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "srgb",
+                            "bt1886"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "deleted_at": {
                       "anyOf": [
                         {
@@ -21003,6 +21105,7 @@
                     "description",
                     "tags",
                     "has_thumbnail",
+                    "display_transfer",
                     "deleted_at",
                     "created_at",
                     "updated_at"
@@ -21207,6 +21310,20 @@
                     "has_thumbnail": {
                       "type": "boolean"
                     },
+                    "display_transfer": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "srgb",
+                            "bt1886"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "deleted_at": {
                       "anyOf": [
                         {
@@ -21236,6 +21353,7 @@
                     "description",
                     "tags",
                     "has_thumbnail",
+                    "display_transfer",
                     "deleted_at",
                     "created_at",
                     "updated_at"
@@ -21717,6 +21835,20 @@
                         "has_thumbnail": {
                           "type": "boolean"
                         },
+                        "display_transfer": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "srgb",
+                                "bt1886"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "deleted_at": {
                           "anyOf": [
                             {
@@ -21746,6 +21878,7 @@
                         "description",
                         "tags",
                         "has_thumbnail",
+                        "display_transfer",
                         "deleted_at",
                         "created_at",
                         "updated_at"
@@ -22059,6 +22192,20 @@
                     "has_thumbnail": {
                       "type": "boolean"
                     },
+                    "display_transfer": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "srgb",
+                            "bt1886"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "deleted_at": {
                       "anyOf": [
                         {
@@ -22088,6 +22235,7 @@
                     "description",
                     "tags",
                     "has_thumbnail",
+                    "display_transfer",
                     "deleted_at",
                     "created_at",
                     "updated_at"

@@ -54,7 +54,10 @@
   import { ReferencePictureBackend } from './reference/reference-backend.js';
   import { referenceSourceAvailability } from './reference/source-contract.js';
   import { shouldRequestReferencePlayback } from './reference-selection.js';
+  import type { ReferenceHardwareAcceleration } from './reference/protocol.js';
+  import { resolveDisplayTransfer } from './reference/color-math.js';
   import { untrack } from 'svelte';
+  import { classifyReferenceFailure } from './picture-backend.js';
   import type {
     PicturePlaybackRate,
     ReferenceFailure
@@ -101,8 +104,12 @@
     oncopytimecode = undefined,
     onshuttleaudiodiagnostic = undefined,
     colorCheckBuildId = 'onelight',
+    displayTransferOverride = null,
+    sourceTransfer = null,
+    canEditColorTransfer = false,
     oncolorselfcheckdiagnostic = undefined,
-    onreferenceplaybackdiagnostic = undefined
+    onreferenceplaybackdiagnostic = undefined,
+    ondisplaytransferchange = undefined
   }: {
     src: string;
     rate?: { num: number; den: number };
@@ -169,11 +176,26 @@
     /* Build identity invalidates the local color result when the deployed
        player changes. The clip hash and browser identity complete the key. */
     colorCheckBuildId?: string;
+    /* The editor's per-asset reference-render transfer override ('srgb' |
+       'bt1886'), or null for auto. Combined with the source transfer tag to
+       resolve what the renderer applies. */
+    displayTransferOverride?: 'srgb' | 'bt1886' | null;
+    /* The source file's color transfer tag (e.g. 'bt709', 'iec61966-2-1'),
+       used to auto-resolve the display transfer when there is no override. */
+    sourceTransfer?: string | null;
+    /* Whether this viewer may change the transfer. Editors and managers see
+       the control; everyone else only sees the resulting picture. */
+    canEditColorTransfer?: boolean;
     oncolorselfcheckdiagnostic?:
       | ((diagnostic: ColorSelfCheckDiagnostic) => void)
       | undefined;
     onreferenceplaybackdiagnostic?:
       | ((diagnostic: ReferencePlaybackDiagnostic) => void)
+      | undefined;
+    /* Fires when an editor picks a transfer; the host persists it. 'auto'
+       clears any override. */
+    ondisplaytransferchange?:
+      | ((value: 'auto' | 'srgb' | 'bt1886') => void)
       | undefined;
   } = $props();
   /* The element that plays. A video for footage, an audio element for a mix:
@@ -182,6 +204,12 @@
      the picture element explicitly. */
   let video: HTMLMediaElement | undefined = $state();
   const isAudio = $derived(kind === 'audio');
+  /* The transfer the reference renderer applies: an explicit editor override
+     wins, otherwise it is derived from the source transfer tag (default
+     BT.1886). Viewers get this result; only editors can change it. */
+  const resolvedDisplayTransfer = $derived(
+    resolveDisplayTransfer(displayTransferOverride, sourceTransfer)
+  );
   let colorSelfCheckResult = $state<ColorSelfCheckResult | null>(null);
   let colorCheckGeneration = 0;
   $effect(() => {
@@ -226,6 +254,24 @@
   let referenceClockHealthTimer: ReturnType<typeof setTimeout> | null = null;
   let referenceGeneration = 0;
   let blockedReferenceSource = $state('');
+  /* A failed source is retried along a short escalation ladder rather than
+     condemned on the first stumble: attempt one uses the platform's chosen
+     (usually hardware) decoder; the next escalates to a software decoder,
+     which is deterministic across GPUs and browsers. Only once the software
+     decoder has ALSO failed -- or the retry budget is spent -- does the source
+     stay on native. This both recovers transient hitches (a decode stall, a
+     lost GPU context, a slow seek) and makes a genuinely unsupported
+     environment fall back within one extra attempt instead of spinning. */
+  const REFERENCE_MAX_RETRIES = 3;
+  let referenceRetrySource = '';
+  let referenceRetries = 0;
+  let referenceRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /* Hardware decode is tried first (fast, correct for the common case). When a
+     platform hardware decoder mishandles a surface, the next attempt escalates
+     to software, which is deterministic across GPUs. The choice is pinned to
+     the media URL so escalation survives retries but resets for new media. */
+  let referenceDecodePreference: ReferenceHardwareAcceleration = 'no-preference';
+  let referencePreferenceSource = '';
   let nativePictureReady = $state(false);
   let referencePrepared = $state(false);
   let referencePreparing = false;
@@ -266,6 +312,7 @@
     }
   });
   const selectColorPlaybackMode = (mode: ColorPlaybackMode): void => {
+    clearReferenceRetry();
     blockedReferenceSource = '';
     referenceFailure = null;
     if (mode === 'reference') {
@@ -1023,6 +1070,20 @@
   );
   let colorPanelOpen = $state(false);
   let activeReferenceSource = '';
+  /* The engine cannot declare the canvas buffer sRGB and the display is
+     wide-gamut: the composited picture may be oversaturated. Reference still
+     runs (the pixels are correct); the panel carries the caution. */
+  let referenceUnmanagedWideGamut = $state(false);
+  $effect(() => {
+    if (!referenceActive) {
+      referenceUnmanagedWideGamut = false;
+      return;
+    }
+    referenceUnmanagedWideGamut =
+      referenceStage?.colorManagedOutput() === false &&
+      typeof matchMedia === 'function' &&
+      matchMedia('(color-gamut: p3)').matches;
+  });
 
   const referenceDiagnostic = (
     outcome: 'ready' | 'fallback',
@@ -1035,7 +1096,7 @@
     frame: failure?.frame ?? frame,
     was_playing: failure?.playing ?? playing,
     source_kind: activeRendition?.kind ?? null,
-    decoder_preference: outcome === 'ready' ? 'no-preference' : null,
+    decoder_preference: outcome === 'ready' ? referenceDecodePreference : null,
     buffered_frames: referenceBackend?.bufferedFrames.length ?? 0,
     preparation_ms:
       referencePreparationMs ??
@@ -1058,6 +1119,20 @@
   ): void => {
     const diagnostic = referenceDiagnostic(outcome, failure);
     onreferenceplaybackdiagnostic?.(diagnostic);
+    /* Low-volume (only on ready/fallback), so log it: a self-hosted operator's
+       fastest window into why a given browser could or could not run the
+       reference path, with no console typing required. */
+    if (typeof console !== 'undefined')
+      (outcome === 'ready' ? console.info : console.warn)(
+        `[onelight:reference] ${outcome}`,
+        {
+          failure_class: diagnostic.failure_class,
+          reason: diagnostic.reason,
+          decoder_preference: diagnostic.decoder_preference,
+          source_kind: diagnostic.source_kind,
+          preparation_ms: diagnostic.preparation_ms
+        }
+      );
     if (typeof window !== 'undefined')
       window.dispatchEvent(
         new CustomEvent('onelight:reference-playback-diagnostic', {
@@ -1076,6 +1151,57 @@
       referenceClockHealthTimer = null;
     }
     referenceClock?.pause();
+  };
+
+  const clearReferenceRetry = (): void => {
+    if (referenceRetryTimer !== null) {
+      clearTimeout(referenceRetryTimer);
+      referenceRetryTimer = null;
+    }
+    referenceRetrySource = '';
+    referenceRetries = 0;
+  };
+
+  /* Failure classes where the decoder itself is the suspect, so the next
+     attempt should prefer a software decoder. A lost GPU context, a renderer
+     fault, a network-starved buffer or a demux error say nothing about the
+     decoder, and pinning the URL to software for those would just make every
+     retry slower. */
+  const DECODER_FAULT_FAILURES: ReadonlySet<ReferenceFailure['failureClass']> =
+    new Set(['decode', 'timestamp', 'output_order', 'allocation', 'unknown']);
+  /* Advance a failed source along the escalation ladder: escalate to software
+     when the decoder is the suspect, and schedule a backed-off re-prepare (the
+     hold reuses blockedReferenceSource so no hot re-prepare fires while we
+     wait) until the retry budget is spent; then leave the source on native.
+     The budget covers the software rung too -- a transient hitch after a
+     successful escalation is retried, not terminal. */
+  const holdOrBlockReference = (
+    source: string,
+    failure: ReferenceFailure,
+  ): void => {
+    if (referenceRetryTimer !== null) {
+      clearTimeout(referenceRetryTimer);
+      referenceRetryTimer = null;
+    }
+    blockedReferenceSource = source;
+    if (!source) return;
+    if (referenceRetrySource !== source) {
+      referenceRetrySource = source;
+      referenceRetries = 0;
+    }
+    referenceRetries += 1;
+    if (
+      referencePreferenceSource === source &&
+      referenceDecodePreference !== 'prefer-software' &&
+      DECODER_FAULT_FAILURES.has(failure.failureClass)
+    )
+      referenceDecodePreference = 'prefer-software';
+    if (referenceRetries > REFERENCE_MAX_RETRIES) return;
+    const backoff = Math.min(2_500, 400 * 2 ** (referenceRetries - 1));
+    referenceRetryTimer = setTimeout(() => {
+      referenceRetryTimer = null;
+      if (blockedReferenceSource === source) blockedReferenceSource = '';
+    }, backoff);
   };
 
   const disposeReferencePreparation = (): void => {
@@ -1106,7 +1232,7 @@
         referenceNoticeTimer = null;
         referenceNotice = false;
       }, 6_000);
-      blockedReferenceSource = failedSource;
+      holdOrBlockReference(failedSource, failure);
       reportReferenceDiagnostic('fallback', failure);
     }
     seekFrame(at);
@@ -1134,7 +1260,7 @@
       stopReferenceClock();
       const failedSource = activeReferenceSource;
       disposeReferencePreparation();
-      blockedReferenceSource = failedSource;
+      holdOrBlockReference(failedSource, failure);
       reportReferenceDiagnostic('fallback', failure);
       return;
     }
@@ -1214,6 +1340,7 @@
         return;
       referenceActive = true;
       referenceLoading = false;
+      clearReferenceRetry();
       pictureIn = true;
       setFrame(switchFrame);
       if (wasPlaying) {
@@ -1231,9 +1358,13 @@
         preparation.generation !== referenceGeneration
       )
         return;
+      const reason =
+        error instanceof Error
+          ? error.message.slice(0, 500)
+          : String(error).slice(0, 500);
       handleReferenceFailure({
-        failureClass: 'decoder_unsupported',
-        reason: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+        failureClass: classifyReferenceFailure(reason, false),
+        reason,
         frame: untrack(() => frame),
         playing: untrack(() => playing)
       });
@@ -1298,7 +1429,7 @@
         rejectReferenceFrameWaiters(preparation, failure.reason);
         handleReferenceFailure(failure);
       }
-    });
+    }, { hardwareAcceleration: referenceDecodePreference });
     preparation = {
       generation,
       backend,
@@ -1336,9 +1467,13 @@
         preparedReference !== preparation
       )
         return;
+      const reason =
+        error instanceof Error
+          ? error.message.slice(0, 500)
+          : String(error).slice(0, 500);
       handleReferenceFailure({
-        failureClass: 'decoder_unsupported',
-        reason: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+        failureClass: classifyReferenceFailure(reason, false),
+        reason,
         frame: initialFrame,
         playing: untrack(() => playing)
       });
@@ -1398,6 +1533,10 @@
       else if (requested && referencePreparing)
         referenceLoading = true;
       return;
+    }
+    if (referencePreferenceSource !== sourceKey) {
+      referencePreferenceSource = sourceKey;
+      referenceDecodePreference = 'no-preference';
     }
     activeReferenceSource = sourceKey;
     const generation = ++referenceGeneration;
@@ -2459,6 +2598,39 @@
     restoreRate();
   };
 
+  /* External audio-clock interruptions (an OS media interruption, a bluetooth
+     device switch) pause the element without going through the transport. The
+     tick loop parks itself while the track is paused and nothing would restart
+     the picture, so the interruption is folded into a real pause. The settle
+     delay skips the transport's own internal pause/play cycles. */
+  let referencePauseProbe: ReturnType<typeof setTimeout> | null = null;
+  const onReferenceClockPause = (): void => {
+    if (!referenceActive) return;
+    if (referencePauseProbe !== null) clearTimeout(referencePauseProbe);
+    referencePauseProbe = setTimeout(() => {
+      referencePauseProbe = null;
+      if (referenceActive && forwardSpeed > 0 && referenceClock?.paused)
+        pausePlayback();
+    }, 300);
+  };
+
+  /* A hidden tab throttles requestAnimationFrame toward zero while the audio
+     clock keeps running: the picture cannot follow, decode starves, and the
+     failure ladder burns invisibly. Reviewing is a foreground activity, so a
+     hidden tab pauses instead. */
+  $effect(() => {
+    const onVisibility = (): void => {
+      if (
+        document.visibilityState === 'hidden' &&
+        referenceActive &&
+        forwardSpeed > 0
+      )
+        pausePlayback();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  });
+
   /* A refused play must not leave a playing UI over a frozen frame. This is
      distinct from a silent rate-changed element, whose play promise resolves
      and whose picture advances. */
@@ -2728,6 +2900,8 @@
     return () => {
       if (reverseTimer !== null) clearInterval(reverseTimer);
       if (referenceNoticeTimer !== null) clearTimeout(referenceNoticeTimer);
+      if (referenceRetryTimer !== null) clearTimeout(referenceRetryTimer);
+      if (referencePauseProbe !== null) clearTimeout(referencePauseProbe);
       shuttleTrack?.pause();
       stopReferenceClock();
       referenceBackend?.close();
@@ -2822,6 +2996,7 @@
       <div class="reference-picture" class:active={referenceActive}>
         <ReferenceStage
           bind:this={referenceStage}
+          displayTransfer={resolvedDisplayTransfer}
           onrenderererror={(reason) => {
             if (referenceActive || referenceLoading)
               handleReferenceFailure({
@@ -2847,6 +3022,7 @@
         preload="auto"
         aria-hidden="true"
         onloadedmetadata={() => syncReferenceClock(referenceClockRate, referenceClockFrame)}
+        onpause={onReferenceClockPause}
         onerror={() => {
           if (referenceActive)
             handleReferenceFailure({
@@ -3475,8 +3651,39 @@
         {#if referenceFailure}
           <p class="color-assumption" role="status">{referenceFailure} Native playback is active at the same frame.</p>
         {/if}
+        {#if referenceUnmanagedWideGamut}
+          <p class="color-assumption">This browser cannot declare the renderer's output as sRGB, and this display is wide-gamut: the picture may composite oversaturated. Verify color in a browser with canvas color management.</p>
+        {/if}
         {#if hdrRenditions.length && !qualifiedHdrRendition && hdrQualificationReason}
           <p class="color-assumption">Native HDR is unavailable: {hdrQualificationReason} The SDR proxy remains active.</p>
+        {/if}
+        {#if canEditColorTransfer}
+          <div class="color-transfer" role="group" aria-labelledby="transfer-label">
+            <span class="color-panel-kicker" id="transfer-label">Reference display transfer</span>
+            <div class="seg">
+              <button
+                type="button"
+                aria-pressed={displayTransferOverride === null || displayTransferOverride === undefined}
+                title="Derive from the source tag (defaults to Rec.709 2.4)"
+                onclick={() => { ondisplaytransferchange?.('auto'); }}
+              >Auto</button>
+              <button
+                type="button"
+                aria-pressed={displayTransferOverride === 'bt1886'}
+                title="BT.1886 gamma 2.4 — the reference-monitor standard for Rec.709 finishing"
+                onclick={() => { ondisplaytransferchange?.('bt1886'); }}
+              >Rec.709 (2.4)</button>
+              <button
+                type="button"
+                aria-pressed={displayTransferOverride === 'srgb'}
+                title="Treat code values as sRGB (~2.2) — the web/consumer look"
+                onclick={() => { ondisplaytransferchange?.('srgb'); }}
+              >sRGB</button>
+            </div>
+            <p class="color-assumption">
+              Applied: {resolvedDisplayTransfer === 'bt1886' ? 'BT.1886 (2.4)' : 'sRGB (~2.2)'}{(displayTransferOverride === null || displayTransferOverride === undefined) ? ', auto from source tag' : ''}. Only editors see this control; viewers get the result.
+            </p>
+          </div>
         {/if}
         <p class="color-scope">
           {COLOR_CHECK_SCOPE}

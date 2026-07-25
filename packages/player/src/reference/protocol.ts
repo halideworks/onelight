@@ -90,7 +90,16 @@ export type DecoderCommand =
       hardwareAcceleration?: ReferenceHardwareAcceleration;
     }
   | { type: "seek"; generation: number; frame: number }
-  | { type: "scrub"; generation: number; frame: number }
+  | {
+      type: "scrub";
+      generation: number;
+      frame: number;
+      /* A fast-moving pointer wants picture updates, not exactness: coarse
+         decodes only the keyframe at or before the target (one decode per
+         sample instead of a GOP walk) and presents it at its true index.
+         The release gesture still runs an exact seek. */
+      coarse?: boolean;
+    }
   | {
       type: "play";
       generation: number;

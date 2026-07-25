@@ -4,6 +4,10 @@ import {
   COLOR_ORACLE_PATCHES,
   type ColorTriplet,
 } from "../../packages/player/src/color-oracle.js";
+import {
+  encodeForDisplay,
+  quantizeEncodedRgb,
+} from "../../packages/player/src/reference/color-math.js";
 import type {
   ExpectedTrack,
   PlaneTransfer,
@@ -70,6 +74,46 @@ const assertWithinOne = (
       expect(
         Math.abs(reading.rgb[channel] - patch.srgb[channel]),
         `${engine} ${format} ${patch.name}: ${reading.rgb.join(",")} versus ${patch.srgb.join(",")}`,
+      ).toBeLessThanOrEqual(1);
+  }
+};
+
+/*
+ * The BT.1886 shader branch (the product default) must match the CPU
+ * encodeForDisplay applied to the SAME run's sRGB readings within 1/255 per
+ * channel. Using the run's own sRGB pixels as the input isolates exactly the
+ * transfer_mode branch: any decode or upload variance cancels out.
+ */
+const assertBt1886Parity = (
+  engine: string,
+  format: string,
+  srgbReadings: readonly PatchReading[],
+  bt1886Readings: readonly PatchReading[],
+): void => {
+  const byName = new Map(
+    bt1886Readings.map((reading) => [reading.name, reading]),
+  );
+  for (const srgbReading of srgbReadings) {
+    const reading = byName.get(srgbReading.name);
+    expect(
+      reading,
+      `${engine} ${format} bt1886 omitted ${srgbReading.name}`,
+    ).toBeDefined();
+    if (!reading) continue;
+    const expected = quantizeEncodedRgb(
+      encodeForDisplay(
+        [
+          srgbReading.rgb[0] / 255,
+          srgbReading.rgb[1] / 255,
+          srgbReading.rgb[2] / 255,
+        ],
+        "bt1886",
+      ),
+    );
+    for (const channel of [0, 1, 2] as const)
+      expect(
+        Math.abs(reading.rgb[channel] - expected[channel]),
+        `${engine} ${format} bt1886 ${srgbReading.name}: ${reading.rgb.join(",")} versus CPU ${expected.join(",")}`,
       ).toBeLessThanOrEqual(1);
   }
 };
@@ -235,6 +279,18 @@ describe.skipIf(fixtureReason !== undefined)(
             expect(["I420", "NV12"]).toContain(result.readings.sourceFormat);
             assertWithinOne(engine.name, "I420", result.readings.i420);
             assertWithinOne(engine.name, "NV12", result.readings.nv12);
+            assertBt1886Parity(
+              engine.name,
+              "I420",
+              result.readings.i420,
+              result.readings.i420Bt1886,
+            );
+            assertBt1886Parity(
+              engine.name,
+              "NV12",
+              result.readings.nv12,
+              result.readings.nv12Bt1886,
+            );
             expect(
               result.readings.i420.map(
                 (reading) => reading.rgb as ColorTriplet,

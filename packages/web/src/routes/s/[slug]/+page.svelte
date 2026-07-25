@@ -65,10 +65,17 @@
   };
   type Comment = ReviewComment & { mine?: boolean };
   type AssetDetail = {
-    asset: { id: string; name: string; kind: string; status: string };
+    asset: {
+      id: string;
+      name: string;
+      kind: string;
+      status: string;
+      display_transfer: 'srgb' | 'bt1886' | null;
+    };
     versions: Array<{
       id: string;
       media_info: Record<string, unknown>;
+      color: Record<string, unknown>;
       renditions: Array<{ kind: string; meta: Record<string, unknown> }>;
       sources: Array<{ kind: string; url: string; meta: Record<string, unknown> }>;
       sidecars?: {
@@ -99,6 +106,11 @@
   let previewPeaksUrl = $state<string | null>(null);
   let previewSpectrogramUrl = $state<string | null>(null);
   let previewCaptionsUrl = $state<string | null>(null);
+  /* The editor's transfer override and the file's source transfer tag: the
+     room must resolve the same reference display transfer the project page
+     does. Read-only for viewers. */
+  let previewDisplayTransfer = $state<'srgb' | 'bt1886' | null>(null);
+  let previewSourceTransfer = $state<string | null>(null);
   let watermarkPending = $state(false);
   /* True from opening an asset until its media answer lands: the "not ready"
      empty state must not flash between clips while the next URL is in flight
@@ -526,6 +538,8 @@
     previewPeaksUrl = null;
     previewSpectrogramUrl = null;
     previewCaptionsUrl = null;
+    previewDisplayTransfer = null;
+    previewSourceTransfer = null;
     watermarkPending = false;
     mediaLoading = true;
     downloadNote = '';
@@ -541,6 +555,10 @@
       const detail = await api<AssetDetail>(`/api/v1/s/${slug}/assets/${asset.id}`);
       previewRate = rateFrom(detail);
       const version = detail.versions[0];
+      previewDisplayTransfer = detail.asset?.display_transfer ?? null;
+      previewSourceTransfer =
+        ((version?.color as { transfer?: string | null } | undefined)
+          ?.transfer) ?? null;
       const info = version?.media_info ?? {};
       const streams = Array.isArray(info['streams'])
         ? (info['streams'] as Array<Record<string, unknown>>)
@@ -635,6 +653,8 @@
     previewPeaksUrl = null;
     previewSpectrogramUrl = null;
     previewCaptionsUrl = null;
+    previewDisplayTransfer = null;
+    previewSourceTransfer = null;
     watermarkPending = false;
     downloadNote = '';
     comments = [];
@@ -1257,6 +1277,8 @@
           filmstrip={previewFilmstrip}
           waveformUrl={previewWaveformUrl}
           colorCheckBuildId={appVersion}
+          displayTransferOverride={previewDisplayTransfer}
+          sourceTransfer={previewSourceTransfer}
           captionsSrc={previewCaptionsUrl ?? undefined}
           allowDrawing={share.allow_comments}
           drawDefaultColor={inkChoice ?? myInk}

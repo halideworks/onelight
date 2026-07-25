@@ -102,6 +102,17 @@ const assetsHaveThumbnail = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes("thumbnail_blob_key"));
 };
 
+const assetsHaveDisplayTransfer = async (
+  binding: D1Database,
+): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='assets'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("display_transfer"));
+};
+
 const renditionsHaveAudioKinds = async (
   binding: D1Database,
 ): Promise<boolean> => {
@@ -474,6 +485,11 @@ export const d1Migrations: D1Migration[] = [
       "CREATE UNIQUE INDEX renditions_base_uq ON renditions(version_id, kind) WHERE share_id IS NULL",
       "CREATE UNIQUE INDEX renditions_share_uq ON renditions(version_id, kind, share_id) WHERE share_id IS NOT NULL",
     ],
+  },
+  {
+    name: "0026_asset_display_transfer.sql",
+    applied: assetsHaveDisplayTransfer,
+    statements: ["ALTER TABLE assets ADD COLUMN display_transfer TEXT"],
   },
 ];
 

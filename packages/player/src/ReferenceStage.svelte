@@ -1,12 +1,15 @@
 <script lang="ts">
   import { ReferenceGlRenderer } from './reference/gl-renderer.js';
+  import type { ReferenceDisplayTransfer } from './reference/color-math.js';
   import type { PlaneTransfer } from './reference/protocol.js';
 
   let {
     requireAcceleration = true,
+    displayTransfer = 'srgb',
     onrenderererror = undefined
   }: {
     requireAcceleration?: boolean;
+    displayTransfer?: ReferenceDisplayTransfer;
     onrenderererror?: ((reason: string) => void) | undefined;
   } = $props();
 
@@ -22,9 +25,12 @@
     return renderer;
   };
 
+  let lastPlanes: PlaneTransfer | null = null;
+
   export function render(planes: PlaneTransfer): void {
+    lastPlanes = planes;
     try {
-      getRenderer().render(planes);
+      getRenderer().render(planes, displayTransfer);
     } catch (error) {
       const reason = boundedReason(error);
       onrenderererror?.(reason);
@@ -32,13 +38,34 @@
     }
   }
 
+  /* An editor comparing 2.2 against 2.4 does it on a held frame; the choice
+     must repaint that frame, not wait for the next presentation. The held
+     buffer can have been transferred back to the decoder (detached, zero
+     byteLength) -- then there is nothing to repaint and the next presented
+     frame carries the new transfer. */
+  $effect(() => {
+    void displayTransfer;
+    if (!renderer || !lastPlanes || lastPlanes.buffer.byteLength === 0) return;
+    try {
+      renderer.render(lastPlanes, displayTransfer);
+    } catch {
+      /* The next presentation repaints; a stale buffer is not an error. */
+    }
+  });
+
   export function close(): void {
     renderer?.close();
     renderer = undefined;
+    lastPlanes = null;
   }
 
   export function element(): HTMLCanvasElement | null {
     return canvas ?? null;
+  }
+
+  /* Null until the first render creates the context. */
+  export function colorManagedOutput(): boolean | null {
+    return renderer ? renderer.colorManagedOutput : null;
   }
 
   const handleContextLoss = (): void => {

@@ -14,6 +14,7 @@ import {
   type DecoderCommand,
   type DecoderEvent,
   type PlaneTransfer,
+  type ReferenceHardwareAcceleration,
 } from "./protocol.js";
 
 type WorkerLike = Pick<
@@ -26,6 +27,11 @@ export type ReferenceBackendOptions = {
   openTimeoutMs?: number;
   starvationMs?: number;
   seekTimeoutMs?: number;
+  /* Which WebCodecs decoder the worker should request. Reference playback is
+     correctness-first, so the transport can escalate to "prefer-software"
+     when a platform hardware decoder mishandles a surface (e.g. odd-width
+     4:2:0), where a bundled software decoder is deterministic. */
+  hardwareAcceleration?: ReferenceHardwareAcceleration;
 };
 
 type LoadWaiter = {
@@ -65,12 +71,17 @@ const defaultWorkerFactory = (): Worker =>
     name: "onelight-reference-decoder",
   });
 
+/* Frames between consecutive scrub window requests beyond which the drag is
+   fast enough that keyframe-only sampling reads better than exact decode. */
+const COARSE_SCRUB_STEP = 8;
+
 export class ReferencePictureBackend implements PictureBackend {
   readonly #callbacks: ReferenceBackendCallbacks;
   readonly #workerFactory: () => WorkerLike;
   readonly #openTimeoutMs: number;
   readonly #starvationMs: number;
   readonly #seekTimeoutMs: number;
+  readonly #hardwareAcceleration: ReferenceHardwareAcceleration;
   readonly #frames = new Map<number, PlaneTransfer>();
   #worker: WorkerLike | null = null;
   #track: DecodedTrack | null = null;
@@ -80,7 +91,9 @@ export class ReferencePictureBackend implements PictureBackend {
   #rate: PicturePlaybackRate = 1;
   #windowPending = false;
   #windowTarget: number | null = null;
+  #windowCoarse = false;
   #scrubbing = false;
+  #lastScrubRequest: number | null = null;
   #loadWaiter: LoadWaiter | null = null;
   #openStage = "starting decoder worker";
   #starvationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -98,6 +111,8 @@ export class ReferencePictureBackend implements PictureBackend {
     this.#openTimeoutMs = options.openTimeoutMs ?? 5_000;
     this.#starvationMs = options.starvationMs ?? 900;
     this.#seekTimeoutMs = options.seekTimeoutMs ?? 5_000;
+    this.#hardwareAcceleration =
+      options.hardwareAcceleration ?? "no-preference";
   }
 
   get bufferedFrames(): readonly number[] {
@@ -172,7 +187,7 @@ export class ReferencePictureBackend implements PictureBackend {
       generation,
       url: transferableSource.url,
       expected: transferableSource.expected,
-      hardwareAcceleration: "no-preference",
+      hardwareAcceleration: this.#hardwareAcceleration,
     });
     await opened;
     if (!this.#failed) this.seek(frame);
@@ -213,6 +228,7 @@ export class ReferencePictureBackend implements PictureBackend {
     if (this.#failed) return;
     this.#scrubbing = true;
     this.#playing = false;
+    this.#lastScrubRequest = null;
     this.#clearStarvation();
   }
 
@@ -225,7 +241,13 @@ export class ReferencePictureBackend implements PictureBackend {
       this.#present(this.#desiredFrame, cached);
       return;
     }
-    if (!this.#windowPending || this.#windowTarget !== this.#desiredFrame)
+    /* A pending coarse sample answers with a keyframe, not the release
+       frame: the release always settles exactly. */
+    if (
+      !this.#windowPending ||
+      this.#windowTarget !== this.#desiredFrame ||
+      this.#windowCoarse
+    )
       this.#requestWindow(this.#desiredFrame, "seek");
   }
 
@@ -272,6 +294,7 @@ export class ReferencePictureBackend implements PictureBackend {
     this.#windowTarget = null;
     this.#playing = false;
     this.#scrubbing = false;
+    this.#lastScrubRequest = null;
   }
 
   #nextGeneration(): number {
@@ -288,10 +311,26 @@ export class ReferencePictureBackend implements PictureBackend {
     const generation = this.#nextGeneration();
     this.#windowPending = true;
     this.#windowTarget = frame;
+    /* A pointer covering many frames between samples wants picture updates
+       over exactness: coarse decodes only the nearest keyframe (one decode
+       per sample instead of a GOP walk). Slow drags and the release seek
+       stay exact. */
+    const coarse =
+      type === "scrub" &&
+      this.#lastScrubRequest !== null &&
+      Math.abs(frame - this.#lastScrubRequest) >= COARSE_SCRUB_STEP;
+    this.#lastScrubRequest = type === "scrub" ? frame : null;
+    this.#windowCoarse = coarse;
     this.#clearSeekTimer();
     this.#seekTimer = setTimeout(() => {
       this.#seekTimer = null;
-      if (generation === this.#generation && !this.#frames.has(frame))
+      if (
+        generation === this.#generation &&
+        !this.#frames.has(frame) &&
+        /* A coarse sample answers with the keyframe at or before the target,
+           so any nearer buffered frame proves it did its job. */
+        !(coarse && this.#nearestBufferedFrame() !== null)
+      )
         this.#fail(
           `Reference decode stalled before frame ${String(frame)}.`,
           false,
@@ -302,6 +341,7 @@ export class ReferencePictureBackend implements PictureBackend {
       generation,
       frame,
       ...(type === "play" ? { rate: this.#rate } : {}),
+      ...(type === "scrub" ? { coarse } : {}),
     } as DecoderCommand);
   }
 
@@ -394,7 +434,12 @@ export class ReferencePictureBackend implements PictureBackend {
     if (!this.#playing || this.#windowPending || !this.#track) return;
     const buffered = this.bufferedFrames;
     const last = buffered.at(-1);
-    if (last === undefined || this.#desiredFrame < last - 1) return;
+    /* Request the next window while FRAME_WINDOW_AHEAD frames of runway
+       remain, not at the last buffered frame: the worker then overlaps the
+       next window's decode with the remaining presentations instead of
+       starting from a cold gap exactly when the runway is exhausted. */
+    if (last === undefined || this.#desiredFrame < last - FRAME_WINDOW_AHEAD)
+      return;
     const duration = this.#track.durationFrames;
     const target =
       duration === null

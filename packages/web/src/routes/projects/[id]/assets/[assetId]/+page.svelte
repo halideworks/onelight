@@ -47,6 +47,7 @@
     status: string;
     current_version_id: string | null;
     has_thumbnail?: boolean;
+    display_transfer?: 'srgb' | 'bt1886' | null;
     updated_at?: number;
   };
   type Version = {
@@ -59,6 +60,7 @@
     frame_rate_den: number | null;
     drop_frame: boolean;
     duration_frames: number | null;
+    color?: Record<string, unknown>;
     transcode_status: string;
     created_at: number;
   };
@@ -495,6 +497,30 @@
       error = '';
     } catch (caught) {
       error = messageFrom(caught, 'The name could not be changed.');
+    }
+  };
+
+  const canEditAsset = $derived(
+    projectRole === 'editor' ||
+      projectRole === 'manager' ||
+      auth.user?.role === 'admin'
+  );
+  const sourceTransfer = $derived(
+    ((selectedVersion?.color as { transfer?: string | null } | undefined)
+      ?.transfer) ?? null
+  );
+  /* Persist an editor's reference-render transfer choice for this file. */
+  const setDisplayTransfer = async (
+    value: 'auto' | 'srgb' | 'bt1886'
+  ): Promise<void> => {
+    if (!asset) return;
+    try {
+      asset = await apiPatch<Asset>(`/api/v1/assets/${asset.id}`, {
+        display_transfer: value
+      });
+      error = '';
+    } catch (caught) {
+      error = messageFrom(caught, 'The display transfer could not be changed.');
     }
   };
 
@@ -1745,6 +1771,10 @@
             {filmstrip}
             {waveformUrl}
             colorCheckBuildId={appVersion}
+            displayTransferOverride={asset?.display_transfer ?? null}
+            {sourceTransfer}
+            canEditColorTransfer={canEditAsset}
+            ondisplaytransferchange={(value) => { void setDisplayTransfer(value); }}
             captionsSrc={captionsUrl ?? undefined}
             allowDrawing
             drawDefaultColor={annotationInkFor(auth.user?.id ?? null)}

@@ -5574,6 +5574,7 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
+                            display_transfer: ("srgb" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;
@@ -8242,11 +8243,15 @@ export interface paths {
                                 kind: string;
                                 /** @enum {string} */
                                 status: "none" | "in_review" | "approved" | "changes_requested";
+                                display_transfer: ("srgb" | "bt1886") | null;
                             };
                             versions: {
                                 id: string;
                                 version_no: number;
                                 media_info: {
+                                    [key: string]: unknown;
+                                };
+                                color: {
                                     [key: string]: unknown;
                                 };
                                 transcode_status: string;
@@ -12077,6 +12082,7 @@ export interface paths {
                                 description: string;
                                 tags: string[];
                                 has_thumbnail: boolean;
+                                display_transfer: ("srgb" | "bt1886") | null;
                                 deleted_at: number | null;
                                 created_at: number;
                                 updated_at: number;
@@ -12277,6 +12283,7 @@ export interface paths {
                                 description: string;
                                 tags: string[];
                                 has_thumbnail: boolean;
+                                display_transfer: ("srgb" | "bt1886") | null;
                                 deleted_at: number | null;
                                 created_at: number;
                                 updated_at: number;
@@ -12369,6 +12376,7 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
+                            display_transfer: ("srgb" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;
@@ -12491,6 +12499,8 @@ export interface paths {
                         status?: "none" | "in_review" | "approved" | "changes_requested";
                         description?: string;
                         tags?: string[];
+                        /** @enum {string} */
+                        display_transfer?: "auto" | "srgb" | "bt1886";
                     };
                 };
             };
@@ -12515,6 +12525,7 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
+                            display_transfer: ("srgb" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;
@@ -12668,6 +12679,7 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
+                            display_transfer: ("srgb" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;
@@ -12908,6 +12920,7 @@ export interface paths {
                                 description: string;
                                 tags: string[];
                                 has_thumbnail: boolean;
+                                display_transfer: ("srgb" | "bt1886") | null;
                                 deleted_at: number | null;
                                 created_at: number;
                                 updated_at: number;
@@ -13095,6 +13108,7 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
+                            display_transfer: ("srgb" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;

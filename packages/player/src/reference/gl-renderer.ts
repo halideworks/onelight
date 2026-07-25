@@ -1,10 +1,19 @@
 import {
   referenceMatrixFromMetadata,
   yuvConversionParameters,
+  type ReferenceDisplayTransfer,
 } from "./color-math.js";
 import type { PlaneLayoutTransfer, PlaneTransfer } from "./protocol.js";
 
 export class UnsupportedReferenceRendererError extends Error {}
+
+/*
+ * A lost GPU context is transient, not a property of the media: the driver
+ * reset, the tab was backgrounded, or another context evicted this one. It is
+ * thrown as its own type so the transport retries the render instead of
+ * permanently condemning the rendition to native fallback.
+ */
+export class ReferenceContextLostError extends Error {}
 
 export type ReferenceRendererOptions = {
   requireAcceleration?: boolean;
@@ -43,8 +52,15 @@ uniform float chroma_center;
 uniform float chroma_multiplier;
 uniform float kr;
 uniform float kb;
+uniform int transfer_mode;
 in vec2 source_position;
 out vec4 output_color;
+
+vec3 srgb_encode(vec3 linear) {
+  vec3 lo = linear * 12.92;
+  vec3 hi = 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055;
+  return mix(lo, hi, step(vec3(0.0031308), linear));
+}
 
 void main() {
   vec2 coordinates = source_offset + source_position * source_scale;
@@ -67,7 +83,12 @@ void main() {
     ) / kg,
     y + 2.0 * (1.0 - kb) * cb
   );
-  output_color = vec4(clamp(rgb, 0.0, 1.0), 1.0);
+  vec3 code = clamp(rgb, 0.0, 1.0);
+  /* transfer_mode 1 = BT.1886: the code values are pure-2.4 display-referred,
+     so decode to linear and re-encode for the sRGB canvas. Mode 0 = sRGB: the
+     code values are already sRGB, pass them through. */
+  vec3 encoded = transfer_mode == 1 ? srgb_encode(pow(code, vec3(2.4))) : code;
+  output_color = vec4(clamp(encoded, 0.0, 1.0), 1.0);
 }`;
 
 const shader = (
@@ -188,6 +209,7 @@ type RendererUniforms = {
   chromaMultiplier: WebGLUniformLocation;
   kr: WebGLUniformLocation;
   kb: WebGLUniformLocation;
+  transferMode: WebGLUniformLocation;
 };
 
 type SrgbWebGlContext = WebGL2RenderingContext & {
@@ -204,10 +226,15 @@ type TextureAllocation = {
 export class ReferenceGlRenderer {
   readonly canvas: HTMLCanvasElement;
   readonly gl: WebGL2RenderingContext;
-  private readonly glProgram: WebGLProgram;
-  private readonly vertexArray: WebGLVertexArrayObject;
-  private readonly textureBanks: readonly [TextureBank, TextureBank];
-  private readonly uniforms: RendererUniforms;
+  /* True when the engine lets the canvas declare its buffer as sRGB
+     (drawingBufferColorSpace). Where it cannot, a wide-gamut display may
+     composite the buffer as device RGB and oversaturate the picture; the
+     transport surfaces that as a caution instead of claiming reference. */
+  readonly colorManagedOutput: boolean;
+  private glProgram: WebGLProgram;
+  private vertexArray: WebGLVertexArrayObject;
+  private textureBanks: readonly [TextureBank, TextureBank];
+  private uniforms: RendererUniforms;
   private readonly textureAllocations: [
     Array<TextureAllocation | null>,
     Array<TextureAllocation | null>,
@@ -244,49 +271,96 @@ export class ReferenceGlRenderer {
       );
     this.gl = gl;
     const colorContext = gl as SrgbWebGlContext;
-    if ("drawingBufferColorSpace" in colorContext)
+    this.colorManagedOutput = "drawingBufferColorSpace" in colorContext;
+    if (this.colorManagedOutput)
       colorContext.drawingBufferColorSpace = "srgb";
 
-    this.glProgram = program(gl);
+    const built = this.buildResources();
+    this.glProgram = built.glProgram;
+    this.vertexArray = built.vertexArray;
+    this.textureBanks = built.textureBanks;
+    this.uniforms = built.uniforms;
+
+    canvas.addEventListener("webglcontextlost", this.onContextLost);
+    canvas.addEventListener("webglcontextrestored", this.onContextRestored);
+  }
+
+  /*
+   * Allocate every GPU object the draw depends on and prime the context state
+   * the draw assumes. Runs once at construction and again after the browser
+   * restores a lost context, when all prior GL objects are dead.
+   */
+  private buildResources(): {
+    glProgram: WebGLProgram;
+    vertexArray: WebGLVertexArrayObject;
+    textureBanks: readonly [TextureBank, TextureBank];
+    uniforms: RendererUniforms;
+  } {
+    const gl = this.gl;
+    const glProgram = program(gl);
     const vertexArray = gl.createVertexArray();
     if (!vertexArray) {
-      gl.deleteProgram(this.glProgram);
+      gl.deleteProgram(glProgram);
       throw new UnsupportedReferenceRendererError(
         "WebGL2 could not allocate a vertex array.",
       );
     }
-    this.vertexArray = vertexArray;
-    this.textureBanks = [
+    const textureBanks: readonly [TextureBank, TextureBank] = [
       [texture(gl), texture(gl), texture(gl)],
       [texture(gl), texture(gl), texture(gl)],
     ];
-    this.uniforms = {
-      isNv12: uniform(gl, this.glProgram, "is_nv12"),
-      sourceOffset: uniform(gl, this.glProgram, "source_offset"),
-      sourceScale: uniform(gl, this.glProgram, "source_scale"),
-      chromaOffset: uniform(gl, this.glProgram, "chroma_offset"),
-      yOffset: uniform(gl, this.glProgram, "y_offset"),
-      yMultiplier: uniform(gl, this.glProgram, "y_multiplier"),
-      chromaCenter: uniform(gl, this.glProgram, "chroma_center"),
-      chromaMultiplier: uniform(gl, this.glProgram, "chroma_multiplier"),
-      kr: uniform(gl, this.glProgram, "kr"),
-      kb: uniform(gl, this.glProgram, "kb"),
+    const uniforms: RendererUniforms = {
+      isNv12: uniform(gl, glProgram, "is_nv12"),
+      sourceOffset: uniform(gl, glProgram, "source_offset"),
+      sourceScale: uniform(gl, glProgram, "source_scale"),
+      chromaOffset: uniform(gl, glProgram, "chroma_offset"),
+      yOffset: uniform(gl, glProgram, "y_offset"),
+      yMultiplier: uniform(gl, glProgram, "y_multiplier"),
+      chromaCenter: uniform(gl, glProgram, "chroma_center"),
+      chromaMultiplier: uniform(gl, glProgram, "chroma_multiplier"),
+      kr: uniform(gl, glProgram, "kr"),
+      kb: uniform(gl, glProgram, "kb"),
+      transferMode: uniform(gl, glProgram, "transfer_mode"),
     };
 
-    gl.useProgram(this.glProgram);
-    gl.uniform1i(uniform(gl, this.glProgram, "luma_plane"), 0);
-    gl.uniform1i(uniform(gl, this.glProgram, "chroma_plane"), 1);
-    gl.uniform1i(uniform(gl, this.glProgram, "v_plane"), 2);
+    gl.useProgram(glProgram);
+    gl.uniform1i(uniform(gl, glProgram, "luma_plane"), 0);
+    gl.uniform1i(uniform(gl, glProgram, "chroma_plane"), 1);
+    gl.uniform1i(uniform(gl, glProgram, "v_plane"), 2);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.disable(gl.BLEND);
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.DITHER);
-
-    canvas.addEventListener("webglcontextlost", this.onContextLost);
+    return { glProgram, vertexArray, textureBanks, uniforms };
   }
 
-  private readonly onContextLost = (): void => {
+  private readonly onContextLost = (event: Event): void => {
+    /* Without preventDefault the browser never fires webglcontextrestored and
+       the context is dead for good. With it, we get a fresh context to rebuild
+       into. */
+    event.preventDefault();
     this.contextLost = true;
+  };
+
+  private readonly onContextRestored = (): void => {
+    if (this.closed) return;
+    /* Prior program, VAO and textures were destroyed with the old context;
+       reset the CPU-side allocation cache so the next upload reallocates. */
+    for (const bank of this.textureAllocations)
+      for (let unit = 0; unit < bank.length; unit += 1) bank[unit] = null;
+    this.activeTextureBank = 0;
+    try {
+      const built = this.buildResources();
+      this.glProgram = built.glProgram;
+      this.vertexArray = built.vertexArray;
+      this.textureBanks = built.textureBanks;
+      this.uniforms = built.uniforms;
+      this.contextLost = false;
+    } catch {
+      /* Rebuild failed; leave contextLost set so render() keeps signalling a
+         recoverable loss until a later restore succeeds. */
+      this.contextLost = true;
+    }
   };
 
   private uploadPlane(
@@ -346,11 +420,14 @@ export class ReferenceGlRenderer {
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
   }
 
-  render(source: PlaneTransfer): void {
+  render(
+    source: PlaneTransfer,
+    transfer: ReferenceDisplayTransfer = "srgb",
+  ): void {
     if (this.closed)
       throw new Error("Reference renderer has already been closed.");
     if (this.contextLost || this.gl.isContextLost())
-      throw new UnsupportedReferenceRendererError(
+      throw new ReferenceContextLostError(
         "Reference renderer context was lost.",
       );
     if (source.color.primaries !== "bt709" || source.color.transfer !== "bt709")
@@ -461,6 +538,7 @@ export class ReferenceGlRenderer {
     gl.uniform1f(this.uniforms.chromaMultiplier, 255 / parameters.chromaRange);
     gl.uniform1f(this.uniforms.kr, parameters.kr);
     gl.uniform1f(this.uniforms.kb, parameters.kb);
+    gl.uniform1i(this.uniforms.transferMode, transfer === "bt1886" ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     this.activeTextureBank = textureBank;
 
@@ -475,6 +553,10 @@ export class ReferenceGlRenderer {
     if (this.closed) return;
     this.closed = true;
     this.canvas.removeEventListener("webglcontextlost", this.onContextLost);
+    this.canvas.removeEventListener(
+      "webglcontextrestored",
+      this.onContextRestored,
+    );
     for (const bank of this.textureBanks)
       for (const item of bank) this.gl.deleteTexture(item);
     this.gl.deleteVertexArray(this.vertexArray);

@@ -305,11 +305,12 @@ let referenceRenderer: ReferenceGlRenderer | undefined;
 const renderReference = (
   planes: PlaneTransfer,
   rects: PatchRect[],
+  transfer: "srgb" | "bt1886" = "srgb",
 ): PatchReading[] => {
   referenceRenderer ??= new ReferenceGlRenderer(referenceCanvas, {
     requireAcceleration: false,
   });
-  referenceRenderer.render(planes);
+  referenceRenderer.render(planes, transfer);
   canvas.width = referenceCanvas.width;
   canvas.height = referenceCanvas.height;
   context.drawImage(referenceCanvas, 0, 0);
@@ -328,6 +329,8 @@ const renderReferenceVariants = (
     sourceFormat: planes.format,
     i420: renderReference(variants.i420, rects),
     nv12: renderReference(variants.nv12, rects),
+    i420Bt1886: renderReference(variants.i420, rects, "bt1886"),
+    nv12Bt1886: renderReference(variants.nv12, rects, "bt1886"),
   });
 };
 

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   convertYuvCodeToEncodedRgb,
+  encodeForDisplay,
   quantizeEncodedRgb,
   referenceMatrixFromMetadata,
+  resolveDisplayTransfer,
   type ReferenceRgb,
   type ReferenceYuv,
   type ReferenceYuvMatrix,
@@ -166,5 +168,44 @@ describe("reference YUV color math", () => {
     expect(rgb[0]).toBeLessThan(1);
     expect(rgb[1]).toBe(0);
     expect(rgb[2]).toBe(0);
+  });
+});
+
+describe("display transfer", () => {
+  it("passes sRGB code values through unchanged", () => {
+    for (const v of [0, 0.1, 0.4, 0.749, 1] as const)
+      expect(encodeForDisplay([v, v, v], "srgb")).toEqual([v, v, v]);
+  });
+
+  it("darkens shadows under BT.1886 while pinning the endpoints", () => {
+    // Endpoints are invariant; a mid grey lands ~8/255 darker than sRGB.
+    expect(quantizeEncodedRgb(encodeForDisplay([0, 0, 0], "bt1886"))).toEqual([
+      0, 0, 0,
+    ]);
+    expect(quantizeEncodedRgb(encodeForDisplay([1, 1, 1], "bt1886"))).toEqual([
+      255, 255, 255,
+    ]);
+    const grey40 = quantizeEncodedRgb(encodeForDisplay([0.4, 0.4, 0.4], "bt1886"));
+    expect(grey40[0]).toBe(94);
+    // Every non-endpoint code is darker than the straight sRGB code.
+    for (const v of [0.1, 0.2, 0.4, 0.6, 0.8] as const)
+      expect(encodeForDisplay([v, v, v], "bt1886")[0]).toBeLessThan(v);
+  });
+
+  it("resolves the transfer from an override, then the source tag, then default", () => {
+    // Explicit override always wins.
+    expect(resolveDisplayTransfer("srgb", "bt709")).toBe("srgb");
+    expect(resolveDisplayTransfer("bt1886", "iec61966-2-1")).toBe("bt1886");
+    // sRGB-tagged sources stay sRGB.
+    expect(resolveDisplayTransfer(null, "iec61966-2-1")).toBe("srgb");
+    expect(resolveDisplayTransfer(undefined, "sRGB")).toBe("srgb");
+    // Legacy ~2.2 tags sit closer to sRGB than to a 2.4 reference.
+    expect(resolveDisplayTransfer(null, "bt470m")).toBe("srgb");
+    expect(resolveDisplayTransfer(null, "gamma22")).toBe("srgb");
+    // BT.709 / SMPTE 170M / unknown / missing all resolve to the reference default.
+    expect(resolveDisplayTransfer(null, "bt709")).toBe("bt1886");
+    expect(resolveDisplayTransfer(null, "smpte170m")).toBe("bt1886");
+    expect(resolveDisplayTransfer(null, null)).toBe("bt1886");
+    expect(resolveDisplayTransfer("garbage", "bt709")).toBe("bt1886");
   });
 });

@@ -49,6 +49,11 @@ export interface ReferenceRenderReadings {
   sourceFormat: PlaneTransfer["format"];
   i420: PatchReading[];
   nv12: PatchReading[];
+  /* The same planes rendered through the BT.1886 display transfer -- the
+     product default -- so the transfer_mode shader branch has browser pixel
+     coverage, not only CPU vectors. */
+  i420Bt1886: PatchReading[];
+  nv12Bt1886: PatchReading[];
 }
 
 export interface ShuttleAudioReading {

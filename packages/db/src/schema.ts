@@ -347,6 +347,9 @@ export const assets = sqliteTable(
        generated poster wherever a thumbnail is shown. Null means the poster
        stands. */
     thumbnailBlobKey: text("thumbnail_blob_key"),
+    /* Editor's reference-render transfer choice: "srgb" or "bt1886", or null
+       for auto (derive from the source transfer tag, default bt1886). */
+    displayTransfer: text("display_transfer", { enum: ["srgb", "bt1886"] }),
     deletedAt: integer("deleted_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),

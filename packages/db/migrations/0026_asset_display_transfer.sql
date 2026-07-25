@@ -1,0 +1,13 @@
+-- An editor's choice of how the reference renderer encodes this asset for the
+-- sRGB output canvas.
+--
+-- BT.709 SDR carries only a capture transfer tag; the display EOTF is a
+-- finishing decision. The reference renderer can treat the decoded code values
+-- as already sRGB-encoded ("srgb", the web/consumer 2.2 look) or as BT.1886
+-- display-referred ("bt1886", pure 2.4 gamma, the ITU reference for Rec.709
+-- finishing, darker shadows). NULL means auto: derive it from the source
+-- color transfer tag, defaulting to bt1886 when the tag is BT.709/SMPTE 170M,
+-- absent, or assumed. Only project editors and managers may set it; viewers
+-- receive the resolved result. It lives on the asset, not the version, because
+-- it is a display decision about the file that should survive a new version.
+ALTER TABLE assets ADD COLUMN display_transfer TEXT;

@@ -1,5 +1,62 @@
 import type { ReferenceColorContract } from "./protocol.js";
 
+/*
+ * The display transfer decides how the decoded, range-expanded, matrixed
+ * BT.709 code values are re-encoded for the sRGB output canvas.
+ *
+ * - "srgb": treat the code values as already sRGB-encoded and pass them
+ *   through. This is the web/consumer convention and what a browser's own
+ *   <video> element does on a plain sRGB display.
+ * - "bt1886": treat the code values as BT.1886 display-referred (pure 2.4
+ *   gamma, the ITU reference EOTF for BT.709 SDR finishing). Decode to linear
+ *   light and re-encode to sRGB so a reference monitor's shadow contrast
+ *   survives onto the sRGB canvas. Shadows land ~11-13/255 darker than "srgb".
+ */
+export type ReferenceDisplayTransfer = "srgb" | "bt1886";
+
+const BT1886_GAMMA = 2.4;
+
+const srgbEncodeChannel = (linear: number): number =>
+  linear <= 0.0031308
+    ? linear * 12.92
+    : 1.055 * Math.pow(linear, 1 / 2.4) - 0.055;
+
+export const encodeForDisplay = (
+  rgb: ReferenceRgb,
+  transfer: ReferenceDisplayTransfer,
+): ReferenceRgb => {
+  if (transfer === "srgb") return rgb;
+  return [
+    clampUnit(srgbEncodeChannel(Math.pow(clampUnit(rgb[0]), BT1886_GAMMA))),
+    clampUnit(srgbEncodeChannel(Math.pow(clampUnit(rgb[1]), BT1886_GAMMA))),
+    clampUnit(srgbEncodeChannel(Math.pow(clampUnit(rgb[2]), BT1886_GAMMA))),
+  ];
+};
+
+const normalizedTransferTag = (value: string | null | undefined): string =>
+  (value ?? "").toLowerCase().replace(/[._\s-]/g, "");
+
+/* sRGB-encoded sources stay sRGB, and so do the ~2.2 legacy tags (BT.470M,
+   gamma 2.2), which sit closer to sRGB than to a 2.4 reference. Everything
+   else (BT.709, SMPTE 170M, unknown, or an assumed tag) resolves to the
+   post-production reference standard, BT.1886. An explicit editor override
+   always wins. */
+export const resolveDisplayTransfer = (
+  override: string | null | undefined,
+  sourceTransfer: string | null | undefined,
+): ReferenceDisplayTransfer => {
+  if (override === "srgb" || override === "bt1886") return override;
+  const tag = normalizedTransferTag(sourceTransfer);
+  if (
+    tag === "iec6196621" ||
+    tag === "srgb" ||
+    tag === "bt470m" ||
+    tag === "gamma22"
+  )
+    return "srgb";
+  return "bt1886";
+};
+
 export type ReferenceYuvMatrix = "bt601" | "bt709" | "bt2020-ncl";
 export type ReferenceRgb = readonly [number, number, number];
 export type ReferenceYuv = readonly [number, number, number];

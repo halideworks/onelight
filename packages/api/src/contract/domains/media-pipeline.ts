@@ -1330,4 +1330,49 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
       },
     );
   });
+
+  describe("display transfer", () => {
+    it("lets editors pin and clear the reference transfer; viewers cannot", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const url = `/api/v1/assets/${seed.media.assetId}`;
+      const patch = (
+        cookie: string,
+        value: "auto" | "srgb" | "bt1886",
+      ): Promise<Response> =>
+        req(h, url, { method: "PATCH", cookie, json: { display_transfer: value } });
+
+      // Default is auto (null).
+      const initial = await json<{ display_transfer: string | null }>(
+        await req(h, url, { cookie: seed.editor.cookie }),
+      );
+      expect(initial.display_transfer).toBeNull();
+
+      // Editor pins BT.1886, then sRGB, then clears back to auto.
+      expect(
+        (await json<{ display_transfer: string | null }>(
+          await patch(seed.editor.cookie, "bt1886"),
+        )).display_transfer,
+      ).toBe("bt1886");
+      expect(
+        (await json<{ display_transfer: string | null }>(
+          await patch(seed.editor.cookie, "srgb"),
+        )).display_transfer,
+      ).toBe("srgb");
+      expect(
+        (await json<{ display_transfer: string | null }>(
+          await patch(seed.editor.cookie, "auto"),
+        )).display_transfer,
+      ).toBeNull();
+
+      // A commenter (below edit capability) is forbidden; an invalid value is rejected.
+      expect((await patch(seed.commenter.cookie, "bt1886")).status).toBe(403);
+      const invalid = await req(h, url, {
+        method: "PATCH",
+        cookie: seed.editor.cookie,
+        json: { display_transfer: "rec709" },
+      });
+      expect(invalid.status).toBe(400);
+    });
+  });
 };
