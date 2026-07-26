@@ -54,6 +54,7 @@ uniform float chroma_multiplier;
 uniform float kr;
 uniform float kb;
 uniform int transfer_mode;
+uniform float transfer_gamma;
 in vec2 source_position;
 out vec4 output_color;
 
@@ -85,10 +86,17 @@ void main() {
     y + 2.0 * (1.0 - kb) * cb
   );
   vec3 code = clamp(rgb, 0.0, 1.0);
-  /* transfer_mode 1 = BT.1886: the code values are pure-2.4 display-referred,
-     so decode to linear and re-encode for the sRGB canvas. Mode 0 = sRGB: the
-     code values are already sRGB, pass them through. */
-  vec3 encoded = transfer_mode == 1 ? srgb_encode(pow(code, vec3(2.4))) : code;
+  /* The pure-power modes decode to linear with their own exponent and
+     re-encode for the sRGB canvas; mode 0 is sRGB, whose code values are
+     already the canvas's own encoding and pass straight through.
+       0 = sRGB (piecewise, passthrough)
+       1 = BT.1886, gamma 2.4, the reference standard for 709 finishing
+       2 = pure gamma 2.2, which is NOT sRGB: no linear toe, darker shadows
+     The exponent is a uniform rather than a branch per curve so another rung
+     costs a constant, not another shader path. */
+  vec3 encoded = transfer_mode == 0
+    ? code
+    : srgb_encode(pow(code, vec3(transfer_gamma)));
   output_color = vec4(clamp(encoded, 0.0, 1.0), 1.0);
 }`;
 
@@ -199,6 +207,17 @@ const planeSpan = (
   };
 };
 
+/* The shader's two knobs per curve, kept beside each other so a new rung is
+   one row here and nothing else. Mode 0 passes code values through; any other
+   mode decodes with its exponent and re-encodes for the sRGB canvas, so the
+   gamma for sRGB is never read. */
+const DISPLAY_TRANSFER_MODE: Readonly<
+  Record<ReferenceDisplayTransfer, number>
+> = { srgb: 0, bt1886: 1, gamma22: 2 };
+const DISPLAY_TRANSFER_GAMMA: Readonly<
+  Record<ReferenceDisplayTransfer, number>
+> = { srgb: 1, bt1886: 2.4, gamma22: 2.2 };
+
 type RendererUniforms = {
   isNv12: WebGLUniformLocation;
   sourceOffset: WebGLUniformLocation;
@@ -211,6 +230,7 @@ type RendererUniforms = {
   kr: WebGLUniformLocation;
   kb: WebGLUniformLocation;
   transferMode: WebGLUniformLocation;
+  transferGamma: WebGLUniformLocation;
 };
 
 type SrgbWebGlContext = WebGL2RenderingContext & {
@@ -321,6 +341,7 @@ export class ReferenceGlRenderer {
       kr: uniform(gl, glProgram, "kr"),
       kb: uniform(gl, glProgram, "kb"),
       transferMode: uniform(gl, glProgram, "transfer_mode"),
+      transferGamma: uniform(gl, glProgram, "transfer_gamma"),
     };
 
     gl.useProgram(glProgram);
@@ -545,7 +566,8 @@ export class ReferenceGlRenderer {
     gl.uniform1f(this.uniforms.chromaMultiplier, 255 / parameters.chromaRange);
     gl.uniform1f(this.uniforms.kr, parameters.kr);
     gl.uniform1f(this.uniforms.kb, parameters.kb);
-    gl.uniform1i(this.uniforms.transferMode, transfer === "bt1886" ? 1 : 0);
+    gl.uniform1i(this.uniforms.transferMode, DISPLAY_TRANSFER_MODE[transfer]);
+    gl.uniform1f(this.uniforms.transferGamma, DISPLAY_TRANSFER_GAMMA[transfer]);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     this.activeTextureBank = textureBank;
 

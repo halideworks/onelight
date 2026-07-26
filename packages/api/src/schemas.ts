@@ -487,9 +487,10 @@ export const bodies = {
     status: approvalStatus.optional(),
     description: z.string().max(10000).optional(),
     tags: z.array(z.string().min(1).max(100)).max(100).optional(),
-    /* Reference-render transfer override. "auto" clears it to null (derive
-       from the source tag); "srgb"/"bt1886" pin it. Editors and managers only. */
-    display_transfer: z.enum(["auto", "srgb", "bt1886"]).optional(),
+    /* Reference-render transfer override for this asset. "auto" clears it to
+       null, which falls through to the project's house standard and then to
+       the source tag; the rest pin it. Editors and managers only. */
+    display_transfer: z.enum(["auto", "srgb", "gamma22", "bt1886"]).optional(),
   }),
   stackPatch: z.object({ version_no: z.number().int().positive() }),
   versionCreate: z.object({
@@ -927,9 +928,9 @@ const asset = z.object({
   /* True when a picture was chosen for this asset, overriding the generated
      poster: GET /assets/:id/thumbnail serves it. */
   has_thumbnail: z.boolean(),
-  /* Editor's reference-render transfer override; null means auto (derive from
-     the source transfer tag, default bt1886). */
-  display_transfer: z.enum(["srgb", "bt1886"]).nullable(),
+  /* This asset's reference-render transfer override; null means auto, which
+     resolves from the project's house standard and then the source tag. */
+  display_transfer: z.enum(["srgb", "gamma22", "bt1886"]).nullable(),
   deleted_at: timestamp.nullable(),
   created_at: timestamp,
   updated_at: timestamp,
@@ -1138,9 +1139,9 @@ const publicShareAssetDetail = z.object({
     name: z.string(),
     kind: z.string(),
     status: approvalStatus,
-    /* Editor's reference-render transfer override, read-only for viewers;
-       null means auto (resolve from the version's source transfer tag). */
-    display_transfer: z.enum(["srgb", "bt1886"]).nullable(),
+    /* The asset's reference-render transfer override, read-only for viewers;
+       null means auto (the project standard, then the source tag). */
+    display_transfer: z.enum(["srgb", "gamma22", "bt1886"]).nullable(),
   }),
   versions: z.array(publicShareVersion),
 });

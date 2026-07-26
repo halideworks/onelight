@@ -195,21 +195,66 @@ describe("display transfer", () => {
       expect(encodeForDisplay([v, v, v], "bt1886")[0]).toBeLessThan(v);
   });
 
-  it("resolves the transfer from an override, then the source tag, then default", () => {
-    // Explicit override always wins.
+  it("holds a pure 2.2 apart from sRGB where a grade is argued about", () => {
+    // Endpoints pin, as they must for any of these curves.
+    expect(quantizeEncodedRgb(encodeForDisplay([0, 0, 0], "gamma22"))).toEqual([
+      0, 0, 0,
+    ]);
+    expect(quantizeEncodedRgb(encodeForDisplay([1, 1, 1], "gamma22"))).toEqual([
+      255, 255, 255,
+    ]);
+    /* 2.2 is always lighter than the 2.4 reference: that is the rung. */
+    for (const v of [0.1, 0.2, 0.4, 0.6, 0.8] as const)
+      expect(encodeForDisplay([v, v, v], "gamma22")[0]).toBeGreaterThan(
+        encodeForDisplay([v, v, v], "bt1886")[0],
+      );
+
+    /* Against sRGB the difference is a shadow difference and nothing else.
+       sRGB's linear toe lifts the bottom of the scale, so a true 2.2 sits
+       clearly under it there -- 0.1 encodes to 19/255 rather than 26 -- while
+       the two converge to within half a code by the upper midtones. Anyone
+       arguing about a grade is arguing about the first number. */
+    const shadow = quantizeEncodedRgb(
+      encodeForDisplay([0.1, 0.1, 0.1], "gamma22"),
+    );
+    expect(shadow[0]).toBe(19);
+    expect(
+      quantizeEncodedRgb(encodeForDisplay([0.1, 0.1, 0.1], "srgb"))[0],
+    ).toBe(26);
+    for (const v of [0.6, 0.8] as const)
+      expect(
+        Math.abs(
+          encodeForDisplay([v, v, v], "gamma22")[0] -
+            encodeForDisplay([v, v, v], "srgb")[0],
+        ),
+      ).toBeLessThan(0.006);
+  });
+
+  it("resolves the transfer from the asset, then the project, then the tag", () => {
+    // An explicit choice on the asset always wins.
     expect(resolveDisplayTransfer("srgb", "bt709")).toBe("srgb");
     expect(resolveDisplayTransfer("bt1886", "iec61966-2-1")).toBe("bt1886");
-    // sRGB-tagged sources stay sRGB.
+    expect(resolveDisplayTransfer("gamma22", "bt709")).toBe("gamma22");
+    // Then the project's house standard, for anything the asset left alone.
+    expect(resolveDisplayTransfer(null, "bt709", "gamma22")).toBe("gamma22");
+    expect(resolveDisplayTransfer(undefined, "iec61966-2-1", "bt1886")).toBe(
+      "bt1886",
+    );
+    // An asset choice still beats the project.
+    expect(resolveDisplayTransfer("srgb", "bt709", "gamma22")).toBe("srgb");
+    // A junk setting at either level falls through rather than rendering wrong.
+    expect(resolveDisplayTransfer("garbage", "bt709")).toBe("bt1886");
+    expect(resolveDisplayTransfer(null, "bt709", "garbage")).toBe("bt1886");
+    // Then the file's own tag. sRGB-authored material stays sRGB.
     expect(resolveDisplayTransfer(null, "iec61966-2-1")).toBe("srgb");
     expect(resolveDisplayTransfer(undefined, "sRGB")).toBe("srgb");
-    // Legacy ~2.2 tags sit closer to sRGB than to a 2.4 reference.
-    expect(resolveDisplayTransfer(null, "bt470m")).toBe("srgb");
-    expect(resolveDisplayTransfer(null, "gamma22")).toBe("srgb");
+    // A tag that says 2.2 now gets a real 2.2 instead of sRGB's approximation.
+    expect(resolveDisplayTransfer(null, "bt470m")).toBe("gamma22");
+    expect(resolveDisplayTransfer(null, "gamma22")).toBe("gamma22");
     // BT.709 / SMPTE 170M / unknown / missing all resolve to the reference default.
     expect(resolveDisplayTransfer(null, "bt709")).toBe("bt1886");
     expect(resolveDisplayTransfer(null, "smpte170m")).toBe("bt1886");
     expect(resolveDisplayTransfer(null, null)).toBe("bt1886");
-    expect(resolveDisplayTransfer("garbage", "bt709")).toBe("bt1886");
   });
 
   it("treats the SDR gamma tags as one family and nothing else", () => {

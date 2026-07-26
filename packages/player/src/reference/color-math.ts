@@ -11,10 +11,25 @@ import type { ReferenceColorContract } from "./protocol.js";
  *   gamma, the ITU reference EOTF for BT.709 SDR finishing). Decode to linear
  *   light and re-encode to sRGB so a reference monitor's shadow contrast
  *   survives onto the sRGB canvas. Shadows land ~11-13/255 darker than "srgb".
+ * - "gamma22": treat the code values as a pure 2.2 power curve. The house
+ *   standard in a lot of finishing rooms and the thing people mean when they
+ *   say "709 2.2". It is NOT sRGB: sRGB's linear toe near black makes it
+ *   lighter in the shadows than a true 2.2, and the difference shows exactly
+ *   where a grade is argued about.
  */
-export type ReferenceDisplayTransfer = "srgb" | "bt1886";
+export type ReferenceDisplayTransfer = "srgb" | "bt1886" | "gamma22";
 
 const BT1886_GAMMA = 2.4;
+const PURE_GAMMA_22 = 2.2;
+
+/* The pure-power transfers differ only in their exponent; sRGB is the odd one
+   out because it is piecewise and is already the canvas's own encoding. */
+const DISPLAY_GAMMA: Readonly<Record<ReferenceDisplayTransfer, number | null>> =
+  {
+    srgb: null,
+    bt1886: BT1886_GAMMA,
+    gamma22: PURE_GAMMA_22,
+  };
 
 const srgbEncodeChannel = (linear: number): number =>
   linear <= 0.0031308
@@ -25,36 +40,65 @@ export const encodeForDisplay = (
   rgb: ReferenceRgb,
   transfer: ReferenceDisplayTransfer,
 ): ReferenceRgb => {
-  if (transfer === "srgb") return rgb;
+  const gamma = DISPLAY_GAMMA[transfer];
+  if (gamma === null) return rgb;
   return [
-    clampUnit(srgbEncodeChannel(Math.pow(clampUnit(rgb[0]), BT1886_GAMMA))),
-    clampUnit(srgbEncodeChannel(Math.pow(clampUnit(rgb[1]), BT1886_GAMMA))),
-    clampUnit(srgbEncodeChannel(Math.pow(clampUnit(rgb[2]), BT1886_GAMMA))),
+    clampUnit(srgbEncodeChannel(Math.pow(clampUnit(rgb[0]), gamma))),
+    clampUnit(srgbEncodeChannel(Math.pow(clampUnit(rgb[1]), gamma))),
+    clampUnit(srgbEncodeChannel(Math.pow(clampUnit(rgb[2]), gamma))),
   ];
 };
 
 const normalizedTransferTag = (value: string | null | undefined): string =>
   (value ?? "").toLowerCase().replace(/[._\s-]/g, "");
 
-/* sRGB-encoded sources stay sRGB, and so do the ~2.2 legacy tags (BT.470M,
-   gamma 2.2), which sit closer to sRGB than to a 2.4 reference. Everything
-   else (BT.709, SMPTE 170M, unknown, or an assumed tag) resolves to the
-   post-production reference standard, BT.1886. An explicit editor override
-   always wins. */
+export const isDisplayTransfer = (
+  value: string | null | undefined,
+): value is ReferenceDisplayTransfer =>
+  value === "srgb" || value === "bt1886" || value === "gamma22";
+
+/*
+ * What the file says it is. A tag is evidence, not an instruction, and only
+ * two answers are ever safe to read off one:
+ *
+ * - sRGB / IEC 61966-2-1: authored for a screen, piecewise curve, leave it.
+ * - BT.470M and the explicit gamma-2.2 tags: a real 2.2 power curve. These
+ *   used to resolve to sRGB because sRGB was the closest thing on offer;
+ *   with a true 2.2 in the set they resolve to what they actually say, which
+ *   moves their shadows where a colourist would expect them.
+ *
+ * Everything else -- BT.709, SMPTE 170M, unknown, or a tag the pipeline had
+ * to assume -- is post-production material, and the reference standard for
+ * that is BT.1886.
+ */
+export const inferDisplayTransfer = (
+  sourceTransfer: string | null | undefined,
+): ReferenceDisplayTransfer => {
+  const tag = normalizedTransferTag(sourceTransfer);
+  if (tag === "iec6196621" || tag === "srgb") return "srgb";
+  if (tag === "bt470m" || tag === "gamma22" || tag === "22") return "gamma22";
+  return "bt1886";
+};
+
+/*
+ * Who decides, in order: this asset, then the project's house standard, then
+ * the file's own tag, then the reference default. Each step is a deliberate
+ * human choice until the last two, so a delivery that differs from the house
+ * can be corrected on the asset without disturbing everything around it, and
+ * a project that finishes to 2.2 stops re-deciding that per upload.
+ *
+ * Callers may pass anything; only values that name a transfer we implement
+ * take effect, so a stale row or a hand-edited setting degrades to inference
+ * rather than to a broken render.
+ */
 export const resolveDisplayTransfer = (
   override: string | null | undefined,
   sourceTransfer: string | null | undefined,
+  projectDefault?: string | null | undefined,
 ): ReferenceDisplayTransfer => {
-  if (override === "srgb" || override === "bt1886") return override;
-  const tag = normalizedTransferTag(sourceTransfer);
-  if (
-    tag === "iec6196621" ||
-    tag === "srgb" ||
-    tag === "bt470m" ||
-    tag === "gamma22"
-  )
-    return "srgb";
-  return "bt1886";
+  if (isDisplayTransfer(override)) return override;
+  if (isDisplayTransfer(projectDefault)) return projectDefault;
+  return inferDisplayTransfer(sourceTransfer);
 };
 
 /*

@@ -163,6 +163,12 @@ export const projects = sqliteTable(
         A soft reference, like assets.current_version_id: a cover pointing at a
         deleted asset reads as no cover, not as a broken row. */
     coverAssetId: text("cover_asset_id"),
+    /* The finishing standard this project works to, so an uploader chooses it
+       once rather than per delivery. Any asset may override it; null means no
+       house standard and leaves assets on tag inference. */
+    displayTransfer: text("display_transfer", {
+      enum: ["srgb", "gamma22", "bt1886"],
+    }),
     /** An uploaded cover picture, shown as-is. Mutually exclusive with
         coverAssetId in practice: setting either clears the other. */
     coverBlobKey: text("cover_blob_key"),
@@ -347,9 +353,13 @@ export const assets = sqliteTable(
        generated poster wherever a thumbnail is shown. Null means the poster
        stands. */
     thumbnailBlobKey: text("thumbnail_blob_key"),
-    /* Editor's reference-render transfer choice: "srgb" or "bt1886", or null
-       for auto (derive from the source transfer tag, default bt1886). */
-    displayTransfer: text("display_transfer", { enum: ["srgb", "bt1886"] }),
+    /* This asset's reference-render transfer, overriding the project's house
+       standard. "srgb" (piecewise), "gamma22" (a true 2.2 power curve, not
+       sRGB) or "bt1886" (2.4, the Rec.709 finishing reference); null falls
+       through to the project, then to the source tag, then to bt1886. */
+    displayTransfer: text("display_transfer", {
+      enum: ["srgb", "gamma22", "bt1886"],
+    }),
     deletedAt: integer("deleted_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),

@@ -113,6 +113,17 @@ const assetsHaveDisplayTransfer = async (
   return Boolean(row?.sql?.includes("display_transfer"));
 };
 
+const projectsHaveDisplayTransfer = async (
+  binding: D1Database,
+): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='projects'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("display_transfer"));
+};
+
 const renditionsHaveAudioKinds = async (
   binding: D1Database,
 ): Promise<boolean> => {
@@ -490,6 +501,11 @@ export const d1Migrations: D1Migration[] = [
     name: "0026_asset_display_transfer.sql",
     applied: assetsHaveDisplayTransfer,
     statements: ["ALTER TABLE assets ADD COLUMN display_transfer TEXT"],
+  },
+  {
+    name: "0027_project_display_transfer.sql",
+    applied: projectsHaveDisplayTransfer,
+    statements: ["ALTER TABLE projects ADD COLUMN display_transfer TEXT"],
   },
 ];
 

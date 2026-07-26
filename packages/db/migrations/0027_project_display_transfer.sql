@@ -1,0 +1,19 @@
+-- The project's house display transfer: the finishing standard this room
+-- works to, so an uploader sets it once instead of re-deciding per delivery.
+--
+-- Resolution order for the reference renderer is asset, then project, then the
+-- file's own transfer tag, then BT.1886. NULL here means "no house standard",
+-- which leaves assets on tag inference exactly as before.
+--
+-- The vocabulary widened with this migration: alongside "srgb" (piecewise, the
+-- web/consumer look) and "bt1886" (pure 2.4, the ITU reference for Rec.709
+-- finishing) there is now "gamma22", a true 2.2 power curve. It is NOT sRGB --
+-- sRGB's linear toe near black lifts the shadows, so 10% grey lands on 26/255
+-- where a real 2.2 puts it on 19 -- and that gap is precisely where grades get
+-- argued about. Source tags that say 2.2 (BT.470M, gamma22) previously had to
+-- resolve to "srgb" as the nearest thing available; they resolve to "gamma22"
+-- now, which is what they always meant.
+--
+-- Stored as free text like the asset column, so a value this build does not
+-- implement degrades to inference rather than to a broken render.
+ALTER TABLE projects ADD COLUMN display_transfer TEXT;
