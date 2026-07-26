@@ -120,7 +120,7 @@ describe("reference picture backend", () => {
     backend.close();
   });
 
-  it("defaults the decoder to no-preference", async () => {
+  it("defaults the decoder to no-preference", () => {
     const worker = new TestWorker();
     const backend = new ReferencePictureBackend(
       { render: vi.fn() },
@@ -134,7 +134,7 @@ describe("reference picture backend", () => {
     backend.close();
   });
 
-  it("forwards an escalated software decode preference to the worker", async () => {
+  it("forwards an escalated software decode preference to the worker", () => {
     const worker = new TestWorker();
     const backend = new ReferencePictureBackend(
       { render: vi.fn() },
@@ -200,6 +200,59 @@ describe("reference picture backend", () => {
       type: "play",
       frame: 50,
     });
+  });
+
+  /*
+   * The play pipeline is paced at the clock. A window request beyond the
+   * desired frame overfills the six-slot cache, the trim then drops the
+   * newest frames, and a dropped frame is unrecoverable during playback
+   * because the worker emits each frame exactly once from a forward-only
+   * iterator. Measured on Safari as a skipped frame every block before this
+   * pacing; zero after.
+   */
+  it("paces play windows at the clock and never re-asks for an unchanged window", async () => {
+    const worker = new TestWorker();
+    const render = vi.fn<(planes: PlaneTransfer, frame: number) => void>();
+    const backend = await openBackend(worker, render);
+    const openingGeneration = worker.commands.at(-1)?.generation ?? 0;
+    for (let frame = 8; frame <= 13; frame += 1)
+      worker.emit({
+        type: "frame",
+        generation: openingGeneration,
+        frame,
+        planes: planes(frame),
+      });
+    worker.emit({ type: "window", generation: openingGeneration, target: 10 });
+
+    const playTargets = (): number[] =>
+      worker.commands
+        .filter((command) => command.type === "play")
+        .map((command) => (command.type === "play" ? command.frame : -1));
+
+    // Runway is 13 with a horizon of 14: one top-up, aimed at the clock.
+    backend.play(10, 1);
+    expect(playTargets()).toEqual([10]);
+
+    // The window completes with the horizon reached: no further request.
+    const playGeneration = worker.commands.at(-1)?.generation ?? 0;
+    worker.emit({
+      type: "frame",
+      generation: playGeneration,
+      frame: 14,
+      planes: planes(14),
+    });
+    worker.emit({ type: "window", generation: playGeneration, target: 10 });
+    expect(playTargets()).toEqual([10]);
+
+    // The clock advances a frame: exactly one more request, again at the clock.
+    backend.seek(11);
+    expect(playTargets()).toEqual([10, 11]);
+
+    // Completing with no progress must not ping-pong into another request.
+    const secondGeneration = worker.commands.at(-1)?.generation ?? 0;
+    worker.emit({ type: "window", generation: secondGeneration, target: 11 });
+    expect(playTargets()).toEqual([10, 11]);
+    expect(backend.bufferedFrames.length).toBeLessThanOrEqual(6);
   });
 
   it("coalesces a scrub to the newest target and settles exactly on release", async () => {

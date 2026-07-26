@@ -4,6 +4,8 @@ import {
   decodeWindowIsComplete,
   MAX_DECODE_REORDER,
   MAX_OPEN_FRAMES,
+  PLAY_WINDOW_AHEAD,
+  PLAY_WINDOW_BEHIND,
   referenceFrameAtTimestamp,
   referenceTimestampIsExact,
   timestampForReferenceFrame,
@@ -25,6 +27,15 @@ const rates: ReferenceRate[] = [
 describe("reference decoder protocol", () => {
   it("keeps the initial resource cap at exactly six frames", () => {
     expect(MAX_OPEN_FRAMES).toBe(6);
+  });
+
+  /* The play window is a redistribution of the same budget, never an
+     enlargement: one frame behind for a presentation lagging its clock tick,
+     the rest spent on the direction the clock is moving. */
+  it("spends the six-frame budget forward during playback", () => {
+    expect(PLAY_WINDOW_BEHIND + 1 + PLAY_WINDOW_AHEAD).toBe(MAX_OPEN_FRAMES);
+    expect(PLAY_WINDOW_BEHIND).toBe(1);
+    expect(PLAY_WINDOW_AHEAD).toBe(4);
   });
 
   /* WebKit emits one frame per fed packet in the order fed, so a B-frame

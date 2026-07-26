@@ -645,25 +645,42 @@ BT.709 limited-range H.264 proxies, at `no-preference`, `prefer-hardware` and
    `encodeForDisplay` within 1/255 -- its first execution outside Chromium.
    Playwright WebKit still cannot stand in for this: it has no WebCodecs.
 
-5. Measured on that Mac, 1920x1080 30 fps proxy, production worker plus
-   production backend plus production renderer: cold open 39 ms and first
-   runway 75 ms (gates 1.5 s and 2.5 s); seek outside the active GOP p95
-   67 ms (gate 250 ms); a one-second scrub presents 32 updates with a 44 ms
-   worst gap and settles the exact release frame in 65 ms (gates 8 updates,
-   250 ms, 750 ms); six seconds of 30 fps playback presents 161 of 180 frames
-   with a 33 ms median interval, an 89 ms p95 and a 115 ms worst gap, never
-   out of order and with no failure raised.
+5. Playback scheduling (supersedes the section 4.6 prefetch shape and
+   rebalances, without enlarging, the section 4.3 six-frame budget). The
+   first Safari measurements presented 161 of 180 frames over six seconds
+   with the buffer pinned at its cap -- not a throughput problem but two
+   structural frame losses, both invisible on an engine that happens to
+   decode faster than the request cadence:
 
-   The 11 percent of frames it skips is the one gate this pass does not meet.
-   It is not decode throughput: the backend's buffer stays full at its
-   six-frame cap throughout and the picture stays on the clock for 142 of 181
-   ticks. It is runway depth. The window reaches only three frames ahead, and
-   an engine that emits in decode order needs a few more packets per window to
-   get there, so the refill occasionally arrives one frame late and the
-   transport shows the newest frame it has. Deepening the runway means
-   revisiting the six-frame contract in section 4.3, which is a product
-   decision, not a Safari fix. Main-thread render cost is 7 ms per 1080p frame
-   here, which the OffscreenCanvas step would remove from the budget.
+   - Every window command bumps the generation, and plane copies still in
+     flight under the superseded window were discarded on completion. Their
+     packets had already been consumed by the warm iterator, so the frames
+     could never be produced again without a keyframe walk. A continuation
+     now reuses the operation object -- same iterator, same decoder pipeline,
+     same in-flight copies, new generation -- so nothing decoded is thrown
+     away by the request cadence itself.
+   - The prefetch requested leapfrog blocks past the buffered end, which
+     overfills the six-slot cache; the trim then drops the newest frames, and
+     a dropped frame is unrecoverable during playback because the worker
+     emits each frame exactly once from a forward-only iterator. The play
+     pipeline is now paced at the clock: the window targets the current
+     frame, reaching one behind and four ahead -- the same six-frame budget
+     redistributed for the direction the clock moves (pause and seek keep the
+     symmetric two-behind shape for instant back-steps). A completed window
+     re-arms the top-up immediately, and an identical re-request while
+     nothing has changed is suppressed rather than ping-ponged.
+
+   Measured after the change on the same Mac, 1920x1080 30 fps proxy,
+   production worker plus backend plus renderer: cold open 33 ms and first
+   runway 70 ms (gates 1.5 s and 2.5 s); seek outside the active GOP p95
+   88 ms (gate 250 ms); a one-second scrub presents 32 updates with a 48 ms
+   worst gap and settles the exact release frame in 100 ms (gates 8 updates,
+   250 ms, 750 ms); and six seconds of 30 fps playback presents every frame
+   exactly once in order -- 181 presentations, every step +1, median interval
+   33 ms, p95 35 ms, worst gap 80 ms, no failure raised. The five-minute soak
+   and the 4K30 qualification remain to be run. Main-thread render cost is
+   7 ms per 1080p frame, which the OffscreenCanvas step would remove from the
+   budget.
 
 Automatic reference selection stays disabled. BCR-T11 additionally requires
 the sustained measurements (five-minute soak, 4K30 qualification) on this Mac,

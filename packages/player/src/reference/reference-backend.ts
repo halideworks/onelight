@@ -8,8 +8,8 @@ import {
 } from "../picture-backend.js";
 import {
   FRAME_WINDOW_AHEAD,
-  FRAME_WINDOW_BEHIND,
   MAX_OPEN_FRAMES,
+  PLAY_WINDOW_AHEAD,
   type DecodedTrack,
   type DecoderCommand,
   type DecoderEvent,
@@ -95,6 +95,8 @@ export class ReferencePictureBackend implements PictureBackend {
   #windowCoarse = false;
   #scrubbing = false;
   #lastScrubRequest: number | null = null;
+  #lastPlayRequest: { target: number; bufferedEnd: number | null } | null =
+    null;
   #loadWaiter: LoadWaiter | null = null;
   #openStage = "starting decoder worker";
   #starvationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -265,11 +267,13 @@ export class ReferencePictureBackend implements PictureBackend {
     this.#scrubbing = false;
     this.#playing = true;
     this.#rate = rate;
+    this.#lastPlayRequest = null;
     this.seek(frame);
   }
 
   pause(): void {
     this.#playing = false;
+    this.#lastPlayRequest = null;
     this.#clearStarvation();
     if (this.#scrubbing) return;
     this.#presentedPlanes = null;
@@ -410,6 +414,7 @@ export class ReferencePictureBackend implements PictureBackend {
       }
       if (this.#scrubbing && !this.#frames.has(this.#desiredFrame))
         this.#requestWindow(this.#desiredFrame, "scrub");
+      else this.#prefetchIfNeeded();
       return;
     }
     if (event.type === "stalled") {
@@ -443,20 +448,39 @@ export class ReferencePictureBackend implements PictureBackend {
 
   #prefetchIfNeeded(): void {
     if (!this.#playing || this.#windowPending || !this.#track) return;
-    const buffered = this.bufferedFrames;
-    const last = buffered.at(-1);
-    /* Request the next window while FRAME_WINDOW_AHEAD frames of runway
-       remain, not at the last buffered frame: the worker then overlaps the
-       next window's decode with the remaining presentations instead of
-       starting from a cold gap exactly when the runway is exhausted. */
-    if (last === undefined || this.#desiredFrame < last - FRAME_WINDOW_AHEAD)
-      return;
+    const last = this.bufferedFrames.at(-1);
+    /* The pipeline advances at the clock's pace: the play window for the
+       current frame already reaches PLAY_WINDOW_AHEAD past it, which is all
+       the cache can hold next to one frame behind. Requesting blocks beyond
+       that overflows the cache, the trim then drops the newest frames, and a
+       frame dropped during playback is unrecoverable -- the worker emits each
+       frame exactly once from a forward-only packet iterator. The window
+       handler calls this the moment a window completes, so the pipeline is
+       continuous rather than paced by whichever clock tick happens to find
+       its frame cached. */
     const duration = this.#track.durationFrames;
-    const target =
+    const horizonCeiling = this.#desiredFrame + PLAY_WINDOW_AHEAD;
+    const horizon =
       duration === null
-        ? last + FRAME_WINDOW_BEHIND + 1
-        : Math.min(duration - 1, last + FRAME_WINDOW_BEHIND + 1);
-    if (target > this.#desiredFrame) this.#requestWindow(target, "play");
+        ? horizonCeiling
+        : Math.min(duration - 1, horizonCeiling);
+    if (last !== undefined && last >= horizon) return;
+    /* Re-requesting the identical window while nothing has changed would
+       ping-pong: the worker emits each frame once, so an already-complete
+       window answers instantly with nothing and the completion handler would
+       ask again. Any progress -- a new frame arriving or the clock advancing
+       -- changes the signature and lifts the guard. */
+    if (
+      this.#lastPlayRequest !== null &&
+      this.#lastPlayRequest.target === this.#desiredFrame &&
+      this.#lastPlayRequest.bufferedEnd === (last ?? null)
+    )
+      return;
+    this.#lastPlayRequest = {
+      target: this.#desiredFrame,
+      bufferedEnd: last ?? null,
+    };
+    this.#requestWindow(this.#desiredFrame, "play");
   }
 
   #presentationCandidate(): {

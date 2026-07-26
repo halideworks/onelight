@@ -15,6 +15,8 @@ import {
   MAX_DECODE_REORDER,
   MAX_OPEN_FRAMES,
   MAX_PLANE_BUFFERS,
+  PLAY_WINDOW_AHEAD,
+  PLAY_WINDOW_BEHIND,
   RETAIN_REORDER_SLACK,
   referenceFrameAtTimestamp,
   referenceTimestampIsExact,
@@ -527,7 +529,12 @@ const decodeWindow = async (
   }
 
   const first =
-    mode === "scrub" ? target : Math.max(0, target - FRAME_WINDOW_BEHIND);
+    mode === "scrub"
+      ? target
+      : Math.max(
+          0,
+          target - (mode === "play" ? PLAY_WINDOW_BEHIND : FRAME_WINDOW_BEHIND),
+        );
   /* Continuation is safe when the window's first frame is already copied,
      already emitted, or still in flight inside the warm decoder pipeline
      (its packet was fed on the live iterator). The distance cap scales with
@@ -550,29 +557,49 @@ const decodeWindow = async (
     target - state.playTarget <= MAX_OPEN_FRAMES * 4;
   const canContinue = canContinuePlayback || canContinueScrub;
   if (!canContinue) cancelDecode();
+  const aheadCeiling =
+    target + (mode === "play" ? PLAY_WINDOW_AHEAD : FRAME_WINDOW_AHEAD);
   const last =
     mode === "scrub"
       ? target
       : state.track.durationFrames === null
-        ? target + FRAME_WINDOW_AHEAD
-        : Math.min(state.track.durationFrames - 1, target + FRAME_WINDOW_AHEAD);
+        ? aheadCeiling
+        : Math.min(state.track.durationFrames - 1, aheadCeiling);
+  /* Scrub samples are throwaway sips, not a stream: copying the reorder
+     slack behind a fast drag triples the work per sample for frames the
+     gesture will never revisit. Only playback and seek continuity need
+     frames past the window end kept alive. */
   const retainCeiling =
-    (mode === "scrub" ? target : last) + RETAIN_REORDER_SLACK;
+    mode === "scrub" ? target + 2 : last + RETAIN_REORDER_SLACK;
   const retainThrough =
     state.track.durationFrames === null
       ? retainCeiling
       : Math.min(state.track.durationFrames - 1, retainCeiling);
-  operation = {
-    generation,
-    target,
-    first,
-    last,
-    retainThrough,
-    maxOutputFrame: null,
-    copyingFrames: new Set<number>(),
-    pendingCopies: new Set(),
-    failed: false,
-  };
+  /* A continuation is the same decode stream wearing a new generation: the
+     iterator, the decoder's internal pipeline, and any plane copies still in
+     flight all carry forward. Reusing the operation object is what lets the
+     in-flight copies land -- their completion closures hold this object, and
+     a fresh one would discard frames whose packets the live iterator has
+     already consumed and can never produce again without a keyframe walk. */
+  if (canContinue && operation && !operation.failed) {
+    operation.generation = generation;
+    operation.target = target;
+    operation.first = first;
+    operation.last = last;
+    operation.retainThrough = retainThrough;
+  } else {
+    operation = {
+      generation,
+      target,
+      first,
+      last,
+      retainThrough,
+      maxOutputFrame: null,
+      copyingFrames: new Set<number>(),
+      pendingCopies: new Set<Promise<void>>(),
+      failed: false,
+    };
+  }
   const targetTimestamp =
     timestampForReferenceFrame(
       target,

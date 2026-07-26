@@ -5,6 +5,17 @@ export const MAX_DECODE_QUEUE = 6;
 export const MAX_PLANE_BUFFERS = 8;
 
 /*
+ * Forward playback spends the same six-frame budget differently. The frames
+ * behind the playhead exist for an instant back-step, and nobody back-steps
+ * while playing: keeping two of them during play starves the direction the
+ * clock is moving. One stays so that a presentation lagging the clock by a
+ * frame is still inside the window; the other buys a fourth frame of forward
+ * runway. Pause and seek keep the symmetric shape.
+ */
+export const PLAY_WINDOW_BEHIND = 1;
+export const PLAY_WINDOW_AHEAD = MAX_OPEN_FRAMES - 1 - PLAY_WINDOW_BEHIND;
+
+/*
  * Decode-order delivery.
  *
  * WebCodecs specifies presentation-order output and Chromium delivers it, but
