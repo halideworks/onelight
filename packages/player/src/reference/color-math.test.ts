@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyGamut,
   convertYuvCodeToEncodedRgb,
   encodeForDisplay,
+  gamutConversionMatrix,
+  isIdentityGamut,
+  primariesToXyz,
+  referencePrimariesFromMetadata,
   isSdrGammaTransfer,
   quantizeEncodedRgb,
   referenceMatrixFromMetadata,
@@ -273,5 +278,110 @@ describe("display transfer", () => {
     // Different code values, not a different name for the same ones.
     for (const tag of ["pq", "hlg", "linear", "smpte2084", "", null, undefined])
       expect(isSdrGammaTransfer(tag)).toBe(false);
+  });
+});
+
+describe("colour primaries", () => {
+  const close = (actual: number, expected: number, tolerance = 5e-4): void => {
+    expect(Math.abs(actual - expected)).toBeLessThan(tolerance);
+  };
+
+  /* Derived from chromaticities, never transcribed, so this is the check that
+     the derivation itself is right. Against the published BT.709 and P3
+     RGB-to-XYZ matrices. */
+  it("derives the published RGB-to-XYZ matrices from chromaticities", () => {
+    const bt709 = primariesToXyz("bt709");
+    for (const [index, expected] of [
+      0.4124, 0.3576, 0.1805, 0.2126, 0.7152, 0.0722, 0.0193, 0.1192, 0.9505,
+    ].entries())
+      close(bt709[index] ?? 0, expected);
+
+    const p3 = primariesToXyz("smpte432");
+    for (const [index, expected] of [
+      0.4866, 0.2657, 0.1982, 0.229, 0.6917, 0.0793, 0, 0.0451, 1.0439,
+    ].entries())
+      close(p3[index] ?? 0, expected);
+
+    const bt2020 = primariesToXyz("bt2020");
+    for (const [index, expected] of [
+      0.637, 0.1446, 0.1689, 0.2627, 0.678, 0.0593, 0, 0.0281, 1.061,
+    ].entries())
+      close(bt2020[index] ?? 0, expected);
+  });
+
+  /* The bit-exact path. A 709 frame on an sRGB canvas must touch no colour
+     matrix at all -- the measured GL-versus-CPU parity depends on it. */
+  it("converts a matching gamut with an exact identity", () => {
+    expect(isIdentityGamut(gamutConversionMatrix("bt709", "bt709"))).toBe(true);
+    expect(isIdentityGamut(gamutConversionMatrix("smpte432", "smpte432"))).toBe(
+      true,
+    );
+    expect(isIdentityGamut(gamutConversionMatrix("smpte432", "bt709"))).toBe(
+      false,
+    );
+    const white = applyGamut(
+      [1, 1, 1],
+      gamutConversionMatrix("bt709", "bt709"),
+    );
+    expect(white).toEqual([1, 1, 1]);
+  });
+
+  /* White is the shared D65 in every one of these gamuts, so it must survive
+     any conversion untouched. If a matrix is wrong, white tints first. */
+  it("keeps the shared white point through every conversion", () => {
+    for (const source of [
+      "smpte432",
+      "bt2020",
+      "smpte170m",
+      "bt470bg",
+    ] as const)
+      for (const channel of applyGamut(
+        [1, 1, 1],
+        gamutConversionMatrix(source, "bt709"),
+      ))
+        close(channel, 1, 1e-6);
+  });
+
+  /* What the proxy pipeline currently throws away. A saturated P3 red has no
+     representation inside 709: the red channel overshoots and the others go
+     negative, and clipping that to the canvas is exactly the loss that made
+     preserving the source gamut worth doing. */
+  it("shows saturated P3 falling outside the 709 gamut", () => {
+    const red = applyGamut(
+      [1, 0, 0],
+      gamutConversionMatrix("smpte432", "bt709"),
+    );
+    expect(red[0]).toBeGreaterThan(1);
+    expect(red[1]).toBeLessThan(0);
+    expect(red[2]).toBeLessThan(0);
+    const green = applyGamut(
+      [0, 1, 0],
+      gamutConversionMatrix("bt2020", "bt709"),
+    );
+    expect(green[1]).toBeGreaterThan(1);
+  });
+
+  /* Round trip: out to a wider gamut and back lands where it started. */
+  it("round-trips through a wider gamut", () => {
+    const toP3 = gamutConversionMatrix("bt709", "smpte432");
+    const back = gamutConversionMatrix("smpte432", "bt709");
+    for (const rgb of [
+      [0.2, 0.4, 0.6],
+      [1, 0, 0],
+      [0.5, 0.5, 0.5],
+    ] as const) {
+      const round = applyGamut(applyGamut(rgb, toP3), back);
+      for (const [index, channel] of round.entries())
+        close(channel, rgb[index] ?? 0, 1e-9);
+    }
+  });
+
+  it("refuses to guess a gamut it does not implement", () => {
+    expect(referencePrimariesFromMetadata("bt709")).toBe("bt709");
+    expect(referencePrimariesFromMetadata("smpte432")).toBe("smpte432");
+    expect(referencePrimariesFromMetadata("bt2020")).toBe("bt2020");
+    expect(referencePrimariesFromMetadata("film")).toBeNull();
+    expect(referencePrimariesFromMetadata(null)).toBeNull();
+    expect(referencePrimariesFromMetadata(undefined)).toBeNull();
   });
 });

@@ -94,7 +94,7 @@ export const inferDisplayTransfer = (
 export const resolveDisplayTransfer = (
   override: string | null | undefined,
   sourceTransfer: string | null | undefined,
-  projectDefault?: string | null | undefined,
+  projectDefault?: string | null,
 ): ReferenceDisplayTransfer => {
   if (isDisplayTransfer(override)) return override;
   if (isDisplayTransfer(projectDefault)) return projectDefault;
@@ -121,6 +121,157 @@ export const isSdrGammaTransfer = (
     tag === "iec6196621" ||
     tag === "srgb"
   );
+};
+
+/*
+ * Colour primaries, in the spellings WebCodecs uses, because the decoded
+ * frame is where they arrive. "smpte432" is Display P3 and "bt470bg" is EBU
+ * 3213 / PAL; every one of these is a D65 white, so converting between them
+ * is a single 3x3 in linear light with no chromatic adaptation.
+ *
+ * The matrix a stream carries is not its gamut: BT.709 matrix coefficients
+ * are routinely used with P3 primaries. They are decoded separately and must
+ * be handled separately, which is the whole reason this type exists apart
+ * from ReferenceYuvMatrix.
+ */
+export type ReferencePrimaries =
+  "bt709" | "smpte170m" | "bt470bg" | "bt2020" | "smpte432";
+
+export type Matrix3 = readonly [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+];
+
+/* xy chromaticities of each gamut's primaries, and the D65 white they all
+   share. Straight from the specs; the matrices are derived, never typed in,
+   so a transcription error cannot hide in a pre-multiplied constant. */
+const PRIMARY_CHROMATICITIES: Readonly<
+  Record<
+    ReferencePrimaries,
+    readonly [number, number, number, number, number, number]
+  >
+> = {
+  bt709: [0.64, 0.33, 0.3, 0.6, 0.15, 0.06],
+  smpte170m: [0.63, 0.34, 0.31, 0.595, 0.155, 0.07],
+  bt470bg: [0.64, 0.33, 0.29, 0.6, 0.15, 0.06],
+  bt2020: [0.708, 0.292, 0.17, 0.797, 0.131, 0.046],
+  smpte432: [0.68, 0.32, 0.265, 0.69, 0.15, 0.06],
+};
+
+const D65: readonly [number, number] = [0.3127, 0.329];
+
+const invert3 = (m: Matrix3): Matrix3 => {
+  const [a, b, c, d, e, f, g, h, i] = m;
+  const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  if (Math.abs(det) < 1e-12)
+    throw new RangeError("Primaries matrix is not invertible.");
+  return [
+    (e * i - f * h) / det,
+    (c * h - b * i) / det,
+    (b * f - c * e) / det,
+    (f * g - d * i) / det,
+    (a * i - c * g) / det,
+    (c * d - a * f) / det,
+    (d * h - e * g) / det,
+    (b * g - a * h) / det,
+    (a * e - b * d) / det,
+  ];
+};
+
+const multiply3 = (left: Matrix3, right: Matrix3): Matrix3 => {
+  const out = new Array<number>(9);
+  for (let row = 0; row < 3; row += 1)
+    for (let column = 0; column < 3; column += 1)
+      out[row * 3 + column] =
+        (left[row * 3] ?? 0) * (right[column] ?? 0) +
+        (left[row * 3 + 1] ?? 0) * (right[3 + column] ?? 0) +
+        (left[row * 3 + 2] ?? 0) * (right[6 + column] ?? 0);
+  return out as unknown as Matrix3;
+};
+
+/* The standard construction: scale each primary's XYZ so the three together
+   sum to the white point, giving the RGB-to-XYZ matrix for that gamut. */
+export const primariesToXyz = (primaries: ReferencePrimaries): Matrix3 => {
+  const [xr, yr, xg, yg, xb, yb] = PRIMARY_CHROMATICITIES[primaries];
+  const column = (x: number, y: number): readonly [number, number, number] => [
+    x / y,
+    1,
+    (1 - x - y) / y,
+  ];
+  const r = column(xr, yr);
+  const g = column(xg, yg);
+  const b = column(xb, yb);
+  const white = column(D65[0], D65[1]);
+  const scale = multiply3(
+    invert3([r[0], g[0], b[0], r[1], g[1], b[1], r[2], g[2], b[2]]),
+    [white[0], 0, 0, white[1], 0, 0, white[2], 0, 0],
+  );
+  const [sr, sg, sb] = [scale[0], scale[3], scale[6]];
+  return [
+    r[0] * sr,
+    g[0] * sg,
+    b[0] * sb,
+    r[1] * sr,
+    g[1] * sg,
+    b[1] * sb,
+    r[2] * sr,
+    g[2] * sg,
+    b[2] * sb,
+  ];
+};
+
+const IDENTITY3: Matrix3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+
+/*
+ * Source gamut to output gamut, in linear light. Identity when they match,
+ * which is both the common case and the one that must stay bit-exact: the
+ * measured GL-versus-CPU parity depends on a 709 frame on an sRGB canvas
+ * touching no colour matrix at all.
+ */
+export const gamutConversionMatrix = (
+  source: ReferencePrimaries,
+  output: ReferencePrimaries,
+): Matrix3 =>
+  source === output
+    ? IDENTITY3
+    : multiply3(invert3(primariesToXyz(output)), primariesToXyz(source));
+
+export const isIdentityGamut = (matrix: Matrix3): boolean =>
+  matrix.every(
+    (value, index) => Math.abs(value - (IDENTITY3[index] ?? 0)) < 1e-9,
+  );
+
+export const applyGamut = (
+  rgb: ReferenceRgb,
+  matrix: Matrix3,
+): ReferenceRgb => [
+  matrix[0] * rgb[0] + matrix[1] * rgb[1] + matrix[2] * rgb[2],
+  matrix[3] * rgb[0] + matrix[4] * rgb[1] + matrix[5] * rgb[2],
+  matrix[6] * rgb[0] + matrix[7] * rgb[1] + matrix[8] * rgb[2],
+];
+
+/* WebCodecs may hand back a primaries string we do not implement, or none at
+   all. Unknown is not guessed at: the caller treats null as "cannot vouch for
+   the gamut" and the contract stays fail-closed. */
+export const referencePrimariesFromMetadata = (
+  primaries: string | null | undefined,
+): ReferencePrimaries | null => {
+  if (
+    primaries === "bt709" ||
+    primaries === "smpte170m" ||
+    primaries === "bt470bg" ||
+    primaries === "bt2020" ||
+    primaries === "smpte432"
+  )
+    return primaries;
+  return null;
 };
 
 export type ReferenceYuvMatrix = "bt601" | "bt709" | "bt2020-ncl";
