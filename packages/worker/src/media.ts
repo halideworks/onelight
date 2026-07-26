@@ -965,6 +965,84 @@ const sourceColorDefaults = (
 // when the probe left it blank, gives zscale a complete input spec. A
 // fully-tagged non-709 source overrides these with its own values (a no-op),
 // so this one recipe covers every needsBt709Conversion source.
+/*
+ * The colour spaces the reference renderer can draw, in ffmpeg's spellings.
+ * A source inside all three sets is preserved rather than converted: the
+ * gamut and the curve are the picture, and squeezing them into BT.709 at
+ * transcode time throws away everything outside 709 permanently. A source
+ * outside them still converts, because a proxy the player cannot render
+ * correctly is worse than a converted one.
+ */
+const PRESERVABLE_PRIMARIES = new Set([
+  "bt709",
+  "smpte170m",
+  "bt470bg",
+  "bt2020",
+  "smpte432",
+]);
+const PRESERVABLE_MATRIX = new Set([
+  "bt709",
+  "smpte170m",
+  "bt470bg",
+  "bt2020nc",
+]);
+const PRESERVABLE_TRANSFER = new Set([
+  "bt709",
+  "smpte170m",
+  "iec61966-2-1",
+  "srgb",
+  "bt470m",
+  "gamma22",
+]);
+
+const BT709_OUTPUT_COLOR = {
+  primaries: "bt709",
+  transfer: "bt709",
+  matrix: "bt709",
+} as const;
+
+/*
+ * What the proxy should be tagged as. The source's own space when we can
+ * render it, BT.709 when we cannot and had to convert, and BT.709 for HDR
+ * because that is what the tonemap produces.
+ *
+ * Range is deliberately NOT preserved. It is a coding convention rather than
+ * a property of the picture -- no gamut or curve information is lost pinning
+ * it to limited -- and a full-range proxy is read wrong by players that
+ * ignore the flag, which would break the native path that every share
+ * viewer falls back to.
+ */
+export const preservedOutputColor = (
+  mediaInfo: MediaInfo,
+): { primaries: string; transfer: string; matrix: string } => {
+  if (isHdrSource(mediaInfo)) return { ...BT709_OUTPUT_COLOR };
+  const video = videoStream(mediaInfo);
+  if (!video) return { ...BT709_OUTPUT_COLOR };
+  const source = sourceColorDefaults(video);
+  return PRESERVABLE_PRIMARIES.has(source.primaries) &&
+    PRESERVABLE_MATRIX.has(source.matrix) &&
+    PRESERVABLE_TRANSFER.has(source.transfer)
+    ? {
+        primaries: source.primaries,
+        transfer: source.transfer,
+        matrix: source.matrix,
+      }
+    : { ...BT709_OUTPUT_COLOR };
+};
+
+/*
+ * Range-only normalisation for a source whose space we are keeping. The
+ * primaries, transfer and matrix go in and come out unchanged -- zscale is
+ * being asked to requantise, not to convert -- so the picture is untouched
+ * and only the coding range moves.
+ */
+export const rangeOnlyFilter = (mediaInfo: MediaInfo): string => {
+  const video = videoStream(mediaInfo);
+  if (!video) return "";
+  const input = sourceColorDefaults(video);
+  return `zscale=matrixin=${input.matrix}:transferin=${input.transfer}:primariesin=${input.primaries}:rangein=full:matrix=${input.matrix}:transfer=${input.transfer}:primaries=${input.primaries}:range=limited`;
+};
+
 export const bt709ConvertFilter = (mediaInfo: MediaInfo): string => {
   const video = videoStream(mediaInfo);
   const input = video
@@ -996,9 +1074,17 @@ export const needsBt709Conversion = (mediaInfo: MediaInfo): boolean => {
 const colorPrefix = (mediaInfo: MediaInfo): string =>
   isHdrSource(mediaInfo)
     ? `${HDR_TONEMAP_FILTER},`
-    : needsBt709Conversion(mediaInfo)
-      ? `${bt709ConvertFilter(mediaInfo)},`
-      : "";
+    : /* A space we can render is kept; only the coding range is normalised,
+         and only when the source is full. Everything else still converts. */
+      preservedOutputColor(mediaInfo).primaries !== "bt709" ||
+        preservedOutputColor(mediaInfo).transfer !== "bt709" ||
+        preservedOutputColor(mediaInfo).matrix !== "bt709"
+      ? sourceRange(videoStream(mediaInfo)) === "full"
+        ? `${rangeOnlyFilter(mediaInfo)},`
+        : ""
+      : needsBt709Conversion(mediaInfo)
+        ? `${bt709ConvertFilter(mediaInfo)},`
+        : "";
 
 const fpsFilter = (mediaInfo: MediaInfo): string =>
   mediaInfo.frameRateNum && mediaInfo.frameRateDen
@@ -1418,8 +1504,10 @@ export const buildWatermarkFilter = (
 };
 
 // Re-encode of the 1080p proxy with the burned watermark. The proxy is
-// already BT.709 yuv420p with AAC audio, so audio is stream-copied and the
-// colorimetry tags are re-asserted rather than converted.
+// already yuv420p with AAC audio, so audio is stream-copied and the
+// colorimetry tags are re-asserted rather than converted -- which means the
+// caller has to say what they are, since a preserved proxy is not
+// necessarily BT.709 any more.
 export const buildWatermarkArgs = (
   source: string,
   outputPath: string,
@@ -1429,12 +1517,20 @@ export const buildWatermarkArgs = (
   fontfile = DEFAULT_WATERMARK_FONTFILE,
   hardware: HardwareInput = SOFTWARE_ACCELERATION,
   timecode?: string,
+  outputColor: { primaries: string; transfer: string; matrix: string } = {
+    primaries: "bt709",
+    transfer: "bt709",
+    matrix: "bt709",
+  },
 ): string[] => {
   const acceleration = accelerationFrom(hardware);
   const gop = rate ? Math.max(1, Math.round(rate.num / rate.den)) : 24;
   const limits = streamingLimitsForFps(1080, rate ? rate.num / rate.den : 24);
-  // The source here is our own finished proxy, which is always SDR BT.709, so
-  // there is no HDR case to exclude: the selected encoder alone decides.
+  /* The source here is our own finished proxy, so there is no HDR case to
+     exclude and the selected encoder alone decides. Its colour space is no
+     longer always BT.709 though: a preserved P3 or BT.2020 proxy must come
+     out of the watermark render tagged as what it still is, or the burn-in
+     would relabel the picture on its way to the viewer. */
   const args = [
     "-hide_banner",
     "-y",
@@ -1465,11 +1561,11 @@ export const buildWatermarkArgs = (
     String(gop),
     ...fixedGopArgs(acceleration, gop),
     "-colorspace",
-    "bt709",
+    outputColor.matrix,
     "-color_primaries",
-    "bt709",
+    outputColor.primaries,
     "-color_trc",
-    "bt709",
+    outputColor.transfer,
     "-color_range",
     "tv",
     "-chroma_sample_location",
@@ -1544,12 +1640,17 @@ const sdrProxyOutputTail = (
     "-keyint_min",
     String(gop),
     ...fixedGopArgs(acceleration, gop),
+    /* Tagged as what the picture actually is. A preserved P3 or BT.2020
+       source keeps its own primaries and curve here; a converted one says
+       BT.709 because that is what came out of the conversion. Range is
+       always limited -- see preservedOutputColor for why that one is
+       normalised rather than kept. */
     "-colorspace",
-    "bt709",
+    preservedOutputColor(job.mediaInfo).matrix,
     "-color_primaries",
-    "bt709",
+    preservedOutputColor(job.mediaInfo).primaries,
     "-color_trc",
-    "bt709",
+    preservedOutputColor(job.mediaInfo).transfer,
     "-color_range",
     "tv",
     "-chroma_sample_location",
@@ -2542,32 +2643,47 @@ export const renderWatermark = (
   timecode?: string,
 ): Promise<void> => {
   const acceleration = accelerationFrom(hardware);
-  return runFfmpegToFile(
-    (tempPath) =>
-      buildWatermarkArgs(
-        source,
-        tempPath,
-        spec,
-        tokens,
-        rate,
-        fontfile,
-        acceleration,
-        timecode,
-      ),
-    outputPath,
-    ffmpeg,
-    acceleration.backend === "software"
-      ? undefined
-      : (tempPath) =>
-          buildWatermarkArgs(
-            source,
-            tempPath,
-            spec,
-            tokens,
-            rate,
-            fontfile,
-            SOFTWARE_ACCELERATION,
-            timecode,
-          ),
+  /* Ask the proxy what it is rather than assuming BT.709. One ffprobe against
+     a job that is already a full re-encode, and it is the difference between
+     a watermarked P3 render carrying its own tags and one that quietly claims
+     to be something else. */
+  const inherited = probeFile(source, ffmpeg.replace(/ffmpeg$/, "ffprobe"))
+    .then((info) => preservedOutputColor(info))
+    .catch(() => ({
+      primaries: "bt709",
+      transfer: "bt709",
+      matrix: "bt709",
+    }));
+  return inherited.then((outputColor) =>
+    runFfmpegToFile(
+      (tempPath) =>
+        buildWatermarkArgs(
+          source,
+          tempPath,
+          spec,
+          tokens,
+          rate,
+          fontfile,
+          acceleration,
+          timecode,
+          outputColor,
+        ),
+      outputPath,
+      ffmpeg,
+      acceleration.backend === "software"
+        ? undefined
+        : (tempPath) =>
+            buildWatermarkArgs(
+              source,
+              tempPath,
+              spec,
+              tokens,
+              rate,
+              fontfile,
+              SOFTWARE_ACCELERATION,
+              timecode,
+              outputColor,
+            ),
+    ),
   );
 };

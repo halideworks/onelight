@@ -775,8 +775,16 @@ describe("one-pass SDR encode", () => {
   });
 
   it("applies the colour conversion once, before the split", () => {
+    /* A space the renderer cannot draw, so this still converts and the graph
+       still has to do it once, ahead of the split. */
     const sdr601 = mediaInfoOf({
-      streams: [{ codec_type: "video", color_space: "smpte170m" }],
+      streams: [
+        {
+          codec_type: "video",
+          color_space: "smpte170m",
+          color_primaries: "film",
+        },
+      ],
     });
     const graph =
       flag(
@@ -833,7 +841,11 @@ describe("poster frame selection", () => {
     expect(flag(args, "-ss")).toBe("0");
   });
 
-  it("converts non-709 SDR sources to BT.709 before tagging", () => {
+  /* Preserve over convert: a space the reference renderer can draw keeps its
+     own gamut and curve all the way to the proxy, because squeezing it into
+     BT.709 here throws away everything outside 709 permanently. The proxy is
+     then tagged as what it actually is. */
+  it("preserves a renderable non-709 source rather than converting it", () => {
     const bt601 = mediaInfoOf({
       streams: [
         {
@@ -845,12 +857,85 @@ describe("poster frame selection", () => {
       ],
     });
     const args = buildSdrProxyArgs(jobOf(bt601), "proxy.mp4", 1080);
+    // No colour filter at all: nothing to convert and the range already fits.
     expect(flag(args, "-vf")).toBe(
-      `${bt709ConvertFilter(bt601)},scale=-2:1080,fps=24000/1001,format=yuv420p`,
+      "scale=-2:1080,fps=24000/1001,format=yuv420p",
     );
-    expect(bt709ConvertFilter(bt601)).toBe(
-      "zscale=matrixin=smpte170m:transferin=smpte170m:primariesin=smpte170m:rangein=limited:matrix=709:primaries=709:transfer=709:range=limited",
+    expect(flag(args, "-color_primaries")).toBe("smpte170m");
+    expect(flag(args, "-colorspace")).toBe("smpte170m");
+    expect(flag(args, "-color_trc")).toBe("smpte170m");
+    // Range is normalised even when the space is kept.
+    expect(flag(args, "-color_range")).toBe("tv");
+  });
+
+  it("preserves P3 and BT.2020 gamuts through to the proxy tag", () => {
+    for (const [primaries, matrix] of [
+      ["smpte432", "bt709"],
+      ["bt2020", "bt2020nc"],
+    ] as const) {
+      const source = mediaInfoOf({
+        streams: [
+          {
+            codec_type: "video",
+            color_space: matrix,
+            color_primaries: primaries,
+            color_transfer: "bt709",
+          },
+        ],
+      });
+      const args = buildSdrProxyArgs(jobOf(source), "proxy.mp4", 1080);
+      expect(flag(args, "-vf")).toBe(
+        "scale=-2:1080,fps=24000/1001,format=yuv420p",
+      );
+      expect(flag(args, "-color_primaries")).toBe(primaries);
+      expect(flag(args, "-colorspace")).toBe(matrix);
+    }
+  });
+
+  /* A full-range source keeps its picture and loses only its coding range:
+     zscale is asked to requantise, with primaries, transfer and matrix going
+     in and coming out unchanged. */
+  it("normalises range without touching a preserved space", () => {
+    const fullRange = mediaInfoOf({
+      streams: [
+        {
+          codec_type: "video",
+          color_space: "bt709",
+          color_primaries: "smpte432",
+          color_transfer: "bt709",
+          color_range: "pc",
+        },
+      ],
+    });
+    const filter = flag(
+      buildSdrProxyArgs(jobOf(fullRange), "proxy.mp4", 1080),
+      "-vf",
     );
+    expect(filter).toContain("primariesin=smpte432:rangein=full");
+    expect(filter).toContain("primaries=smpte432:range=limited");
+  });
+
+  /* A space the renderer cannot draw still converts: a proxy the player
+     would render wrong is worse than a converted one. */
+  it("still converts a space the renderer cannot draw", () => {
+    const film = mediaInfoOf({
+      streams: [
+        {
+          codec_type: "video",
+          color_space: "smpte170m",
+          color_primaries: "film",
+          color_transfer: "smpte170m",
+        },
+      ],
+    });
+    const args = buildSdrProxyArgs(jobOf(film), "proxy.mp4", 1080);
+    expect(flag(args, "-vf")).toBe(
+      `${bt709ConvertFilter(film)},scale=-2:1080,fps=24000/1001,format=yuv420p`,
+    );
+    expect(flag(args, "-color_primaries")).toBe("bt709");
+  });
+
+  it("leaves an already-709 source untouched", () => {
     const tagged709 = mediaInfoOf({
       streams: [
         {
