@@ -156,3 +156,60 @@ describe("reference source contract", () => {
     ).toBeNull();
   });
 });
+
+/*
+ * The gate used to name one space -- limited-range BT.709 -- because that was
+ * the only thing the pipeline ever produced and the only thing the renderer
+ * could draw. Both of those are changing, so it asks the renderer's own two
+ * questions instead: can a gamut matrix be derived, and is the YUV matrix one
+ * we implement.
+ */
+describe("reference availability across colour spaces", () => {
+  const withColor = (color: Record<string, string>): typeof rendition => ({
+    ...rendition,
+    meta: {
+      ...rendition.meta,
+      output_color: { ...rendition.meta.output_color, ...color },
+    },
+  });
+  const contractFor = (color: Record<string, string>) =>
+    referenceSourceContract(
+      withColor(color),
+      { num: 24000, den: 1001 },
+      107892,
+    );
+
+  it("offers reference for the gamuts the renderer can convert", () => {
+    for (const primaries of [
+      "bt709",
+      "smpte432",
+      "bt2020",
+      "smpte170m",
+      "bt470bg",
+    ]) {
+      const contract = contractFor({ primaries });
+      expect(contract, `${primaries} should be offered`).not.toBeNull();
+      expect(contract?.expected.outputColor.primaries).toBe(primaries);
+    }
+  });
+
+  it("refuses a gamut it cannot derive rather than approximating it", () => {
+    expect(contractFor({ primaries: "film" })).toBeNull();
+  });
+
+  /* PQ and HLG are genuinely different code values, not a label difference,
+     and stay refused until the output path can carry them. */
+  it("refuses HDR transfers until the output path exists", () => {
+    for (const transfer of ["pq", "smpte2084", "hlg", "arib-std-b67"])
+      expect(
+        contractFor({ transfer }),
+        `${transfer} must not be offered`,
+      ).toBeNull();
+  });
+
+  it("offers the matrices the YUV stage implements and no others", () => {
+    for (const matrix of ["bt709", "smpte170m", "bt470bg", "bt2020-ncl"])
+      expect(contractFor({ matrix }), matrix).not.toBeNull();
+    expect(contractFor({ matrix: "rgb" })).toBeNull();
+  });
+});
