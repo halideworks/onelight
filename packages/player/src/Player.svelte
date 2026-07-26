@@ -1078,10 +1078,14 @@
   const referencePossible = $derived(
     Boolean(activeReferenceContract && (!sourceHasAudio || shuttleAudio?.x1))
   );
-  /* Automatic selection stays fail-closed until the real Safari, Windows
-     Chromium and Windows Firefox hardware matrix in BCR-T11 passes. Manual
-     reference mode still runs the exact same runtime capability checks. */
-  const automaticReferenceQualified = false;
+  /* Automatic runs the reference renderer wherever the machine can actually
+     run it. Apple Silicon Safari and Chromium are measured (181/180 frames,
+     a five-minute soak at 8999/8999, 4K30 at 90/90); Windows and Intel
+     iGPUs are not, and are covered by the recovery ladder rather than by
+     withholding the accurate path from everyone. Reference is offered at all
+     only for renditions whose colour contract is complete and agreeing, so
+     an untagged proxy still plays natively. */
+  const automaticReferenceQualified = true;
   const referenceRequested = $derived(
     shouldRequestReferencePlayback({
       mode: colorPlaybackMode,
@@ -3802,11 +3806,11 @@
         {#if
           referencePossible &&
           colorPlaybackMode === 'automatic' &&
-          colorSelfCheckResult?.outcome === 'warning' &&
-          !automaticReferenceQualified
+          !referenceActive &&
+          !referenceLoading
         }
           <p class="color-assumption">
-            Automatic remains on native playback until this platform class passes the sustained hardware matrix. Reference can still be selected explicitly.
+            Automatic asked for the reference renderer and this browser could not keep it. Native playback is active at the same frame; the reason is above.
           </p>
         {/if}
         {#if referenceFailure}
