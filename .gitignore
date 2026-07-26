@@ -18,3 +18,12 @@ qa/debug.log
 *.db
 *.db-shm
 *.db-wal
+# Agent instructions and agent tooling stay local. They accumulate internal
+# detail -- host names, paths, infrastructure, what is broken this week -- and
+# none of it belongs in a repo that gets cloned, shared or published.
+CLAUDE.md
+AGENTS.md
+.claude/
+.cursor/
+.aider*
+.github/copilot-instructions.md
