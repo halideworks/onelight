@@ -371,6 +371,151 @@ describe("reference decode worker scheduling", () => {
   });
 
   /*
+   * The play shape reaches one frame back where the seek shape reaches three
+   * ahead, so the first play window after a seek does not tile with it. The
+   * worker owes the transport the frame in between: the emission record
+   * survives the refused continuation, the window's first is pulled back over
+   * the hole, and the fresh keyframe walk produces it.
+   */
+  it("backfills the hole between a seek window and the first play window", async () => {
+    const { send, events, rig } = await loadWorker();
+    await openAt(send, 1);
+
+    rig.queue = [0, 1, 2, 3, 4].map((index) => makeFrame(index, false));
+    send({ type: "seek", generation: 2, frame: 0 });
+    await waitFor(
+      () => settledWindow(events, 2),
+      "the seek window to satisfy its target",
+    );
+    expect(framesOf(events)).toEqual([0, 1, 2, 3]);
+
+    /* The seek abandoned its iterator, so this play cannot continue the
+       pipeline and re-walks from the keyframe: the fake supplies the
+       re-decoded frames in decode order. */
+    rig.queue = Array.from({ length: 12 }, (_, index) =>
+      makeFrame(index, false),
+    );
+    send({ type: "play", generation: 3, frame: 6, rate: 1 });
+    await waitFor(
+      () => settledWindow(events, 3),
+      "the first play window to satisfy its target",
+    );
+
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(framesOf(events)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  /*
+   * The same carry when playback itself is the predecessor: the deeper play
+   * window can finish after the clock has already asked for the next one, and
+   * the refused continuation used to wipe the frames the old window had
+   * decoded but not delivered. One frame lost per window jump.
+   */
+  it("keeps emission contiguous across a refused play continuation", async () => {
+    const { send, events, rig } = await loadWorker();
+    await openAt(send, 1);
+
+    rig.queue = [0, 1, 2, 3, 4, 5].map((index) => makeFrame(index, false));
+    send({ type: "play", generation: 2, frame: 0, rate: 1 });
+    await waitFor(
+      () => settledWindow(events, 2),
+      "the first play window to satisfy its target",
+    );
+    expect(framesOf(events)).toEqual([0, 1, 2, 3, 4]);
+
+    /* Eight frames on is within playback's continuation distance but past
+       what the pipeline has fed, so the continuation is refused and the
+       stream re-walks -- through the ground the old window already covered. */
+    rig.queue = Array.from({ length: 14 }, (_, index) =>
+      makeFrame(index, false),
+    );
+    send({ type: "play", generation: 3, frame: 8, rate: 1 });
+    await waitFor(
+      () => settledWindow(events, 3),
+      "the refused continuation's window to satisfy its target",
+    );
+
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(framesOf(events)).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    ]);
+  });
+
+  /*
+   * A cold window whose shape reaches behind a keyframe sitting inside it
+   * promises frames the walk from that keyframe can never produce. It used to
+   * chase them far past the window and then deliver nothing at all -- the
+   * emitter broke on the missing first frame. The window now starts honestly
+   * at the keyframe.
+   */
+  it("starts an honest window at the keyframe when the shape reaches behind it", async () => {
+    const { send, events, rig } = await loadWorker();
+    await openAt(send, 1);
+
+    /* The fake sink's keyframes sit at multiples of 60: a seek to 61 shapes
+       its window from 59, behind the keyframe. */
+    rig.queue = Array.from({ length: 11 }, (_, index) =>
+      makeFrame(60 + index, false),
+    );
+    send({ type: "seek", generation: 2, frame: 61 });
+    await waitFor(
+      () => settledWindow(events, 2),
+      "the keyframe-aligned seek window to settle",
+    );
+
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(
+      events.some((event) => event.type === "window" && event.generation === 2),
+    ).toBe(true);
+    expect(framesOf(events)).toEqual([60, 61, 62, 63, 64]);
+  });
+
+  /*
+   * A platform decoder can wedge: it dequeues fed packets and produces
+   * nothing until reset. A stalled play window used to leave the dead stream
+   * standing, so every following command "continued" it -- eleven straight
+   * stalls on real Safari before the distance cap forced a fresh walk. The
+   * stall now resets the stream and keeps the emission record, so the next
+   * command walks from a keyframe and backfills what the wedge swallowed.
+   */
+  it("resets a dead play stream on stall and backfills on the next command", async () => {
+    const { send, events, rig } = await loadWorker();
+    await openAt(send, 1);
+
+    rig.queue = [0, 1, 2, 3, 4, 5].map((index) => makeFrame(index, false));
+    send({ type: "play", generation: 2, frame: 0, rate: 1 });
+    await waitFor(
+      () => settledWindow(events, 2),
+      "the first play window to satisfy its target",
+    );
+    expect(framesOf(events)).toEqual([0, 1, 2, 3, 4]);
+
+    /* The decoder wedges: packets keep being accepted, no output appears. */
+    send({ type: "play", generation: 3, frame: 6, rate: 1 });
+    await waitFor(
+      () =>
+        events.some(
+          (event) => event.type === "stalled" && event.generation === 3,
+        ),
+      "the wedged window to report a stall",
+    );
+
+    /* The decoder recovers (a reset cured it): the fresh walk re-decodes
+       from the keyframe and the transport receives every missing frame. */
+    rig.queue = Array.from({ length: 13 }, (_, index) =>
+      makeFrame(index, false),
+    );
+    send({ type: "play", generation: 4, frame: 7, rate: 1 });
+    await waitFor(
+      () => settledWindow(events, 4),
+      "the recovery window to satisfy its target",
+    );
+
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(framesOf(events)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  });
+
+  /*
    * The mirror: a discontinuity resets the decoder and re-walks from a
    * keyframe, so work from the abandoned window must not leak into the new
    * one under a generation it was never decoded for.

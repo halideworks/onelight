@@ -5,18 +5,18 @@ export const MAX_DECODE_QUEUE = 6;
 export const MAX_PLANE_BUFFERS = 8;
 
 /*
- * Playback once spent this budget asymmetrically -- one frame behind instead
- * of two, buying a fourth of forward runway -- on the reasoning that nobody
- * back-steps while playing. It measured well and was wrong: the deeper window
- * needs one more frame decoded before it can close, and that extra latency
- * let the next window command arrive before the last frame's copy landed, so
- * a pipeline reset at the boundary destroyed it. One frame lost per window
- * jump, caught by the QA contiguity gate. The shape stays symmetric with seek
- * until the emitter can carry a frame across a reset; the names stay so the
- * distinction has somewhere to live.
+ * Playback spends its budget asymmetrically: one frame behind instead of two,
+ * buying a fourth frame of forward runway. Nobody back-steps while playing,
+ * and the extra runway is what keeps Safari's one-frame-per-packet delivery
+ * ahead of the clock (180/180 frames presented against 123 with the symmetric
+ * shape, measured on an M3 Ultra). The shape once lost a frame per window
+ * jump -- it does not tile with the seek window that precedes it, and a
+ * refused continuation used to wipe the emission frontier -- so the worker
+ * now carries the frontier across window boundaries and backfills any hole
+ * between it and the new window's first from the keyframe walk.
  */
-export const PLAY_WINDOW_BEHIND = FRAME_WINDOW_BEHIND;
-export const PLAY_WINDOW_AHEAD = FRAME_WINDOW_AHEAD;
+export const PLAY_WINDOW_BEHIND = 1;
+export const PLAY_WINDOW_AHEAD = 4;
 
 /*
  * Decode-order delivery.

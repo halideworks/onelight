@@ -178,9 +178,17 @@ const takeRecycledBuffer = (byteLength: number): ArrayBuffer | undefined => {
   return recycledBuffers.splice(index, 1)[0];
 };
 
-const cancelDecode = (): void => {
+/*
+ * Preserving the emission record is what lets a play window that could not
+ * continue the pipeline still deliver contiguously: the fresh keyframe walk
+ * re-produces the ground behind it, already-emitted frames are recognised and
+ * dropped instead of sent twice, and finished copies whose packets are spent
+ * are kept rather than destroyed. Everything about the decode stream itself
+ * (iterator, decoder pipeline, feed mark) still resets either way.
+ */
+const cancelDecode = (preserveEmission = false): void => {
   operation = null;
-  clearPlaneState();
+  if (!preserveEmission) clearPlaneState();
   if (openState) {
     openState.playIterator = null;
     openState.playTarget = null;
@@ -552,7 +560,7 @@ const decodeWindow = async (
     return;
   }
 
-  const first =
+  let first =
     mode === "scrub"
       ? target
       : Math.max(
@@ -580,7 +588,26 @@ const decodeWindow = async (
     target > state.playTarget &&
     target - state.playTarget <= MAX_OPEN_FRAMES * 4;
   const canContinue = canContinuePlayback || canContinueScrub;
-  if (!canContinue) cancelDecode();
+  /* A play window that cannot continue the pipeline still owes the transport
+     every frame between what was last delivered and its own shape: the seek
+     window that precedes playback reaches further ahead than the play shape
+     reaches back, and a refused continuation lands mid-stream. Keep the
+     emission record, and pull the window's first back over the hole so the
+     fresh keyframe walk produces it. A backward or far-forward jump is a real
+     discontinuity and owes nothing behind it. */
+  let backfillFrom: number | null = null;
+  if (!canContinue) {
+    const carryContiguity =
+      mode === "play" &&
+      lastEmittedFrame !== null &&
+      target > lastEmittedFrame &&
+      target - lastEmittedFrame <= MAX_OPEN_FRAMES * 2 * rate;
+    cancelDecode(carryContiguity);
+    if (carryContiguity && lastEmittedFrame !== null) {
+      if (lastEmittedFrame + 1 < first) backfillFrom = lastEmittedFrame + 1;
+      first = Math.min(first, lastEmittedFrame + 1);
+    }
+  }
   const aheadCeiling =
     target + (mode === "play" ? PLAY_WINDOW_AHEAD : FRAME_WINDOW_AHEAD);
   const last =
@@ -634,7 +661,21 @@ const decodeWindow = async (
   try {
     let iterator = state.playIterator;
     if (!canContinue || !iterator) {
-      const keyPacket = await state.packetSink.getKeyPacket(targetTimestamp, {
+      /* A backfilled window must be producible from its own first frame, so
+         the walk anchors there. Otherwise the target's keyframe decides, and
+         when that keyframe lands inside the window's shape the window starts
+         honestly at it: frames behind a keyframe cannot come from this walk,
+         and a window that promises them completes never and delivers
+         nothing. */
+      const anchorTimestamp =
+        backfillFrom === null
+          ? targetTimestamp
+          : timestampForReferenceFrame(
+              backfillFrom,
+              state.track.firstTimestampUs,
+              state.track.frameRate,
+            ) / 1_000_000;
+      const keyPacket = await state.packetSink.getKeyPacket(anchorTimestamp, {
         verifyKeyPackets: true,
       });
       if (generation !== activeGeneration) return;
@@ -642,6 +683,16 @@ const decodeWindow = async (
         throw new UnsupportedReferenceError(
           "No keyframe is available before the requested frame.",
         );
+      const keyIndex = referenceFrameAtTimestamp(
+        Math.round(keyPacket.timestamp * 1_000_000),
+        state.track.firstTimestampUs,
+        state.track.frameRate,
+      );
+      if (keyIndex > first) {
+        first = keyIndex;
+        if (operation && operation.generation === generation)
+          operation.first = first;
+      }
       iterator = state.packetSink.packets(keyPacket)[Symbol.asyncIterator]();
       if (mode === "play" || mode === "scrub") state.playIterator = iterator;
     }
@@ -678,8 +729,30 @@ const decodeWindow = async (
         !operation ||
         operation.generation !== generation ||
         operation.failed
-      )
+      ) {
+        /* A continuation superseded this loop between the iterator handing
+           over a packet and this check. The packet is spent either way; if
+           the successor is still riding this same stream, feed it so the
+           stream carries no hole. A reset stream never reaches here with the
+           same iterator: cancelDecode nulls it. */
+        if (
+          operation &&
+          !operation.failed &&
+          openState === state &&
+          state.playIterator === iterator &&
+          state.decoder.state === "configured"
+        ) {
+          state.decoder.decode(packet.toEncodedVideoChunk());
+          const fedFrame = referenceFrameAtTimestamp(
+            Math.round(packet.timestamp * 1_000_000),
+            state.track.firstTimestampUs,
+            state.track.frameRate,
+          );
+          if (state.maxFedFrame === null || fedFrame > state.maxFedFrame)
+            state.maxFedFrame = fedFrame;
+        }
         return;
+      }
       state.decoder.decode(packet.toEncodedVideoChunk());
       const fedFrame = referenceFrameAtTimestamp(
         Math.round(packet.timestamp * 1_000_000),
@@ -710,7 +783,14 @@ const decodeWindow = async (
     )
       return;
     if (!planes.has(target) && !emittedFrames.has(target)) {
-      clearPlaneState();
+      /* The stream produced nothing for its own target: whatever the feed
+         mark claims, the pipeline is dead, and a continuation that rides it
+         eats packets forever without output (a wedged platform decoder stays
+         wedged until reset). Reset the stream so the next command walks
+         fresh from a keyframe. For playback, keep the emission record: the
+         walk then backfills every missing frame behind the new window
+         instead of stranding them. */
+      cancelDecode(mode === "play");
       post({ type: "stalled", generation, frame: target });
       return;
     }

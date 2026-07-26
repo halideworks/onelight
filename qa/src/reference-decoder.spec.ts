@@ -4,6 +4,7 @@ import { chromium, firefox } from "playwright";
 import type { BrowserType } from "playwright";
 import {
   MAX_OPEN_FRAMES,
+  PLAY_WINDOW_AHEAD,
   referenceFrameAtTimestamp,
   type ExpectedTrack,
 } from "../../packages/player/src/reference/protocol.js";
@@ -629,8 +630,15 @@ describe.skipIf(fixtureReason !== undefined)(
               expectedFor(clip),
             ] as const,
           );
+          /* Every frame from 0 through the last play window's forward edge,
+             with no hole anywhere: the seek window, the first play window
+             and every continuation must tile. The length follows the play
+             shape so the gate judges contiguity, not the shape itself. */
           expect(frames).toEqual(
-            Array.from({ length: 118 }, (_, frame) => frame),
+            Array.from(
+              { length: 115 + PLAY_WINDOW_AHEAD },
+              (_, frame) => frame,
+            ),
           );
         } finally {
           await browser.close();
