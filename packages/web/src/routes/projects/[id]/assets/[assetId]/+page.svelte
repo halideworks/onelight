@@ -511,7 +511,7 @@
   );
   /* Persist an editor's reference-render transfer choice for this file. */
   const setDisplayTransfer = async (
-    value: 'auto' | 'srgb' | 'bt1886'
+    value: 'auto' | 'srgb' | 'gamma22' | 'bt1886'
   ): Promise<void> => {
     if (!asset) return;
     try {

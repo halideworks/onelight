@@ -108,6 +108,7 @@
     onshuttleaudiodiagnostic = undefined,
     colorCheckBuildId = 'onelight',
     displayTransferOverride = null,
+    projectDisplayTransfer = null,
     sourceTransfer = null,
     canEditColorTransfer = false,
     oncolorselfcheckdiagnostic = undefined,
@@ -182,7 +183,11 @@
     /* The editor's per-asset reference-render transfer override ('srgb' |
        'bt1886'), or null for auto. Combined with the source transfer tag to
        resolve what the renderer applies. */
-    displayTransferOverride?: 'srgb' | 'bt1886' | null;
+    displayTransferOverride?: 'srgb' | 'gamma22' | 'bt1886' | null;
+    /* The project's house finishing standard, used for any asset that has
+       not overridden it. Null means the room has no standard and assets fall
+       through to their own tags. */
+    projectDisplayTransfer?: 'srgb' | 'gamma22' | 'bt1886' | null;
     /* The source file's color transfer tag (e.g. 'bt709', 'iec61966-2-1'),
        used to auto-resolve the display transfer when there is no override. */
     sourceTransfer?: string | null;
@@ -198,7 +203,7 @@
     /* Fires when an editor picks a transfer; the host persists it. 'auto'
        clears any override. */
     ondisplaytransferchange?:
-      | ((value: 'auto' | 'srgb' | 'bt1886') => void)
+      | ((value: 'auto' | 'srgb' | 'gamma22' | 'bt1886') => void)
       | undefined;
   } = $props();
   /* The element that plays. A video for footage, an audio element for a mix:
@@ -207,11 +212,30 @@
      the picture element explicitly. */
   let video: HTMLMediaElement | undefined = $state();
   const isAudio = $derived(kind === 'audio');
-  /* The transfer the reference renderer applies: an explicit editor override
-     wins, otherwise it is derived from the source transfer tag (default
-     BT.1886). Viewers get this result; only editors can change it. */
+  /* The transfer the reference renderer applies: this asset's override, then
+     the project's house standard, then the source tag, then BT.1886. Viewers
+     get the result; only editors can change it. */
   const resolvedDisplayTransfer = $derived(
-    resolveDisplayTransfer(displayTransferOverride, sourceTransfer)
+    resolveDisplayTransfer(
+      displayTransferOverride,
+      sourceTransfer,
+      projectDisplayTransfer
+    )
+  );
+  const DISPLAY_TRANSFER_LABELS: Record<string, string> = {
+    bt1886: 'BT.1886 (2.4)',
+    gamma22: 'Rec.709 (2.2)',
+    srgb: 'sRGB'
+  };
+  /* Which step of the chain actually decided, said plainly: an editor
+     reading "Applied: 2.2" needs to know whether that came from this asset,
+     the room's standard, or the file itself before they argue with it. */
+  const displayTransferSource = $derived(
+    displayTransferOverride
+      ? ', set on this asset'
+      : projectDisplayTransfer
+        ? ", from the project's standard"
+        : ', auto from source tag'
   );
   let colorSelfCheckResult = $state<ColorSelfCheckResult | null>(null);
   let colorCheckGeneration = 0;
@@ -3845,13 +3869,19 @@
               >Rec.709 (2.4)</button>
               <button
                 type="button"
+                aria-pressed={displayTransferOverride === 'gamma22'}
+                title="A true 2.2 power curve — the house standard in many finishing rooms. Not sRGB: no linear toe, so the shadows sit lower"
+                onclick={() => { ondisplaytransferchange?.('gamma22'); }}
+              >Rec.709 (2.2)</button>
+              <button
+                type="button"
                 aria-pressed={displayTransferOverride === 'srgb'}
-                title="Treat code values as sRGB (~2.2) — the web/consumer look"
+                title="Treat code values as sRGB — the web/consumer look, with a lifted shadow toe"
                 onclick={() => { ondisplaytransferchange?.('srgb'); }}
               >sRGB</button>
             </div>
             <p class="color-assumption">
-              Applied: {resolvedDisplayTransfer === 'bt1886' ? 'BT.1886 (2.4)' : 'sRGB (~2.2)'}{(displayTransferOverride === null || displayTransferOverride === undefined) ? ', auto from source tag' : ''}. Only editors see this control; viewers get the result.
+              Applied: {DISPLAY_TRANSFER_LABELS[resolvedDisplayTransfer]}{displayTransferSource}. Only editors see this control; viewers get the result.
             </p>
           </div>
         {/if}
