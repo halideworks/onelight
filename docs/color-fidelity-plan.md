@@ -70,9 +70,23 @@ Trap found here: the contract normaliser strips separators, which flattened
 `bt2020-ncl` into `bt2020ncl` and would have failed reconciliation against
 WebCodecs' canonical spelling. Restored after normalising.
 
-### 5. Then, and only then, stop flattening in the worker
+### 5. Stop flattening in the worker (DONE, `709b159`)
 
-`needsBt709Conversion` becomes a narrower question. The policy worth having:
+Done. A source whose primaries, matrix and transfer are all renderable is
+preserved: no colour filter runs and the proxy is tagged as what it is.
+Verified end to end on a synthesised P3 source -- proxy args carry no zscale,
+and the encoded file's `colr` box reads primaries 12 (SMPTE 432), which is the
+box mediabunny reads to build the WebCodecs config.
+
+Range is deliberately NOT preserved: it is a coding convention rather than a
+property of the picture, and a full-range proxy is misread by players that
+ignore the flag, which would break the native path every share viewer falls
+back to. A full-range source gets a zscale that requantises and nothing else.
+
+The watermark render inherits the proxy's space by probing it, rather than
+re-asserting BT.709 as it used to.
+
+The policy, for reference:
 
 - **P3-D65 SDR**: preserve. H.264 VUI can signal `colour_primaries = 12`
   (SMPTE 432) and WebCodecs reports `smpte432`, so it survives to the player.
@@ -81,7 +95,7 @@ WebCodecs' canonical spelling. Restored after normalising.
   as much as possible. The renderer already has the 601 matrix, and preserving
   skips a generation of resampling. It touches the most existing media of
   anything here, so it lands last of the SDR spaces and with its own oracle.
-- **HDR (PQ/HLG)**: step 6.
+- **HDR (PQ/HLG)**: still tonemapped to 709; step 6.
 
 Every preserved space needs its proxy correctly tagged, and the trap in
 [[onelight-safari-reference]] applies -- `-color_primaries` alone does not reach
