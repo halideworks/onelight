@@ -248,6 +248,16 @@
   let referenceFailure = $state<string | null>(null);
   let referenceNotice = $state(false);
   let referenceNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+  /* Sources the reviewer has already been told fell back to native. The
+     recovery ladder gives a failing source several backed-off attempts, and
+     announcing each one restarted the six-second notice: it read as a
+     permanent banner that then kept coming back. The message is worth saying
+     once per source and never again. */
+  const noticedReferenceSources = new Set<string>();
+  /* Which source the visible notice is about, so a re-prepare of that same
+     source (the ladder's next attempt, 400 ms later) does not cut the
+     message short, while loading a genuinely different asset does. */
+  let referenceNoticeSource = '';
   let referenceClockRate: PicturePlaybackRate = 1;
   let referenceClockFrame = 0;
   let referenceClockUrl = '';
@@ -1289,12 +1299,16 @@
     referenceActive = false;
     if (failure) {
       referenceFailure = failure.reason;
-      referenceNotice = true;
-      if (referenceNoticeTimer !== null) clearTimeout(referenceNoticeTimer);
-      referenceNoticeTimer = setTimeout(() => {
-        referenceNoticeTimer = null;
-        referenceNotice = false;
-      }, 6_000);
+      if (!noticedReferenceSources.has(failedSource)) {
+        noticedReferenceSources.add(failedSource);
+        referenceNotice = true;
+        referenceNoticeSource = failedSource;
+        if (referenceNoticeTimer !== null) clearTimeout(referenceNoticeTimer);
+        referenceNoticeTimer = setTimeout(() => {
+          referenceNoticeTimer = null;
+          referenceNotice = false;
+        }, 6_000);
+      }
       holdOrBlockReference(failedSource, failure);
       reportReferenceDiagnostic('fallback', failure);
     }
@@ -1450,7 +1464,13 @@
     referencePreparationStartedAt = performance.now();
     referencePreparationMs = null;
     referenceFailure = null;
-    referenceNotice = false;
+    if (sourceKey !== referenceNoticeSource) {
+      referenceNotice = false;
+      if (referenceNoticeTimer !== null) {
+        clearTimeout(referenceNoticeTimer);
+        referenceNoticeTimer = null;
+      }
+    }
     referencePrepared = false;
     const referenceAudioUrl = shuttleAudio?.x1;
     if (
