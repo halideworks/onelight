@@ -3594,8 +3594,10 @@
            playback path. They were all on the surface at once -- six labelled
            groups and sixteen buttons under the picture, wrapping onto a
            second line -- and a reviewer looking at a frame had to look past
-           them. They live behind one disclosure now, and the state that
-           matters when it is wrong still shows on the row. -->
+           them. They slide out of the Setup button onto this same row now, so
+           the whole instrument is two lines whether they are open or shut, and
+           the state that matters when it is wrong still shows when they are
+           shut. -->
       {#if colorCheck.state === 'warning' && !isAudio && !setupOpen}
         <button
           type="button"
@@ -3607,20 +3609,8 @@
           {colorStateLabel}
         </button>
       {/if}
-      <button
-        type="button"
-        class="setup-toggle"
-        aria-expanded={setupOpen}
-        aria-controls="player-setup"
-        onclick={() => { setupOpen = !setupOpen; if (!setupOpen) colorPanelOpen = false; }}
-        title="Lanes, scopes, surround, quality and playback"
-      >
-        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="2.2" /><path d="M8 1.6v1.8M8 12.6v1.8M1.6 8h1.8M12.6 8h1.8M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3" /></svg>
-        Setup
-      </button>
-    </div>
-    {#if setupOpen}
-    <div class="transport-row settings setup" id="player-setup">
+      {#if setupOpen}
+      <div class="setup-inline" id="player-setup">
       {#if !isAudio && (hasFilmstrip || waveformUrl) && durationFrames !== null && durationFrames > 0}
         <span class="ctl-label" id="lanes-label">Lanes</span>
         <div class="seg" role="group" aria-labelledby="lanes-label">
@@ -3696,20 +3686,38 @@
             onclick={() => { selectColorPlaybackMode('reference'); }}
           >Reference</button>
         </div>
+        <!-- Compact by default: a passing check is a dot, because a reviewer
+             does not need a sentence telling them nothing is wrong. Anything
+             other than passing keeps its words. -->
         <button
           type="button"
           class="color-state"
+          class:mark-only={colorCheck.state === 'passed'}
           data-state={colorCheck.state}
           aria-expanded={colorPanelOpen}
           aria-controls="color-status-panel"
+          aria-label={colorStateLabel}
+          title={colorStateLabel}
           onclick={() => { colorPanelOpen = !colorPanelOpen; }}
         >
           <span class="color-status-mark" aria-hidden="true"></span>
-          {colorStateLabel}
+          {#if colorCheck.state !== 'passed'}{colorStateLabel}{/if}
         </button>
       {/if}
+      </div>
+      {/if}
+      <button
+        type="button"
+        class="setup-toggle"
+        aria-expanded={setupOpen}
+        aria-controls="player-setup"
+        onclick={() => { setupOpen = !setupOpen; if (!setupOpen) colorPanelOpen = false; }}
+        title="Lanes, scopes, surround, quality and playback"
+      >
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="2.2" /><path d="M8 1.6v1.8M8 12.6v1.8M1.6 8h1.8M12.6 8h1.8M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3" /></svg>
+        Setup
+      </button>
     </div>
-    {/if}
     {#if chrome === 'full' && !isAudio && colorPanelOpen}
       <section class="color-panel" id="color-status-panel" aria-label="Browser decode check">
         <div class="color-panel-head">
@@ -4296,8 +4304,37 @@
      picture, so drawings stay on the footage. */
   .stage:fullscreen { width: 100vw; height: 100vh; }
   .transport-row.settings { margin-top: 10px; justify-content: flex-start; }
-  .transport-row.settings.setup { margin-top: 8px; }
-  .setup-toggle { display: inline-flex; align-items: center; gap: 6px; }
+  .setup-toggle { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+  /* The preferences ride the same row as the button that opens them, packed
+     against it, so the instrument is two rows open or shut. Everything in
+     here is deliberately a size down from the transport: it is a settings
+     drawer, and it should read as one at a glance without being squinted at. */
+  .setup-inline {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px 8px;
+    min-width: 0;
+    animation: setup-out 170ms cubic-bezier(0.2, 0.7, 0.3, 1);
+    transform-origin: right center;
+  }
+  @keyframes setup-out {
+    from { opacity: 0; transform: translateX(14px); }
+    to { opacity: 1; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .setup-inline { animation: none; }
+  }
+  .setup-inline .ctl-label {
+    font-size: 10px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--n-600, #8a8a8a);
+  }
+  .setup-inline .seg button { font-size: 11px; padding: 3px 7px; }
+  .setup-inline .color-state { font-size: 11px; padding: 3px 7px; gap: 5px; }
+  .setup-inline .color-state.mark-only { padding: 3px 6px; }
   .color-state {
     display: inline-flex;
     align-items: center;
