@@ -1,8 +1,12 @@
 import {
+  gamutConversionMatrix,
+  isIdentityGamut,
   isSdrGammaTransfer,
   referenceMatrixFromMetadata,
+  referencePrimariesFromMetadata,
   yuvConversionParameters,
   type ReferenceDisplayTransfer,
+  type ReferencePrimaries,
 } from "./color-math.js";
 import type { PlaneLayoutTransfer, PlaneTransfer } from "./protocol.js";
 
@@ -18,6 +22,10 @@ export class ReferenceContextLostError extends Error {}
 
 export type ReferenceRendererOptions = {
   requireAcceleration?: boolean;
+  /* Ask for a wide-gamut drawing buffer. Only honoured where the engine
+     supports it; the renderer reports what it actually got as
+     outputPrimaries, and converts every frame into that. */
+  outputColorSpace?: "srgb" | "display-p3";
 };
 
 const VERTEX_SHADER = `#version 300 es
@@ -55,6 +63,8 @@ uniform float kr;
 uniform float kb;
 uniform int transfer_mode;
 uniform float transfer_gamma;
+uniform mat3 gamut_matrix;
+uniform bool passthrough;
 in vec2 source_position;
 out vec4 output_color;
 
@@ -62,6 +72,12 @@ vec3 srgb_encode(vec3 linear) {
   vec3 lo = linear * 12.92;
   vec3 hi = 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055;
   return mix(lo, hi, step(vec3(0.0031308), linear));
+}
+
+vec3 srgb_decode(vec3 encoded) {
+  vec3 lo = encoded / 12.92;
+  vec3 hi = pow((encoded + 0.055) / 1.055, vec3(2.4));
+  return mix(lo, hi, step(vec3(0.04045), encoded));
 }
 
 void main() {
@@ -86,17 +102,28 @@ void main() {
     y + 2.0 * (1.0 - kb) * cb
   );
   vec3 code = clamp(rgb, 0.0, 1.0);
-  /* The pure-power modes decode to linear with their own exponent and
-     re-encode for the sRGB canvas; mode 0 is sRGB, whose code values are
-     already the canvas's own encoding and pass straight through.
-       0 = sRGB (piecewise, passthrough)
-       1 = BT.1886, gamma 2.4, the reference standard for 709 finishing
-       2 = pure gamma 2.2, which is NOT sRGB: no linear toe, darker shadows
-     The exponent is a uniform rather than a branch per curve so another rung
-     costs a constant, not another shader path. */
-  vec3 encoded = transfer_mode == 0
-    ? code
-    : srgb_encode(pow(code, vec3(transfer_gamma)));
+  /* Nothing to convert and nothing to re-encode: the code values already ARE
+     the canvas's encoding. This branch is load-bearing rather than an
+     optimisation -- the measured 0/255 agreement between this shader and the
+     CPU oracle on a 709 frame depends on those values never round-tripping
+     through linear light. */
+  if (passthrough) {
+    output_color = vec4(code, 1.0);
+    return;
+  }
+  /* Otherwise: to linear by the source's own transfer, across gamuts by the
+     3x3 (identity when they already match), and back out with the canvas's
+     curve. A display-p3 canvas is P3 primaries with the sRGB transfer
+     function, so only the matrix differs between output spaces.
+       transfer_mode 0 = sRGB piecewise
+       1 = BT.1886, gamma 2.4, the reference for 709 finishing
+       2 = pure gamma 2.2, NOT sRGB: no linear toe, lower shadows
+     The exponent is a uniform rather than a branch per curve, so another rung
+     costs a constant instead of another shader path. */
+  vec3 linear = transfer_mode == 0
+    ? srgb_decode(code)
+    : pow(code, vec3(transfer_gamma));
+  vec3 encoded = srgb_encode(clamp(gamut_matrix * linear, 0.0, 1.0));
   output_color = vec4(clamp(encoded, 0.0, 1.0), 1.0);
 }`;
 
@@ -231,6 +258,8 @@ type RendererUniforms = {
   kb: WebGLUniformLocation;
   transferMode: WebGLUniformLocation;
   transferGamma: WebGLUniformLocation;
+  gamutMatrix: WebGLUniformLocation;
+  passthrough: WebGLUniformLocation;
 };
 
 type SrgbWebGlContext = WebGL2RenderingContext & {
@@ -252,6 +281,9 @@ export class ReferenceGlRenderer {
      composite the buffer as device RGB and oversaturate the picture; the
      transport surfaces that as a caution instead of claiming reference. */
   readonly colorManagedOutput: boolean;
+  /* The gamut the canvas is composited in, and therefore what every frame is
+     converted into. sRGB unless the caller asked for and got display-p3. */
+  readonly outputPrimaries: ReferencePrimaries;
   private glProgram: WebGLProgram;
   private vertexArray: WebGLVertexArrayObject;
   private textureBanks: readonly [TextureBank, TextureBank];
@@ -293,7 +325,23 @@ export class ReferenceGlRenderer {
     this.gl = gl;
     const colorContext = gl as SrgbWebGlContext;
     this.colorManagedOutput = "drawingBufferColorSpace" in colorContext;
-    if (this.colorManagedOutput) colorContext.drawingBufferColorSpace = "srgb";
+    /* A wide-gamut canvas is only worth asking for when the caller wants one
+       and the engine actually takes it: reading the property back is the only
+       honest confirmation, since assigning an unsupported value is silently
+       ignored. Whatever it settles on is what frames get converted into, so a
+       refusal degrades to sRGB rather than to a mismatched picture. */
+    let output: ReferencePrimaries = "bt709";
+    if (this.colorManagedOutput) {
+      const wanted =
+        options.outputColorSpace === "display-p3" ? "display-p3" : "srgb";
+      colorContext.drawingBufferColorSpace = wanted;
+      if (
+        wanted === "display-p3" &&
+        colorContext.drawingBufferColorSpace === "display-p3"
+      )
+        output = "smpte432";
+    }
+    this.outputPrimaries = output;
 
     const built = this.buildResources();
     this.glProgram = built.glProgram;
@@ -342,6 +390,8 @@ export class ReferenceGlRenderer {
       kb: uniform(gl, glProgram, "kb"),
       transferMode: uniform(gl, glProgram, "transfer_mode"),
       transferGamma: uniform(gl, glProgram, "transfer_gamma"),
+      gamutMatrix: uniform(gl, glProgram, "gamut_matrix"),
+      passthrough: uniform(gl, glProgram, "passthrough"),
     };
 
     gl.useProgram(glProgram);
@@ -568,6 +618,30 @@ export class ReferenceGlRenderer {
     gl.uniform1f(this.uniforms.kb, parameters.kb);
     gl.uniform1i(this.uniforms.transferMode, DISPLAY_TRANSFER_MODE[transfer]);
     gl.uniform1f(this.uniforms.transferGamma, DISPLAY_TRANSFER_GAMMA[transfer]);
+    /* The frame's own gamut to the canvas's. A tag naming a gamut we do not
+       implement is not guessed at: it renders as the output gamut, which is
+       the same picture the pipeline produced before any of this existed. */
+    const sourcePrimaries =
+      referencePrimariesFromMetadata(source.color.primaries) ??
+      this.outputPrimaries;
+    const gamut = gamutConversionMatrix(sourcePrimaries, this.outputPrimaries);
+    /* Column-major, which is what uniformMatrix3fv wants and the transpose of
+       how the maths reads. */
+    gl.uniformMatrix3fv(this.uniforms.gamutMatrix, false, [
+      gamut[0],
+      gamut[3],
+      gamut[6],
+      gamut[1],
+      gamut[4],
+      gamut[7],
+      gamut[2],
+      gamut[5],
+      gamut[8],
+    ]);
+    gl.uniform1i(
+      this.uniforms.passthrough,
+      transfer === "srgb" && isIdentityGamut(gamut) ? 1 : 0,
+    );
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     this.activeTextureBank = textureBank;
 

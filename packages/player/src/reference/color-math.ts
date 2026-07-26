@@ -36,16 +36,50 @@ const srgbEncodeChannel = (linear: number): number =>
     ? linear * 12.92
     : 1.055 * Math.pow(linear, 1 / 2.4) - 0.055;
 
+const srgbDecodeChannel = (encoded: number): number =>
+  encoded <= 0.04045
+    ? encoded / 12.92
+    : Math.pow((encoded + 0.055) / 1.055, 2.4);
+
+/*
+ * Code values in, canvas code values out.
+ *
+ * With no gamut conversion to do this is what it always was: sRGB passes
+ * through untouched, and a power curve decodes with its exponent and
+ * re-encodes for the canvas. The passthrough is load-bearing rather than an
+ * optimisation -- the measured 0/255 GL-versus-CPU agreement on a 709 frame
+ * depends on those values never making a round trip through linear.
+ *
+ * With a gamut to convert there is no way around linear light, so sRGB code
+ * values get decoded first and everything takes the long path. The output
+ * encoding is sRGB's curve either way: a display-p3 canvas is P3 primaries
+ * with the sRGB transfer function, so only the matrix changes.
+ */
 export const encodeForDisplay = (
   rgb: ReferenceRgb,
   transfer: ReferenceDisplayTransfer,
+  gamut: Matrix3 = IDENTITY3,
 ): ReferenceRgb => {
   const gamma = DISPLAY_GAMMA[transfer];
-  if (gamma === null) return rgb;
+  const identity = isIdentityGamut(gamut);
+  if (gamma === null && identity) return rgb;
+  const linear: ReferenceRgb =
+    gamma === null
+      ? [
+          srgbDecodeChannel(clampUnit(rgb[0])),
+          srgbDecodeChannel(clampUnit(rgb[1])),
+          srgbDecodeChannel(clampUnit(rgb[2])),
+        ]
+      : [
+          Math.pow(clampUnit(rgb[0]), gamma),
+          Math.pow(clampUnit(rgb[1]), gamma),
+          Math.pow(clampUnit(rgb[2]), gamma),
+        ];
+  const converted = identity ? linear : applyGamut(linear, gamut);
   return [
-    clampUnit(srgbEncodeChannel(Math.pow(clampUnit(rgb[0]), gamma))),
-    clampUnit(srgbEncodeChannel(Math.pow(clampUnit(rgb[1]), gamma))),
-    clampUnit(srgbEncodeChannel(Math.pow(clampUnit(rgb[2]), gamma))),
+    clampUnit(srgbEncodeChannel(clampUnit(converted[0]))),
+    clampUnit(srgbEncodeChannel(clampUnit(converted[1]))),
+    clampUnit(srgbEncodeChannel(clampUnit(converted[2]))),
   ];
 };
 

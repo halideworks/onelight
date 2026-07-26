@@ -1,8 +1,8 @@
 # Proxies that respect the source colour space
 
 The goal, in David's words: proxies should perfectly respect colour space
-(gamma, gamut, everything). Today they do not, deliberately and for a reason
-that has expired.
+(gamma, gamut, everything), and **preserve over convert as much as possible**.
+Today they do neither, deliberately and for a reason that has expired.
 
 ## What happens now
 
@@ -67,9 +67,10 @@ something to assert equality on.
 - **P3-D65 SDR**: preserve. H.264 VUI can signal `colour_primaries = 12`
   (SMPTE 432) and WebCodecs reports `smpte432`, so it survives to the player.
 - **BT.2020 SDR**: preserve by the same mechanism; rare, but free once P3 works.
-- **BT.601 / SD**: preserve is *more* accurate than converting -- the renderer
-  already has the 601 matrix, and preserving avoids a generation of resampling.
-  Worth measuring before changing, since it touches the most existing media.
+- **BT.601 / SD**: preserve. David's call, 2026-07-26: preserve over convert
+  as much as possible. The renderer already has the 601 matrix, and preserving
+  skips a generation of resampling. It touches the most existing media of
+  anything here, so it lands last of the SDR spaces and with its own oracle.
 - **HDR (PQ/HLG)**: step 6.
 
 Every preserved space needs its proxy correctly tagged, and the trap in
