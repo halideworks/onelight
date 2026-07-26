@@ -5,15 +5,18 @@ export const MAX_DECODE_QUEUE = 6;
 export const MAX_PLANE_BUFFERS = 8;
 
 /*
- * Forward playback spends the same six-frame budget differently. The frames
- * behind the playhead exist for an instant back-step, and nobody back-steps
- * while playing: keeping two of them during play starves the direction the
- * clock is moving. One stays so that a presentation lagging the clock by a
- * frame is still inside the window; the other buys a fourth frame of forward
- * runway. Pause and seek keep the symmetric shape.
+ * Playback once spent this budget asymmetrically -- one frame behind instead
+ * of two, buying a fourth of forward runway -- on the reasoning that nobody
+ * back-steps while playing. It measured well and was wrong: the deeper window
+ * needs one more frame decoded before it can close, and that extra latency
+ * let the next window command arrive before the last frame's copy landed, so
+ * a pipeline reset at the boundary destroyed it. One frame lost per window
+ * jump, caught by the QA contiguity gate. The shape stays symmetric with seek
+ * until the emitter can carry a frame across a reset; the names stay so the
+ * distinction has somewhere to live.
  */
-export const PLAY_WINDOW_BEHIND = 1;
-export const PLAY_WINDOW_AHEAD = MAX_OPEN_FRAMES - 1 - PLAY_WINDOW_BEHIND;
+export const PLAY_WINDOW_BEHIND = FRAME_WINDOW_BEHIND;
+export const PLAY_WINDOW_AHEAD = FRAME_WINDOW_AHEAD;
 
 /*
  * Decode-order delivery.

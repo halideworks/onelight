@@ -29,13 +29,10 @@ describe("reference decoder protocol", () => {
     expect(MAX_OPEN_FRAMES).toBe(6);
   });
 
-  /* The play window is a redistribution of the same budget, never an
-     enlargement: one frame behind for a presentation lagging its clock tick,
-     the rest spent on the direction the clock is moving. */
-  it("spends the six-frame budget forward during playback", () => {
+  /* Whatever shape playback uses, it spends the same budget and never more:
+     the window is what the six-frame cap is spent on. */
+  it("never spends more than the six-frame budget on a play window", () => {
     expect(PLAY_WINDOW_BEHIND + 1 + PLAY_WINDOW_AHEAD).toBe(MAX_OPEN_FRAMES);
-    expect(PLAY_WINDOW_BEHIND).toBe(1);
-    expect(PLAY_WINDOW_AHEAD).toBe(4);
   });
 
   /* WebKit emits one frame per fed packet in the order fed, so a B-frame

@@ -83,6 +83,9 @@ class UnsupportedReferenceError extends Error {}
 const port = globalThis as unknown as WorkerPort;
 const planes = new Map<number, PlaneTransfer>();
 const emittedFrames = new Set<number>();
+/* The last frame handed to the transport, so a copy that finishes after its
+   window closed can still be delivered in order rather than stranded. */
+let lastEmittedFrame: number | null = null;
 const recycledBuffers: ArrayBuffer[] = [];
 let activeGeneration = 0;
 let openState: OpenState | null = null;
@@ -164,6 +167,7 @@ const clearPlaneState = (): void => {
       recycledBuffers.push(plane.buffer);
   planes.clear();
   emittedFrames.clear();
+  lastEmittedFrame = null;
 };
 
 const takeRecycledBuffer = (byteLength: number): ArrayBuffer | undefined => {
@@ -357,18 +361,41 @@ const packetTimeBeyondWindow = (
   return packet.timestamp >= lastTimestamp;
 };
 
+/*
+ * Deliver in ascending order, and never strand a frame that was decoded for a
+ * window that has since closed. A copy can land after its window posted, by
+ * which time the next window's first frame has moved on; scanning only from
+ * that new first would leave the finished frame in the map until the trim
+ * discarded it, and its packet is long spent. Where the frame immediately
+ * after the last delivery is sitting ready below the window, start there
+ * instead. A window that genuinely jumped forward has no such frame waiting,
+ * so it still starts at its own first.
+ */
 const emitPlanes = (generation: number, first: number, last: number): void => {
-  for (let frame = first; frame <= last; frame += 1) {
+  const stranded =
+    lastEmittedFrame !== null &&
+    lastEmittedFrame + 1 < first &&
+    planes.has(lastEmittedFrame + 1);
+  const start = stranded ? (lastEmittedFrame ?? first) + 1 : first;
+  for (let frame = start; frame <= last; frame += 1) {
     if (emittedFrames.has(frame)) continue;
     const copied = planes.get(frame);
     if (!copied) break;
     planes.delete(frame);
     emittedFrames.add(frame);
+    lastEmittedFrame = frame;
     post({ type: "frame", generation, frame, planes: copied }, [copied.buffer]);
   }
 };
 
-/* Sent already, copied and waiting its turn to be sent, or being copied. */
+/*
+ * Sent already, or copied and waiting its turn to be sent. A copy still in
+ * flight does NOT count: treating it as done let the window close before the
+ * frame existed, and a pipeline reset between that close and the copy landing
+ * destroyed it, losing one frame per boundary. The feed loop is bounded by the
+ * reorder ceiling either way, so waiting for the copy costs at most a few more
+ * packets.
+ */
 const windowOutputsComplete = (
   current: DecodeOperation,
   last: number,
@@ -376,10 +403,7 @@ const windowOutputsComplete = (
   decodeWindowIsComplete(
     current.first,
     last,
-    (frame) =>
-      emittedFrames.has(frame) ||
-      planes.has(frame) ||
-      current.copyingFrames.has(frame),
+    (frame) => emittedFrames.has(frame) || planes.has(frame),
   );
 
 /*

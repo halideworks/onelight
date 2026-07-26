@@ -570,6 +570,14 @@ const probeReferencePlayback = async (
       };
       requestAnimationFrame(tick);
     });
+    /* The clock reaches the clip's last frame at the very end of the run, so
+       stopping the moment it does counts the tail as dropped: the pipeline has
+       been asked for those frames and is still delivering them. Let what was
+       already requested arrive before judging it. */
+    for (let turn = 0; turn < 40; turn += 1) {
+      if (presented.has(lastRequested)) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     const elapsedMs = performance.now() - started;
     if (terminalFailure) throw new Error(String(terminalFailure));
     const expectedFrames = Math.max(1, lastRequested + 1);
