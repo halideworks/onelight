@@ -713,3 +713,19 @@ BT.709 limited-range H.264 proxies, at `no-preference`, `prefer-hardware` and
 Automatic reference selection stays disabled: BCR-T11 also requires Windows
 Chromium and Firefox and an Intel integrated GPU, which this pass did not run.
 The Apple Silicon row is now complete.
+
+Render-in-worker, measured feasibility (2026-07-26, same Mac, 3840x2160):
+the production `ReferenceGlRenderer` constructs and draws unchanged on an
+`OffscreenCanvas` transferred into a worker, and reports
+`colorManagedOutput: true` there, so `drawingBufferColorSpace` survives the
+move and the sRGB output contract holds. Per 4K frame the main thread spends
+7 ms p50 and 9 ms p95 rendering today; with the canvas in the worker the
+render costs 6 ms p50 there and the main thread spends under a millisecond
+handing the buffer over. The saving is real and the renderer needs no changes.
+
+What the step actually costs is not the renderer but the backend: windowing,
+the six-frame trim, nearest-frame scrub presentation and the frame-waiter
+handshake are all written around planes held on the main thread, and they
+have to move with it or be re-expressed as commands. That is the work, and it
+should be done as its own change with its own measurement pass, not folded
+into a fix.
