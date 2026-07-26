@@ -3339,9 +3339,12 @@
     <div class="transport-row main">
       <div class="side">
         {#if onshare}
-          <button type="button" class="linky" onclick={() => onshare?.(frame)} title="Copy link at this frame">
+          <!-- The label said what the tooltip says. "at this frame" is the
+               only interesting part and it is still one hover away; the button
+               sits beside a timecode that already tells you which frame. -->
+          <button type="button" class="linky" onclick={() => onshare?.(frame)} aria-label="Copy link at this frame" title="Copy link at this frame">
             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M6.5 9.5l3-3M7.5 4.5l1.2-1.2a2.4 2.4 0 013.4 3.4L10.9 7.9M5.1 8.1L3.9 9.3a2.4 2.4 0 003.4 3.4l1.2-1.2" /></svg>
-            <span class="lbl">Copy link at this frame</span>
+            <span class="lbl">Copy link</span>
           </button>
         {/if}
       </div>
@@ -4230,8 +4233,12 @@
      deck in the middle stays on the stage's centre line. Copy-link and volume
      are the only things here that are not playback, so they take the edges --
      of this row, not of a second one. */
-  .transport-row.main { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; }
-  .side { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  /* The deck is two bands tall (34px of controls, 14px of labels under them),
+     so centring the edges against the whole thing dropped them half a label
+     below the play button they are supposed to share a line with. The edges
+     take the control band and centre inside that instead. */
+  .transport-row.main { display: grid; grid-template-columns: 1fr auto 1fr; align-items: start; gap: 16px; }
+  .side { display: flex; align-items: center; gap: 8px; min-width: 0; height: 34px; }
   .side.right { justify-self: end; }
   /* The instrument: timecode, transport, marks. One grid, two rows, and the
      rows are the point. Every control lives on a fixed 34px band so the play
