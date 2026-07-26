@@ -2413,6 +2413,15 @@
           );
           return;
         }
+        /* An abort is not a refusal: it means a newer transport command
+           replaced this one before it could start. Shuttling does exactly
+           that on every rate change, swapping the sidecar and calling play
+           again, so treating it as a fault dropped the reviewer out of the
+           renderer on every press of L. The newer command owns the transport
+           now, and if none actually took over, the clock's own pause probe
+           folds the stale playing state into a pause. */
+        if (reason instanceof DOMException && reason.name === 'AbortError')
+          return;
         handleReferenceFailure({
           failureClass: 'unknown',
           reason:

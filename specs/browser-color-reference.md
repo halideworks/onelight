@@ -546,6 +546,15 @@ Playwright WebKit 26.5 on Windows has neither `VideoDecoder` nor
 `unsupported` result instead of waiting for a presentation callback that
 cannot occur. Its separate attached-video canvas bytes are pinned by platform.
 
+Amended 2026-07-26 from a Linux run of the same matrix: Firefox returns BGRX
+there too, so the BGRX result is the engine's behavior rather than a Windows
+one, and product copy about Firefox should say so. Playwright WebKit on Linux,
+unlike on Windows, does have `VideoDecoder`, returns I420, and renders the
+oracle patches within tolerance, which makes it a usable automated stand-in
+for the WebKit decode path even though it is still not Safari: it does not
+range-expand the way VideoToolbox does, so it exercises the untouched half of
+the reconciliation.
+
 BCR-T07 may therefore be implemented and pixel-qualified only after the
 runtime preflight returns native I420 or NV12. A runtime returning RGB remains
 on native playback. Browser names are not used as the capability decision.
@@ -682,7 +691,25 @@ BT.709 limited-range H.264 proxies, at `no-preference`, `prefer-hardware` and
    7 ms per 1080p frame, which the OffscreenCanvas step would remove from the
    budget.
 
-Automatic reference selection stays disabled. BCR-T11 additionally requires
-the sustained measurements (five-minute soak, 4K30 qualification) on this Mac,
-Windows Chromium and Firefox, and an Intel integrated GPU, none of which this
-pass ran.
+6. The sustained gates, run on that Mac 2026-07-26 through the production
+   worker, backend and renderer. Five-minute 1080p30 soak: 8996 of 8996
+   requested frames presented, none dropped, none out of order, median
+   interval 33 ms, p95 35 ms, worst gap 94 ms, buffer never past its
+   six-frame cap. Bounded 4K30 qualification: 90 of 90 presented, none
+   dropped, p95 interval 35 ms, render 11 ms p95 and 20 ms worst. Both meet
+   section 7.3. Two caveats on the evidence: Safari does not implement the
+   `longtask` PerformanceObserver entry, so "no steady-state main-thread task
+   over 50 ms" is supported indirectly by the presentation intervals and a
+   45 ms worst render rather than measured directly; and the seek percentiles
+   were measured at 1080p (p95 67-88 ms), not separately at 4K.
+
+   A measurement that reads as a failure is not one: a run that stops the
+   instant its clock reaches the clip's last frame counts the tail as
+   dropped, which is what produced an apparent five-frame 4K deficit and what
+   the QA suite's own 4K test shows as `missingRequestedFrames` ending in the
+   final indices. Let the pipeline deliver what was already asked for before
+   judging it.
+
+Automatic reference selection stays disabled: BCR-T11 also requires Windows
+Chromium and Firefox and an Intel integrated GPU, which this pass did not run.
+The Apple Silicon row is now complete.
