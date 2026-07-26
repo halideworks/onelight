@@ -1110,6 +1110,10 @@
           : colorCheck.label
   );
   let colorPanelOpen = $state(false);
+  /* The preference groups under the picture, closed until asked for. They are
+     set once for a session and then stared past for the rest of it, so the
+     picture keeps the room by default. */
+  let setupOpen = $state(false);
   let activeReferenceSource = '';
   /* The engine cannot declare the canvas buffer sRGB and the display is
      wide-gamut: the composited picture may be oversaturated. Reference still
@@ -3585,7 +3589,38 @@
         {/if}
       {/if}
       <span class="grow"></span>
-      {#if chrome === 'full'}
+      <!-- Everything past this point is a preference, not a move: which lanes
+           are drawn, which scope, what the wall is, which rendition, which
+           playback path. They were all on the surface at once -- six labelled
+           groups and sixteen buttons under the picture, wrapping onto a
+           second line -- and a reviewer looking at a frame had to look past
+           them. They live behind one disclosure now, and the state that
+           matters when it is wrong still shows on the row. -->
+      {#if colorCheck.state === 'warning' && !isAudio && !setupOpen}
+        <button
+          type="button"
+          class="color-state"
+          data-state={colorCheck.state}
+          onclick={() => { setupOpen = true; colorPanelOpen = true; }}
+        >
+          <span class="color-status-mark" aria-hidden="true"></span>
+          {colorStateLabel}
+        </button>
+      {/if}
+      <button
+        type="button"
+        class="setup-toggle"
+        aria-expanded={setupOpen}
+        aria-controls="player-setup"
+        onclick={() => { setupOpen = !setupOpen; if (!setupOpen) colorPanelOpen = false; }}
+        title="Lanes, scopes, surround, quality and playback"
+      >
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="2.2" /><path d="M8 1.6v1.8M8 12.6v1.8M1.6 8h1.8M12.6 8h1.8M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3" /></svg>
+        Setup
+      </button>
+    </div>
+    {#if setupOpen}
+    <div class="transport-row settings setup" id="player-setup">
       {#if !isAudio && (hasFilmstrip || waveformUrl) && durationFrames !== null && durationFrames > 0}
         <span class="ctl-label" id="lanes-label">Lanes</span>
         <div class="seg" role="group" aria-labelledby="lanes-label">
@@ -3673,8 +3708,8 @@
           {colorStateLabel}
         </button>
       {/if}
-      {/if}
     </div>
+    {/if}
     {#if chrome === 'full' && !isAudio && colorPanelOpen}
       <section class="color-panel" id="color-status-panel" aria-label="Browser decode check">
         <div class="color-panel-head">
@@ -4261,6 +4296,8 @@
      picture, so drawings stay on the footage. */
   .stage:fullscreen { width: 100vw; height: 100vh; }
   .transport-row.settings { margin-top: 10px; justify-content: flex-start; }
+  .transport-row.settings.setup { margin-top: 8px; }
+  .setup-toggle { display: inline-flex; align-items: center; gap: 6px; }
   .color-state {
     display: inline-flex;
     align-items: center;
