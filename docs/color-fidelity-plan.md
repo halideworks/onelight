@@ -32,7 +32,7 @@ own and is a no-op until the step after it.
 GL-versus-CPU parity on 709 is untouched. Unimplemented tags return null rather
 than a guess.
 
-### 2. Shader applies the gamut, in linear light
+### 2. Shader applies the gamut, in linear light (DONE, `2dbc24d`)
 
 The conversion is only valid on linear values, so the fragment shader becomes
 linearise (by source transfer) -> 3x3 -> encode (for the output space).
@@ -43,22 +43,32 @@ through, and the 0/255 GL-versus-CPU parity measured on Safari depends on that.
 Gate the new path on a `passthrough` uniform rather than always linearising, or
 that result is lost to float round-trip.
 
-### 3. Output space, not just sRGB
+### 3. Output space, not just sRGB (PARTLY DONE, `2dbc24d`)
 
-`gl-renderer.ts` sets `drawingBufferColorSpace = "srgb"`. Safari and Chrome
-also accept `"display-p3"`. On a P3 display, P3 content should be rendered to a
-P3 canvas rather than converted down. That needs a display capability probe
-(`matchMedia("(color-gamut: p3)")` plus the context actually accepting the
-value) and a defined fallback: convert to 709 when the display cannot show it.
+The renderer takes an `outputColorSpace` option, asks the context for
+`display-p3`, reads the property back to see whether it was honoured, and
+reports the result as `outputPrimaries`; every frame is converted into that.
 
-### 4. Carry primaries through the contract
+**Still to do:** nobody passes the option yet. It needs a display capability
+probe (`matchMedia("(color-gamut: p3)")`) and a decision about who owns the
+choice -- almost certainly the same resolution chain as the transfer, since
+"render P3 content on a P3 display" is a preference a room will want to fix.
 
-`ReferenceColorContract` already has `primaries`. `raw-planes.ts` currently
-demands they match the container contract exactly, which is what
-`reconcileDecodedColor` had to relax for Safari's transfer tag. The same
-treatment is needed for primaries once proxies stop being uniformly 709: the
-decoded frame's primaries become an input to the gamut matrix rather than
-something to assert equality on.
+### 4. Carry primaries through the contract (DONE, `8d5557e`)
+
+The availability gate in `source-contract.ts` no longer names BT.709: it asks
+whether a gamut matrix can be derived and whether the YUV matrix is
+implemented. P3, BT.2020, 170M and 470BG renditions are offered; PQ and HLG
+are still refused pending step 6.
+
+`raw-planes.ts` keeps its primaries equality check, and should. It is not a
+709 restriction -- it catches a decoder disagreeing with the container about
+the gamut, which is still a fault. The renderer converts from whatever the
+contract declares.
+
+Trap found here: the contract normaliser strips separators, which flattened
+`bt2020-ncl` into `bt2020ncl` and would have failed reconciliation against
+WebCodecs' canonical spelling. Restored after normalising.
 
 ### 5. Then, and only then, stop flattening in the worker
 
