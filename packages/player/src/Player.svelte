@@ -1229,12 +1229,25 @@
     source: string,
     failure: ReferenceFailure,
   ): void => {
+    /* A failure whose source is already gone is a second report of the one
+       being handled: the first call disposed the preparation, which clears
+       activeReferenceSource. Blocking on that empty key would CLEAR the hold
+       the first call just set, so the next attempt starts immediately, fails
+       the same way, and the pair repeats. Measured as 107 fallback
+       diagnostics in five seconds on a machine without hardware WebGL2,
+       arriving in pairs with no backoff between them. Leave the hold alone. */
+    if (!source) return;
+    /* Likewise a second report arriving while this source is already held
+       with a retry pending. It is the same attempt failing in more than one
+       place, and spending the budget twice for it would halve the retries a
+       genuinely transient fault gets. */
+    if (blockedReferenceSource === source && referenceRetryTimer !== null)
+      return;
     if (referenceRetryTimer !== null) {
       clearTimeout(referenceRetryTimer);
       referenceRetryTimer = null;
     }
     blockedReferenceSource = source;
-    if (!source) return;
     if (referenceRetrySource !== source) {
       referenceRetrySource = source;
       referenceRetries = 0;
