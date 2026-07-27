@@ -1115,7 +1115,10 @@
       mode: colorPlaybackMode,
       selfCheckOutcome: colorSelfCheckResult?.outcome ?? null,
       available: referencePossible,
-      automaticQualified: automaticReferenceQualified
+      automaticQualified: automaticReferenceQualified,
+      /* A native HDR rendition this display can actually play. Automatic
+         leaves it alone rather than tone-mapping the grade down to SDR. */
+      nativeHdrQualified: Boolean(qualifiedHdrRendition)
     })
   );
   const activeColorPath = $derived(

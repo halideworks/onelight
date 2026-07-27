@@ -5,6 +5,9 @@ export type ReferenceSelectionInput = {
   selfCheckOutcome: "pass" | "warning" | "unsupported" | null;
   available: boolean;
   automaticQualified: boolean;
+  /* A native HDR rendition this display and browser can actually play. When
+     one exists, automatic leaves HDR alone rather than tone-mapping it. */
+  nativeHdrQualified?: boolean;
 };
 
 /*
@@ -24,11 +27,21 @@ export type ReferenceSelectionInput = {
  * `selfCheckOutcome` no longer decides anything and stays for the diagnostic
  * record; `automaticQualified` remains the switch for turning the default
  * back off per platform class if a real one ever needs it.
+ *
+ * The one thing automatic must NOT do is take an HDR grade away from a
+ * display that can show it. The reference renderer tone-maps HDR down to an
+ * SDR canvas, which is the right answer for a display that cannot reproduce
+ * the range and the wrong answer for one that can -- it throws away exactly
+ * the thing the viewer bought the panel for. Where a native HDR rendition has
+ * qualified, native wins; the reviewer can still ask for reference by name if
+ * they want the frame-accurate path and will accept the tone map.
  */
 export const shouldRequestReferencePlayback = ({
   mode,
   available,
   automaticQualified,
+  nativeHdrQualified = false,
 }: ReferenceSelectionInput): boolean =>
   available &&
-  (mode === "reference" || (mode === "automatic" && automaticQualified));
+  (mode === "reference" ||
+    (mode === "automatic" && automaticQualified && !nativeHdrQualified));

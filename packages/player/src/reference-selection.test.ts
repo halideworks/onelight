@@ -75,3 +75,48 @@ describe("reference playback selection", () => {
     ).toBe(false);
   });
 });
+
+describe("HDR takes precedence over the reference tone map", () => {
+  /* The reference renderer tone-maps HDR onto an SDR canvas. That is right
+     for a display that cannot show the range and wrong for one that can, so
+     automatic must not quietly swap a native HDR grade for a tone-mapped
+     copy. Observed on a real HDR display: HDR clips played back looking like
+     BT.709. */
+  it("leaves a qualified native HDR rendition alone in automatic", () => {
+    expect(
+      shouldRequestReferencePlayback({
+        mode: "automatic",
+        selfCheckOutcome: "pass",
+        available: true,
+        automaticQualified: true,
+        nativeHdrQualified: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("still prefers reference for everything that is not HDR", () => {
+    expect(
+      shouldRequestReferencePlayback({
+        mode: "automatic",
+        selfCheckOutcome: "pass",
+        available: true,
+        automaticQualified: true,
+        nativeHdrQualified: false,
+      }),
+    ).toBe(true);
+  });
+
+  /* Asking for it by name is still honoured: a reviewer who wants the
+     frame-accurate path on HDR material can have it, tone map and all. */
+  it("honours an explicit reference choice even on HDR", () => {
+    expect(
+      shouldRequestReferencePlayback({
+        mode: "reference",
+        selfCheckOutcome: null,
+        available: true,
+        automaticQualified: true,
+        nativeHdrQualified: true,
+      }),
+    ).toBe(true);
+  });
+});
