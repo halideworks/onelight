@@ -1,6 +1,8 @@
 import {
   isHdrTransfer,
   isSdrGammaTransfer,
+  referenceMatrixFromMetadata,
+  referencePrimariesFromMetadata,
   referenceSourceTransfer,
 } from "./color-math.js";
 import type {
@@ -35,13 +37,44 @@ export const referenceColorFrom = (
   };
 };
 
+/*
+ * Do these two describe the same colour, whatever they call it?
+ *
+ * Compared by meaning rather than by spelling, because the two sides speak
+ * different dialects by construction. The rendition contract carries what
+ * ffprobe wrote -- "smpte2084", "bt2020nc" -- and the decoded track carries
+ * what WebCodecs says -- "pq", "bt2020-ncl". String equality therefore
+ * reported every HDR rendition as a mismatch and refused it: "rendition
+ * color metadata does not match the decoder contract", on files where the
+ * colour was identical and only the vocabulary differed.
+ *
+ * Each component is put through the function that already knows its
+ * synonyms, and anything neither side can place falls back to comparing the
+ * raw strings, so an unrecognised pair still has to agree exactly rather
+ * than being waved through.
+ */
+const sameComponent = <T>(
+  actual: string,
+  expected: string,
+  interpret: (value: string) => T | null,
+): boolean => {
+  const a = interpret(actual);
+  const b = interpret(expected);
+  return a !== null && b !== null ? a === b : actual === expected;
+};
+
 export const referenceColorsAgree = (
   actual: ReferenceColorContract,
   expected: ReferenceColorContract,
 ): boolean =>
-  actual.primaries === expected.primaries &&
-  actual.transfer === expected.transfer &&
-  actual.matrix === expected.matrix &&
+  sameComponent(actual.primaries, expected.primaries, (v) =>
+    referencePrimariesFromMetadata(v),
+  ) &&
+  referenceSourceTransfer(actual.transfer) ===
+    referenceSourceTransfer(expected.transfer) &&
+  sameComponent(actual.matrix, expected.matrix, (v) =>
+    referenceMatrixFromMetadata(v),
+  ) &&
   actual.range === expected.range;
 
 /*

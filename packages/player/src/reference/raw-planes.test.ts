@@ -4,6 +4,7 @@ import {
   copyRawFramePlanes,
   reconcileDecodedColor,
   UnsupportedRawPlaneError,
+  referenceColorsAgree,
 } from "./raw-planes.js";
 
 const BT709_LIMITED: ReferenceColorContract = {
@@ -314,5 +315,86 @@ describe("raw reference plane transfer", () => {
           "left",
         ),
       ).rejects.toBeInstanceOf(UnsupportedRawPlaneError);
+  });
+});
+
+/*
+ * The two sides speak different dialects by construction: the rendition
+ * contract carries what ffprobe wrote, the decoded track what WebCodecs says.
+ * Comparing the strings refused every HDR rendition on the live site with
+ * "rendition color metadata does not match the decoder contract", on files
+ * whose colour was identical and whose vocabulary merely differed.
+ */
+describe("colour agreement across vocabularies", () => {
+  const ffprobeSide = {
+    primaries: "bt2020",
+    transfer: "smpte2084",
+    matrix: "bt2020nc",
+    range: "tv",
+  } as const;
+  const webcodecsSide = {
+    primaries: "bt2020",
+    transfer: "pq",
+    matrix: "bt2020-ncl",
+    range: "tv",
+  } as const;
+
+  it("agrees when only the spelling differs", () => {
+    expect(referenceColorsAgree(webcodecsSide, ffprobeSide)).toBe(true);
+    expect(referenceColorsAgree(ffprobeSide, webcodecsSide)).toBe(true);
+  });
+
+  it("agrees across the SDR synonyms too", () => {
+    expect(
+      referenceColorsAgree(
+        {
+          primaries: "bt709",
+          transfer: "iec61966-2-1",
+          matrix: "bt709",
+          range: "tv",
+        },
+        { primaries: "bt709", transfer: "bt709", matrix: "bt709", range: "tv" },
+      ),
+    ).toBe(true);
+  });
+
+  /* Different colour is still different: this must not become a rubber stamp. */
+  it("still refuses a genuine disagreement", () => {
+    expect(
+      referenceColorsAgree({ ...webcodecsSide, transfer: "hlg" }, ffprobeSide),
+    ).toBe(false);
+    expect(
+      referenceColorsAgree(
+        { ...webcodecsSide, primaries: "bt709" },
+        ffprobeSide,
+      ),
+    ).toBe(false);
+    expect(
+      referenceColorsAgree({ ...webcodecsSide, matrix: "bt709" }, ffprobeSide),
+    ).toBe(false);
+    expect(
+      referenceColorsAgree({ ...webcodecsSide, range: "pc" }, ffprobeSide),
+    ).toBe(false);
+  });
+
+  /* A pair neither side can place still has to match exactly. */
+  it("falls back to exact comparison for names it cannot place", () => {
+    expect(
+      referenceColorsAgree(
+        { primaries: "film", transfer: "bt709", matrix: "bt709", range: "tv" },
+        { primaries: "film", transfer: "bt709", matrix: "bt709", range: "tv" },
+      ),
+    ).toBe(true);
+    expect(
+      referenceColorsAgree(
+        { primaries: "film", transfer: "bt709", matrix: "bt709", range: "tv" },
+        {
+          primaries: "unknown",
+          transfer: "bt709",
+          matrix: "bt709",
+          range: "tv",
+        },
+      ),
+    ).toBe(false);
   });
 });
