@@ -77,23 +77,44 @@ describe("reference playback selection", () => {
 });
 
 describe("HDR takes precedence over the reference tone map", () => {
-  /* The reference renderer tone-maps HDR onto an SDR canvas. That is right
-     for a display that cannot show the range and wrong for one that can, so
-     automatic must not quietly swap a native HDR grade for a tone-mapped
-     copy. Observed on a real HDR display: HDR clips played back looking like
-     BT.709. */
-  it("leaves a qualified native HDR rendition alone in automatic", () => {
+  /* The reference renderer tone-maps HDR onto an SDR canvas, and no browser
+     will give it anything else: measured on shipped Chrome 150 and Safari
+     26.5.2, WebGL cannot output HDR at all and the one canvas that can needs a
+     display headroom that is unqueryable and slides with the brightness
+     slider. So on a display that can show the grade, native is not merely
+     preferred, it is the only way to see the thing being reviewed. */
+  it("gives HDR to native wherever the display can show it", () => {
+    for (const mode of ["automatic", "reference"] as const) {
+      expect(
+        shouldRequestReferencePlayback({
+          mode,
+          selfCheckOutcome: "pass",
+          available: true,
+          automaticQualified: true,
+          hdrHandledNatively: true,
+        }),
+        `mode ${mode} must not take HDR from a display that can show it`,
+      ).toBe(false);
+    }
+  });
+
+  /* An SDR display cannot show the grade whoever draws it, so the tone map is
+     happening either way -- and reference's is better than the browser's, and
+     frame-accurate with it. HDR keeps reference there. */
+  it("keeps HDR on reference where the display cannot show it", () => {
     expect(
       shouldRequestReferencePlayback({
         mode: "automatic",
         selfCheckOutcome: "pass",
         available: true,
         automaticQualified: true,
-        nativeHdrQualified: true,
+        hdrHandledNatively: false,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
+  /* An SDR proxy on an HDR display has no grade at stake, so nothing is being
+     protected and reference stays the default. */
   it("still prefers reference for everything that is not HDR", () => {
     expect(
       shouldRequestReferencePlayback({
@@ -101,21 +122,6 @@ describe("HDR takes precedence over the reference tone map", () => {
         selfCheckOutcome: "pass",
         available: true,
         automaticQualified: true,
-        nativeHdrQualified: false,
-      }),
-    ).toBe(true);
-  });
-
-  /* Asking for it by name is still honoured: a reviewer who wants the
-     frame-accurate path on HDR material can have it, tone map and all. */
-  it("honours an explicit reference choice even on HDR", () => {
-    expect(
-      shouldRequestReferencePlayback({
-        mode: "reference",
-        selfCheckOutcome: null,
-        available: true,
-        automaticQualified: true,
-        nativeHdrQualified: true,
       }),
     ).toBe(true);
   });

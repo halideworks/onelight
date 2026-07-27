@@ -5,9 +5,11 @@ export type ReferenceSelectionInput = {
   selfCheckOutcome: "pass" | "warning" | "unsupported" | null;
   available: boolean;
   automaticQualified: boolean;
-  /* A native HDR rendition this display and browser can actually play. When
-     one exists, automatic leaves HDR alone rather than tone-mapping it. */
-  nativeHdrQualified?: boolean;
+  /* The rendition on screen is HDR AND this display can show that grade
+     natively. Both halves matter: an HDR rendition on an SDR display is not
+     handled natively in any useful sense, and an SDR proxy on an HDR display
+     has no grade at stake. */
+  hdrHandledNatively?: boolean;
 };
 
 /*
@@ -28,20 +30,26 @@ export type ReferenceSelectionInput = {
  * record; `automaticQualified` remains the switch for turning the default
  * back off per platform class if a real one ever needs it.
  *
- * The one thing automatic must NOT do is take an HDR grade away from a
- * display that can show it. The reference renderer tone-maps HDR down to an
- * SDR canvas, which is the right answer for a display that cannot reproduce
- * the range and the wrong answer for one that can -- it throws away exactly
- * the thing the viewer bought the panel for. Where a native HDR rendition has
- * qualified, native wins; the reviewer can still ask for reference by name if
- * they want the frame-accurate path and will accept the tone map.
+ * Nothing may take an HDR grade away from a display that can show it, and
+ * that includes asking for reference by name. The reference renderer tone-maps
+ * HDR onto an SDR canvas because no browser will give it anything else:
+ * measured on shipped Chrome 150 and Safari 26.5.2, WebGL cannot output HDR by
+ * any route, and the one canvas that can (WebGPU extended range) needs the
+ * display's headroom, which is unqueryable, slides with the brightness slider
+ * and is misreported by the only media query there is. So on an HDR display
+ * the choice is a real HDR picture from the native path or a tone-mapped one
+ * from reference, and offering a reviewer the second is offering them a worse
+ * picture with a better label. Native wins there until a PQ canvas ships.
+ *
+ * On an SDR display the same tone map is exactly right -- better than the
+ * browser's, and frame-accurate with it -- so reference keeps HDR there.
  */
 export const shouldRequestReferencePlayback = ({
   mode,
   available,
   automaticQualified,
-  nativeHdrQualified = false,
+  hdrHandledNatively = false,
 }: ReferenceSelectionInput): boolean =>
   available &&
-  (mode === "reference" ||
-    (mode === "automatic" && automaticQualified && !nativeHdrQualified));
+  !hdrHandledNatively &&
+  (mode === "reference" || (mode === "automatic" && automaticQualified));

@@ -873,6 +873,12 @@
     renditions.filter((rendition) => isHdrRendition(rendition) && rendition.url)
   );
   let qualifiedHdrRendition = $state<PlayerRendition | null>(null);
+  /* Whether an HDR rendition passed NATIVE qualification, which is a different
+     question from whether one was selected: on an SDR display none qualifies
+     natively and the rendition is chosen for the reference renderer instead.
+     This is the flag that decides who draws HDR, so it must not be conflated
+     with the selection. */
+  let nativeHdrQualified = $state(false);
   let hdrQualificationReason = $state<string | null>(null);
   let hdrQualificationGeneration = 0;
   let hdrDisplayGeneration = $state(0);
@@ -899,12 +905,8 @@
     );
     const generation = ++hdrQualificationGeneration;
     qualifiedHdrRendition = null;
+    nativeHdrQualified = false;
     hdrQualificationReason = null;
-    /* Read synchronously: Svelte tracks what the effect body reads before its
-       first await, so reading the mode inside the async continuation below
-       would register no dependency and switching to Reference would never
-       re-pick the rendition. */
-    const requestedMode = colorPlaybackMode;
     void (async () => {
       /* Native playback and the reference renderer do not share a decoder:
          the first asks MediaCapabilities about the browser's video pipeline,
@@ -930,26 +932,19 @@
       /* The two engines want different things and a rendition can satisfy
          only one. Chrome decodes AV1 in WebCodecs and HEVC not at all, while
          its native path prefers the hardware HEVC and reports 4K AV1 as not
-         smooth -- so native qualification alone chose the one rendition
-         reference could never open, and reference fell back every time.
+         smooth, so the two lists genuinely differ.
 
-         Native qualification also asks for `smooth`, which reference has no
-         use for: it decodes frame by frame under its own scheduler rather
-         than feeding a real-time <video>. A rendition being unsuitable for
-         native playback says nothing about whether reference can step
-         through it.
-
-         So the choice follows the engine that was asked for. One that suits
-         both wins outright; otherwise reference mode takes what it can
-         decode and everything else takes what plays natively. */
+         The order follows what the picture will be, which no longer depends
+         on which mode was asked for: where this display can show the grade
+         natively that is what happens, so a natively-qualified rendition wins
+         and reference does not run on HDR at all. Where it cannot, only
+         reference can carry HDR here -- by tone-mapping it -- so the one it
+         can decode wins. A rendition suiting both is best either way. */
       const both = nativeOk.find((candidate) =>
         referenceOk.includes(candidate)
       );
-      const preferred =
-        both ??
-        (requestedMode === 'reference'
-          ? (referenceOk[0] ?? nativeOk[0])
-          : (nativeOk[0] ?? referenceOk[0]));
+      const preferred = both ?? nativeOk[0] ?? referenceOk[0];
+      nativeHdrQualified = nativeOk.length > 0;
       if (generation !== hdrQualificationGeneration) return;
       qualifiedHdrRendition = preferred ?? null;
     })();
@@ -1222,14 +1217,23 @@
     referenceSourceAvailability(activeRendition, rate, durationFrames)
   );
   const activeReferenceContract = $derived(activeReferenceAvailability.contract);
+  /* The grade is HDR and this display can show it, so the native path owns the
+     picture: reference could only tone-map it down, which on this display is
+     strictly a worse picture than the one already on screen. */
+  const hdrHandledNatively = $derived(
+    isHdrRendition(activeRendition) && nativeHdrQualified
+  );
   const referenceUnavailableReason = $derived(
-    activeReferenceAvailability.reason ??
-      (sourceHasAudio && !shuttleAudio?.x1
-        ? 'The frame-locked reference audio sidecar is not ready.'
-        : null)
+    hdrHandledNatively
+      ? 'This display can show the HDR grade, and native playback is showing it. The reference renderer can only tone-map HDR to SDR, so it is not offered here.'
+      : (activeReferenceAvailability.reason ??
+        (sourceHasAudio && !shuttleAudio?.x1
+          ? 'The frame-locked reference audio sidecar is not ready.'
+          : null))
   );
   const referencePossible = $derived(
-    Boolean(activeReferenceContract && (!sourceHasAudio || shuttleAudio?.x1))
+    Boolean(activeReferenceContract && (!sourceHasAudio || shuttleAudio?.x1)) &&
+      !hdrHandledNatively
   );
   /* Automatic runs the reference renderer wherever the machine can actually
      run it. Apple Silicon Safari and Chromium are measured (181/180 frames,
@@ -1245,9 +1249,7 @@
       selfCheckOutcome: colorSelfCheckResult?.outcome ?? null,
       available: referencePossible,
       automaticQualified: automaticReferenceQualified,
-      /* A native HDR rendition this display can actually play. Automatic
-         leaves it alone rather than tone-mapping the grade down to SDR. */
-      nativeHdrQualified: Boolean(qualifiedHdrRendition)
+      hdrHandledNatively
     })
   );
   const activeColorPath = $derived(
