@@ -3727,6 +3727,8 @@
           <button
             type="button"
             aria-pressed={colorPlaybackMode === 'reference'}
+            class:requested-inactive={colorPlaybackMode === 'reference' &&
+              !referenceActive}
             aria-label={referencePossible ? 'Reference playback' : `Reference playback unavailable. ${referenceUnavailableReason ?? ''}`}
             title={referencePossible ? 'Use the frame-accurate reference renderer' : referenceUnavailableReason ?? 'Reference playback is unavailable.'}
             disabled={!referencePossible}
@@ -3752,6 +3754,23 @@
         </button>
       {/if}
       </div>
+      {/if}
+      <!-- What is ACTUALLY drawing the picture, always on screen and never
+           the thing that was merely asked for. A reviewer who selected
+           Reference and silently got Native is being told the colour is
+           trustworthy when it is the browser's; for this tool that is worse
+           than not offering Reference at all. -->
+      {#if !isAudio}
+        <span
+          class="engine-readout"
+          data-engine={referenceActive ? 'reference' : 'native'}
+          class:fellback={colorPlaybackMode === 'reference' && !referenceActive}
+          title={referenceActive
+            ? 'The reference renderer is drawing this picture.'
+            : colorPlaybackMode === 'reference'
+              ? `Reference was asked for and is not running: ${referenceFailure ?? referenceUnavailableReason ?? 'it could not start.'}`
+              : "The browser's own video path is drawing this picture."}
+        >{referenceActive ? 'Reference' : 'Native'}{colorPlaybackMode === 'reference' && !referenceActive ? ' (fell back)' : ''}</span>
       {/if}
       <button
         type="button"
@@ -4362,6 +4381,24 @@
   .stage:fullscreen { width: 100vw; height: 100vh; }
   .transport-row.settings { margin-top: 10px; justify-content: flex-start; }
   .setup-toggle { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+  .engine-readout {
+    flex: none;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--n-300, #3a3a3a);
+    color: var(--n-700, #9a9a9a);
+    white-space: nowrap;
+  }
+  .engine-readout[data-engine='reference'] { color: var(--n-900, #e8e8e8); }
+  /* Asked for and not running: this must read as a problem, not a setting. */
+  .engine-readout.fellback {
+    color: #e8b23a;
+    border-color: #e8b23a;
+  }
+  .seg button.requested-inactive { opacity: 0.55; }
   /* The preferences ride the same row as the button that opens them, packed
      against it, so the instrument is two rows open or shut. Everything in
      here is deliberately a size down from the transport: it is a settings
