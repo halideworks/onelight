@@ -109,3 +109,56 @@ describe("native HDR qualification", () => {
     );
   });
 });
+
+describe("HDR qualification against displays that actually exist", () => {
+  const env = (matched: readonly string[]): HdrCapabilityEnvironment => ({
+    matches: (q: string) => matched.includes(q),
+    decodingInfo: () =>
+      Promise.resolve({
+        supported: true,
+        smooth: true,
+        powerEfficient: true,
+      } as MediaCapabilitiesDecodingInfo),
+  });
+
+  /* A P3 HDR panel in Chrome. Measured on real hardware: video-color-gamut p3
+     true, rec2020 false. Demanding rec2020 rejected every display of that
+     kind, which is all of them -- every HDR clip fell back to the BT.709
+     proxy on an HDR screen in HDR mode. */
+  it("qualifies a P3 HDR display in Chrome", async () => {
+    const result = await qualifyNativeHdr(
+      rendition,
+      env(["(video-dynamic-range: high)", "(video-color-gamut: p3)"]),
+    );
+    expect(result.qualified, result.reason ?? "").toBe(true);
+  });
+
+  /* Safari implements neither video- prefixed query, and an unsupported one
+     evaluates false, so HDR could never qualify there whatever was plugged
+     in. The unprefixed forms are the fallback. */
+  it("qualifies through the unprefixed queries Safari does implement", async () => {
+    const result = await qualifyNativeHdr(
+      rendition,
+      env(["(dynamic-range: high)", "(color-gamut: p3)"]),
+    );
+    expect(result.qualified).toBe(true);
+  });
+
+  it("still refuses a plain SDR sRGB display", async () => {
+    const result = await qualifyNativeHdr(
+      rendition,
+      env(["(color-gamut: srgb)"]),
+    );
+    expect(result.qualified).toBe(false);
+    expect(result.reason).toContain("high dynamic range");
+  });
+
+  /* Wide gamut is not dynamic range: a P3 SDR panel must still be refused. */
+  it("still refuses an SDR display that happens to be wide gamut", async () => {
+    const result = await qualifyNativeHdr(
+      rendition,
+      env(["(color-gamut: p3)"]),
+    );
+    expect(result.qualified).toBe(false);
+  });
+});

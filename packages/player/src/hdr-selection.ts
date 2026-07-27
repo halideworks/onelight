@@ -152,16 +152,41 @@ export const qualifyNativeHdr = async (
       reason: "The browser does not expose HDR decode capability checks.",
       contract,
     };
-  if (!environment.matches("(video-dynamic-range: high)"))
+  /*
+   * Two questions of the display, each asked in a way that survives contact
+   * with real browsers and real panels.
+   *
+   * Dynamic range: the `video-` prefixed query is what Chrome implements and
+   * what this asked for exclusively. Safari does not implement it, and an
+   * unsupported media query evaluates false, so HDR could never qualify there
+   * no matter what was plugged in. The unprefixed form is the fallback.
+   *
+   * Gamut: this demanded rec2020, which is the container the grade is
+   * MASTERED in, not a thing any consumer display covers. Every real HDR
+   * panel -- including Apple's XDR -- reports p3, so requiring rec2020
+   * rejected all of them. Measured on a P3 HDR screen in HDR mode: p3 true,
+   * rec2020 false. p3 is the honest bar; a display that does report rec2020
+   * clears it too.
+   */
+  if (
+    !environment.matches("(video-dynamic-range: high)") &&
+    !environment.matches("(dynamic-range: high)")
+  )
     return {
       qualified: false,
       reason: "The current display path does not report high dynamic range.",
       contract,
     };
-  if (!environment.matches("(video-color-gamut: rec2020)"))
+  if (
+    !environment.matches("(video-color-gamut: p3)") &&
+    !environment.matches("(video-color-gamut: rec2020)") &&
+    !environment.matches("(color-gamut: p3)") &&
+    !environment.matches("(color-gamut: rec2020)")
+  )
     return {
       qualified: false,
-      reason: "The current display path does not report a Rec.2020 gamut.",
+      reason:
+        "The current display path reports neither a P3 nor a Rec.2020 gamut.",
       contract,
     };
   const video = {
