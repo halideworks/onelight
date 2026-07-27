@@ -1340,7 +1340,11 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
         cookie: string,
         value: "auto" | "srgb" | "bt1886",
       ): Promise<Response> =>
-        req(h, url, { method: "PATCH", cookie, json: { display_transfer: value } });
+        req(h, url, {
+          method: "PATCH",
+          cookie,
+          json: { display_transfer: value },
+        });
 
       // Default is auto (null).
       const initial = await json<{ display_transfer: string | null }>(
@@ -1350,19 +1354,25 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
 
       // Editor pins BT.1886, then sRGB, then clears back to auto.
       expect(
-        (await json<{ display_transfer: string | null }>(
-          await patch(seed.editor.cookie, "bt1886"),
-        )).display_transfer,
+        (
+          await json<{ display_transfer: string | null }>(
+            await patch(seed.editor.cookie, "bt1886"),
+          )
+        ).display_transfer,
       ).toBe("bt1886");
       expect(
-        (await json<{ display_transfer: string | null }>(
-          await patch(seed.editor.cookie, "srgb"),
-        )).display_transfer,
+        (
+          await json<{ display_transfer: string | null }>(
+            await patch(seed.editor.cookie, "srgb"),
+          )
+        ).display_transfer,
       ).toBe("srgb");
       expect(
-        (await json<{ display_transfer: string | null }>(
-          await patch(seed.editor.cookie, "auto"),
-        )).display_transfer,
+        (
+          await json<{ display_transfer: string | null }>(
+            await patch(seed.editor.cookie, "auto"),
+          )
+        ).display_transfer,
       ).toBeNull();
 
       // A commenter (below edit capability) is forbidden; an invalid value is rejected.
