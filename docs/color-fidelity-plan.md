@@ -109,33 +109,32 @@ Every preserved space needs its proxy correctly tagged, and the trap in
 [[onelight-safari-reference]] applies -- `-color_primaries` alone does not reach
 the H.264 VUI without `-x264-params colorprim=...`.
 
-### 6. HDR through the reference renderer (NOT STARTED, and larger than it looks)
+### 6. HDR through the reference renderer (DONE, `b6692a0` `3e704cd` `9ceef80` `ee6358c`)
 
-Worth being precise about, because "add PQ and HLG to the shader" undersells it
-by an order of magnitude. HDR *playback* already works: `hdr_hevc` / `hdr_av1`
-renditions play natively via `qualifyNativeHdr`. What is missing is HDR through
-the REFERENCE renderer, i.e. frame-accurate stepping and scrubbing with a known
-transform. That needs, in rough order of cost:
+Built. The chain: hdr_hevc/hdr_av1 rendition, contract, decoder, 10-bit
+planes, PQ or HLG to light, tone map, gamut, display.
 
-1. **A 10-bit plane pipeline.** `raw-planes.ts` accepts 8-bit I420 and NV12
-   only; HDR is 10-bit (I420P10, P010). This means new accepted formats, R16
-   textures and UNSIGNED_SHORT uploads in the renderer (the existing
-   `bytesPerPixel: 1 | 2` is groundwork, not the feature), and shader
-   normalisation against 1023 rather than 255. On its own this is comparable
-   in size to everything in steps 1 to 5.
-2. **PQ (ST.2084) and HLG EOTFs**, in the shader and mirrored on the CPU for
-   the oracle. Straightforward once the samples arrive intact.
-3. **Somewhere to put the result.** Either an HDR canvas (`rec2100-pq`, thin
-   and inconsistent engine support today) or a defined tone-map to SDR. If
-   tone-mapping, match the worker's `tonemapping=bt.2390` so the reference
-   render and the tonemapped proxy agree rather than disagreeing subtly.
-4. **The contract**, which currently excludes `hdr_hevc` and `hdr_av1` by kind
-   before any colour reasoning happens.
-5. **Fixtures and oracles**, which do not exist for HDR at any bit depth.
+- **10-bit planes.** I420P10 accepted; uploaded as normalised 16-bit textures
+  via `EXT_texture_norm16`, which is required rather than worked around --
+  core WebGL2's alternative is an integer texture and those cannot be linearly
+  filtered, which chroma upsampling depends on. No extension, no 10-bit, fall
+  back to native. Ten bits sit in the low end of sixteen-bit words, so one
+  uniform restores full scale and every downstream constant keeps working:
+  64/1023 and 16/255 are the same fraction.
+- **PQ and HLG** decoded in the shader and on the CPU, checked against the
+  published ST.2084 anchors (0.5081 -> 100 nits, 0.5806 -> 203, 0.7518 ->
+  1000, 1.0 -> 10000) and for continuity across HLG's split at 0.5.
+- **Tone map:** extended Reinhard on luminance, diffuse white 203 nits, peak
+  1000 by default, both overridable. Near-identity in the shadows, exactly 1.0
+  at the mastering peak, and hue-preserving because one factor scales all
+  three channels.
 
-Until this lands, HDR sources get a tonemapped SDR proxy for review and the
-native HDR rendition for viewing, which is the behaviour that has always been
-there.
+**A real bug found on the way.** `render()` still demanded BT.709 primaries
+and matrix while the contract around it had been widened, so P3 and BT.2020
+renditions were offered and then threw on their first frame -- the gamut path
+was unreachable for the content it exists to serve. Fixed, and the QA gamut
+parity gate that was reverted as "too slow" now passes in 1.3 s: the 40-second
+timeout had been the throw hanging the promise, not rasteriser cost.
 
 ### 7. QA (partly blocked on cost)
 
@@ -143,14 +142,16 @@ The oracles are all 709. The gamut maths is covered by unit tests that check
 the derivation against published matrices, which is the strongest evidence
 available without new fixtures.
 
-A GL-versus-CPU gamut parity gate was attempted and reverted. The approach
-works -- relabel the run's own decoded planes as P3 or BT.2020, render, and
-compare against the CPU transform, exactly as the BT.1886 pass isolates the
-transfer stage -- but the gamut path costs two `pow` chains and a matrix per
-pixel where the passthrough costs nothing, and two extra full-frame renders on
-CI's software rasteriser took the probe from 1.3 s to over 40 s. Doing it
-properly means rendering a small patch rather than a full frame. Worth having;
-not worth a flaky 40-second gate.
+The GL-versus-CPU gamut parity gate is in: the run's own decoded planes are
+relabelled P3, rendered, and compared against the CPU transform, exactly as
+the BT.1886 pass isolates the transfer stage. It asserts the picture actually
+moved, so a matrix that did nothing cannot pass it. 1.3 s on chromium, 4 s on
+webkit.
+
+Still missing: HDR fixtures. Nothing in the corpus is PQ or HLG at 10 bits, so
+the HDR path is covered by unit tests against published anchors and by the
+browser gates only inasmuch as they prove the shader compiles and the SDR
+paths still agree. An HDR fixture and oracle is the remaining QA gap.
 
 Note the existing fixture drift: `bars-bt709.mp4` does not match its
 checked-in oracle and is stale, not a bug.
