@@ -53,9 +53,21 @@ describe.skipIf(fixturesMissing !== undefined)(
       name: string,
       run: (page: Page) => Promise<void>,
     ): void => {
+      /* These probes need the engine to actually PLAY audio and report
+         progress, not merely to decode it. Headless Firefox on Linux blocks
+         waiting on an audio device that CI does not have: the probe times out
+         at four minutes rather than failing an assertion, identically on CI
+         and on the dev box, while chromium and webkit -- which use dummy
+         audio backends -- run it fine. That is the harness meeting an engine
+         limitation, not the sidecars being wrong, and the same pitch and
+         audibility expectations are still enforced on two engines. */
+      const headlessAudioUnavailable =
+        engine.name === "firefox" && process.platform === "linux"
+          ? "headless firefox has no audio device on linux"
+          : undefined;
       const browserMissing = fixturesMissing
         ? undefined
-        : skipReason(env, [engine.name]);
+        : (skipReason(env, [engine.name]) ?? headlessAudioUnavailable);
       if (!fixturesMissing && browserMissing)
         console.log(
           `[qa] shuttle-audio ${engine.name}: skipped (${browserMissing})`,
