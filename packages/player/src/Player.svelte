@@ -1079,6 +1079,13 @@
   const activeRendition = $derived.by((): PlayerRendition | null => {
     if (quality === 'hdr' && qualifiedHdrRendition)
       return qualifiedHdrRendition;
+    /* Auto on a display that can show the grade means the grade. HDR was a
+       manual rung only, so a qualified HDR rendition sat there unused while
+       Auto served the tonemapped SDR proxy -- the reviewer had to know to ask
+       for the thing their screen was built for. Qualification has already
+       established that this browser and this display can play it. */
+    if (quality === 'auto' && qualifiedHdrRendition)
+      return qualifiedHdrRendition;
     if (quality !== 'auto') {
       const pick = ladder.find((rung) => rung.kind === quality);
       if (pick) return pick;
