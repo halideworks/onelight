@@ -1235,6 +1235,13 @@
     Boolean(activeReferenceContract && (!sourceHasAudio || shuttleAudio?.x1)) &&
       !hdrHandledNatively
   );
+  /* Reference asked for and not running is a fallback worth flagging -- unless
+     it is not running because the grade is going out natively, which is the
+     better picture and the intended one. Amber on a correct configuration
+     teaches a reviewer to ignore the badge, which costs more than it says. */
+  const referenceFellBack = $derived(
+    colorPlaybackMode === 'reference' && !referenceActive && !hdrHandledNatively
+  );
   /* Automatic runs the reference renderer wherever the machine can actually
      run it. Apple Silicon Safari and Chromium are measured (181/180 frames,
      a five-minute soak at 8999/8999, 4K30 at 90/90); Windows and Intel
@@ -3914,13 +3921,15 @@
         <span
           class="engine-readout"
           data-engine={referenceActive ? 'reference' : 'native'}
-          class:fellback={colorPlaybackMode === 'reference' && !referenceActive}
+          class:fellback={referenceFellBack}
           title={referenceActive
             ? 'The reference renderer is drawing this picture.'
-            : colorPlaybackMode === 'reference'
-              ? `Reference was asked for and is not running: ${referenceFailure ?? referenceUnavailableReason ?? 'it could not start.'}`
-              : "The browser's own video path is drawing this picture."}
-        >{referenceActive ? 'Reference' : 'Native'}{colorPlaybackMode === 'reference' && !referenceActive ? ' (fell back)' : ''}</span>
+            : hdrHandledNatively
+              ? 'Native playback is showing the HDR grade, which is the most accurate picture this display can be given.'
+              : colorPlaybackMode === 'reference'
+                ? `Reference was asked for and is not running: ${referenceFailure ?? referenceUnavailableReason ?? 'it could not start.'}`
+                : "The browser's own video path is drawing this picture."}
+        >{referenceActive ? 'Reference' : 'Native'}{referenceFellBack ? ' (fell back)' : ''}</span>
       {/if}
       <!-- The dynamic range actually on screen. The Quality control that asks
            for HDR lives behind Setup, so without this a reviewer who asked for
