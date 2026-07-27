@@ -136,25 +136,28 @@ export const resolveDisplayTransfer = (
 };
 
 /*
- * Transfer tags an SDR BT.709 surface may legitimately arrive with. A decoded
- * frame's transfer tag is descriptive, not an instruction: nothing in the
- * decode path applies it, and the output encoding comes from
- * resolveDisplayTransfer. Apple's decoders tag BT.709 surfaces
- * "iec61966-2-1", because macOS treats BT.709 as sRGB, so demanding an exact
- * "bt709" match refuses every frame Safari produces. "linear", "pq" and "hlg"
- * describe genuinely different code values and stay rejected.
+ * Is this an SDR gamma transfer?
+ *
+ * Tolerant by default, strict only where the maths genuinely differs. This
+ * began as an allow-list of spellings and the list was always going to be
+ * wrong: it refused a Rec.709 file tagged with a true 2.2 transfer -- an
+ * entirely ordinary thing to be handed -- purely because "bt470m" was not
+ * written in it. A tag is evidence about a gamma curve whose exact shape the
+ * display-transfer control already owns; it is not grounds to refuse a file.
+ * So anything unrecognised, unspecified, or from the gamma family is SDR.
+ *
+ * Four transfers are not that, and they are excluded by name rather than by
+ * omission. PQ and HLG describe absolute light. Linear and the log encodings
+ * describe scene-referred values. Rendering any of them as though they were a
+ * gamma curve would be visibly wrong, not marginally wrong, so they take
+ * their own path or none.
  */
 export const isSdrGammaTransfer = (
   value: string | null | undefined,
 ): boolean => {
+  if (referenceSourceTransfer(value) !== "sdr") return false;
   const tag = normalizedTransferTag(value);
-  return (
-    tag === "bt709" ||
-    tag === "rec709" ||
-    tag === "smpte170m" ||
-    tag === "iec6196621" ||
-    tag === "srgb"
-  );
+  return !(tag === "linear" || tag.startsWith("log"));
 };
 
 /*

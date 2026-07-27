@@ -283,8 +283,23 @@ describe("display transfer", () => {
       "srgb",
     ])
       expect(isSdrGammaTransfer(tag)).toBe(true);
-    // Different code values, not a different name for the same ones.
-    for (const tag of ["pq", "hlg", "linear", "smpte2084", "", null, undefined])
+    /* Tolerant where a tag is only a name for a gamma curve: a true 2.2
+       transfer, a legacy PAL one, and an absent or unrecognised tag are all
+       renderable, and refusing them was rejecting ordinary files. */
+    for (const tag of [
+      "bt470m",
+      "gamma22",
+      "gamma28",
+      "smpte240m",
+      "",
+      null,
+      undefined,
+      "something-nobody-has-heard-of",
+    ])
+      expect(isSdrGammaTransfer(tag), String(tag)).toBe(true);
+    /* Strict where the maths genuinely differs: absolute-light and
+       scene-referred encodings would be visibly wrong drawn as gamma. */
+    for (const tag of ["pq", "hlg", "linear", "smpte2084", "log3g10", "logc"])
       expect(isSdrGammaTransfer(tag)).toBe(false);
   });
 });
