@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { cpus } from "node:os";
+import { cpus, setPriority } from "node:os";
 import path from "node:path";
 import { encodePeaks } from "@onelight/core";
 import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
@@ -281,17 +281,34 @@ export const probeArgs = (source: string): string[] => [
    burns another 6h against the same wedged process while it pegs a core. */
 const PROCESS_IDLE_TIMEOUT_MS = 5 * 60_000;
 
+/*
+ * Lowering a child's scheduling priority is the only thing that actually
+ * protects the site, and it is worth being precise about why: capping encoder
+ * threads does NOT bound what the process takes. Measured on the real 4K HDR
+ * job, `lp=2` still averaged 3.3 of four cores, because the decode and filter
+ * threads are not the encoder's to cap. Niceness needs no such bookkeeping --
+ * an idle box still gives the rendition everything going spare, and the moment
+ * a request arrives the request wins.
+ */
 export const runProcess = (
   command: string,
   args: string[],
   cwd?: string,
   idleTimeoutMs = PROCESS_IDLE_TIMEOUT_MS,
+  niceness?: number,
 ): Promise<ProcessResult> =>
   new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    if (niceness !== undefined && child.pid !== undefined)
+      try {
+        setPriority(child.pid, niceness);
+      } catch {
+        /* Priority is an optimisation, not a requirement: a platform or a
+           sandbox that refuses it must not fail the transcode. */
+      }
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let timedOut = false;
@@ -2003,11 +2020,19 @@ export const hdrHardwareEncoder = (
  * quality knob rather than the correctness one: the picture is the same grade,
  * carried less efficiently.
  *
- * Parallelism is capped at half the cores so the encode cannot take the
- * machine. On a box that also serves the site those are the same cores, and a
- * rendition nobody is waiting for must never be what makes the site feel slow.
+ * Two things keep it off the site's back, and only one of them is this
+ * parameter. `lp` caps the ENCODER's parallelism; it does not bound the
+ * process, because the decode and filter threads are not the encoder's to
+ * cap -- measured on the real 4K job, `lp=2` still averaged 3.3 of four
+ * cores. What actually protects the site is scheduling priority, applied
+ * where this encode is run (see SOFTWARE_AV1_NICENESS), which costs nothing
+ * on an idle box and yields immediately on a busy one.
  */
 const SOFTWARE_AV1_PRESET = "10";
+
+/* The lowest ordinary priority. Nothing waits on this rendition, so it should
+   lose every contest against a request being served. */
+export const SOFTWARE_AV1_NICENESS = 19;
 
 export const softwareAv1Parallelism = (cores = cpus().length): number =>
   Math.max(
@@ -2456,8 +2481,27 @@ export const runTranscode = async (
           outputAcceleration.backend === "software"
             ? selectedArgs
             : argsFor(SOFTWARE_ACCELERATION);
+        /* Nobody is waiting on the software AV1 rendition -- the asset is
+           ready and playing off its proxies long before this finishes -- and
+           it is the one output that runs for minutes on cores the site is
+           also using. It yields to the site; everything else keeps its
+           priority so ordinary transcodes stay quick. The retry below is a
+           software encode by definition, so it is niced whatever the first
+           attempt was. */
+        const softwareNiceness =
+          output.kind === "hdr_av1" ? SOFTWARE_AV1_NICENESS : undefined;
+        const niceness =
+          outputAcceleration.backend === "software"
+            ? softwareNiceness
+            : undefined;
         try {
-          await runProcess(ffmpeg, selectedArgs);
+          await runProcess(
+            ffmpeg,
+            selectedArgs,
+            undefined,
+            undefined,
+            niceness,
+          );
         } catch (error) {
           if (
             acceleration.backend === "software" ||
@@ -2470,7 +2514,13 @@ export const runTranscode = async (
               error instanceof Error ? error.message : String(error)
             }`,
           );
-          await runProcess(ffmpeg, softwareArgs);
+          await runProcess(
+            ffmpeg,
+            softwareArgs,
+            undefined,
+            undefined,
+            softwareNiceness,
+          );
         }
         await rename(tempPath, output.path);
       }

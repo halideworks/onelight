@@ -84,9 +84,14 @@ HEVC Main10 HDR rails when the GPU supports them. AMF's current 8-bit-only HDR
 inputs stay on the software recipe to preserve correctness.
 
 Where the GPU cannot encode AV1 — everything before Intel Arc and NVIDIA Ada —
-the AV1 HDR rendition is encoded in software rather than skipped, at a preset
-and a parallelism cap chosen so it cannot take the machine (measured at 1.7x
-realtime for 4K HDR on half of four cores). It is not a compression
+the AV1 HDR rendition is encoded in software rather than skipped, at a cheap
+preset and at the lowest scheduling priority. The priority is what protects a
+box that also serves the site: capping encoder parallelism does not bound the
+process, since the decode and filter threads are not the encoder's to cap
+(measured on a 4K HDR master, `lp=2` still averaged 3.3 of four cores), while
+niceness costs nothing on an idle machine and yields immediately on a busy
+one. Nothing waits on this rendition — the asset is ready and playing off its
+proxies long before it finishes. It is not a compression
 optimisation: Chrome decodes HEVC only in hardware, hardware decoders return
 frames whose planes cannot be read back, and AV1 is the only HDR codec Chrome
 will decode in software. Without this rendition an asset simply has no HDR
