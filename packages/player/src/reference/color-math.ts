@@ -390,3 +390,23 @@ export const quantizeEncodedRgb = (
   Math.round(rgb[1] * 255),
   Math.round(rgb[2] * 255),
 ];
+
+/*
+ * Whether to ask for a wide-gamut drawing buffer for this content on this
+ * display.
+ *
+ * Only when it buys something. Content already inside BT.709 gains nothing
+ * from a P3 canvas and loses the passthrough: 709 into a P3 buffer is a real
+ * matrix, so every frame would take the long path through linear light for no
+ * visible difference and the measured bit-exactness would go with it. Content
+ * wider than 709 on a display that can show it is the case worth the cost --
+ * anything else converts down, which is accurate but gamut-limited.
+ */
+export const wantsWideGamutOutput = (
+  sourcePrimaries: string | null | undefined,
+  displaySupportsP3: boolean,
+): boolean => {
+  if (!displaySupportsP3) return false;
+  const primaries = referencePrimariesFromMetadata(sourcePrimaries);
+  return primaries === "smpte432" || primaries === "bt2020";
+};

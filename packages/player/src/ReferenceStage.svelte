@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ReferenceGlRenderer } from './reference/gl-renderer.js';
+  import { wantsWideGamutOutput } from './reference/color-math.js';
   import type { ReferenceDisplayTransfer } from './reference/color-math.js';
   import type { PlaneTransfer } from './reference/protocol.js';
 
@@ -15,13 +16,48 @@
 
   let canvas: HTMLCanvasElement | undefined = $state();
   let renderer: ReferenceGlRenderer | undefined;
+  /* Which output space the live renderer was ASKED for. The drawing buffer's
+     colour space is fixed at construction, so a source whose gamut needs a
+     different one gets a new renderer rather than a mismatched buffer.
+     Tracking the request rather than what the engine granted is deliberate:
+     an engine that refuses display-p3 would otherwise look like a mismatch on
+     every single frame and be torn down and rebuilt forever. */
+  let requestedOutput: 'srgb' | 'display-p3' = 'srgb';
+
+  const displaySupportsP3 = (): boolean => {
+    try {
+      return (
+        typeof matchMedia === 'function' &&
+        matchMedia('(color-gamut: p3)').matches
+      );
+    } catch {
+      /* A engine without the media query is not a wide-gamut engine. */
+      return false;
+    }
+  };
 
   const boundedReason = (error: unknown): string =>
     (error instanceof Error ? error.message : String(error)).slice(0, 500);
 
-  const getRenderer = (): ReferenceGlRenderer => {
+  const getRenderer = (planes: PlaneTransfer): ReferenceGlRenderer => {
     if (!canvas) throw new Error('Reference stage is not mounted.');
-    renderer ??= new ReferenceGlRenderer(canvas, { requireAcceleration });
+    const wanted: 'srgb' | 'display-p3' = wantsWideGamutOutput(
+      planes.color.primaries,
+      displaySupportsP3()
+    )
+      ? 'display-p3'
+      : 'srgb';
+    if (renderer && requestedOutput !== wanted) {
+      renderer.close();
+      renderer = undefined;
+    }
+    if (!renderer) {
+      renderer = new ReferenceGlRenderer(canvas, {
+        requireAcceleration,
+        outputColorSpace: wanted
+      });
+      requestedOutput = wanted;
+    }
     return renderer;
   };
 
@@ -30,7 +66,7 @@
   export function render(planes: PlaneTransfer): void {
     lastPlanes = planes;
     try {
-      getRenderer().render(planes, displayTransfer);
+      getRenderer(planes).render(planes, displayTransfer);
     } catch (error) {
       const reason = boundedReason(error);
       onrenderererror?.(reason);
@@ -56,6 +92,7 @@
   export function close(): void {
     renderer?.close();
     renderer = undefined;
+    requestedOutput = 'srgb';
     lastPlanes = null;
   }
 

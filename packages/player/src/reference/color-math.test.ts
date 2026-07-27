@@ -7,6 +7,7 @@ import {
   isIdentityGamut,
   primariesToXyz,
   referencePrimariesFromMetadata,
+  wantsWideGamutOutput,
   isSdrGammaTransfer,
   quantizeEncodedRgb,
   referenceMatrixFromMetadata,
@@ -383,5 +384,25 @@ describe("colour primaries", () => {
     expect(referencePrimariesFromMetadata("film")).toBeNull();
     expect(referencePrimariesFromMetadata(null)).toBeNull();
     expect(referencePrimariesFromMetadata(undefined)).toBeNull();
+  });
+});
+
+describe("wide-gamut output selection", () => {
+  it("asks for a wide buffer only when the content is wider than 709", () => {
+    expect(wantsWideGamutOutput("smpte432", true)).toBe(true);
+    expect(wantsWideGamutOutput("bt2020", true)).toBe(true);
+    /* 709 content gains nothing and would lose the passthrough. */
+    expect(wantsWideGamutOutput("bt709", true)).toBe(false);
+    expect(wantsWideGamutOutput("smpte170m", true)).toBe(false);
+  });
+
+  it("never asks for one the display cannot show", () => {
+    expect(wantsWideGamutOutput("smpte432", false)).toBe(false);
+    expect(wantsWideGamutOutput("bt2020", false)).toBe(false);
+  });
+
+  it("does not ask on a tag it cannot place", () => {
+    expect(wantsWideGamutOutput("film", true)).toBe(false);
+    expect(wantsWideGamutOutput(null, true)).toBe(false);
   });
 });
