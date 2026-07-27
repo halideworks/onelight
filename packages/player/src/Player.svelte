@@ -3698,7 +3698,13 @@
               type="button"
               aria-pressed={quality === 'hdr'}
               onclick={() => {
-                selectColorPlaybackMode('native');
+                /* Picking a rendition is not picking a renderer. This used to
+                   slam the playback mode to native, because reference could
+                   not decode HDR at all; it can now, so forcing that took a
+                   real choice away -- selecting HDR knocked the reviewer out
+                   of Reference and there was no way back while HDR was on.
+                   Automatic still prefers native HDR on a display that can
+                   show it; asking for Reference explicitly is honoured. */
                 quality = 'hdr';
               }}
             >HDR</button>
