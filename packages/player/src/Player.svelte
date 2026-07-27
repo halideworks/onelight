@@ -897,6 +897,11 @@
     const generation = ++hdrQualificationGeneration;
     qualifiedHdrRendition = null;
     hdrQualificationReason = null;
+    /* Read synchronously: Svelte tracks what the effect body reads before its
+       first await, so reading the mode inside the async continuation below
+       would register no dependency and switching to Reference would never
+       re-pick the rendition. */
+    const requestedMode = colorPlaybackMode;
     void (async () => {
       /* Native playback and the reference renderer do not share a decoder:
          the first asks MediaCapabilities about the browser's video pipeline,
@@ -909,23 +914,41 @@
          none can satisfy both, the natively-playable one is still used: HDR
          on screen matters more than which renderer draws it, and the engine
          readout says which one did. */
-      const qualified: PlayerRendition[] = [];
+      const nativeOk: PlayerRendition[] = [];
+      const referenceOk: PlayerRendition[] = [];
       for (const candidate of candidates) {
         const result = await qualifyNativeHdr(candidate);
         if (generation !== hdrQualificationGeneration) return;
         hdrQualificationReason = result.reason;
-        if (result.qualified) qualified.push(candidate);
+        if (result.qualified) nativeOk.push(candidate);
+        if (await referenceCanDecode(candidate)) referenceOk.push(candidate);
+        if (generation !== hdrQualificationGeneration) return;
       }
-      if (!qualified.length) return;
-      for (const candidate of qualified) {
-        if (await referenceCanDecode(candidate)) {
-          if (generation !== hdrQualificationGeneration) return;
-          qualifiedHdrRendition = candidate;
-          return;
-        }
-      }
+      /* The two engines want different things and a rendition can satisfy
+         only one. Chrome decodes AV1 in WebCodecs and HEVC not at all, while
+         its native path prefers the hardware HEVC and reports 4K AV1 as not
+         smooth -- so native qualification alone chose the one rendition
+         reference could never open, and reference fell back every time.
+
+         Native qualification also asks for `smooth`, which reference has no
+         use for: it decodes frame by frame under its own scheduler rather
+         than feeding a real-time <video>. A rendition being unsuitable for
+         native playback says nothing about whether reference can step
+         through it.
+
+         So the choice follows the engine that was asked for. One that suits
+         both wins outright; otherwise reference mode takes what it can
+         decode and everything else takes what plays natively. */
+      const both = nativeOk.find((candidate) =>
+        referenceOk.includes(candidate)
+      );
+      const preferred =
+        both ??
+        (requestedMode === 'reference'
+          ? (referenceOk[0] ?? nativeOk[0])
+          : (nativeOk[0] ?? referenceOk[0]));
       if (generation !== hdrQualificationGeneration) return;
-      qualifiedHdrRendition = qualified[0] ?? null;
+      qualifiedHdrRendition = preferred ?? null;
     })();
   });
   /* Can the reference renderer's decoder actually take this rendition?
