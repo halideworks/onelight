@@ -43,16 +43,24 @@ through, and the 0/255 GL-versus-CPU parity measured on Safari depends on that.
 Gate the new path on a `passthrough` uniform rather than always linearising, or
 that result is lost to float round-trip.
 
-### 3. Output space, not just sRGB (PARTLY DONE, `2dbc24d`)
+### 3. Output space, not just sRGB (DONE, `2dbc24d` + `ce8a483`)
 
 The renderer takes an `outputColorSpace` option, asks the context for
 `display-p3`, reads the property back to see whether it was honoured, and
 reports the result as `outputPrimaries`; every frame is converted into that.
 
-**Still to do:** nobody passes the option yet. It needs a display capability
-probe (`matchMedia("(color-gamut: p3)")`) and a decision about who owns the
-choice -- almost certainly the same resolution chain as the transfer, since
-"render P3 content on a P3 display" is a preference a room will want to fix.
+`ReferenceStage` probes the display with `matchMedia("(color-gamut: p3)")` and
+asks for a wide buffer when the content is wider than 709 and the display can
+show it -- and only then, because 709 into a P3 buffer is a real matrix that
+would cost the passthrough for no visible gain.
+
+The renderer is rebuilt when the *requested* space changes, not when the
+granted one differs: an engine that refuses display-p3 would otherwise look
+like a mismatch on every frame and rebuild forever.
+
+**Deliberately not a user preference.** The content's gamut and the display's
+capability answer the question between them; there is nothing here a room
+needs to fix by hand, unlike the transfer.
 
 ### 4. Carry primaries through the contract (DONE, `8d5557e`)
 
