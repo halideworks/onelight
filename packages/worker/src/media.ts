@@ -1103,8 +1103,22 @@ const durationSeconds = (mediaInfo: MediaInfo): number =>
 
 // One 10x10 sprite sheet covers the whole duration: at most 100 tiles, so
 // the tile interval grows with duration and is never below 2 seconds.
-export const spriteInterval = (mediaInfo: MediaInfo): number =>
-  Math.max(2, Math.ceil(durationSeconds(mediaInfo) / 100));
+/*
+ * Seconds between filmstrip tiles.
+ *
+ * The floor of 2 is fine for programme material and wrong for anything
+ * shorter than one interval: `fps=1/2` over a 0.041 s clip -- a single frame,
+ * which real HDR test material often is -- selects nothing, ffmpeg writes an
+ * empty file, and the rename onto the final blob path fails with ENOENT. The
+ * interval therefore never exceeds the clip, so every source yields at least
+ * one tile.
+ */
+export const spriteInterval = (mediaInfo: MediaInfo): number => {
+  const duration = durationSeconds(mediaInfo);
+  const nominal = Math.max(2, Math.ceil(duration / 100));
+  if (!Number.isFinite(duration) || duration <= 0) return nominal;
+  return Math.min(nominal, Math.max(duration / 2, 1 / 120));
+};
 
 export const SPRITE_TILE_WIDTH = 160;
 export const SPRITE_TILE_HEIGHT = 90;
@@ -1803,6 +1817,27 @@ const hdrAcceleration = (hardware: HardwareInput): HardwareAcceleration => {
   return acceleration.backend === "amf" ? SOFTWARE_ACCELERATION : acceleration;
 };
 
+/*
+ * The same choice, but having asked the hardware whether it can encode this
+ * particular codec. A GPU that does HEVC and not AV1 is ordinary rather than
+ * exotic -- every Intel iGPU before Arc is one -- and attempting anyway costs
+ * a failed ffmpeg run and then a software encode, which for AV1 is the
+ * slowest path in the pipeline.
+ */
+export const hdrAccelerationFor = async (
+  codec: "av1" | "hevc",
+  hardware: HardwareInput,
+  ffmpeg = "ffmpeg",
+): Promise<HardwareAcceleration> => {
+  const acceleration = hdrAcceleration(hardware);
+  if (acceleration.backend === "software") return acceleration;
+  const encoder = hdrHardwareEncoder(codec, acceleration.backend);
+  if (!encoder) return SOFTWARE_ACCELERATION;
+  return (await hardwareEncoderUsable(encoder, acceleration, ffmpeg))
+    ? acceleration
+    : SOFTWARE_ACCELERATION;
+};
+
 const hdrLimits = (mediaInfo: MediaInfo): StreamingLimits => {
   const height = Number(videoStream(mediaInfo)?.height ?? 2160);
   return streamingLimits(Number.isFinite(height) ? height : 2160, mediaInfo);
@@ -1841,6 +1876,88 @@ const hdrNvencArgs = (
   `${codec}_nvenc`,
   ...nvencQualityArgs(quality, limits, acceleration.device),
 ];
+
+/*
+ * Can this backend actually encode this codec on this machine?
+ *
+ * Asked empirically, by encoding one frame and seeing whether ffmpeg agrees,
+ * because the alternative is a table of vendors and generations that is wrong
+ * the moment someone runs this on hardware nobody here has. An Alder Lake-N
+ * iGPU advertises VAAPI and encodes H.264, HEVC and VP9 but not AV1; Arc and
+ * Meteor Lake do AV1; NVENC gained it with Ada. Probing costs one trivial
+ * ffmpeg run per pair, cached for the life of the process, and it tells the
+ * truth on all of them.
+ *
+ * Without this the AV1 rendition attempted hardware, failed with "no usable
+ * encoding profile", and fell back to libsvtav1 -- software AV1, the slowest
+ * encoder in the pipeline, on a box whose cores are shared with the live
+ * site. That is a silent multi-minute penalty per HDR asset, which is exactly
+ * how it presented: "still processing, very slowly".
+ */
+const encoderProbeCache = new Map<string, Promise<boolean>>();
+
+export const hardwareEncoderUsable = (
+  encoder: string,
+  acceleration: HardwareAcceleration,
+  ffmpeg = "ffmpeg",
+): Promise<boolean> => {
+  const key = `${encoder}:${acceleration.backend}:${
+    "device" in acceleration ? acceleration.device : ""
+  }`;
+  const cached = encoderProbeCache.get(key);
+  if (cached) return cached;
+  const args = [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    ...(acceleration.backend === "vaapi" && "device" in acceleration
+      ? ["-vaapi_device", acceleration.device]
+      : []),
+    "-f",
+    "lavfi",
+    "-i",
+    "nullsrc=s=320x240:d=0.04",
+    ...(acceleration.backend === "vaapi"
+      ? ["-vf", "format=nv12,hwupload"]
+      : []),
+    "-c:v",
+    encoder,
+    "-frames:v",
+    "1",
+    "-f",
+    "null",
+    "-",
+  ];
+  const probe = new Promise<boolean>((resolve) => {
+    const child = spawn(ffmpeg, args, { stdio: "ignore" });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve(false);
+    }, 20_000);
+    child.on("error", () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve(code === 0);
+    });
+  });
+  encoderProbeCache.set(key, probe);
+  return probe;
+};
+
+/* The encoder a backend would use for an HDR codec, so the probe and the
+   argument builder cannot disagree about the name. */
+export const hdrHardwareEncoder = (
+  codec: "av1" | "hevc",
+  backend: HardwareBackend,
+): string | null => {
+  if (backend === "vaapi") return `${codec}_vaapi`;
+  if (backend === "nvenc") return `${codec}_nvenc`;
+  if (backend === "amf") return codec === "hevc" ? "hevc_amf" : "av1_amf";
+  return null;
+};
 
 export const buildHdrAv1Args = (
   job: TranscodeJob,
@@ -2244,9 +2361,20 @@ export const runTranscode = async (
             output.height ?? 1080,
             selected,
           );
-        const selectedArgs = argsFor(acceleration);
+        /* Per output, not per job: a GPU that encodes HEVC but not AV1 should
+           run the HEVC rendition on hardware and take the software path for
+           AV1 directly, rather than failing into it. */
+        const outputAcceleration =
+          output.kind === "hdr_av1" || output.kind === "hdr_hevc"
+            ? await hdrAccelerationFor(
+                output.kind === "hdr_av1" ? "av1" : "hevc",
+                acceleration,
+                ffmpeg,
+              )
+            : acceleration;
+        const selectedArgs = argsFor(outputAcceleration);
         const softwareArgs =
-          acceleration.backend === "software"
+          outputAcceleration.backend === "software"
             ? selectedArgs
             : argsFor(SOFTWARE_ACCELERATION);
         try {
