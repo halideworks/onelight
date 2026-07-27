@@ -4217,6 +4217,21 @@
                           "restricted": {
                             "type": "boolean"
                           },
+                          "display_transfer": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "srgb",
+                                  "gamma22",
+                                  "bt1886"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "record_transfer_ips": {
                             "type": "boolean"
                           },
@@ -4252,6 +4267,7 @@
                           "cover_kind",
                           "cover_url",
                           "restricted",
+                          "display_transfer",
                           "record_transfer_ips",
                           "created_by",
                           "created_at",
@@ -4417,6 +4433,21 @@
                     "restricted": {
                       "type": "boolean"
                     },
+                    "display_transfer": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "srgb",
+                            "gamma22",
+                            "bt1886"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "record_transfer_ips": {
                       "type": "boolean"
                     },
@@ -4452,6 +4483,7 @@
                     "cover_kind",
                     "cover_url",
                     "restricted",
+                    "display_transfer",
                     "record_transfer_ips",
                     "created_by",
                     "created_at",
@@ -4568,6 +4600,21 @@
                     "restricted": {
                       "type": "boolean"
                     },
+                    "display_transfer": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "srgb",
+                            "gamma22",
+                            "bt1886"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "record_transfer_ips": {
                       "type": "boolean"
                     },
@@ -4603,6 +4650,7 @@
                     "cover_kind",
                     "cover_url",
                     "restricted",
+                    "display_transfer",
                     "record_transfer_ips",
                     "created_by",
                     "created_at",
@@ -4711,6 +4759,15 @@
                       "archived"
                     ]
                   },
+                  "display_transfer": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "srgb",
+                      "gamma22",
+                      "bt1886"
+                    ]
+                  },
                   "cover_asset_id": {
                     "type": [
                       "string",
@@ -4779,6 +4836,21 @@
                     "restricted": {
                       "type": "boolean"
                     },
+                    "display_transfer": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "srgb",
+                            "gamma22",
+                            "bt1886"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "record_transfer_ips": {
                       "type": "boolean"
                     },
@@ -4814,6 +4886,7 @@
                     "cover_kind",
                     "cover_url",
                     "restricted",
+                    "display_transfer",
                     "record_transfer_ips",
                     "created_by",
                     "created_at",
@@ -5074,6 +5147,21 @@
                     "restricted": {
                       "type": "boolean"
                     },
+                    "display_transfer": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "srgb",
+                            "gamma22",
+                            "bt1886"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "record_transfer_ips": {
                       "type": "boolean"
                     },
@@ -5109,6 +5197,7 @@
                     "cover_kind",
                     "cover_url",
                     "restricted",
+                    "display_transfer",
                     "record_transfer_ips",
                     "created_by",
                     "created_at",
@@ -8677,6 +8766,7 @@
                           "type": "string",
                           "enum": [
                             "srgb",
+                            "gamma22",
                             "bt1886"
                           ]
                         },
@@ -13082,6 +13172,7 @@
                               "type": "string",
                               "enum": [
                                 "srgb",
+                                "gamma22",
                                 "bt1886"
                               ]
                             },
@@ -20340,6 +20431,7 @@
                                 "type": "string",
                                 "enum": [
                                   "srgb",
+                                  "gamma22",
                                   "bt1886"
                                 ]
                               },
@@ -20689,6 +20781,7 @@
                                 "type": "string",
                                 "enum": [
                                   "srgb",
+                                  "gamma22",
                                   "bt1886"
                                 ]
                               },
@@ -20874,6 +20967,7 @@
                           "type": "string",
                           "enum": [
                             "srgb",
+                            "gamma22",
                             "bt1886"
                           ]
                         },
@@ -21019,6 +21113,7 @@
                     "enum": [
                       "auto",
                       "srgb",
+                      "gamma22",
                       "bt1886"
                     ]
                   }
@@ -21097,6 +21192,7 @@
                           "type": "string",
                           "enum": [
                             "srgb",
+                            "gamma22",
                             "bt1886"
                           ]
                         },
@@ -21345,6 +21441,7 @@
                           "type": "string",
                           "enum": [
                             "srgb",
+                            "gamma22",
                             "bt1886"
                           ]
                         },
@@ -21870,6 +21967,7 @@
                               "type": "string",
                               "enum": [
                                 "srgb",
+                                "gamma22",
                                 "bt1886"
                               ]
                             },
@@ -22227,6 +22325,7 @@
                           "type": "string",
                           "enum": [
                             "srgb",
+                            "gamma22",
                             "bt1886"
                           ]
                         },

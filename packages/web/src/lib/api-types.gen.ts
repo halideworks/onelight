@@ -3038,6 +3038,7 @@ export interface paths {
                                 cover_kind: "upload" | "asset" | "generated";
                                 cover_url: string | null;
                                 restricted: boolean;
+                                display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                                 record_transfer_ips: boolean;
                                 created_by: string;
                                 created_at: number;
@@ -3126,6 +3127,7 @@ export interface paths {
                             cover_kind: "upload" | "asset" | "generated";
                             cover_url: string | null;
                             restricted: boolean;
+                            display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             record_transfer_ips: boolean;
                             created_by: string;
                             created_at: number;
@@ -3216,6 +3218,7 @@ export interface paths {
                             cover_kind: "upload" | "asset" | "generated";
                             cover_url: string | null;
                             restricted: boolean;
+                            display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             record_transfer_ips: boolean;
                             created_by: string;
                             created_at: number;
@@ -3342,6 +3345,8 @@ export interface paths {
                         restricted?: boolean;
                         /** @enum {string} */
                         status?: "active" | "archived";
+                        /** @enum {string} */
+                        display_transfer?: "auto" | "srgb" | "gamma22" | "bt1886";
                         cover_asset_id?: string | null;
                         cover_upload_id?: string;
                         record_transfer_ips?: boolean;
@@ -3367,6 +3372,7 @@ export interface paths {
                             cover_kind: "upload" | "asset" | "generated";
                             cover_url: string | null;
                             restricted: boolean;
+                            display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             record_transfer_ips: boolean;
                             created_by: string;
                             created_at: number;
@@ -3535,6 +3541,7 @@ export interface paths {
                             cover_kind: "upload" | "asset" | "generated";
                             cover_url: string | null;
                             restricted: boolean;
+                            display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             record_transfer_ips: boolean;
                             created_by: string;
                             created_at: number;
@@ -5574,7 +5581,7 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
-                            display_transfer: ("srgb" | "bt1886") | null;
+                            display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;
@@ -8243,7 +8250,7 @@ export interface paths {
                                 kind: string;
                                 /** @enum {string} */
                                 status: "none" | "in_review" | "approved" | "changes_requested";
-                                display_transfer: ("srgb" | "bt1886") | null;
+                                display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             };
                             versions: {
                                 id: string;
@@ -12084,7 +12091,7 @@ export interface paths {
                                 description: string;
                                 tags: string[];
                                 has_thumbnail: boolean;
-                                display_transfer: ("srgb" | "bt1886") | null;
+                                display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                                 deleted_at: number | null;
                                 created_at: number;
                                 updated_at: number;
@@ -12285,7 +12292,7 @@ export interface paths {
                                 description: string;
                                 tags: string[];
                                 has_thumbnail: boolean;
-                                display_transfer: ("srgb" | "bt1886") | null;
+                                display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                                 deleted_at: number | null;
                                 created_at: number;
                                 updated_at: number;
@@ -12378,7 +12385,7 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
-                            display_transfer: ("srgb" | "bt1886") | null;
+                            display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;
@@ -12502,7 +12509,7 @@ export interface paths {
                         description?: string;
                         tags?: string[];
                         /** @enum {string} */
-                        display_transfer?: "auto" | "srgb" | "bt1886";
+                        display_transfer?: "auto" | "srgb" | "gamma22" | "bt1886";
                     };
                 };
             };
@@ -12527,7 +12534,7 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
-                            display_transfer: ("srgb" | "bt1886") | null;
+                            display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;
@@ -12681,7 +12688,7 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
-                            display_transfer: ("srgb" | "bt1886") | null;
+                            display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;
@@ -12922,7 +12929,7 @@ export interface paths {
                                 description: string;
                                 tags: string[];
                                 has_thumbnail: boolean;
-                                display_transfer: ("srgb" | "bt1886") | null;
+                                display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                                 deleted_at: number | null;
                                 created_at: number;
                                 updated_at: number;
@@ -13110,7 +13117,7 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
-                            display_transfer: ("srgb" | "bt1886") | null;
+                            display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
                             updated_at: number;
