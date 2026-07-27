@@ -862,12 +862,15 @@
   const qualityLadder = $derived(
     ladder.filter((rendition) => rendition.kind.startsWith('proxy_'))
   );
+  /* A rendition carries the HDR grade or it does not; which codec does the
+     carrying is a separate question from whether what you are looking at is
+     HDR. Asked in one place so every readout agrees. */
+  const isHdrRendition = (
+    rendition: PlayerRendition | null | undefined
+  ): boolean =>
+    rendition?.kind === 'hdr_av1' || rendition?.kind === 'hdr_hevc';
   const hdrRenditions = $derived(
-    renditions.filter(
-      (rendition) =>
-        (rendition.kind === 'hdr_av1' || rendition.kind === 'hdr_hevc') &&
-        rendition.url
-    )
+    renditions.filter((rendition) => isHdrRendition(rendition) && rendition.url)
   );
   let qualifiedHdrRendition = $state<PlayerRendition | null>(null);
   let hdrQualificationReason = $state<string | null>(null);
@@ -956,16 +959,21 @@
      differently, most visibly for HEVC. An engine without WebCodecs simply
      has no reference path, so the answer there is no. */
   const referenceDecodeCache = new Map<string, Promise<boolean>>();
-  const referenceCanDecode = (rendition: PlayerRendition): Promise<boolean> => {
+  const referenceCanDecode = (
+    rendition: PlayerRendition,
+    hardwareAcceleration?: ReferenceHardwareAcceleration
+  ): Promise<boolean> => {
     const codec = String(rendition.meta?.codec ?? '');
     if (!codec) return Promise.resolve(false);
-    const cached = referenceDecodeCache.get(codec);
+    const key = `${codec}|${hardwareAcceleration ?? 'no-preference'}`;
+    const cached = referenceDecodeCache.get(key);
     if (cached) return cached;
     const probe =
       typeof VideoDecoder === 'undefined'
         ? Promise.resolve(false)
         : VideoDecoder.isConfigSupported({
             codec,
+            ...(hardwareAcceleration ? { hardwareAcceleration } : {}),
             ...(Number(rendition.meta?.coded_width) > 0
               ? { codedWidth: Number(rendition.meta?.coded_width) }
               : {}),
@@ -975,7 +983,7 @@
           })
             .then((support) => Boolean(support.supported))
             .catch(() => false);
-    referenceDecodeCache.set(codec, probe);
+    referenceDecodeCache.set(key, probe);
     return probe;
   };
   let quality = $state('auto');
@@ -1162,6 +1170,45 @@
     return autoRung();
   });
   const resolveSrc = (): string => activeRendition?.url ?? src;
+  /*
+   * What is ACTUALLY on screen, and whether it is what was asked for.
+   *
+   * `quality === 'hdr'` is a request. When no HDR rendition qualifies -- the
+   * display stopped reporting HDR, or qualification is still in flight, which
+   * it always is for a moment after a source change -- activeRendition falls
+   * through to the SDR ladder and keeps playing. That fallback is right: a
+   * reviewer should not lose the picture over it. Announcing it as HDR is not.
+   * For a colour tool, a control that misreports the dynamic range on screen
+   * is worse than having no HDR at all, so the readout follows the rendition
+   * and the request only decides whether losing it counts as a fallback.
+   */
+  const hdrActive = $derived(isHdrRendition(activeRendition));
+  const hdrRequested = $derived(quality === 'hdr');
+  const hdrFellBack = $derived(hdrRequested && !hdrActive);
+  /*
+   * Whether this browser can decode what is playing WITHOUT a hardware
+   * decoder. It is the last rung of the recovery ladder, so a codec that has
+   * no software decoder here has no rung to fall to: measured on Chrome, HEVC
+   * answers false for `prefer-software` at every level and resolution, while
+   * AV1 answers true. Null until the answer lands, so nothing is concluded
+   * from a question still in flight.
+   */
+  let activeSoftwareDecodable = $state<boolean | null>(null);
+  const referenceHardwareOnlyReason =
+    'This browser decodes this rendition only in hardware, and its hardware ' +
+    'frames cannot be read back for reference rendering.';
+  $effect(() => {
+    const rendition = activeRendition;
+    activeSoftwareDecodable = null;
+    if (!rendition) return;
+    let current = true;
+    void referenceCanDecode(rendition, 'prefer-software').then((usable) => {
+      if (current) activeSoftwareDecodable = usable;
+    });
+    return () => {
+      current = false;
+    };
+  });
   const activeColorContracts = $derived(
     renditionColorContracts(activeRendition?.meta ?? colorMetadata)
   );
@@ -1198,7 +1245,7 @@
     })
   );
   const activeColorPath = $derived(
-    activeRendition?.kind === 'hdr_av1' || activeRendition?.kind === 'hdr_hevc'
+    hdrActive
       ? 'Native HDR'
       : referenceActive
       ? `Reference renderer, ${RUNG_LABELS[activeRendition?.kind ?? ''] ?? activeRendition?.kind ?? 'proxy'} rendition`
@@ -1208,7 +1255,7 @@
   );
   const colorCheck = $derived(colorCheckPresentation(colorSelfCheckResult));
   const colorStateLabel = $derived(
-    activeRendition?.kind === 'hdr_av1' || activeRendition?.kind === 'hdr_hevc'
+    hdrActive
       ? 'Native HDR'
       : referenceActive
         ? 'Reference renderer'
@@ -1378,8 +1425,24 @@
       referencePreferenceSource === source &&
       referenceDecodePreference !== 'prefer-software' &&
       DECODER_FAULT_FAILURES.has(failure.failureClass)
-    )
+    ) {
+      /* Escalate only where software decoding is a thing this browser can
+         actually do for this codec. Chrome decodes HEVC in hardware only, and
+         a hardware decoder hands back an opaque surface whose `format` is null
+         -- so the frames arrive, the renderer cannot read them, and the
+         allocation failure below escalates to a preference WebCodecs then
+         refuses outright. The retry died reporting "WebCodecs does not support
+         the rendition codec", which is true of the escalated request and a lie
+         about the rendition: it sent a whole session hunting a codec problem
+         that was never there. Where the ladder has no rung left, stop on the
+         real reason instead of inventing a better-sounding one. */
+      if (activeSoftwareDecodable === false) {
+        referenceFailure = referenceHardwareOnlyReason;
+        referenceRetries = REFERENCE_MAX_RETRIES + 1;
+        return;
+      }
       referenceDecodePreference = 'prefer-software';
+    }
     if (referenceRetries > REFERENCE_MAX_RETRIES) return;
     const backoff = Math.min(2_500, 400 * 2 ** (referenceRetries - 1));
     referenceRetryTimer = setTimeout(() => {
@@ -3762,10 +3825,18 @@
               {RUNG_LABELS[rung.kind] ?? rung.kind}
             </button>
           {/each}
-          {#if qualifiedHdrRendition}
+          <!-- Kept while HDR is the request even after qualification drops it,
+               because a button that disappears takes the fact that HDR is no
+               longer playing with it, and leaves the whole group reading
+               unpressed with no way back. -->
+          {#if qualifiedHdrRendition || hdrRequested}
             <button
               type="button"
-              aria-pressed={quality === 'hdr'}
+              aria-pressed={hdrActive}
+              class:requested-inactive={hdrFellBack}
+              title={hdrFellBack
+                ? `HDR is not playing: ${hdrQualificationReason ?? 'no HDR rendition qualified on this display.'}`
+                : 'Play the HDR rendition'}
               onclick={() => {
                 /* Picking a rendition is not picking a renderer. This used to
                    slam the playback mode to native, because reference could
@@ -3840,6 +3911,22 @@
               ? `Reference was asked for and is not running: ${referenceFailure ?? referenceUnavailableReason ?? 'it could not start.'}`
               : "The browser's own video path is drawing this picture."}
         >{referenceActive ? 'Reference' : 'Native'}{colorPlaybackMode === 'reference' && !referenceActive ? ' (fell back)' : ''}</span>
+      {/if}
+      <!-- The dynamic range actually on screen. The Quality control that asks
+           for HDR lives behind Setup, so without this a reviewer who asked for
+           HDR and silently got the SDR ladder has nothing anywhere in the
+           chrome telling them which one they are grading. -->
+      {#if !isAudio && (hdrRenditions.length || hdrActive)}
+        <span
+          class="engine-readout"
+          data-engine={hdrActive ? 'reference' : 'native'}
+          class:fellback={hdrFellBack}
+          title={hdrActive
+            ? 'The HDR rendition is on screen.'
+            : hdrFellBack
+              ? `HDR was asked for and is not playing: ${hdrQualificationReason ?? 'no HDR rendition qualified on this display.'}`
+              : 'A standard dynamic range rendition is on screen.'}
+        >{hdrActive ? 'HDR' : 'SDR'}{hdrFellBack ? ' (fell back)' : ''}</span>
       {/if}
       <button
         type="button"

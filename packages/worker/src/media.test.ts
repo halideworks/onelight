@@ -15,6 +15,7 @@ import {
   bt709ConvertFilter,
   buildHardwareProbeArgs,
   buildHdrAv1Args,
+  softwareAv1Parallelism,
   buildHdrHevcArgs,
   buildPdfPagesArgs,
   buildCombinedSdrArgs,
@@ -1021,7 +1022,9 @@ describe("HDR renditions", () => {
   it("sets a 1-second GOP for svt-av1 and x265", () => {
     const av1 = buildHdrAv1Args(jobOf(hdrMediaInfo("smpte2084")), "hdr.mp4");
     expect(flag(av1, "-g")).toBe("24");
-    expect(flag(av1, "-svtav1-params")).toBe("keyint=24");
+    expect(flag(av1, "-svtav1-params")).toBe(
+      `keyint=24:lp=${softwareAv1Parallelism()}`,
+    );
     expect(flag(av1, "-color_trc")).toBe("smpte2084");
     expect(flag(av1, "-color_range")).toBe("tv");
     const hevc = buildHdrHevcArgs(jobOf(hdrMediaInfo("smpte2084")), "hdr.mp4");
@@ -1033,6 +1036,24 @@ describe("HDR renditions", () => {
     expect(flag(hevc, "-color_range")).toBe("tv");
     expect(flag(hevc, "-maxrate")).toBe("36000k");
     expect(flag(hevc, "-bufsize")).toBe("72000k");
+  });
+
+  /* Chrome decodes HEVC only in hardware, and hardware frames come back as
+     opaque surfaces the reference renderer cannot read, so hdr_av1 is the only
+     rendition that can carry reference HDR there. It has to be made even where
+     the GPU cannot encode it -- cheaply enough that it never takes the box. */
+  it("encodes software AV1 cheaply and leaves the machine cores to spare", () => {
+    const av1 = buildHdrAv1Args(jobOf(hdrMediaInfo("smpte2084")), "hdr.mp4");
+    expect(flag(av1, "-c:v")).toBe("libsvtav1");
+    expect(Number(flag(av1, "-preset"))).toBeGreaterThanOrEqual(10);
+    expect(flag(av1, "-svtav1-params")).toContain(
+      `lp=${softwareAv1Parallelism()}`,
+    );
+    for (const cores of [1, 2, 4, 8, 16]) {
+      const used = softwareAv1Parallelism(cores);
+      expect(used).toBeGreaterThanOrEqual(1);
+      expect(used).toBeLessThanOrEqual(Math.max(1, cores - 1));
+    }
   });
 
   it("uses Intel or Arc hardware for both 10-bit HDR rails", () => {

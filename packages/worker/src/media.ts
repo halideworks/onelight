@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { cpus } from "node:os";
 import path from "node:path";
 import { encodePeaks } from "@onelight/core";
 import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
@@ -1985,6 +1986,35 @@ export const hdrHardwareEncoder = (
   return null;
 };
 
+/*
+ * Software AV1 is not optional the way it looks. On Chrome the reference
+ * renderer needs frames whose planes it can read, and a hardware decoder --
+ * every one measured, HEVC and AV1 alike -- hands back an opaque GPU surface
+ * whose `format` is null, so `allocationSize()` throws and the renderer has
+ * nothing to copy. The only HDR codec Chrome can decode in SOFTWARE is AV1,
+ * which makes this rendition the single path to reference HDR there. Skipping
+ * it does not cost compression, it costs the feature.
+ *
+ * So it is made, but cheaply. Measured on this box (Alder Lake-N, four cores,
+ * five seconds of 4K HDR): preset 6 takes 21.8s, preset 8 takes 12.1s and
+ * preset 10 takes 7.5s, against 4.4s for the hardware HEVC rendition that runs
+ * beside it -- and about 4s of every one of those is the 4K decode, which no
+ * setting avoids. Preset 10 is therefore close to the floor, and it is the
+ * quality knob rather than the correctness one: the picture is the same grade,
+ * carried less efficiently.
+ *
+ * Parallelism is capped at half the cores so the encode cannot take the
+ * machine. On a box that also serves the site those are the same cores, and a
+ * rendition nobody is waiting for must never be what makes the site feel slow.
+ */
+const SOFTWARE_AV1_PRESET = "10";
+
+export const softwareAv1Parallelism = (cores = cpus().length): number =>
+  Math.max(
+    1,
+    Math.floor((Number.isFinite(cores) && cores > 0 ? cores : 2) / 2),
+  );
+
 export const buildHdrAv1Args = (
   job: TranscodeJob,
   outputPath: string,
@@ -2013,11 +2043,11 @@ export const buildHdrAv1Args = (
             "-c:v",
             "libsvtav1",
             "-preset",
-            "6",
+            SOFTWARE_AV1_PRESET,
             "-crf",
             "28",
             "-svtav1-params",
-            `keyint=${gop}`,
+            `keyint=${gop}:lp=${softwareAv1Parallelism()}`,
             ...rateLimitArgs(limits),
             "-pix_fmt",
             "yuv420p10le",
@@ -2399,24 +2429,25 @@ export const runTranscode = async (
               )
             : acceleration;
         /*
-         * AV1 in software is not a fallback, it is a trap. libsvtav1 on a 4K
-         * HDR master runs for minutes at every core the box has, and on a
-         * machine that also serves the site those are the same cores. The
-         * rendition is an optimisation -- HEVC Main10 carries the same HDR
-         * picture, hardware-encoded, and Safari prefers it -- so where the
-         * GPU cannot encode AV1 the honest answer is not to make one.
+         * This used to skip hdr_av1 wherever the GPU could not encode it,
+         * because software AV1 was expensive and hdr_hevc carries the same HDR
+         * picture. The picture was never the point: Chrome decodes HEVC only
+         * in hardware, and hardware frames come back as opaque surfaces the
+         * reference renderer cannot read, so on an asset with no AV1 rendition
+         * reference HDR is simply unavailable there. The rendition is now
+         * always made, at a preset and parallelism chosen so it cannot hurt
+         * the machine (see buildHdrAv1Args).
          *
-         * ONELIGHT_SOFTWARE_AV1=1 opts back in for anyone who wants the
-         * compression and can spare the machine.
+         * ONELIGHT_SOFTWARE_AV1=0 opts out for an operator who would rather
+         * lose reference HDR in Chrome than spend the cores.
          */
         if (
           output.kind === "hdr_av1" &&
           outputAcceleration.backend === "software" &&
-          acceleration.backend !== "software" &&
-          process.env.ONELIGHT_SOFTWARE_AV1 !== "1"
+          process.env.ONELIGHT_SOFTWARE_AV1 === "0"
         ) {
           console.log(
-            `[onelight-worker] skipping hdr_av1 for job ${job.id}: this GPU cannot encode AV1 and software AV1 would cost minutes of every core. hdr_hevc carries the HDR picture. Set ONELIGHT_SOFTWARE_AV1=1 to encode it anyway.`,
+            `[onelight-worker] skipping hdr_av1 for job ${job.id}: ONELIGHT_SOFTWARE_AV1=0 and this GPU cannot encode AV1. hdr_hevc still carries the HDR picture, but reference HDR will be unavailable in Chrome.`,
           );
           continue;
         }

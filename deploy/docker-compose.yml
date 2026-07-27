@@ -68,6 +68,12 @@ services:
       ONELIGHT_VAAPI_DEVICE: ${ONELIGHT_VAAPI_DEVICE:-}
       ONELIGHT_VAAPI_LOW_POWER: ${ONELIGHT_VAAPI_LOW_POWER:-}
       ONELIGHT_NVENC_DEVICE: ${ONELIGHT_NVENC_DEVICE:-0}
+      # Set to 0 to stop making the AV1 HDR rendition on a box whose GPU
+      # cannot encode it. That trades cores for a feature: AV1 is the only HDR
+      # codec Chrome decodes in software, and only a software decoder returns
+      # frames the reference renderer can read, so without this rendition
+      # reference HDR is unavailable in Chrome no matter what else is present.
+      ONELIGHT_SOFTWARE_AV1: ${ONELIGHT_SOFTWARE_AV1:-}
     volumes:
       - onelight-data:/data
     healthcheck:

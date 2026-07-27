@@ -83,6 +83,16 @@ driver reset does not lose the entire asset. VAAPI and NVENC encode AV1 and
 HEVC Main10 HDR rails when the GPU supports them. AMF's current 8-bit-only HDR
 inputs stay on the software recipe to preserve correctness.
 
+Where the GPU cannot encode AV1 — everything before Intel Arc and NVIDIA Ada —
+the AV1 HDR rendition is encoded in software rather than skipped, at a preset
+and a parallelism cap chosen so it cannot take the machine (measured at 1.7x
+realtime for 4K HDR on half of four cores). It is not a compression
+optimisation: Chrome decodes HEVC only in hardware, hardware decoders return
+frames whose planes cannot be read back, and AV1 is the only HDR codec Chrome
+will decode in software. Without this rendition an asset simply has no HDR
+that reference playback can open in Chrome. `ONELIGHT_SOFTWARE_AV1=0` trades
+that feature back for the cores.
+
 ## Hooks
 
 Onelight generates what it can from the media itself and leaves the rest as
