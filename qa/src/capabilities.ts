@@ -94,3 +94,20 @@ export const skipReason = (
   }
   return undefined;
 };
+
+/*
+ * Firefox's WebCodecs hands back BGRX, and the reference path takes raw I420
+ * or NV12 planes only, so reference playback cannot run there at all -- not
+ * slowly, not approximately, at all. Specs that exercise the reference
+ * decoder, its scheduler or its renderer therefore have nothing to assert on
+ * that engine beyond a clean refusal, which reference-renderer.spec already
+ * checks in one place.
+ *
+ * Kept here rather than repeated per spec so that when Firefox does grow
+ * raw-plane output there is one line to delete. Tracked upstream as Mozilla
+ * bug 1969762.
+ */
+export const referencePathUnsupported = (engine: string): string | undefined =>
+  engine === "firefox"
+    ? "firefox WebCodecs returns BGRX, so the reference path cannot run (mozilla bug 1969762)"
+    : undefined;

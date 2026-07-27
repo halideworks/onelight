@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   artifactsDir,
   harnessDir,
+  referencePathUnsupported,
   readEnvironment,
   skipReason,
 } from "./capabilities.js";
@@ -99,7 +100,8 @@ describe.skipIf(fixtureReason !== undefined)(
     for (const engine of engines) {
       const browserReason = fixtureReason
         ? undefined
-        : skipReason(env, [engine.name]);
+        : (skipReason(env, [engine.name]) ??
+          referencePathUnsupported(engine.name));
       if (!fixtureReason && browserReason)
         console.log(
           `[qa] reference decoder ${engine.name}: skipped (${browserReason})`,

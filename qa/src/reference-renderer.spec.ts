@@ -258,10 +258,19 @@ describe.skipIf(fixtureReason !== undefined)(
               ] as const,
             );
 
-            if (engine.name === "firefox" && process.platform === "win32") {
+            /* Firefox hands back BGRX from WebCodecs and the reference path
+               takes raw I420 or NV12 only, so it refuses -- correctly, and
+               with a reason that says why. This was pinned to Windows when
+               Linux Firefox still returned I420; current builds return BGRX
+               everywhere, so the platform condition was asserting a fact that
+               had stopped being true and failed on Linux CI and on the dev
+               box alike. What is under test is that the refusal is clean, not
+               which platform it happens on. */
+            if (engine.name === "firefox") {
               expect(result).toEqual({
                 status: "unsupported",
-                reason: "Decoded pixel format BGRX is not I420 or NV12.",
+                reason:
+                  "Decoded pixel format BGRX is not I420, NV12 or I420P10.",
               });
               return;
             }
