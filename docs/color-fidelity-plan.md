@@ -109,19 +109,51 @@ Every preserved space needs its proxy correctly tagged, and the trap in
 [[onelight-safari-reference]] applies -- `-color_primaries` alone does not reach
 the H.264 VUI without `-x264-params colorprim=...`.
 
-### 6. HDR through the reference renderer
+### 6. HDR through the reference renderer (NOT STARTED, and larger than it looks)
 
-PQ (ST.2084) and HLG are transfer functions the shader can implement, but they
-need somewhere to put the result: an HDR-capable canvas, or a defined tone-map
-to SDR. This shares all of step 3's plumbing, which is why gamut and HDR should
-be built as one "output path" phase rather than twice.
+Worth being precise about, because "add PQ and HLG to the shader" undersells it
+by an order of magnitude. HDR *playback* already works: `hdr_hevc` / `hdr_av1`
+renditions play natively via `qualifyNativeHdr`. What is missing is HDR through
+the REFERENCE renderer, i.e. frame-accurate stepping and scrubbing with a known
+transform. That needs, in rough order of cost:
 
-### 7. QA
+1. **A 10-bit plane pipeline.** `raw-planes.ts` accepts 8-bit I420 and NV12
+   only; HDR is 10-bit (I420P10, P010). This means new accepted formats, R16
+   textures and UNSIGNED_SHORT uploads in the renderer (the existing
+   `bytesPerPixel: 1 | 2` is groundwork, not the feature), and shader
+   normalisation against 1023 rather than 255. On its own this is comparable
+   in size to everything in steps 1 to 5.
+2. **PQ (ST.2084) and HLG EOTFs**, in the shader and mirrored on the CPU for
+   the oracle. Straightforward once the samples arrive intact.
+3. **Somewhere to put the result.** Either an HDR canvas (`rec2100-pq`, thin
+   and inconsistent engine support today) or a defined tone-map to SDR. If
+   tone-mapping, match the worker's `tonemapping=bt.2390` so the reference
+   render and the tonemapped proxy agree rather than disagreeing subtly.
+4. **The contract**, which currently excludes `hdr_hevc` and `hdr_av1` by kind
+   before any colour reasoning happens.
+5. **Fixtures and oracles**, which do not exist for HDR at any bit depth.
 
-The oracles are all 709. Each preserved space needs its own fixture and
-checked-in oracle, generated the same way `color-check-bt709.mp4` was. Note the
-existing fixture drift: `bars-bt709.mp4` does not match its checked-in oracle
-and is stale, not a bug.
+Until this lands, HDR sources get a tonemapped SDR proxy for review and the
+native HDR rendition for viewing, which is the behaviour that has always been
+there.
+
+### 7. QA (partly blocked on cost)
+
+The oracles are all 709. The gamut maths is covered by unit tests that check
+the derivation against published matrices, which is the strongest evidence
+available without new fixtures.
+
+A GL-versus-CPU gamut parity gate was attempted and reverted. The approach
+works -- relabel the run's own decoded planes as P3 or BT.2020, render, and
+compare against the CPU transform, exactly as the BT.1886 pass isolates the
+transfer stage -- but the gamut path costs two `pow` chains and a matrix per
+pixel where the passthrough costs nothing, and two extra full-frame renders on
+CI's software rasteriser took the probe from 1.3 s to over 40 s. Doing it
+properly means rendering a small patch rather than a full frame. Worth having;
+not worth a flaky 40-second gate.
+
+Note the existing fixture drift: `bars-bt709.mp4` does not match its
+checked-in oracle and is stale, not a bug.
 
 ## Unfinished nearby
 
