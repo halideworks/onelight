@@ -482,3 +482,18 @@ export const toneMapNits = (
 /* Rec.709 luminance weights, for tone-mapping a colour by its brightness. */
 export const relativeLuminance = (rgb: ReferenceRgb): number =>
   0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+
+/* Which linearisation a decoded frame needs. PQ and HLG name genuinely
+   different code values; everything else in the SDR family is a label the
+   renderer does not apply. */
+export const referenceSourceTransfer = (
+  value: string | null | undefined,
+): ReferenceSourceTransfer => {
+  const tag = normalizedTransferTag(value);
+  if (tag === "pq" || tag === "smpte2084" || tag === "smptest2084") return "pq";
+  if (tag === "hlg" || tag === "aribstdb67") return "hlg";
+  return "sdr";
+};
+
+export const isHdrTransfer = (value: string | null | undefined): boolean =>
+  referenceSourceTransfer(value) !== "sdr";

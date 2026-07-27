@@ -112,8 +112,13 @@ export type PlaneLayoutTransfer = {
   stride: number;
 };
 
+/* The pixel layouts the reference path accepts. I420P10 is 10-bit samples in
+   the low bits of 16-bit words, which is what a WebCodecs decoder hands back
+   for HDR; everything else here is 8-bit. */
+export type ReferencePlaneFormat = "I420" | "NV12" | "I420P10";
+
 export type PlaneTransfer = {
-  format: "I420" | "NV12";
+  format: ReferencePlaneFormat;
   buffer: ArrayBuffer;
   layout: PlaneLayoutTransfer[];
   codedWidth: number;

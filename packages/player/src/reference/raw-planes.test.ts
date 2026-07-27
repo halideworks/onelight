@@ -148,7 +148,7 @@ describe("raw reference plane transfer", () => {
       copyRawFramePlanes(stub.frame, BT709_LIMITED, "left"),
     ).rejects.toThrow(
       new UnsupportedRawPlaneError(
-        "Decoded pixel format BGRX is not I420 or NV12.",
+        "Decoded pixel format BGRX is not I420, NV12 or I420P10.",
       ),
     );
     expect(stub.allocatedWith()).toBeUndefined();
@@ -246,12 +246,41 @@ describe("raw reference plane transfer", () => {
         BT709_LIMITED,
       ),
     ).toThrow(/conflicts/);
+    /* HLG against an SDR contract is a decoder disagreeing about the picture,
+       not a label difference: PQ and HLG describe different code values and
+       the renderer decodes them differently, so they are only accepted when
+       the container declared them too. */
     expect(() =>
       reconcileDecodedColor(
         { ...BT709_LIMITED, transfer: "hlg" },
         BT709_LIMITED,
       ),
+    ).toThrow(/conflicts with the rendition/);
+    /* A transfer that is neither SDR nor an HDR curve we implement is still
+       refused outright. */
+    expect(() =>
+      reconcileDecodedColor(
+        { ...BT709_LIMITED, transfer: "linear" },
+        BT709_LIMITED,
+      ),
     ).toThrow(/outside the SDR BT.709 family/);
+    /* Matching HDR on both sides passes, and the frame's own tag wins. */
+    expect(
+      reconcileDecodedColor(
+        {
+          ...BT709_LIMITED,
+          transfer: "smpte2084",
+          primaries: "bt2020",
+          matrix: "bt2020-ncl",
+        },
+        {
+          ...BT709_LIMITED,
+          transfer: "pq",
+          primaries: "bt2020",
+          matrix: "bt2020-ncl",
+        },
+      ).transfer,
+    ).toBe("smpte2084");
   });
 
   it("rejects missing, overlapping, short-stride, and out-of-bounds planes", async () => {

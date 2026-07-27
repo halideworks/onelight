@@ -1,5 +1,10 @@
-import { isSdrGammaTransfer } from "./color-math.js";
+import {
+  isHdrTransfer,
+  isSdrGammaTransfer,
+  referenceSourceTransfer,
+} from "./color-math.js";
 import type {
+  ReferencePlaneFormat,
   PlaneLayoutTransfer,
   PlaneTransfer,
   ReferenceChromaLocation,
@@ -66,10 +71,24 @@ export const reconcileDecodedColor = (
     throw new UnsupportedRawPlaneError(
       `Decoded frame color metadata conflicts with rendition metadata: matrix ${actual.matrix} against ${expected.matrix}.`,
     );
-  if (!isSdrGammaTransfer(actual.transfer))
-    throw new UnsupportedRawPlaneError(
-      `Decoded frame color metadata is outside the SDR BT.709 family: transfer ${actual.transfer}.`,
-    );
+  /* An SDR tag is a label the renderer ignores, so any of the family is
+     accepted; PQ and HLG are NOT labels -- they describe genuinely different
+     code values and the renderer decodes them differently -- so they are
+     accepted only when the container declared them too. A frame claiming PQ
+     against an SDR contract is a decoder disagreeing about the picture. */
+  if (!isSdrGammaTransfer(actual.transfer)) {
+    if (!isHdrTransfer(actual.transfer))
+      throw new UnsupportedRawPlaneError(
+        `Decoded frame color metadata is outside the SDR BT.709 family: transfer ${actual.transfer}.`,
+      );
+    if (
+      referenceSourceTransfer(actual.transfer) !==
+      referenceSourceTransfer(expected.transfer)
+    )
+      throw new UnsupportedRawPlaneError(
+        `Decoded frame transfer ${actual.transfer} conflicts with the rendition's ${expected.transfer}.`,
+      );
+  }
   return actual;
 };
 
@@ -98,18 +117,25 @@ const exactRect = (rect: {
   };
 };
 
+/* 10-bit samples occupy two bytes each, so every row is twice as wide in
+   bytes while holding the same number of samples. Everything downstream
+   reasons in samples; only this function knows about bytes. */
+const bytesPerSample = (format: ReferencePlaneFormat): 1 | 2 =>
+  format === "I420P10" ? 2 : 1;
+
 const planeGeometry = (
-  format: "I420" | "NV12",
+  format: ReferencePlaneFormat,
   width: number,
   height: number,
 ): Array<{ rowBytes: number; rows: number }> => {
   const chromaWidth = Math.ceil(width / 2);
   const chromaHeight = Math.ceil(height / 2);
-  if (format === "I420")
+  const size = bytesPerSample(format);
+  if (format === "I420" || format === "I420P10")
     return [
-      { rowBytes: width, rows: height },
-      { rowBytes: chromaWidth, rows: chromaHeight },
-      { rowBytes: chromaWidth, rows: chromaHeight },
+      { rowBytes: width * size, rows: height },
+      { rowBytes: chromaWidth * size, rows: chromaHeight },
+      { rowBytes: chromaWidth * size, rows: chromaHeight },
     ];
   return [
     { rowBytes: width, rows: height },
@@ -118,7 +144,7 @@ const planeGeometry = (
 };
 
 const validatePlaneLayouts = (
-  format: "I420" | "NV12",
+  format: ReferencePlaneFormat,
   width: number,
   height: number,
   byteLength: number,
@@ -170,10 +196,19 @@ export const copyRawFramePlanes = async (
   chromaLocation: ReferenceChromaLocation,
   reusableBuffer?: ArrayBuffer,
 ): Promise<PlaneTransfer> => {
-  if (frame.format !== "I420" && frame.format !== "NV12")
+  /* The DOM lib's VideoPixelFormat predates the 10-bit members the spec now
+     carries, so the tag is read as a string and narrowed here rather than
+     trusted to the ambient type. */
+  const decodedFormat = frame.format as string | null;
+  if (
+    decodedFormat !== "I420" &&
+    decodedFormat !== "NV12" &&
+    decodedFormat !== "I420P10"
+  )
     throw new UnsupportedRawPlaneError(
-      `Decoded pixel format ${frame.format ?? "unknown"} is not I420 or NV12.`,
+      `Decoded pixel format ${decodedFormat ?? "unknown"} is not I420, NV12 or I420P10.`,
     );
+  const format: ReferencePlaneFormat = decodedFormat;
   const color = referenceColorFrom(frame.colorSpace);
   if (!color)
     throw new UnsupportedRawPlaneError(
@@ -203,7 +238,7 @@ export const copyRawFramePlanes = async (
     stride: plane.stride,
   }));
   validatePlaneLayouts(
-    frame.format,
+    format,
     codedRect.width,
     codedRect.height,
     buffer.byteLength,
@@ -211,7 +246,7 @@ export const copyRawFramePlanes = async (
   );
   const visible = frame.visibleRect ?? codedRect;
   return {
-    format: frame.format,
+    format,
     buffer,
     layout,
     codedWidth: frame.codedWidth,
