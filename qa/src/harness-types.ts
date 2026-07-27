@@ -53,6 +53,8 @@ export interface ReferenceRenderReadings {
      product default -- so the transfer_mode shader branch has browser pixel
      coverage, not only CPU vectors. */
   i420Bt1886: PatchReading[];
+  /* The same planes relabelled P3, for checking the shader's gamut matrix. */
+  i420P3: PatchReading[];
   nv12Bt1886: PatchReading[];
 }
 

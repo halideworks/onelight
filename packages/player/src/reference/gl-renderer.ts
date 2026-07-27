@@ -4,6 +4,7 @@ import {
   isSdrGammaTransfer,
   referenceMatrixFromMetadata,
   referencePrimariesFromMetadata,
+  referenceSourceTransfer,
   yuvConversionParameters,
   type ReferenceDisplayTransfer,
   type ReferencePrimaries,
@@ -22,6 +23,11 @@ export class ReferenceContextLostError extends Error {}
 
 export type ReferenceRendererOptions = {
   requireAcceleration?: boolean;
+  /* How the HDR tone map is anchored. The defaults are BT.2408's 203 nit
+     diffuse white and a 1000 nit mastering peak, which is what most HDR
+     deliverables are graded to; a grade that says otherwise should say so. */
+  referenceWhiteNits?: number;
+  peakNits?: number;
   /* Ask for a wide-gamut drawing buffer. Only honoured where the engine
      supports it; the renderer reports what it actually got as
      outputPrimaries, and converts every frame into that. */
@@ -65,6 +71,16 @@ uniform int transfer_mode;
 uniform float transfer_gamma;
 uniform mat3 gamut_matrix;
 uniform bool passthrough;
+/* 10-bit samples arrive in the low end of 16-bit words, so the hardware
+   normalises them against 65535 while the YUV maths expects a full-scale
+   0-1. One factor puts them back: 65535/1023 for 10-bit, 1 for 8-bit. */
+uniform float sample_scale;
+/* Absolute-luminance modes. 0 = none, the code values are display-referred.
+   1 = PQ, 2 = HLG: the values name light, and light has to be tone-mapped
+   before it can go on a display that cannot produce it. */
+uniform int hdr_mode;
+uniform float reference_white_nits;
+uniform float peak_nits;
 in vec2 source_position;
 out vec4 output_color;
 
@@ -80,15 +96,53 @@ vec3 srgb_decode(vec3 encoded) {
   return mix(lo, hi, step(vec3(0.04045), encoded));
 }
 
+/* ST.2084, giving absolute luminance in nits. */
+vec3 pq_eotf_nits(vec3 code) {
+  const float m1 = 2610.0 / 16384.0;
+  const float m2 = (2523.0 / 4096.0) * 128.0;
+  const float c1 = 3424.0 / 4096.0;
+  const float c2 = (2413.0 / 4096.0) * 32.0;
+  const float c3 = (2392.0 / 4096.0) * 32.0;
+  vec3 value = pow(clamp(code, 0.0, 1.0), vec3(1.0 / m2));
+  vec3 numerator = max(value - c1, 0.0);
+  vec3 denominator = max(c2 - c3 * value, 1e-6);
+  return 10000.0 * pow(numerator / denominator, vec3(1.0 / m1));
+}
+
+/* ARIB STD-B67 inverse OETF, scene-referred 0-1. */
+vec3 hlg_inverse_oetf(vec3 code) {
+  const float a = 0.17883277;
+  const float b = 1.0 - 4.0 * a;
+  const float c = 0.5 - a * log(4.0 * a);
+  vec3 value = clamp(code, 0.0, 1.0);
+  vec3 lo = value * value / 3.0;
+  vec3 hi = (exp((value - c) / a) + b) / 12.0;
+  return mix(lo, hi, step(vec3(0.5), value));
+}
+
+/* Extended Reinhard on luminance, in units where diffuse white is 1. Scaling
+   the three channels by one factor keeps hue where a per-channel curve would
+   desaturate a bright colour towards white. */
+vec3 tone_map(vec3 nits) {
+  float white = max(peak_nits / reference_white_nits, 1.0);
+  vec3 scene = nits / reference_white_nits;
+  float luma = dot(scene, vec3(0.2126, 0.7152, 0.0722));
+  if (luma <= 0.0) return vec3(0.0);
+  float mapped = (luma * (1.0 + luma / (white * white))) / (1.0 + luma);
+  return scene * (mapped / luma);
+}
+
 void main() {
   vec2 coordinates = source_offset + source_position * source_scale;
   vec2 chroma_coordinates = coordinates + chroma_offset;
-  float y = (texture(luma_plane, coordinates).r - y_offset) * y_multiplier;
+  float y =
+    (texture(luma_plane, coordinates).r * sample_scale - y_offset) *
+    y_multiplier;
   vec2 chroma = is_nv12
     ? texture(chroma_plane, chroma_coordinates).rg
     : vec2(
-        texture(chroma_plane, chroma_coordinates).r,
-        texture(v_plane, chroma_coordinates).r
+        texture(chroma_plane, chroma_coordinates).r * sample_scale,
+        texture(v_plane, chroma_coordinates).r * sample_scale
       );
   float cb = (chroma.r - chroma_center) * chroma_multiplier;
   float cr = (chroma.g - chroma_center) * chroma_multiplier;
@@ -120,9 +174,18 @@ void main() {
        2 = pure gamma 2.2, NOT sRGB: no linear toe, lower shadows
      The exponent is a uniform rather than a branch per curve, so another rung
      costs a constant instead of another shader path. */
-  vec3 linear = transfer_mode == 0
-    ? srgb_decode(code)
-    : pow(code, vec3(transfer_gamma));
+  vec3 linear;
+  if (hdr_mode == 1) {
+    linear = tone_map(pq_eotf_nits(code));
+  } else if (hdr_mode == 2) {
+    /* HLG's inverse OETF is scene-referred; the OOTF that makes it display
+       light is folded into the tone map by scaling to the mastering peak. */
+    linear = tone_map(hlg_inverse_oetf(code) * peak_nits);
+  } else {
+    linear = transfer_mode == 0
+      ? srgb_decode(code)
+      : pow(code, vec3(transfer_gamma));
+  }
   vec3 encoded = srgb_encode(clamp(gamut_matrix * linear, 0.0, 1.0));
   output_color = vec4(clamp(encoded, 0.0, 1.0), 1.0);
 }`;
@@ -260,6 +323,10 @@ type RendererUniforms = {
   transferGamma: WebGLUniformLocation;
   gamutMatrix: WebGLUniformLocation;
   passthrough: WebGLUniformLocation;
+  sampleScale: WebGLUniformLocation;
+  hdrMode: WebGLUniformLocation;
+  referenceWhiteNits: WebGLUniformLocation;
+  peakNits: WebGLUniformLocation;
 };
 
 type SrgbWebGlContext = WebGL2RenderingContext & {
@@ -271,6 +338,7 @@ type TextureAllocation = {
   width: number;
   height: number;
   bytesPerPixel: 1 | 2;
+  sixteenBit: boolean;
 };
 
 export class ReferenceGlRenderer {
@@ -284,6 +352,9 @@ export class ReferenceGlRenderer {
   /* The gamut the canvas is composited in, and therefore what every frame is
      converted into. sRGB unless the caller asked for and got display-p3. */
   readonly outputPrimaries: ReferencePrimaries;
+  private readonly norm16: { R16_EXT: number } | null = null;
+  private readonly referenceWhiteNits: number;
+  private readonly peakNits: number;
   private glProgram: WebGLProgram;
   private vertexArray: WebGLVertexArrayObject;
   private textureBanks: readonly [TextureBank, TextureBank];
@@ -342,6 +413,17 @@ export class ReferenceGlRenderer {
         output = "smpte432";
     }
     this.outputPrimaries = output;
+    /* 10-bit planes need a normalised 16-bit texture. WebGL2 core has no such
+       format -- R16UI exists but integer textures cannot be linearly filtered,
+       and chroma upsampling depends on that filtering -- so EXT_texture_norm16
+       is required rather than worked around. Without it a 10-bit frame is
+       refused and the transport falls back to native, which is the same
+       fail-closed behaviour every other unmet requirement gets. */
+    this.norm16 = gl.getExtension("EXT_texture_norm16") as {
+      R16_EXT: number;
+    } | null;
+    this.referenceWhiteNits = options.referenceWhiteNits ?? 203;
+    this.peakNits = Math.max(options.peakNits ?? 1000, 1);
 
     const built = this.buildResources();
     this.glProgram = built.glProgram;
@@ -392,6 +474,10 @@ export class ReferenceGlRenderer {
       transferGamma: uniform(gl, glProgram, "transfer_gamma"),
       gamutMatrix: uniform(gl, glProgram, "gamut_matrix"),
       passthrough: uniform(gl, glProgram, "passthrough"),
+      sampleScale: uniform(gl, glProgram, "sample_scale"),
+      hdrMode: uniform(gl, glProgram, "hdr_mode"),
+      referenceWhiteNits: uniform(gl, glProgram, "reference_white_nits"),
+      peakNits: uniform(gl, glProgram, "peak_nits"),
     };
 
     gl.useProgram(glProgram);
@@ -442,40 +528,51 @@ export class ReferenceGlRenderer {
     width: number,
     height: number,
     bytesPerPixel: 1 | 2,
+    sixteenBit = false,
   ): void {
     const gl = this.gl;
     const span = planeSpan(
       layout,
       width,
       height,
-      bytesPerPixel,
+      sixteenBit ? 2 : bytesPerPixel,
       source.buffer.byteLength,
     );
     gl.activeTexture(gl.TEXTURE0 + unit);
     gl.bindTexture(gl.TEXTURE_2D, this.textureBanks[bank]?.[unit] ?? null);
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, span.rowLength);
-    const pixels = new Uint8Array(source.buffer, layout.offset, span.length);
+    const pixels = sixteenBit
+      ? new Uint16Array(source.buffer, layout.offset, span.length / 2)
+      : new Uint8Array(source.buffer, layout.offset, span.length);
     const format = bytesPerPixel === 1 ? gl.RED : gl.RG;
+    const type = sixteenBit ? gl.UNSIGNED_SHORT : gl.UNSIGNED_BYTE;
     const allocations = this.textureAllocations[bank];
     const allocation = allocations?.[unit];
     if (
       !allocation ||
       allocation.width !== width ||
       allocation.height !== height ||
-      allocation.bytesPerPixel !== bytesPerPixel
+      allocation.bytesPerPixel !== bytesPerPixel ||
+      allocation.sixteenBit !== sixteenBit
     ) {
+      const internalFormat = sixteenBit
+        ? (this.norm16?.R16_EXT ?? gl.R8)
+        : bytesPerPixel === 1
+          ? gl.R8
+          : gl.RG8;
       gl.texImage2D(
         gl.TEXTURE_2D,
         0,
-        bytesPerPixel === 1 ? gl.R8 : gl.RG8,
+        internalFormat,
         width,
         height,
         0,
         format,
-        gl.UNSIGNED_BYTE,
+        type,
         null,
       );
-      if (allocations) allocations[unit] = { width, height, bytesPerPixel };
+      if (allocations)
+        allocations[unit] = { width, height, bytesPerPixel, sixteenBit };
     }
     gl.texSubImage2D(
       gl.TEXTURE_2D,
@@ -485,7 +582,7 @@ export class ReferenceGlRenderer {
       width,
       height,
       format,
-      gl.UNSIGNED_BYTE,
+      type,
       pixels,
     );
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
@@ -501,27 +598,43 @@ export class ReferenceGlRenderer {
       throw new ReferenceContextLostError(
         "Reference renderer context was lost.",
       );
-    /* The frame's transfer tag names a display convention, not a decode step:
-       the shader's output encoding comes from the transfer argument below.
-       Any SDR BT.709-family tag renders identically, which is what lets
-       Safari's "iec61966-2-1" surfaces through. */
-    if (
-      source.color.primaries !== "bt709" ||
-      !isSdrGammaTransfer(source.color.transfer)
-    )
+    /* What this renderer can actually draw, asked as three separate
+       questions because they are three separate properties of the frame.
+
+       An SDR transfer tag names a display convention, not a decode step --
+       the output encoding comes from the transfer argument below -- so any of
+       the family renders identically, which is what lets Safari's
+       "iec61966-2-1" surfaces through. PQ and HLG are decode steps and get
+       their own path. Primaries feed the gamut matrix, and the matrix feeds
+       the YUV stage; both are refused by name when unimplemented rather than
+       approximated. */
+    const sourcePrimaries = referencePrimariesFromMetadata(
+      source.color.primaries,
+    );
+    if (!sourcePrimaries)
       throw new UnsupportedReferenceRendererError(
-        "The reference renderer currently requires BT.709 SDR input.",
+        `The reference renderer cannot draw ${source.color.primaries} primaries.`,
+      );
+    const sourceTransfer = referenceSourceTransfer(source.color.transfer);
+    if (sourceTransfer === "sdr" && !isSdrGammaTransfer(source.color.transfer))
+      throw new UnsupportedReferenceRendererError(
+        `The reference renderer cannot draw the ${source.color.transfer} transfer.`,
       );
     const matrix = referenceMatrixFromMetadata(source.color.matrix);
-    if (matrix !== "bt709")
+    if (!matrix)
       throw new UnsupportedReferenceRendererError(
-        "The reference renderer currently requires a BT.709 matrix.",
+        `The reference renderer cannot draw the ${source.color.matrix} matrix.`,
+      );
+    const tenBit = source.format === "I420P10";
+    if (tenBit && !this.norm16)
+      throw new UnsupportedReferenceRendererError(
+        "This engine has no EXT_texture_norm16, so 10-bit planes cannot be uploaded without losing chroma filtering.",
       );
     const width = source.codedRect.width;
     const height = source.codedRect.height;
     const chromaWidth = Math.ceil(width / 2);
     const chromaHeight = Math.ceil(height / 2);
-    const expectedPlanes = source.format === "I420" ? 3 : 2;
+    const expectedPlanes = source.format === "NV12" ? 2 : 3;
     if (source.layout.length !== expectedPlanes)
       throw new UnsupportedReferenceRendererError(
         `Reference ${source.format} frame has an invalid plane count.`,
@@ -541,8 +654,8 @@ export class ReferenceGlRenderer {
      * while keeping allocation bounded.
      */
     const textureBank = this.activeTextureBank === 0 ? 1 : 0;
-    this.uploadPlane(textureBank, 0, source, yLayout, width, height, 1);
-    if (source.format === "I420") {
+    this.uploadPlane(textureBank, 0, source, yLayout, width, height, 1, tenBit);
+    if (source.format !== "NV12") {
       const vLayout = source.layout[2];
       if (!vLayout)
         throw new UnsupportedReferenceRendererError(
@@ -556,6 +669,7 @@ export class ReferenceGlRenderer {
         chromaWidth,
         chromaHeight,
         1,
+        tenBit,
       );
       this.uploadPlane(
         textureBank,
@@ -565,6 +679,7 @@ export class ReferenceGlRenderer {
         chromaWidth,
         chromaHeight,
         1,
+        tenBit,
       );
     } else
       this.uploadPlane(
@@ -621,9 +736,6 @@ export class ReferenceGlRenderer {
     /* The frame's own gamut to the canvas's. A tag naming a gamut we do not
        implement is not guessed at: it renders as the output gamut, which is
        the same picture the pipeline produced before any of this existed. */
-    const sourcePrimaries =
-      referencePrimariesFromMetadata(source.color.primaries) ??
-      this.outputPrimaries;
     const gamut = gamutConversionMatrix(sourcePrimaries, this.outputPrimaries);
     /* Column-major, which is what uniformMatrix3fv wants and the transpose of
        how the maths reads. */
@@ -640,8 +752,19 @@ export class ReferenceGlRenderer {
     ]);
     gl.uniform1i(
       this.uniforms.passthrough,
-      transfer === "srgb" && isIdentityGamut(gamut) ? 1 : 0,
+      sourceTransfer === "sdr" && transfer === "srgb" && isIdentityGamut(gamut)
+        ? 1
+        : 0,
     );
+    /* 10 bits sitting in the low end of 16-bit words: the hardware normalises
+       against 65535, the YUV maths wants full scale. */
+    gl.uniform1f(this.uniforms.sampleScale, tenBit ? 65535 / 1023 : 1);
+    gl.uniform1i(
+      this.uniforms.hdrMode,
+      sourceTransfer === "pq" ? 1 : sourceTransfer === "hlg" ? 2 : 0,
+    );
+    gl.uniform1f(this.uniforms.referenceWhiteNits, this.referenceWhiteNits);
+    gl.uniform1f(this.uniforms.peakNits, this.peakNits);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     this.activeTextureBank = textureBank;
 

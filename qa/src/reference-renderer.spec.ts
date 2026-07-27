@@ -6,6 +6,7 @@ import {
 } from "../../packages/player/src/color-oracle.js";
 import {
   encodeForDisplay,
+  gamutConversionMatrix,
   quantizeEncodedRgb,
 } from "../../packages/player/src/reference/color-math.js";
 import type {
@@ -291,6 +292,45 @@ describe.skipIf(fixtureReason !== undefined)(
               result.readings.nv12,
               result.readings.nv12Bt1886,
             );
+            /* The gamut stage against the CPU implementation of the same
+               transform. The CPU side is derived from chromaticities and
+               checked against the published matrices, so agreement here is
+               agreement with the standard rather than with itself. */
+            {
+              const matrix = gamutConversionMatrix("smpte432", "bt709");
+              const byName = new Map(
+                result.readings.i420P3.map((r) => [r.name, r]),
+              );
+              let moved = 0;
+              for (const base of result.readings.i420) {
+                const reading = byName.get(base.name);
+                expect(
+                  reading,
+                  `${engine.name} P3 omitted ${base.name}`,
+                ).toBeDefined();
+                if (!reading) continue;
+                const expected = quantizeEncodedRgb(
+                  encodeForDisplay(
+                    [base.rgb[0] / 255, base.rgb[1] / 255, base.rgb[2] / 255],
+                    "srgb",
+                    matrix,
+                  ),
+                );
+                for (const channel of [0, 1, 2] as const)
+                  expect(
+                    Math.abs(reading.rgb[channel] - expected[channel]),
+                    `${engine.name} P3 ${base.name}: ${reading.rgb.join(",")} versus CPU ${expected.join(",")}`,
+                  ).toBeLessThanOrEqual(1);
+                if ([0, 1, 2].some((c) => reading.rgb[c] !== base.rgb[c]))
+                  moved += 1;
+              }
+              /* A matrix that changed nothing would satisfy every assertion
+                 above while proving the shader ignored it. */
+              expect(
+                moved,
+                `${engine.name} P3 produced an identical picture, so the matrix did nothing`,
+              ).toBeGreaterThan(0);
+            }
             expect(
               result.readings.i420.map(
                 (reading) => reading.rgb as ColorTriplet,

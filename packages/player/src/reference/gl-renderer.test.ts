@@ -187,12 +187,29 @@ describe("ReferenceGlRenderer context loss recovery", () => {
     };
     expect(() => renderer.render(converted)).not.toThrow();
 
-    // A transfer that names different code values, not a display convention,
-    // is still refused.
+    /* PQ names different code values rather than a display convention, so it
+       takes the HDR decode path instead of being refused. */
     expect(() =>
       renderer.render({
         ...converted,
         color: { ...converted.color, transfer: "pq" },
+      }),
+    ).not.toThrow();
+
+    /* A transfer that is neither a display convention nor a curve the shader
+       implements is still refused by name. */
+    expect(() =>
+      renderer.render({
+        ...converted,
+        color: { ...converted.color, transfer: "linear" },
+      }),
+    ).toThrow(UnsupportedReferenceRendererError);
+
+    /* So is a gamut with no derivable matrix. */
+    expect(() =>
+      renderer.render({
+        ...converted,
+        color: { ...converted.color, primaries: "film" },
       }),
     ).toThrow(UnsupportedReferenceRendererError);
     renderer.close();

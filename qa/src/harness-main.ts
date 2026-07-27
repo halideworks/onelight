@@ -331,6 +331,16 @@ const renderReferenceVariants = (
     nv12: renderReference(variants.nv12, rects),
     i420Bt1886: renderReference(variants.i420, rects, "bt1886"),
     nv12Bt1886: renderReference(variants.nv12, rects, "bt1886"),
+    /* The same samples wearing a different gamut label, so the shader's
+       colour matrix can be checked against the CPU one without a second
+       fixture: decode and upload variance cancels between the two. */
+    i420P3: renderReference(
+      {
+        ...variants.i420,
+        color: { ...variants.i420.color, primaries: "smpte432" },
+      },
+      rects,
+    ),
   });
 };
 
