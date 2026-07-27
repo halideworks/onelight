@@ -898,17 +898,63 @@
     qualifiedHdrRendition = null;
     hdrQualificationReason = null;
     void (async () => {
+      /* Native playback and the reference renderer do not share a decoder:
+         the first asks MediaCapabilities about the browser's video pipeline,
+         the second asks WebCodecs. Chrome answers differently for HEVC, so a
+         rendition can be perfectly playable natively and still leave
+         reference with nothing to decode -- which is what happened, and why
+         reference fell back on every HDR clip while native was fine.
+
+         Both are asked, and a rendition both engines can handle wins. Where
+         none can satisfy both, the natively-playable one is still used: HDR
+         on screen matters more than which renderer draws it, and the engine
+         readout says which one did. */
+      const qualified: PlayerRendition[] = [];
       for (const candidate of candidates) {
         const result = await qualifyNativeHdr(candidate);
         if (generation !== hdrQualificationGeneration) return;
         hdrQualificationReason = result.reason;
-        if (result.qualified) {
+        if (result.qualified) qualified.push(candidate);
+      }
+      if (!qualified.length) return;
+      for (const candidate of qualified) {
+        if (await referenceCanDecode(candidate)) {
+          if (generation !== hdrQualificationGeneration) return;
           qualifiedHdrRendition = candidate;
           return;
         }
       }
+      if (generation !== hdrQualificationGeneration) return;
+      qualifiedHdrRendition = qualified[0] ?? null;
     })();
   });
+  /* Can the reference renderer's decoder actually take this rendition?
+     WebCodecs is a different decoder from the one <video> uses and answers
+     differently, most visibly for HEVC. An engine without WebCodecs simply
+     has no reference path, so the answer there is no. */
+  const referenceDecodeCache = new Map<string, Promise<boolean>>();
+  const referenceCanDecode = (rendition: PlayerRendition): Promise<boolean> => {
+    const codec = String(rendition.meta?.codec ?? '');
+    if (!codec) return Promise.resolve(false);
+    const cached = referenceDecodeCache.get(codec);
+    if (cached) return cached;
+    const probe =
+      typeof VideoDecoder === 'undefined'
+        ? Promise.resolve(false)
+        : VideoDecoder.isConfigSupported({
+            codec,
+            ...(Number(rendition.meta?.coded_width) > 0
+              ? { codedWidth: Number(rendition.meta?.coded_width) }
+              : {}),
+            ...(Number(rendition.meta?.coded_height) > 0
+              ? { codedHeight: Number(rendition.meta?.coded_height) }
+              : {})
+          })
+            .then((support) => Boolean(support.supported))
+            .catch(() => false);
+    referenceDecodeCache.set(codec, probe);
+    return probe;
+  };
   let quality = $state('auto');
   let currentSrc = $state('');
   let pendingRestore: {
@@ -3802,6 +3848,19 @@
           <div class="color-fact wide">
             <dt>Active path</dt>
             <dd>{activeColorPath}</dd>
+          </div>
+          <!-- Which file is actually being played, and the exact codec string
+               the engines are being asked about. When reference declines a
+               rendition the answer is almost always in this string, and
+               without it on screen the next step is guesswork. -->
+          <div class="color-fact wide">
+            <dt>Active rendition</dt>
+            <dd>
+              {activeRendition?.kind ?? 'source'}
+              {activeRendition?.meta?.codec
+                ? ` — ${String(activeRendition.meta.codec)}`
+                : ''}
+            </dd>
           </div>
           <div class="color-fact">
             <dt>Source primaries</dt>
