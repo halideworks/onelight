@@ -2362,8 +2362,8 @@ export const runTranscode = async (
             selected,
           );
         /* Per output, not per job: a GPU that encodes HEVC but not AV1 should
-           run the HEVC rendition on hardware and take the software path for
-           AV1 directly, rather than failing into it. */
+           run the HEVC rendition on hardware rather than failing into
+           software. */
         const outputAcceleration =
           output.kind === "hdr_av1" || output.kind === "hdr_hevc"
             ? await hdrAccelerationFor(
@@ -2372,6 +2372,28 @@ export const runTranscode = async (
                 ffmpeg,
               )
             : acceleration;
+        /*
+         * AV1 in software is not a fallback, it is a trap. libsvtav1 on a 4K
+         * HDR master runs for minutes at every core the box has, and on a
+         * machine that also serves the site those are the same cores. The
+         * rendition is an optimisation -- HEVC Main10 carries the same HDR
+         * picture, hardware-encoded, and Safari prefers it -- so where the
+         * GPU cannot encode AV1 the honest answer is not to make one.
+         *
+         * ONELIGHT_SOFTWARE_AV1=1 opts back in for anyone who wants the
+         * compression and can spare the machine.
+         */
+        if (
+          output.kind === "hdr_av1" &&
+          outputAcceleration.backend === "software" &&
+          acceleration.backend !== "software" &&
+          process.env.ONELIGHT_SOFTWARE_AV1 !== "1"
+        ) {
+          console.log(
+            `[onelight-worker] skipping hdr_av1 for job ${job.id}: this GPU cannot encode AV1 and software AV1 would cost minutes of every core. hdr_hevc carries the HDR picture. Set ONELIGHT_SOFTWARE_AV1=1 to encode it anyway.`,
+          );
+          continue;
+        }
         const selectedArgs = argsFor(outputAcceleration);
         const softwareArgs =
           outputAcceleration.backend === "software"
