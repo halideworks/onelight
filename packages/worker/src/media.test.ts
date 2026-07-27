@@ -42,6 +42,7 @@ import {
   renderWatermarkText,
   selectHardwareAcceleration,
   sidecarArgs,
+  isHdrSource,
   spriteInterval,
   streamingLimits,
   writeSpriteVtt,
@@ -1566,5 +1567,42 @@ describe("audio sidecars", () => {
     expect(length).toBe(2);
     expect(samples[2]).toBeCloseTo(0, 6);
     expect(samples[3]).toBeCloseTo(500 / 32768, 6);
+  });
+});
+
+describe("HDR detection when the file does not say", () => {
+  const stream = (extra: Record<string, unknown>) =>
+    mediaInfoOf({ streams: [{ codec_type: "video", height: 2160, ...extra }] });
+
+  it("treats a tagged PQ or HLG source as HDR", () => {
+    expect(isHdrSource(stream({ color_transfer: "smpte2084" }))).toBe(true);
+    expect(isHdrSource(stream({ color_transfer: "arib-std-b67" }))).toBe(true);
+  });
+
+  /* A Dolby Vision master arrived with transfer, primaries and matrix all
+     reading "unknown". Classified SDR, it skipped the tonemap and had BT.709
+     stamped on it -- PQ code values encoded as gamma. Depth is what was
+     available to go on, and it was enough. */
+  it("treats an untagged 10-bit source as HDR rather than as gamma", () => {
+    expect(isHdrSource(stream({ pix_fmt: "yuv420p10le" }))).toBe(true);
+    expect(
+      isHdrSource(
+        stream({ color_transfer: "unknown", pix_fmt: "yuv420p10le" }),
+      ),
+    ).toBe(true);
+    expect(isHdrSource(stream({ bits_per_raw_sample: "12" }))).toBe(true);
+  });
+
+  /* Untagged 8-bit is the ordinary SDR delivery and keeps that assumption. */
+  it("leaves untagged 8-bit alone", () => {
+    expect(isHdrSource(stream({ pix_fmt: "yuv420p" }))).toBe(false);
+    expect(isHdrSource(stream({}))).toBe(false);
+  });
+
+  /* An explicit SDR tag is believed even at 10 bit: the file said so. */
+  it("believes an explicit SDR transfer at any depth", () => {
+    expect(
+      isHdrSource(stream({ color_transfer: "bt709", pix_fmt: "yuv420p10le" })),
+    ).toBe(false);
   });
 });

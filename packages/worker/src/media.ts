@@ -430,9 +430,35 @@ const sourceTransfer = (mediaInfo: MediaInfo): string | undefined =>
   asString(videoStream(mediaInfo)?.color_transfer) ??
   asString(mediaInfo.format["color_transfer"]);
 
+/*
+ * A tagged PQ or HLG transfer is HDR, and so is an untagged source deeper
+ * than eight bits.
+ *
+ * The second half exists because a Dolby Vision master arrived with its
+ * transfer, primaries and matrix all reading "unknown". It was therefore
+ * classified SDR, skipped the tonemap, and had BT.709 stamped on it by the
+ * colour defaults -- PQ code values encoded as though they were gamma, which
+ * looks exactly as wrong as it sounds.
+ *
+ * Depth is the honest signal. SDR deliverables are eight bit; ten bit and
+ * deeper is HDR, log, or a mastering format, and none of those are gamma. So
+ * where there is no transfer tag to go on, depth decides, and the untagged
+ * 8-bit case keeps the SDR assumption that is right for it.
+ */
+const sourceBitDepth = (mediaInfo: MediaInfo): number => {
+  const video = videoStream(mediaInfo);
+  const declared = Number(asString(video?.bits_per_raw_sample));
+  if (Number.isFinite(declared) && declared > 0) return declared;
+  const format = asString(video?.pix_fmt) ?? "";
+  const match = /p(\d{2})(?:le|be)?$/.exec(format);
+  return match ? Number(match[1]) : 8;
+};
+
 export const isHdrSource = (mediaInfo: MediaInfo): boolean => {
   const transfer = sourceTransfer(mediaInfo);
-  return transfer === "smpte2084" || transfer === "arib-std-b67";
+  if (transfer === "smpte2084" || transfer === "arib-std-b67") return true;
+  const untagged = transfer === undefined || transfer === "unknown";
+  return untagged && sourceBitDepth(mediaInfo) > 8;
 };
 
 // libplacebo handles the HLG inverse OOTF internally when converting to an
