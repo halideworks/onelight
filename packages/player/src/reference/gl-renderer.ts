@@ -120,16 +120,81 @@ vec3 hlg_inverse_oetf(vec3 code) {
   return mix(lo, hi, step(vec3(0.5), value));
 }
 
-/* Extended Reinhard on luminance, in units where diffuse white is 1. Scaling
-   the three channels by one factor keeps hue where a per-channel curve would
-   desaturate a bright colour towards white. */
+/* Inverse PQ: nits to code. */
+vec3 pq_inverse(vec3 nits) {
+  const float m1 = 2610.0 / 16384.0;
+  const float m2 = (2523.0 / 4096.0) * 128.0;
+  const float c1 = 3424.0 / 4096.0;
+  const float c2 = (2413.0 / 4096.0) * 32.0;
+  const float c3 = (2392.0 / 4096.0) * 32.0;
+  vec3 y = pow(max(nits, 0.0) / 10000.0, vec3(m1));
+  return pow((c1 + c2 * y) / (1.0 + c3 * y), vec3(m2));
+}
+
+float pq_inverse1(float nits) { return pq_inverse(vec3(nits)).x; }
+
+/*
+ * BT.2390's EETF on a PQ code. 1:1 below the knee -- material the display can
+ * already show is not touched -- then a cubic Hermite shoulder leaving the
+ * knee at slope 1 and arriving at display peak with slope 0.
+ */
+float bt2390_eetf(float code, float iw, float ow, float ob) {
+  if (ow >= iw) return code;
+  float e1 = code / iw;
+  float maxLum = ow / iw;
+  float minLum = ob / iw;
+  float ks = 1.5 * maxLum - 0.5;
+  float e2 = e1;
+  if (e1 > ks && ks < 1.0) {
+    float t = (e1 - ks) / (1.0 - ks);
+    float t2 = t * t;
+    float t3 = t2 * t;
+    e2 = (2.0 * t3 - 3.0 * t2 + 1.0) * ks
+       + (t3 - 2.0 * t2 + t) * (1.0 - ks)
+       + (-2.0 * t3 + 3.0 * t2) * maxLum;
+  }
+  float e3 = e2 + minLum * pow(1.0 - e2, 4.0);
+  return clamp(e3 * iw, 0.0, 1.0);
+}
+
+/*
+ * Tone map in ICtCp, Dolby's perceptually uniform opponent space. Hue is the
+ * angle of (Ct, Cp), so scaling both by one factor compresses brightness and
+ * saturation without rotating hue -- a curve applied per channel drags colour
+ * towards white as it compresses, which is the tell of a bad conversion.
+ */
 vec3 tone_map(vec3 nits) {
-  float white = max(peak_nits / reference_white_nits, 1.0);
-  vec3 scene = nits / reference_white_nits;
-  float luma = dot(scene, vec3(0.2126, 0.7152, 0.0722));
-  if (luma <= 0.0) return vec3(0.0);
-  float mapped = (luma * (1.0 + luma / (white * white))) / (1.0 + luma);
-  return scene * (mapped / luma);
+  const mat3 rgb_to_lms = mat3(
+    1688.0 / 4096.0, 683.0 / 4096.0, 99.0 / 4096.0,
+    2146.0 / 4096.0, 2951.0 / 4096.0, 309.0 / 4096.0,
+    262.0 / 4096.0, 462.0 / 4096.0, 3688.0 / 4096.0);
+  const mat3 lms_to_ictcp = mat3(
+    2048.0 / 4096.0, 6610.0 / 4096.0, 17933.0 / 4096.0,
+    2048.0 / 4096.0, -13613.0 / 4096.0, -17390.0 / 4096.0,
+    0.0, 7003.0 / 4096.0, -543.0 / 4096.0);
+  vec3 ictcp = lms_to_ictcp * pq_inverse(rgb_to_lms * nits);
+  float intensity = ictcp.x;
+  if (intensity <= 0.0) return vec3(0.0);
+  float mapped = bt2390_eetf(
+    intensity,
+    pq_inverse1(peak_nits),
+    pq_inverse1(reference_white_nits),
+    pq_inverse1(0.0));
+  float scale = mapped / intensity;
+  vec3 toned = vec3(mapped, ictcp.yz * scale);
+  vec3 lms = pq_eotf_nits(clamp(inverse(lms_to_ictcp) * toned, 0.0, 1.0));
+  vec3 rgb = max(inverse(rgb_to_lms) * lms, 0.0) / reference_white_nits;
+  /* Compressing intensity does not land the colour inside the display cube:
+     a saturated one has channels above its own luminance by definition, and
+     on a real 1000-nit grade that was 40% of the pixels. Holding intensity
+     and killing chroma until it fits turns a saturated orange white, which is
+     the artefact ICtCp was chosen to prevent. Scaling the triple by its
+     largest channel keeps the ratios, so hue and saturation survive exactly
+     and brightness pays instead: an out-of-gamut highlight comes back a
+     little dimmer rather than a lot paler. */
+  float peak = max(rgb.r, max(rgb.g, rgb.b));
+  if (peak > 1.0) rgb /= peak;
+  return clamp(rgb, 0.0, 1.0);
 }
 
 void main() {

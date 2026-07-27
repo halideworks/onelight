@@ -497,3 +497,158 @@ export const referenceSourceTransfer = (
 
 export const isHdrTransfer = (value: string | null | undefined): boolean =>
   referenceSourceTransfer(value) !== "sdr";
+
+/* ---- BT.2390 tone mapping in ICtCp ------------------------------------- */
+
+/*
+ * Why this replaces a Reinhard curve on RGB luminance.
+ *
+ * Two problems with tone-mapping in linear light. Perceptual spacing: linear
+ * light gives most of its numeric range to highlights nobody is looking at,
+ * so a curve that behaves in the mid-tones misbehaves in the shadows. And
+ * hue: any curve applied per channel, or applied to a luminance derived from
+ * RGB and then multiplied back, drags colour towards the achromatic axis as
+ * it compresses -- the tell of a bad HDR conversion, oranges going yellow and
+ * skies going pale.
+ *
+ * ICtCp answers both. It is Dolby's perceptually uniform opponent space: I is
+ * intensity on the PQ curve, and hue is the angle of (Ct, Cp). Compressing I
+ * and scaling Ct and Cp by the same factor cannot rotate that angle, so hue
+ * is preserved by construction rather than by correction. BT.2390's EETF is
+ * then applied to I in the PQ domain, where equal steps are equally visible:
+ * a 1:1 segment through the range the display can already show, and a Hermite
+ * shoulder that rolls the rest off with matched slope so there is no seam.
+ */
+
+/* Inverse PQ: absolute luminance in nits to a PQ code value. */
+export const pqInverseEotf = (nits: number): number => {
+  const y = Math.max(nits, 0) / PQ_PEAK_NITS;
+  const ym = Math.pow(y, PQ_M1);
+  return Math.pow((PQ_C1 + PQ_C2 * ym) / (1 + PQ_C3 * ym), PQ_M2);
+};
+
+/*
+ * The BT.2390 EETF, operating on PQ code values.
+ *
+ * Everything below the knee is passed through untouched, so material the
+ * display can already show is not altered at all -- the property a colourist
+ * is actually asking about. Above it, a cubic Hermite spline leaves the knee
+ * with slope 1 and arrives at the display peak with slope 0.
+ */
+export const bt2390Eetf = (
+  pqCode: number,
+  sourcePeakNits: number,
+  displayPeakNits: number,
+  displayBlackNits = 0,
+): number => {
+  const iw = pqInverseEotf(sourcePeakNits);
+  const ib = 0;
+  const ow = pqInverseEotf(displayPeakNits);
+  const ob = pqInverseEotf(displayBlackNits);
+  if (iw <= ib) return pqCode;
+  /* A display that can already show the whole source has nothing to roll
+     off, and forcing it through the spline would compress for no reason. */
+  if (ow >= iw) return pqCode;
+  const e1 = (pqCode - ib) / (iw - ib);
+  const maxLum = (ow - ib) / (iw - ib);
+  const minLum = (ob - ib) / (iw - ib);
+  const ks = 1.5 * maxLum - 0.5;
+  let e2 = e1;
+  if (e1 > ks && ks < 1) {
+    const t = (e1 - ks) / (1 - ks);
+    const t2 = t * t;
+    const t3 = t2 * t;
+    e2 =
+      (2 * t3 - 3 * t2 + 1) * ks +
+      (t3 - 2 * t2 + t) * (1 - ks) +
+      (-2 * t3 + 3 * t2) * maxLum;
+  }
+  /* Black lift, quartic so it dies away before it can touch the mid-tones. */
+  const e3 = e2 + minLum * Math.pow(1 - e2, 4);
+  return clampUnit(e3 * (iw - ib) + ib);
+};
+
+/* Dolby's ICtCp matrices, exact rationals over 4096. */
+const RGB2020_TO_LMS: Matrix3 = [
+  1688 / 4096,
+  2146 / 4096,
+  262 / 4096,
+  683 / 4096,
+  2951 / 4096,
+  462 / 4096,
+  99 / 4096,
+  309 / 4096,
+  3688 / 4096,
+];
+const LMS_TO_ICTCP: Matrix3 = [
+  2048 / 4096,
+  2048 / 4096,
+  0,
+  6610 / 4096,
+  -13613 / 4096,
+  7003 / 4096,
+  17933 / 4096,
+  -17390 / 4096,
+  -543 / 4096,
+];
+const LMS_FROM_RGB2020 = invert3(RGB2020_TO_LMS);
+const ICTCP_TO_LMS = invert3(LMS_TO_ICTCP);
+
+/*
+ * BT.2020 linear light in nits, tone-mapped for a display of the given peak,
+ * returned as BT.2020 linear light scaled so the display peak is 1.
+ */
+export const toneMapIctcp = (
+  rgbNits: ReferenceRgb,
+  sourcePeakNits = 1000,
+  displayPeakNits = 203,
+): ReferenceRgb => {
+  const lms = applyGamut(rgbNits, RGB2020_TO_LMS);
+  const lmsPq: ReferenceRgb = [
+    pqInverseEotf(lms[0]),
+    pqInverseEotf(lms[1]),
+    pqInverseEotf(lms[2]),
+  ];
+  const ictcp = applyGamut(lmsPq, LMS_TO_ICTCP);
+  const intensity = ictcp[0];
+  if (intensity <= 0) return [0, 0, 0];
+  const mapped = bt2390Eetf(intensity, sourcePeakNits, displayPeakNits);
+  /* One factor on both chroma axes: the hue angle atan2(Cp, Ct) is invariant
+     under it, so compression changes how bright and how saturated a colour
+     is and never which colour it is. */
+  const scale = mapped / intensity;
+  /*
+   * Compressing intensity does not land the colour inside the display cube: a
+   * saturated one has channels above its own luminance by definition, and on
+   * a real 1000-nit grade that was 40% of the pixels.
+   *
+   * The obvious repair -- hold intensity and walk chroma down until it fits --
+   * is wrong, and measurably so. A saturated orange came back at
+   * [1.00, 0.92, 0.86], which is white. Holding a bright intensity forces
+   * almost total desaturation, producing exactly the washed-out conversion
+   * ICtCp was chosen to prevent.
+   *
+   * So the triple is scaled instead. Dividing all three channels by the
+   * largest keeps their ratios exactly, which keeps hue and saturation
+   * exactly, and spends brightness instead -- an out-of-gamut highlight comes
+   * back a little dimmer rather than a lot paler. For judging a grade that is
+   * the right thing to give up: a colourist will forgive a highlight half a
+   * stop down, not one that changed colour.
+   */
+  const toned: ReferenceRgb = [mapped, ictcp[1] * scale, ictcp[2] * scale];
+  const backPq = applyGamut(toned, ICTCP_TO_LMS);
+  const backLms: ReferenceRgb = [
+    pqEotfNits(clampUnit(backPq[0])),
+    pqEotfNits(clampUnit(backPq[1])),
+    pqEotfNits(clampUnit(backPq[2])),
+  ];
+  const linear = applyGamut(backLms, LMS_FROM_RGB2020);
+  const rgb: ReferenceRgb = [
+    Math.max(linear[0], 0) / displayPeakNits,
+    Math.max(linear[1], 0) / displayPeakNits,
+    Math.max(linear[2], 0) / displayPeakNits,
+  ];
+  const peak = Math.max(rgb[0], rgb[1], rgb[2]);
+  if (peak <= 1) return rgb;
+  return [rgb[0] / peak, rgb[1] / peak, rgb[2] / peak];
+};

@@ -8,7 +8,10 @@ import {
   primariesToXyz,
   referencePrimariesFromMetadata,
   hlgInverseOetf,
+  bt2390Eetf,
   pqEotfNits,
+  pqInverseEotf,
+  toneMapIctcp,
   toneMapNits,
   wantsWideGamutOutput,
   isSdrGammaTransfer,
@@ -506,5 +509,122 @@ describe("HDR transfer functions", () => {
         toneMapNits(500, 203, 1000),
       );
     });
+  });
+});
+
+describe("BT.2390 tone mapping in ICtCp", () => {
+  const near = (a: number, b: number, tol: number): void => {
+    expect(Math.abs(a - b)).toBeLessThan(tol);
+  };
+
+  it("round-trips PQ through its own inverse", () => {
+    for (const nits of [0.01, 1, 100, 203, 1000, 4000, 10000])
+      near(pqEotfNits(pqInverseEotf(nits)), nits, Math.max(nits * 1e-4, 1e-4));
+  });
+
+  /* The property that makes BT.2390 the broadcast answer: content the display
+     can already show is passed through untouched, so nothing below the knee
+     is altered to buy headroom it does not need. */
+  it("passes the range below the knee through unchanged", () => {
+    const source = 1000;
+    const display = 203;
+    const ks = 1.5 * (pqInverseEotf(display) / pqInverseEotf(source)) - 0.5;
+    const belowKnee = pqInverseEotf(source) * ks * 0.5;
+    /* Not bit-exact: BT.2390's quartic black lift adds the PQ code for the
+       display's own black, which is 7.3e-7 rather than zero. That lift is
+       the spec doing its job, not drift. */
+    near(bt2390Eetf(belowKnee, source, display), belowKnee, 1e-6);
+
+    /* End to end, the same property in nits: everything under the knee comes
+       out exactly where linear scaling would put it. */
+    for (const nits of [1, 50])
+      near(toneMapIctcp([nits, nits, nits], 1000, 203)[0], nits / 203, 5e-4);
+  });
+
+  it("maps the source peak to the display peak", () => {
+    near(bt2390Eetf(pqInverseEotf(1000), 1000, 203), pqInverseEotf(203), 2e-3);
+  });
+
+  /* A display that can already show everything has nothing to compress. */
+  it("is the identity when the display outranges the source", () => {
+    const code = pqInverseEotf(200);
+    expect(bt2390Eetf(code, 400, 1000)).toBe(code);
+  });
+
+  it("never exceeds the display peak and stays monotonic", () => {
+    let previous = -1;
+    for (let nits = 0; nits <= 4000; nits += 25) {
+      const out = bt2390Eetf(pqInverseEotf(nits), 4000, 203);
+      expect(out).toBeLessThanOrEqual(pqInverseEotf(203) + 1e-6);
+      expect(out).toBeGreaterThanOrEqual(previous - 1e-9);
+      previous = out;
+    }
+  });
+
+  /*
+   * The reason for ICtCp over a curve on RGB. A saturated colour compressed
+   * for an SDR display must keep its hue: the failure everyone recognises is
+   * a sunset going pale as it clips. Hue in ICtCp is the angle of (Ct, Cp),
+   * and scaling both by one factor cannot move it.
+   */
+  it("preserves hue through heavy compression", () => {
+    const saturated: ReferenceRgb = [900, 180, 40];
+    const mapped = toneMapIctcp(saturated, 1000, 203);
+    const hueOf = (rgb: ReferenceRgb): number => {
+      const lms = [
+        0.412 * rgb[0] + 0.524 * rgb[1] + 0.064 * rgb[2],
+        0.167 * rgb[0] + 0.72 * rgb[1] + 0.113 * rgb[2],
+        0.024 * rgb[0] + 0.075 * rgb[1] + 0.9 * rgb[2],
+      ] as const;
+      return Math.atan2(
+        (17933 / 4096) * lms[0] -
+          (17390 / 4096) * lms[1] -
+          (543 / 4096) * lms[2],
+        (6610 / 4096) * lms[0] -
+          (13613 / 4096) * lms[1] +
+          (7003 / 4096) * lms[2],
+      );
+    };
+    /* Compared in the same coarse space on both sides: what matters is that
+       the angle barely moves, not its absolute value. */
+    near(hueOf(mapped), hueOf(saturated), 0.06);
+  });
+
+  it("keeps saturation rather than washing colour towards white", () => {
+    const saturated: ReferenceRgb = [900, 180, 40];
+    const mapped = toneMapIctcp(saturated, 1000, 203);
+    const spreadBefore =
+      (Math.max(...saturated) - Math.min(...saturated)) /
+      Math.max(...saturated);
+    const spreadAfter =
+      (Math.max(...mapped) - Math.min(...mapped)) / Math.max(...mapped);
+    /* A per-channel curve collapses this ratio; ICtCp should hold most of it. */
+    /* Scaling by the largest channel keeps the ratios, so almost all of it
+       survives. Holding intensity and killing chroma instead measured 0.14
+       here -- white -- which is why it is not done that way. */
+    expect(spreadAfter).toBeGreaterThan(spreadBefore * 0.95);
+  });
+
+  /*
+   * Where diffuse white lands is the whole trade of a peak-preserving EETF,
+   * so it is pinned rather than hand-waved. A 1000-nit grade shown on an SDR
+   * display puts 203-nit diffuse white at 0.78 of display white, NOT at 1.0:
+   * the top fifth of the range is being held back so speculars have somewhere
+   * to go and roll off instead of clipping to a flat plate. Anyone who wants
+   * white at 1.0 is asking to throw the highlights away, which is the thing
+   * this renderer exists not to do.
+   */
+  it("trades white level for specular headroom, and says where", () => {
+    near(toneMapIctcp([203, 203, 203], 1000, 203)[0], 0.7835, 2e-3);
+    near(toneMapIctcp([400, 400, 400], 1000, 203)[0], 0.9537, 2e-3);
+    /* The source peak lands exactly on display white. */
+    near(toneMapIctcp([1000, 1000, 1000], 1000, 203)[0], 1, 1e-3);
+    /* Highlights above diffuse white stay distinguishable rather than
+       collapsing into one white: that is what the headroom buys. */
+    expect(toneMapIctcp([600, 600, 600], 1000, 203)[0]).toBeGreaterThan(
+      toneMapIctcp([400, 400, 400], 1000, 203)[0],
+    );
+    const black = toneMapIctcp([0, 0, 0], 1000, 203);
+    for (const channel of black) near(channel, 0, 1e-6);
   });
 });
