@@ -410,3 +410,75 @@ export const wantsWideGamutOutput = (
   const primaries = referencePrimariesFromMetadata(sourcePrimaries);
   return primaries === "smpte432" || primaries === "bt2020";
 };
+
+/*
+ * HDR electro-optical transfer functions.
+ *
+ * These differ from the SDR curves in kind, not degree: an SDR code value is
+ * display-referred and relative, where a PQ code value names an absolute
+ * luminance in nits. Linearising one gives light, not a 0-1 signal, so the
+ * result has to be tone-mapped before it can go anywhere near an SDR canvas.
+ */
+export type ReferenceSourceTransfer = "sdr" | "pq" | "hlg";
+
+/* ST.2084 constants, as published. */
+const PQ_M1 = 2610 / 16384;
+const PQ_M2 = (2523 / 4096) * 128;
+const PQ_C1 = 3424 / 4096;
+const PQ_C2 = (2413 / 4096) * 32;
+const PQ_C3 = (2392 / 4096) * 32;
+const PQ_PEAK_NITS = 10000;
+
+/* PQ code value to absolute luminance in nits. */
+export const pqEotfNits = (code: number): number => {
+  const value = Math.pow(clampUnit(code), 1 / PQ_M2);
+  const numerator = Math.max(value - PQ_C1, 0);
+  const denominator = PQ_C2 - PQ_C3 * value;
+  if (denominator <= 0) return 0;
+  return PQ_PEAK_NITS * Math.pow(numerator / denominator, 1 / PQ_M1);
+};
+
+/*
+ * HLG, ARIB STD-B67. The inverse OETF gives a scene-referred signal; the OOTF
+ * that follows is what makes it display light, and its system gamma depends on
+ * the peak luminance the display is being driven to.
+ */
+const HLG_A = 0.17883277;
+const HLG_B = 1 - 4 * HLG_A;
+const HLG_C = 0.5 - HLG_A * Math.log(4 * HLG_A);
+
+export const hlgInverseOetf = (code: number): number => {
+  const value = clampUnit(code);
+  return value <= 0.5
+    ? (value * value) / 3
+    : (Math.exp((value - HLG_C) / HLG_A) + HLG_B) / 12;
+};
+
+/*
+ * HDR linear light to a display-linear 0-1 signal.
+ *
+ * Extended Reinhard, in units where the grade's diffuse white is 1. It is
+ * within a hair of the identity near black, so anything at or below diffuse
+ * white is reproduced as authored, and it reaches exactly 1 at the peak the
+ * grade was mastered to, so specular highlights roll off into the headroom
+ * instead of clipping to a flat white.
+ *
+ * Applied to luminance rather than per channel on purpose: one scale factor
+ * across the three cannot pull them apart, so a tone-mapped highlight keeps
+ * its hue where a per-channel curve would desaturate it towards white.
+ */
+export const toneMapNits = (
+  nits: number,
+  referenceWhiteNits = 203,
+  peakNits = 1000,
+): number => {
+  if (nits <= 0) return 0;
+  const white = Math.max(peakNits / referenceWhiteNits, 1);
+  const scene = nits / referenceWhiteNits;
+  const mapped = (scene * (1 + scene / (white * white))) / (1 + scene);
+  return clampUnit(mapped);
+};
+
+/* Rec.709 luminance weights, for tone-mapping a colour by its brightness. */
+export const relativeLuminance = (rgb: ReferenceRgb): number =>
+  0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];

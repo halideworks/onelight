@@ -7,6 +7,9 @@ import {
   isIdentityGamut,
   primariesToXyz,
   referencePrimariesFromMetadata,
+  hlgInverseOetf,
+  pqEotfNits,
+  toneMapNits,
   wantsWideGamutOutput,
   isSdrGammaTransfer,
   quantizeEncodedRgb,
@@ -404,5 +407,104 @@ describe("wide-gamut output selection", () => {
   it("does not ask on a tag it cannot place", () => {
     expect(wantsWideGamutOutput("film", true)).toBe(false);
     expect(wantsWideGamutOutput(null, true)).toBe(false);
+  });
+});
+
+describe("HDR transfer functions", () => {
+  const close = (actual: number, expected: number, tol: number): void => {
+    expect(Math.abs(actual - expected)).toBeLessThan(tol);
+  };
+
+  /* Against the published ST.2084 anchor points. These are the numbers a
+     colourist would recognise: 0 is black, 1.0 is the format's 10000 nit
+     ceiling, and 0.58 is very close to the 203 nit diffuse white BT.2408
+     defines as HDR reference white. */
+  it("decodes PQ to absolute luminance at the published anchors", () => {
+    close(pqEotfNits(0), 0, 1e-6);
+    close(pqEotfNits(1), 10000, 1);
+    close(pqEotfNits(0.5081), 100, 1);
+    close(pqEotfNits(0.5806), 203, 2);
+    close(pqEotfNits(0.7518), 1000, 5);
+  });
+
+  it("decodes PQ monotonically", () => {
+    let previous = -1;
+    for (let code = 0; code <= 1; code += 0.05) {
+      const nits = pqEotfNits(code);
+      expect(nits).toBeGreaterThan(previous);
+      previous = nits;
+    }
+  });
+
+  /* HLG's inverse OETF has a defined split at signal 0.5, and both halves
+     must meet there or a mid-grey gets a visible step. */
+  it("decodes HLG continuously across the piecewise split", () => {
+    close(hlgInverseOetf(0), 0, 1e-9);
+    close(hlgInverseOetf(0.5), 1 / 12, 1e-9);
+    close(hlgInverseOetf(1), 1, 1e-6);
+    const below = hlgInverseOetf(0.4999);
+    const above = hlgInverseOetf(0.5001);
+    expect(Math.abs(above - below)).toBeLessThan(1e-3);
+  });
+
+  describe("tone mapping", () => {
+    /* Diffuse white on a 1000-nit grade lands just over half of display
+       linear, which is about 188/255 once the sRGB curve is applied -- a
+       believable SDR white with the specular range still above it. Pinned
+       because it is the number a colourist would notice moving. */
+    it("places diffuse white where an SDR white belongs", () => {
+      expect(toneMapNits(0)).toBe(0);
+      close(toneMapNits(203, 203, 1000), 0.5206, 5e-4);
+      const encoded = quantizeEncodedRgb(
+        encodeForDisplay(
+          [
+            toneMapNits(203, 203, 1000),
+            toneMapNits(203, 203, 1000),
+            toneMapNits(203, 203, 1000),
+          ],
+          "srgb",
+        ),
+      );
+      expect(encoded[0]).toBeGreaterThan(120);
+      expect(encoded[0]).toBeLessThan(140);
+    });
+
+    /* Near black the curve is within a percent of doing nothing, so shadow
+       detail arrives as graded rather than lifted or crushed. */
+    it("leaves the bottom of the scale alone", () => {
+      for (const nits of [0.5, 2, 10]) {
+        const scene = nits / 203;
+        expect(Math.abs(toneMapNits(nits, 203, 1000) - scene)).toBeLessThan(
+          scene * 0.06,
+        );
+      }
+    });
+
+    /* The peak the grade was mastered to lands exactly on display white:
+       that is the property that makes highlights roll off instead of
+       clipping, and it is the reason for the extended form. */
+    it("puts the mastering peak exactly on display white", () => {
+      close(toneMapNits(1000, 203, 1000), 1, 1e-9);
+      close(toneMapNits(4000, 203, 4000), 1, 1e-9);
+      close(toneMapNits(203, 203, 203), 1, 1e-9);
+    });
+
+    it("never exceeds display white and stays monotonic", () => {
+      let previous = -1;
+      for (let nits = 0; nits <= 4000; nits += 50) {
+        const mapped = toneMapNits(nits, 203, 1000);
+        expect(mapped).toBeLessThanOrEqual(1);
+        expect(mapped).toBeGreaterThanOrEqual(previous);
+        previous = mapped;
+      }
+    });
+
+    /* A brighter mastering peak means more headroom, so the same absolute
+       luminance sits lower on the display. */
+    it("respects the mastering peak it was given", () => {
+      expect(toneMapNits(500, 203, 4000)).toBeLessThan(
+        toneMapNits(500, 203, 1000),
+      );
+    });
   });
 });
