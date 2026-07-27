@@ -177,37 +177,61 @@ describe("dynamic range readout", () => {
      SDR rendition playing, and the control used to keep reading HDR. A colour
      tool that misreports the range on screen is worse than one without HDR. */
   it("reports the range playing, not the range requested", () => {
-    expect(hdrRangeReadout("hdr", "hdr_av1")).toEqual({
+    expect(hdrRangeReadout("hdr", "hdr_av1", false)).toEqual({
       label: "HDR",
       fellBack: false,
+      toneMapped: false,
     });
-    expect(hdrRangeReadout("hdr", "proxy_1080")).toEqual({
+    expect(hdrRangeReadout("hdr", "proxy_1080", false)).toEqual({
       label: "SDR",
       fellBack: true,
+      toneMapped: false,
     });
-    expect(hdrRangeReadout("hdr", null)).toEqual({
+    expect(hdrRangeReadout("hdr", null, false)).toEqual({
       label: "SDR",
       fellBack: true,
+      toneMapped: false,
+    });
+  });
+
+  /* The one that shipped wrong: the reference renderer tone-maps PQ onto an
+     SDR canvas, so an HDR rendition drawn by it is NOT HDR on screen, however
+     much the rendition and the button say otherwise. */
+  it("refuses to call a tone-mapped HDR rendition HDR", () => {
+    expect(hdrRangeReadout("hdr", "hdr_av1", true)).toEqual({
+      label: "SDR",
+      fellBack: true,
+      toneMapped: true,
+    });
+    expect(hdrRangeReadout("auto", "hdr_hevc", true)).toEqual({
+      label: "SDR",
+      fellBack: false,
+      toneMapped: true,
     });
   });
 
   it("calls HDR HDR even when it was not the thing asked for", () => {
     /* Auto picks the HDR rendition on a display that can show it, and the
        readout must say so rather than only answering the explicit request. */
-    expect(hdrRangeReadout("auto", "hdr_hevc")).toEqual({
+    expect(hdrRangeReadout("auto", "hdr_hevc", false)).toEqual({
       label: "HDR",
       fellBack: false,
+      toneMapped: false,
     });
   });
 
-  it("does not cry fallback for a rung that was never HDR", () => {
-    expect(hdrRangeReadout("auto", "proxy_1080")).toEqual({
+  it("does not cry fallback or tone-map for a rung that was never HDR", () => {
+    expect(hdrRangeReadout("auto", "proxy_1080", false)).toEqual({
       label: "SDR",
       fellBack: false,
+      toneMapped: false,
     });
-    expect(hdrRangeReadout("1080", "proxy_1080")).toEqual({
+    /* Reference on an SDR proxy is the ordinary case: nothing is being
+       tone-mapped, so nothing should be flagged. */
+    expect(hdrRangeReadout("1080", "proxy_1080", true)).toEqual({
       label: "SDR",
       fellBack: false,
+      toneMapped: false,
     });
   });
 });

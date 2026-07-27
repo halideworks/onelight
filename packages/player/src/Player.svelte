@@ -1182,7 +1182,12 @@
    * is worse than having no HDR at all, so the readout follows the rendition
    * and the request only decides whether losing it counts as a fallback.
    */
-  const hdrReadout = $derived(hdrRangeReadout(quality, activeRendition?.kind));
+  /* referenceActive, not referenceRequested: what matters is which engine is
+     putting pixels on the screen, because that is what decides whether the
+     grade survives to the eye. */
+  const hdrReadout = $derived(
+    hdrRangeReadout(quality, activeRendition?.kind, referenceActive)
+  );
   const hdrActive = $derived(hdrReadout.label === 'HDR');
   const hdrRequested = $derived(quality === 'hdr');
   const hdrFellBack = $derived(hdrReadout.fellBack);
@@ -3835,9 +3840,11 @@
               type="button"
               aria-pressed={hdrActive}
               class:requested-inactive={hdrFellBack}
-              title={hdrFellBack
-                ? `HDR is not playing: ${hdrQualificationReason ?? 'no HDR rendition qualified on this display.'}`
-                : 'Play the HDR rendition'}
+              title={hdrReadout.toneMapped
+                ? 'The HDR rendition is selected, but the reference renderer tone-maps it to SDR. Switch to Native playback to see the HDR grade.'
+                : hdrFellBack
+                  ? `HDR is not playing: ${hdrQualificationReason ?? 'no HDR rendition qualified on this display.'}`
+                  : 'Play the HDR rendition'}
               onclick={() => {
                 /* Picking a rendition is not picking a renderer. This used to
                    slam the playback mode to native, because reference could
@@ -3924,10 +3931,16 @@
           class:fellback={hdrFellBack}
           title={hdrActive
             ? 'The HDR rendition is on screen.'
+            : hdrReadout.toneMapped
+              ? 'The HDR rendition is being tone-mapped to SDR for display: the reference renderer draws to a standard dynamic range canvas. Switch to Native playback to see the HDR grade itself.'
+              : hdrFellBack
+                ? `HDR was asked for and is not playing: ${hdrQualificationReason ?? 'no HDR rendition qualified on this display.'}`
+                : 'A standard dynamic range rendition is on screen.'}
+        >{hdrReadout.label}{hdrReadout.toneMapped
+            ? ' (tone-mapped)'
             : hdrFellBack
-              ? `HDR was asked for and is not playing: ${hdrQualificationReason ?? 'no HDR rendition qualified on this display.'}`
-              : 'A standard dynamic range rendition is on screen.'}
-        >{hdrReadout.label}{hdrFellBack ? ' (fell back)' : ''}</span>
+              ? ' (fell back)'
+              : ''}</span>
       {/if}
       <button
         type="button"

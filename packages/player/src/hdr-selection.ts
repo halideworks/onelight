@@ -82,22 +82,34 @@ export const isHdrRenditionKind = (kind: string | null | undefined): boolean =>
   kind === "hdr_av1" || kind === "hdr_hevc";
 
 /*
- * What the dynamic-range readout must say, given what was asked for and what
- * is actually playing. `quality === "hdr"` is a REQUEST: when nothing
- * qualifies, the active rendition falls through to the SDR ladder and keeps
- * playing, which is right for the picture and wrong to announce as HDR. For a
- * colour tool a control that misreports the range on screen is worse than
- * having no HDR at all, so the label follows the rendition and the request
- * only decides whether losing it counts as a fallback worth flagging.
+ * What the dynamic-range readout must say. Two facts decide it, and reading
+ * only the first is what made this lie twice:
+ *
+ * 1. Is the rendition HDR? `quality === "hdr"` is a REQUEST -- when nothing
+ *    qualifies the active rendition falls through to the SDR ladder and keeps
+ *    playing, which is right for the picture and wrong to announce as HDR.
+ * 2. Does the engine drawing it deliver HDR? The reference renderer does not.
+ *    It tone-maps PQ and HLG through ICtCp onto an sRGB or display-p3 canvas
+ *    -- both SDR, there is no HDR canvas path -- so an HDR rendition drawn by
+ *    reference reaches the eye as a tone-mapped SDR picture, visibly less
+ *    saturated than the native path's.
+ *
+ * So HDR on screen means an HDR rendition AND an engine that can show it.
+ * Reporting the rendition alone told a reviewer they were grading HDR while
+ * they were looking at a tone-map, which for a colour tool is the worst thing
+ * this control can do.
  */
 export const hdrRangeReadout = (
   requestedKind: string,
   activeKind: string | null | undefined,
-): { label: "HDR" | "SDR"; fellBack: boolean } => {
-  const active = isHdrRenditionKind(activeKind);
+  toneMappingEngine: boolean,
+): { label: "HDR" | "SDR"; fellBack: boolean; toneMapped: boolean } => {
+  const renditionIsHdr = isHdrRenditionKind(activeKind);
+  const onScreen = renditionIsHdr && !toneMappingEngine;
   return {
-    label: active ? "HDR" : "SDR",
-    fellBack: requestedKind === "hdr" && !active,
+    label: onScreen ? "HDR" : "SDR",
+    fellBack: requestedKind === "hdr" && !onScreen,
+    toneMapped: renditionIsHdr && toneMappingEngine,
   };
 };
 
