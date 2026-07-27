@@ -36,9 +36,16 @@ const normalizedColorName = (value: unknown): string | null => {
   /* Separator-stripping is what lets "BT.709" and "bt709" agree, but it also
      flattens the one canonical name that contains a separator. WebCodecs says
      "bt2020-ncl" and the decoded frame is reconciled against this contract by
-     string equality, so the canonical spelling has to come back out or a
-     BT.2020 rendition would fail its own consistency check. */
-  if (result === "bt2020ncl") return "bt2020-ncl";
+     string equality, so the canonical spelling has to come back out.
+
+     Both spellings arrive in practice and they are not the same string.
+     ffprobe -- and therefore every rendition's stored metadata -- writes
+     "bt2020nc"; WebCodecs writes "bt2020-ncl". Mapping only the latter left
+     the former unrecognised, so referenceMatrixFromMetadata returned null and
+     reference playback was refused for EVERY BT.2020 rendition, HDR included.
+     Tested against the decoder's spelling and not the pipeline's, which is
+     exactly the half that was wrong. */
+  if (result === "bt2020ncl" || result === "bt2020nc") return "bt2020-ncl";
   return result;
 };
 

@@ -337,7 +337,9 @@ export const referenceMatrixFromMetadata = (
 ): ReferenceYuvMatrix | null => {
   if (matrix === "bt709") return "bt709";
   if (matrix === "bt470bg" || matrix === "smpte170m") return "bt601";
-  if (matrix === "bt2020-ncl") return "bt2020-ncl";
+  /* Both the WebCodecs spelling and ffprobe's, because renditions carry the
+     latter and decoded frames the former. */
+  if (matrix === "bt2020-ncl" || matrix === "bt2020nc") return "bt2020-ncl";
   return null;
 };
 

@@ -227,3 +227,49 @@ describe("reference availability across colour spaces", () => {
     expect(contractFor({ matrix: "rgb" })).toBeNull();
   });
 });
+
+/*
+ * The exact strings production carries, copied from a real rendition on the
+ * live site rather than invented here. The matrix is where this bit: the
+ * pipeline stores ffprobe's "bt2020nc" and the decoder emits WebCodecs'
+ * "bt2020-ncl", and only the second was recognised -- so reference playback
+ * was refused for every BT.2020 rendition, HDR included, while the tests
+ * passed against the spelling that was never in the metadata.
+ */
+describe("the spellings production actually stores", () => {
+  const withColor = (color: Record<string, string>): typeof rendition => ({
+    ...rendition,
+    meta: {
+      ...rendition.meta,
+      output_color: { ...rendition.meta.output_color, ...color },
+    },
+  });
+
+  it("accepts an HDR rendition exactly as the pipeline writes it", () => {
+    const contract = referenceSourceContract(
+      {
+        ...withColor({
+          primaries: "bt2020",
+          transfer: "smpte2084",
+          matrix: "bt2020nc",
+          range: "tv",
+        }),
+        kind: "hdr_hevc",
+      },
+      { num: 24000, den: 1001 },
+      100,
+    );
+    expect(contract).not.toBeNull();
+    expect(contract?.expected.outputColor.matrix).toBe("bt2020-ncl");
+  });
+
+  it("accepts an SDR BT.2020 rendition written the same way", () => {
+    const contract = referenceSourceContract(
+      withColor({ primaries: "bt2020", transfer: "bt709", matrix: "bt2020nc" }),
+      { num: 24000, den: 1001 },
+      100,
+    );
+    expect(contract).not.toBeNull();
+    expect(contract?.expected.outputColor.matrix).toBe("bt2020-ncl");
+  });
+});
