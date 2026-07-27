@@ -1,4 +1,5 @@
 import {
+  isHdrTransfer,
   isSdrGammaTransfer,
   referenceMatrixFromMetadata,
   referencePrimariesFromMetadata,
@@ -98,7 +99,17 @@ export const referenceSourceAvailability = (
       contract: null,
       reason: "No playable rendition is active.",
     };
-  if (!rendition.kind.startsWith("proxy_") && rendition.kind !== "watermarked")
+  /* The HDR renditions carry the grade at its own transfer and gamut, which
+     the renderer can now decode, so they are eligible where before only the
+     tonemapped SDR proxies were. Everything else about the contract still
+     has to hold: complete colour metadata, a derivable gamut, an implemented
+     matrix, exact frame timing. */
+  if (
+    !rendition.kind.startsWith("proxy_") &&
+    rendition.kind !== "watermarked" &&
+    rendition.kind !== "hdr_hevc" &&
+    rendition.kind !== "hdr_av1"
+  )
     return {
       contract: null,
       reason:
@@ -168,10 +179,13 @@ export const referenceSourceAvailability = (
       contract: null,
       reason: `Reference playback cannot render the ${output.matrix} matrix.`,
     };
-  if (!isSdrGammaTransfer(output.transfer))
+  /* SDR or one of the HDR curves the shader implements. Anything else --
+     linear, a log encoding, an unknown tag -- is refused rather than guessed
+     at, exactly as an unplaceable gamut is. */
+  if (!isSdrGammaTransfer(output.transfer) && !isHdrTransfer(output.transfer))
     return {
       contract: null,
-      reason: `Reference playback requires an SDR transfer, not ${output.transfer}.`,
+      reason: `Reference playback cannot render the ${output.transfer} transfer.`,
     };
   return {
     contract: {

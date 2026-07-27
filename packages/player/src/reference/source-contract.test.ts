@@ -69,10 +69,20 @@ describe("reference source contract", () => {
     ).toBeNull();
   });
 
-  it("does not treat HDR or a non-proxy source as a reference contract", () => {
+  /* The HDR renditions carry the grade at its own transfer and gamut, which
+     the renderer decodes, so they became eligible with that support. A kind
+     that is not a playable picture never was. */
+  it("accepts an HDR rendition and still refuses a non-picture kind", () => {
     expect(
       referenceSourceContract(
         { ...rendition, kind: "hdr_hevc" },
+        { num: 24000, den: 1001 },
+        100,
+      ),
+    ).not.toBeNull();
+    expect(
+      referenceSourceContract(
+        { ...rendition, kind: "audio_peaks" },
         { num: 24000, den: 1001 },
         100,
       ),
@@ -199,12 +209,16 @@ describe("reference availability across colour spaces", () => {
 
   /* PQ and HLG are genuinely different code values, not a label difference,
      and stay refused until the output path can carry them. */
-  it("refuses HDR transfers until the output path exists", () => {
+  /* The shader decodes PQ and HLG now, so they are offered rather than
+     refused; a transfer it does not implement still is. */
+  it("offers the HDR transfers the shader implements", () => {
     for (const transfer of ["pq", "smpte2084", "hlg", "arib-std-b67"])
       expect(
         contractFor({ transfer }),
-        `${transfer} must not be offered`,
-      ).toBeNull();
+        `${transfer} should be offered`,
+      ).not.toBeNull();
+    expect(contractFor({ transfer: "linear" })).toBeNull();
+    expect(contractFor({ transfer: "log3g10" })).toBeNull();
   });
 
   it("offers the matrices the YUV stage implements and no others", () => {
