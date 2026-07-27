@@ -21,7 +21,11 @@
     colorMaximumDelta,
     renditionColorContracts
   } from './color-playback.js';
-  import { qualifyNativeHdr } from './hdr-selection.js';
+  import {
+    hdrRangeReadout,
+    isHdrRenditionKind,
+    qualifyNativeHdr
+  } from './hdr-selection.js';
   import {
     SUPPORTED_RATES,
     formatTimecode,
@@ -862,13 +866,9 @@
   const qualityLadder = $derived(
     ladder.filter((rendition) => rendition.kind.startsWith('proxy_'))
   );
-  /* A rendition carries the HDR grade or it does not; which codec does the
-     carrying is a separate question from whether what you are looking at is
-     HDR. Asked in one place so every readout agrees. */
   const isHdrRendition = (
     rendition: PlayerRendition | null | undefined
-  ): boolean =>
-    rendition?.kind === 'hdr_av1' || rendition?.kind === 'hdr_hevc';
+  ): boolean => isHdrRenditionKind(rendition?.kind);
   const hdrRenditions = $derived(
     renditions.filter((rendition) => isHdrRendition(rendition) && rendition.url)
   );
@@ -1182,9 +1182,10 @@
    * is worse than having no HDR at all, so the readout follows the rendition
    * and the request only decides whether losing it counts as a fallback.
    */
-  const hdrActive = $derived(isHdrRendition(activeRendition));
+  const hdrReadout = $derived(hdrRangeReadout(quality, activeRendition?.kind));
+  const hdrActive = $derived(hdrReadout.label === 'HDR');
   const hdrRequested = $derived(quality === 'hdr');
-  const hdrFellBack = $derived(hdrRequested && !hdrActive);
+  const hdrFellBack = $derived(hdrReadout.fellBack);
   /*
    * Whether this browser can decode what is playing WITHOUT a hardware
    * decoder. It is the last rung of the recovery ladder, so a codec that has
@@ -3926,7 +3927,7 @@
             : hdrFellBack
               ? `HDR was asked for and is not playing: ${hdrQualificationReason ?? 'no HDR rendition qualified on this display.'}`
               : 'A standard dynamic range rendition is on screen.'}
-        >{hdrActive ? 'HDR' : 'SDR'}{hdrFellBack ? ' (fell back)' : ''}</span>
+        >{hdrReadout.label}{hdrFellBack ? ' (fell back)' : ''}</span>
       {/if}
       <button
         type="button"

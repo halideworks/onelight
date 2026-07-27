@@ -75,11 +75,36 @@ const contractsAgree = (
     (field) => normalized(source[field]) === normalized(output[field]),
   );
 
+/* A rendition carries the HDR grade or it does not; which codec does the
+   carrying is a separate question, asked in one place so every readout and
+   every selection agree about what "HDR" means. */
+export const isHdrRenditionKind = (kind: string | null | undefined): boolean =>
+  kind === "hdr_av1" || kind === "hdr_hevc";
+
+/*
+ * What the dynamic-range readout must say, given what was asked for and what
+ * is actually playing. `quality === "hdr"` is a REQUEST: when nothing
+ * qualifies, the active rendition falls through to the SDR ladder and keeps
+ * playing, which is right for the picture and wrong to announce as HDR. For a
+ * colour tool a control that misreports the range on screen is worse than
+ * having no HDR at all, so the label follows the rendition and the request
+ * only decides whether losing it counts as a fallback worth flagging.
+ */
+export const hdrRangeReadout = (
+  requestedKind: string,
+  activeKind: string | null | undefined,
+): { label: "HDR" | "SDR"; fellBack: boolean } => {
+  const active = isHdrRenditionKind(activeKind);
+  return {
+    label: active ? "HDR" : "SDR",
+    fellBack: requestedKind === "hdr" && !active,
+  };
+};
+
 export const hdrRenditionContract = (
   rendition: PlayerRendition,
 ): HdrRenditionContract | null => {
-  if (rendition.kind !== "hdr_av1" && rendition.kind !== "hdr_hevc")
-    return null;
+  if (!isHdrRenditionKind(rendition.kind)) return null;
   const meta = rendition.meta;
   const source = recordOrNull(meta?.source_color);
   const output = recordOrNull(meta?.output_color);

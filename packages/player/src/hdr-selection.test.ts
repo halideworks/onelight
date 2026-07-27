@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  hdrRangeReadout,
   hdrRenditionContract,
+  isHdrRenditionKind,
   qualifyNativeHdr,
   type HdrCapabilityEnvironment,
 } from "./hdr-selection.js";
@@ -160,5 +162,52 @@ describe("HDR qualification against displays that actually exist", () => {
       env(["(color-gamut: p3)"]),
     );
     expect(result.qualified).toBe(false);
+  });
+});
+
+describe("dynamic range readout", () => {
+  it("names both HDR codecs and nothing else", () => {
+    expect(isHdrRenditionKind("hdr_av1")).toBe(true);
+    expect(isHdrRenditionKind("hdr_hevc")).toBe(true);
+    for (const kind of ["proxy_2160", "proxy_1080", "proxy_540", "", null])
+      expect(isHdrRenditionKind(kind)).toBe(false);
+  });
+
+  /* The bug this exists to stop: asking for HDR when none qualifies leaves an
+     SDR rendition playing, and the control used to keep reading HDR. A colour
+     tool that misreports the range on screen is worse than one without HDR. */
+  it("reports the range playing, not the range requested", () => {
+    expect(hdrRangeReadout("hdr", "hdr_av1")).toEqual({
+      label: "HDR",
+      fellBack: false,
+    });
+    expect(hdrRangeReadout("hdr", "proxy_1080")).toEqual({
+      label: "SDR",
+      fellBack: true,
+    });
+    expect(hdrRangeReadout("hdr", null)).toEqual({
+      label: "SDR",
+      fellBack: true,
+    });
+  });
+
+  it("calls HDR HDR even when it was not the thing asked for", () => {
+    /* Auto picks the HDR rendition on a display that can show it, and the
+       readout must say so rather than only answering the explicit request. */
+    expect(hdrRangeReadout("auto", "hdr_hevc")).toEqual({
+      label: "HDR",
+      fellBack: false,
+    });
+  });
+
+  it("does not cry fallback for a rung that was never HDR", () => {
+    expect(hdrRangeReadout("auto", "proxy_1080")).toEqual({
+      label: "SDR",
+      fellBack: false,
+    });
+    expect(hdrRangeReadout("1080", "proxy_1080")).toEqual({
+      label: "SDR",
+      fellBack: false,
+    });
   });
 });
