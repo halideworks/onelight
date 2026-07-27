@@ -791,9 +791,15 @@ const edlExportLeg = async (client, share, commentBody) => {
   const expectedMarker = commentBody
     .replaceAll("|", "/")
     .replace(/\r\n|\r|\n/g, "\\n");
+  /* The marker note is "|M:{author}: {body}" -- resolveMarkerText prefixes
+     the commenter, which the unit tests pin and which this assertion was
+     written before. So the body is looked for inside the marker field rather
+     than immediately after "|M:"; the encoding of pipes and newlines is what
+     is actually under test here. */
+  const markerField = edl.split("\n").find((line) => line.includes("|M:"));
   assert(
-    edl.includes(`|M:${expectedMarker}`),
-    `EDL carries the encoded marker text (looked for |M:${expectedMarker})`,
+    markerField !== undefined && markerField.includes(expectedMarker),
+    `EDL carries the encoded marker text (looked for ${expectedMarker} in ${markerField ?? "no |M: line"})`,
   );
   assert(/\|D:25(\s|$)/.test(edl), "EDL marker duration is 25 frames");
   log("EDL export: title, DF flag, encoded marker text, and duration verified");

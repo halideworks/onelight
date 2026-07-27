@@ -50,5 +50,11 @@ jobs:
       # creates its own Vulkan device when an ICD is present.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core mesa-vulkan-drivers
       - run: pnpm install --frozen-lockfile
+      # qa imports packages/worker/src/media.ts, which imports @onelight/core,
+      # and vite resolves that through the package exports -- so core has to be
+      # built or the run dies at import with "failed to resolve entry for
+      # package". The node job gets this for free because typecheck runs first;
+      # this one went straight from install to qa and had nothing built.
+      - run: pnpm typecheck
       - run: pnpm --filter @onelight/qa exec playwright install --with-deps chromium firefox webkit
       - run: pnpm qa
