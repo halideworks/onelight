@@ -63,6 +63,13 @@ const hardwareGlAvailable = async (
   }
 };
 
+/* How much of a timeline the clock may outrun the decoder by before the
+   scheduler, rather than the machine, is the suspect. Observed on
+   ubuntu-latest: zero to six skips of a 113 frame timeline across runs of
+   unchanged code, so roughly 5%; the gate sits well above that and well below
+   anything that would still look like continuous playback. */
+const MAX_CLOCK_SKIP_FRACTION = 0.15;
+
 const cadenceJudged = (
   hardwareGl: boolean,
   label: string,
@@ -174,7 +181,17 @@ describe.skipIf(fixtureReason !== undefined)(
             ) {
               expect(result.openMs).toBeLessThan(1_500);
               expect(result.startupMs).toBeLessThan(2_500);
-              expect(result.clockSkippedFrames).toBe(0);
+              /* Bounded rather than forbidden, and the comment above already
+                 said why: the clock outrunning the decoder measures the host,
+                 not the scheduler. This was left asserting exactly zero and
+                 duly failed on webkit at four skips one run and five the next,
+                 on identical code -- a regression gives the same number twice,
+                 a busy runner does not. A proportion still fails a scheduler
+                 that has actually collapsed, which is the thing worth
+                 catching. */
+              expect(result.clockSkippedFrames).toBeLessThan(
+                result.expectedFrames * MAX_CLOCK_SKIP_FRACTION,
+              );
               expect(result.droppedFrames).toBeLessThanOrEqual(1);
               expect(result.presentedFrames).toBeGreaterThan(100);
             }
