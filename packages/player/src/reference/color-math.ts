@@ -315,6 +315,9 @@ export type ReferenceYuv = readonly [number, number, number];
 export type YuvConversionParameters = {
   kr: number;
   kb: number;
+  /* Full-scale code for the sample depth these levels belong to; every offset
+     and range below is in those units and must be normalised against it. */
+  maxCode: number;
   yOffset: number;
   yRange: number;
   chromaOffset: number;
@@ -338,17 +341,28 @@ export const referenceMatrixFromMetadata = (
   return null;
 };
 
+/*
+ * Studio-range levels do NOT scale between bit depths by simply reusing the
+ * 8-bit fractions: 16/255 is 0.062745 where 64/1023 is 0.062561, and nominal
+ * 10-bit white under 8-bit constants lands on 0.9969 instead of 1, which is
+ * 0.8 of a code at 8-bit output and considerably more in PQ, where the curve
+ * is steep near white. The levels are therefore taken from the depth.
+ */
 export const yuvConversionParameters = (
   matrix: ReferenceYuvMatrix,
   range: ReferenceColorContract["range"],
+  depth: 8 | 10 = 8,
 ): YuvConversionParameters => {
   const coefficients = MATRIX_COEFFICIENTS[matrix];
+  const maxCode = depth === 10 ? 1023 : 255;
+  const scale = depth === 10 ? 4 : 1;
   return {
     ...coefficients,
-    yOffset: range === "tv" ? 16 : 0,
-    yRange: range === "tv" ? 219 : 255,
-    chromaOffset: 128,
-    chromaRange: range === "tv" ? 224 : 255,
+    maxCode,
+    yOffset: range === "tv" ? 16 * scale : 0,
+    yRange: range === "tv" ? 219 * scale : maxCode,
+    chromaOffset: 128 * scale,
+    chromaRange: range === "tv" ? 224 * scale : maxCode,
   };
 };
 

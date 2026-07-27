@@ -758,7 +758,11 @@ export class ReferenceGlRenderer {
       );
 
     const gl = this.gl;
-    const parameters = yuvConversionParameters(matrix, source.color.range);
+    const parameters = yuvConversionParameters(
+      matrix,
+      source.color.range,
+      tenBit ? 10 : 8,
+    );
     const sourceX = source.visibleRect.x - source.codedRect.x;
     const sourceY = source.visibleRect.y - source.codedRect.y;
     if (
@@ -790,10 +794,16 @@ export class ReferenceGlRenderer {
       source.chromaLocation === "center" ? 0 : 0.5 / width,
       source.chromaLocation === "topleft" ? 0.5 / height : 0,
     );
-    gl.uniform1f(this.uniforms.yOffset, parameters.yOffset / 255);
-    gl.uniform1f(this.uniforms.yMultiplier, 255 / parameters.yRange);
-    gl.uniform1f(this.uniforms.chromaCenter, parameters.chromaOffset / 255);
-    gl.uniform1f(this.uniforms.chromaMultiplier, 255 / parameters.chromaRange);
+    /* Normalised against the depth's own full scale, which is what makes the
+       levels correct rather than approximately correct. */
+    const maxCode = parameters.maxCode;
+    gl.uniform1f(this.uniforms.yOffset, parameters.yOffset / maxCode);
+    gl.uniform1f(this.uniforms.yMultiplier, maxCode / parameters.yRange);
+    gl.uniform1f(this.uniforms.chromaCenter, parameters.chromaOffset / maxCode);
+    gl.uniform1f(
+      this.uniforms.chromaMultiplier,
+      maxCode / parameters.chromaRange,
+    );
     gl.uniform1f(this.uniforms.kr, parameters.kr);
     gl.uniform1f(this.uniforms.kb, parameters.kb);
     gl.uniform1i(this.uniforms.transferMode, DISPLAY_TRANSFER_MODE[transfer]);

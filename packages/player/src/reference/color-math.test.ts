@@ -12,6 +12,7 @@ import {
   pqEotfNits,
   pqInverseEotf,
   toneMapIctcp,
+  yuvConversionParameters,
   toneMapNits,
   wantsWideGamutOutput,
   isSdrGammaTransfer,
@@ -626,5 +627,38 @@ describe("BT.2390 tone mapping in ICtCp", () => {
     );
     const black = toneMapIctcp([0, 0, 0], 1000, 203);
     for (const channel of black) near(channel, 0, 1e-6);
+  });
+});
+
+describe("studio levels across bit depths", () => {
+  /* Reusing the 8-bit fractions on 10-bit samples is wrong, and this is the
+     test that says so: 16/255 is not 64/1023, and nominal white lands on
+     0.9969 instead of 1 -- 0.8 of a code at 8-bit output, and much more once
+     PQ magnifies it near white. */
+  it("puts nominal white on exactly 1 at both depths", () => {
+    for (const [depth, white] of [
+      [8, 235],
+      [10, 940],
+    ] as const) {
+      const p = yuvConversionParameters("bt709", "tv", depth);
+      const y = ((white - p.yOffset) / p.maxCode) * (p.maxCode / p.yRange);
+      expect(Math.abs(y - 1), `depth ${depth}`).toBeLessThan(1e-9);
+    }
+  });
+
+  it("puts nominal black on exactly 0 at both depths", () => {
+    for (const [depth, black] of [
+      [8, 16],
+      [10, 64],
+    ] as const) {
+      const p = yuvConversionParameters("bt709", "tv", depth);
+      expect(Math.abs((black - p.yOffset) / p.maxCode)).toBeLessThan(1e-9);
+    }
+  });
+
+  it("centres chroma exactly at both depths", () => {
+    expect(yuvConversionParameters("bt709", "tv", 8).chromaOffset).toBe(128);
+    expect(yuvConversionParameters("bt709", "tv", 10).chromaOffset).toBe(512);
+    expect(yuvConversionParameters("bt709", "pc", 10).yRange).toBe(1023);
   });
 });
