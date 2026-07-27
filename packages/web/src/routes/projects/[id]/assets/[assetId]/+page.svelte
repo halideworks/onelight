@@ -84,6 +84,13 @@
   type UploadState = { status: 'idle' | 'uploading' | 'registering' | 'failed'; progress: number; error: string };
 
   let asset = $state<Asset | null>(null);
+  /* The project's house finishing standard, which the player applies to any
+     asset that has not overridden it. Fetched alongside the asset because the
+     resolution chain needs the middle step, not because this page shows it. */
+  let projectDisplayTransfer = $state<'srgb' | 'gamma22' | 'bt1886' | null>(
+    null
+  );
+  let projectTransferFor: string | null = null;
   let versions = $state<Version[]>([]);
   let selectedVersionId = $state<string | null>(null);
   let source = $state('');
@@ -510,6 +517,23 @@
       ?.transfer) ?? null
   );
   /* Persist an editor's reference-render transfer choice for this file. */
+  /* One fetch per project, cached by id: the standard changes about as often
+     as the room does, and the asset page opens far more. */
+  const loadProjectTransfer = async (id: string): Promise<void> => {
+    if (projectTransferFor === id) return;
+    projectTransferFor = id;
+    try {
+      const project = await api<{
+        display_transfer: 'srgb' | 'gamma22' | 'bt1886' | null;
+      }>(`/api/v1/projects/${id}`);
+      projectDisplayTransfer = project.display_transfer ?? null;
+    } catch {
+      projectTransferFor = null;
+      /* No house standard reachable: assets fall through to their own tags,
+         which is what happens when there is none set anyway. */
+    }
+  };
+
   const setDisplayTransfer = async (
     value: 'auto' | 'srgb' | 'gamma22' | 'bt1886'
   ): Promise<void> => {
@@ -554,6 +578,7 @@
   const loadMembers = async (id: string): Promise<void> => {
     if (membersFor === id) return;
     membersFor = id;
+    void loadProjectTransfer(id);
     try {
       members = (await api<{ items: Member[] }>(`/api/v1/projects/${id}/members`)).items;
     } catch {
@@ -1772,6 +1797,7 @@
             {waveformUrl}
             colorCheckBuildId={appVersion}
             displayTransferOverride={asset?.display_transfer ?? null}
+            {projectDisplayTransfer}
             {sourceTransfer}
             canEditColorTransfer={canEditAsset}
             ondisplaytransferchange={(value) => { void setDisplayTransfer(value); }}

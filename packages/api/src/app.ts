@@ -514,6 +514,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         ? precomputed.coverUrl
         : await coverUrlFor(project),
       restricted: Boolean(project.restricted),
+      display_transfer: project.displayTransfer ?? null,
       /* Whether transfer links in this project keep the addresses of the
          people who open them. Off unless the project says otherwise. */
       record_transfer_ips:
@@ -3483,6 +3484,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .set({
         ...(body.name ? { name: body.name.trim() } : {}),
         ...(body.palette ? { palette: body.palette } : {}),
+        /* "auto" is how a caller clears the house standard, the same way it
+           clears an asset's override. */
+        ...(body.display_transfer === undefined
+          ? {}
+          : {
+              displayTransfer:
+                body.display_transfer === "auto" ? null : body.display_transfer,
+            }),
         // The kinds of cover are alternatives, so setting one clears the
         // others; without this, clearing a picked asset would silently fall
         // back to an upload chosen weeks ago.
@@ -10436,9 +10445,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           ? {}
           : {
               displayTransfer:
-                body.display_transfer === "auto"
-                  ? null
-                  : body.display_transfer,
+                body.display_transfer === "auto" ? null : body.display_transfer,
             }),
         updatedAt: env.clock.now(),
       })

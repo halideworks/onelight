@@ -259,6 +259,9 @@ export const bodies = {
     palette: z.enum(PALETTES).optional(),
     restricted: z.boolean().optional(),
     status: z.enum(["active", "archived"]).optional(),
+    /* The room's finishing standard, applied to any asset that has not
+       overridden it. "auto" clears it, leaving assets on their own tags. */
+    display_transfer: z.enum(["auto", "srgb", "gamma22", "bt1886"]).optional(),
     /* An asset id in this project, or null to fall back to the generated
        palette cover. */
     cover_asset_id: z.string().nullable().optional(),
@@ -583,6 +586,9 @@ const project = z.object({
      the generated palette cover in all three cases. */
   cover_url: z.string().nullable(),
   restricted: z.boolean(),
+  /* The room's finishing standard for reference playback; null means none,
+     and assets fall through to their own tag. */
+  display_transfer: z.enum(["srgb", "gamma22", "bt1886"]).nullable(),
   /* Whether the addresses of people who open this project's transfer links are
      kept. Off by default: a client-facing link should not log IPs because the
      software felt like it, and a self-hoster who needs the trail says so. */
