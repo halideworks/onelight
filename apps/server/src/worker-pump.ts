@@ -15,6 +15,7 @@ import {
   exportXmeml,
   framesFromTimecode,
   hmacSha256Hex,
+  isStillSource,
   parseTimecode,
   stackKeyOf,
   UlidGenerator,
@@ -772,6 +773,32 @@ const PLAYABLE_VIDEO_KINDS: Array<typeof renditions.$inferSelect.kind> = [
 const STILL_LADDER_SWEEP_INTERVAL_MS = 30_000;
 const STILL_LADDER_SWEEP_LIMIT = 8;
 const STILL_LADDER_SCAN_BATCH = 200;
+
+/* A file that has become an image.
+
+   The format table grows: a .cr3 or a .heic uploaded before there was a
+   decoder for it landed as a plain file, honestly, because a card with no
+   picture is worse than an honest file. Now that one exists, those rows are
+   re-kinded and the ladder sweep below picks them up on its next pass. */
+export const sweepReKindStills = async (db: AppDb): Promise<number> => {
+  const candidates = await db
+    .select({ id: assets.id, name: assets.name })
+    .from(assets)
+    .where(and(eq(assets.kind, "file"), isNull(assets.deletedAt)))
+    .limit(STILL_LADDER_SCAN_BATCH)
+    .all();
+  let changed = 0;
+  for (const row of candidates) {
+    if (!isStillSource(row.name)) continue;
+    await db
+      .update(assets)
+      .set({ kind: "image" })
+      .where(eq(assets.id, row.id))
+      .run();
+    changed += 1;
+  }
+  return changed;
+};
 
 export const sweepStillLadderJobs = async (db: AppDb): Promise<number> => {
   let enqueued = 0;
@@ -2213,6 +2240,7 @@ export const startWorkerPump = (
           now - lastStillLadderSweep >= STILL_LADDER_SWEEP_INTERVAL_MS
         ) {
           lastStillLadderSweep = now;
+          await sweep("still re-kind", () => sweepReKindStills(db));
           await sweep("still ladder", () => sweepStillLadderJobs(db));
         }
         if (

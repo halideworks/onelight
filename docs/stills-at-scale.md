@@ -354,9 +354,10 @@ full-size rung once where it cannot.
 
 ### Not built
 
-- **Wipe and onion-skin compare.** The still viewer already loads the previous
-  version for A/B; making it a wipe with synchronised zoom is player work that
-  did not fit this pass. The A/B toggle stands.
+- **Compare**: the wipe and the blink were already there, and both already
+  ride the picture's own transform, so a comparison at 400% compares the same
+  400% of both versions. What was missing was onion skin, which is now the
+  third mode; see the end of this document.
 - **RAW, HEIC and PSB**: built, see "The rest of the formats" below.
 
 ## Measured on the built stack (2026-07-29)
@@ -417,3 +418,17 @@ decoded back. Writing that DNG turned up the trap worth knowing: a TIFF value
 of four bytes or fewer lives in the entry itself, and writing an offset there
 instead makes libraw read the offset as the CFA pattern and demosaic a
 two-colour sensor.
+
+## Compare, finished
+
+The still viewer already wiped and blinked, and both already rode the
+picture's own transform: the comparison lives inside the same plate as the
+current version, so a wipe at 400% is comparing the same 400% of both. What it
+could not do was lay one version over the other.
+
+Onion skin is the third mode, on `O`, with an opacity slider that defaults to
+half. Half is the useful default because at half anything that moved reads as
+a double edge and anything that did not reads as one, which is the question a
+retouch round actually asks. The three modes answer three different questions:
+the wipe is the honest side-by-side, the blink catches a small shift that is
+invisible side by side, and the onion catches alignment.

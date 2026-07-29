@@ -15,6 +15,7 @@ import {
   workspaces,
 } from "@onelight/db";
 import {
+  sweepReKindStills,
   sweepShuttleAudioJobs,
   sweepStillLadderJobs,
   sweepWatermarkJobs,
@@ -644,6 +645,82 @@ describe("still ladder backfill", () => {
       await seedStill(db, { kinds: ["poster", "still_review"] });
       expect(await sweepStillLadderJobs(db)).toBe(0);
       expect(await db.select().from(jobs).all()).toHaveLength(0);
+    } finally {
+      sqlite.close();
+    }
+  });
+});
+
+describe("re-kinding files that have become stills", () => {
+  it("turns a RAW uploaded before there was a decoder into an image", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await db
+        .insert(workspaces)
+        .values({ id: "ws-1", name: "Studio", createdAt: 1 })
+        .run();
+      await db
+        .insert(users)
+        .values({
+          id: "user-1",
+          workspaceId: "ws-1",
+          email: "owner@example.com",
+          name: "Owner",
+          role: "admin",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      await db
+        .insert(projects)
+        .values({
+          id: "project-1",
+          workspaceId: "ws-1",
+          name: "Shoot",
+          palette: "kuro",
+          createdBy: "user-1",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      await db
+        .insert(assets)
+        .values([
+          {
+            id: "asset-raw",
+            projectId: "project-1",
+            name: "IMG_0431.CR3",
+            kind: "file",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          {
+            id: "asset-heic",
+            projectId: "project-1",
+            name: "IMG_0432.heic",
+            kind: "file",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          {
+            id: "asset-zip",
+            projectId: "project-1",
+            name: "deliverables.zip",
+            kind: "file",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ])
+        .run();
+      expect(await sweepReKindStills(db)).toBe(2);
+      const rows = await db.select().from(assets).all();
+      const byId = new Map(rows.map((row) => [row.id, row.kind]));
+      expect(byId.get("asset-raw")).toBe("image");
+      expect(byId.get("asset-heic")).toBe("image");
+      /* Everything else is still a file, which is the point of the check. */
+      expect(byId.get("asset-zip")).toBe("file");
+      expect(await sweepReKindStills(db)).toBe(0);
     } finally {
       sqlite.close();
     }

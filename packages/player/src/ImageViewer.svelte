@@ -75,9 +75,13 @@
      window resize, which "always refit" would quietly undo mid-inspection. */
   let userZoomed = $state(false);
   let arrived = $state(false);
-  let compareMode = $state<'off' | 'slider' | 'blink'>('off');
+  let compareMode = $state<'off' | 'slider' | 'blink' | 'onion'>('off');
   /* Where the wipe sits, 0..1 across the picture. */
   let wipe = $state(0.5);
+  /* How much of the previous version shows through in onion skin. Half is
+     the useful default: at half, anything that moved reads as a double edge
+     and anything that did not reads as one. */
+  let onion = $state(0.5);
   let blinkShowing = $state<'current' | 'previous'>('current');
   let panning = $state(false);
 
@@ -261,6 +265,10 @@
       event.preventDefault();
       compareMode = compareMode === 'blink' ? 'off' : 'blink';
     }
+    if (compareSrc && key === 'o') {
+      event.preventDefault();
+      compareMode = compareMode === 'onion' ? 'off' : 'onion';
+    }
   };
 
   const nudge = (dx: number, dy: number): void => {
@@ -269,9 +277,14 @@
   };
 
   /* ---- A/B against the previous version ----
-     The wipe is the honest comparison for a still: same pixels, same place,
-     one boundary you control. Blink is the other half of the pair, because
-     small shifts are invisible side by side and obvious when they flicker. */
+     Three ways to ask the same question, because retouching answers to
+     different ones. The wipe is the honest comparison: same pixels, same
+     place, one boundary you control. Blink catches a small shift, which is
+     invisible side by side and obvious when it flickers. Onion skin catches
+     alignment: at half opacity anything that moved reads as a double edge.
+
+     All three ride the same transform as the picture itself, so a comparison
+     at 400% is comparing the same 400% of both versions. */
   $effect(() => {
     if (compareMode !== 'blink') {
       blinkShowing = 'current';
@@ -483,6 +496,15 @@
         </div>
       {:else if compareSrc && compareMode === 'blink' && blinkShowing === 'previous'}
         <img class="picture previous over" src={compareSrc} alt={compareLabel} draggable="false" />
+      {:else if compareSrc && compareMode === 'onion'}
+        <img
+          class="picture previous over"
+          class:pixelated
+          src={compareSrc}
+          alt={compareLabel}
+          draggable="false"
+          style:opacity={onion}
+        />
       {/if}
       <AnnotationOverlay
         strokes={canvasStrokes}
@@ -535,7 +557,15 @@
       </div>
     {/if}
     {#if compareMode !== 'off'}
-      <span class="ablabel">{blinkShowing === 'previous' || compareMode === 'slider' ? compareLabel : 'This version'}</span>
+      <span class="ablabel">
+        {#if compareMode === 'onion'}
+          {compareLabel} over this version
+        {:else if blinkShowing === 'previous' || compareMode === 'slider'}
+          {compareLabel}
+        {:else}
+          This version
+        {/if}
+      </span>
     {/if}
   </div>
 
@@ -564,7 +594,20 @@
         <button type="button" aria-pressed={compareMode === 'off'} onclick={() => { compareMode = 'off'; }}>Off</button>
         <button type="button" aria-pressed={compareMode === 'slider'} onclick={() => { compareMode = 'slider'; }}>Wipe</button>
         <button type="button" aria-pressed={compareMode === 'blink'} onclick={() => { compareMode = 'blink'; }} title="Alternate the two versions (B)">Blink</button>
+        <button type="button" aria-pressed={compareMode === 'onion'} onclick={() => { compareMode = 'onion'; }} title="Lay the previous version over this one (O)">Onion</button>
       </div>
+      {#if compareMode === 'onion'}
+        <Slider
+          label="Onion skin opacity"
+          length="90px"
+          min={0}
+          max={1}
+          step={0.01}
+          value={onion}
+          valueText={`${String(Math.round(onion * 100))} percent`}
+          oninput={(next) => { onion = next; }}
+        />
+      {/if}
     {/if}
     {#if allowDrawing && chrome === 'full'}
       <button type="button" aria-pressed={drawMode} onclick={toggleDraw}>Draw</button>
