@@ -799,3 +799,30 @@ the per frame contour is bit identical at default threads, at two and at one
 (checksum 1223.175175 in all three), and two threads was in fact the FASTEST of
 the three on a busy box, 4.5 s against 6.9 s, because it stops fighting
 itself.
+
+### Proved against the real library
+
+The whole case in one run. `BILLS_CC.mov`, the full 94 second spot, re-exported
+with a day-for-night look, audio dropped, renamed `CLIENT_final_v3.mov`. It
+carries no capture key, because it is a render, and no audio hash, because it is
+silent. Then measured against every clip in the library:
+
+```
+asset                          position  overlap  motion
+BILLS_CC.mov                         24     0.00       5   <- MOTION MATCHES
+EAGLES_CC.mov                        32     0.00      22
+CARDINALS_CC.mov                     31     0.00      35
+everything else                   29-33     0.00   29-38
+```
+
+At full length the positional hash fails harder than it did on the thirty
+second excerpt: 24 bits, and not one sample within the overlap tier's bar. Both
+picture tiers are blind here. The motion contour answers with 5 against a
+nearest rival of 22, which is 12 bits outside its own threshold. Without this
+tier that delivery is a dead end; with it, it is a confident match on evidence
+nothing about the file's name, time or sound could have provided.
+
+The library also shows the guards working rather than failing: the six clips
+with no contour are HDR bench fixtures of 1, 5 and 21 frames, which is fewer
+frames than there are windows, plus a static colour bar chart, which has no
+shape to hash.
