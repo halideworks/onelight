@@ -1094,6 +1094,7 @@ const registerWorkerRenditions = async (
   assetKind: string,
   state: WorkerResponse,
   blobRoot: string,
+  options: { targeted?: boolean } = {},
 ): Promise<void> => {
   if (!state.result?.renditions)
     throw new Error(state.error ?? "Transcode failed.");
@@ -1192,6 +1193,15 @@ const registerWorkerRenditions = async (
         ? `Reference audio ${shuttleFailure.kind} failed: ${shuttleFailure.error}`
         : "Reference and pitch-corrected shuttle audio were not produced.",
     );
+  }
+  /* A job that asked for one named rendition says nothing about whether the
+     version is ready: the full-size still is rendered on demand, long after
+     the version was ready, and judging readiness by what this job produced
+     would mark a perfectly good asset failed. Register and stop. */
+  if (options.targeted) {
+    if (!produced.size)
+      throw new Error("The requested rendition was not produced.");
+    return;
   }
   const primaries = primaryRenditionKinds(assetKind);
   if (!primaries.some((kind) => produced.has(kind))) {
@@ -1467,6 +1477,7 @@ const processJob = async (
     assetKind,
     state,
     blobRoot,
+    { targeted: onlyKinds.length > 0 },
   );
 };
 
