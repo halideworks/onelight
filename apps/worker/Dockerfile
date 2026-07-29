@@ -34,8 +34,14 @@ FROM node:22-trixie-slim
 # libraries are injected by the NVIDIA container runtime, while Debian's
 # ffmpeg supplies the NVENC wrapper. All are inert without a passed-through
 # GPU. vainfo is kept for render-node diagnostics.
+#
+# libraw-bin (dcraw_emu) demosaics camera RAW; libheif-examples (heif-dec)
+# decodes HEIC and HEIF, which nothing else in this image opens and which is
+# what every iPhone since 2017 hands over. Both are decoders only: the stills
+# ladder is still rendered by sharp, so orientation and colour behave the same
+# whatever opened the file.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg mesa-va-drivers mesa-vulkan-drivers libvulkan1 poppler-utils libvips-tools fonts-dejavu-core ca-certificates intel-media-va-driver libva2 libva-drm2 vainfo \
+  && apt-get install -y --no-install-recommends ffmpeg mesa-va-drivers mesa-vulkan-drivers libvulkan1 poppler-utils libvips-tools libraw-bin libheif-examples fonts-dejavu-core ca-certificates intel-media-va-driver libva2 libva-drm2 vainfo \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --create-home --uid 10001 onelight \
   && mkdir -p /data \

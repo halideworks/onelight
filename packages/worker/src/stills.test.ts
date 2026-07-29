@@ -151,7 +151,9 @@ describe("still source classification", () => {
     ])
       expect(isStillSource(name)).toBe(true);
     expect(isStillSource("a.mov")).toBe(false);
-    expect(isStillSource("a.cr3")).toBe(false);
+    /* RAW and HEIC have decoders now; see stills-decoders.test.ts. */
+    expect(isStillSource("a.cr3")).toBe(true);
+    expect(isStillSource("a.heic")).toBe(true);
   });
 
   it("knows which sources a browser can zoom on its own", () => {
@@ -163,6 +165,9 @@ describe("still source classification", () => {
     expect(needsStillFull("a.tif")).toBe(true);
     expect(needsStillFull("a.psd")).toBe(true);
     expect(needsStillFull("a.mov")).toBe(false);
+    /* A RAW and a HEIC are not browser formats either. */
+    expect(needsStillFull("a.cr3")).toBe(true);
+    expect(needsStillFull("a.heic")).toBe(true);
   });
 });
 

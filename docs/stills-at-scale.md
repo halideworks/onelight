@@ -357,13 +357,7 @@ full-size rung once where it cannot.
 - **Wipe and onion-skin compare.** The still viewer already loads the previous
   version for A/B; making it a wipe with synchronised zoom is player work that
   did not fit this pass. The A/B toggle stands.
-- **RAW and HEIC ingest.** Neither libvips as we ship it nor the worker image's
-  ffmpeg can decode them, so they stay `kind: file` rather than landing as
-  images with no picture. Adding libraw or libheif to the worker image is the
-  whole of the work; the format table in `packages/core/src/stills-format.ts`
-  is where it would be declared.
-- **PSB** (Photoshop's large document format) is version 2 of the PSD
-  container and ffmpeg's decoder refuses it.
+- **RAW, HEIC and PSB**: built, see "The rest of the formats" below.
 
 ## Measured on the built stack (2026-07-29)
 
@@ -385,3 +379,41 @@ nyx's four shared cores. Sources are 1600x1067 across the four formats.
 The run is what found the bug fixed in `4e22d09`: a targeted on-demand
 rendition job was running the full completion path and marking a perfectly
 good version failed. No test in the suite could see it.
+
+## The rest of the formats
+
+Three formats were left out of the first pass because nothing in the worker
+image could decode them. All three are in now.
+
+**RAW** goes through libraw's own `dcraw_emu` (`libraw-bin`): a half-size
+demosaic, which is plenty for a 2048 review still and several times faster
+than a full one, with the white balance the photographer set in camera rather
+than a guess. Twenty-three extensions, from `cr2` and `cr3` to `iiq` and
+`3fr`. The decoder writes netpbm rather than TIFF, and the result is read by
+`packages/worker/src/netpbm.ts`: libvips opens a sharp-written 16-bit TIFF
+perfectly and refuses dcraw's, which is a fight with someone else's tag layout
+that nobody needs to have. netpbm has no tags at all.
+
+**HEIC and HEIF** go through `heif-dec` (`libheif-examples`), which is the only
+decoder here that opens them. This is what every iPhone since 2017 hands over,
+so a phone shooting alongside a camera now lands in the same folder.
+
+**PSB** is read directly, by `packages/worker/src/psd-image.ts`. ffmpeg's PSD
+decoder refuses any container whose version is not 1, and PSB is version 2;
+the two formats are otherwise the same file with three fields widened. The
+reader takes both, so a PSD now has two independent paths: read directly, and
+ffmpeg if that fails on some file it cannot make sense of. What it reads is
+the composite, which is the picture Photoshop writes for software that is not
+Photoshop; a file saved without maximise compatibility has none, and the
+reader says so rather than guessing.
+
+Both new decoders are decoders only. The ladder is still rendered by sharp, so
+orientation, colour and the rungs behave the same whatever opened the file.
+
+Fixtures are synthesized in the tests, because a camera file cannot be
+committed: the DNG is written from the format's own documentation (a Bayer
+mosaic plus the tags libraw needs), and the HEIC is encoded by libheif and
+decoded back. Writing that DNG turned up the trap worth knowing: a TIFF value
+of four bytes or fewer lives in the entry itself, and writing an offset there
+instead makes libraw read the offset as the CFA pattern and demosaic a
+two-colour sensor.

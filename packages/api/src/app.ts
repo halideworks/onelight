@@ -1336,7 +1336,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     /* What the stills pipeline can render, and nothing else: a file that
        lands as "image" and cannot be decoded is a card with no picture, which
        is worse than an honest "file". The table is in core (stills-format.ts)
-       so the API, the worker and the review room cannot disagree about it. */
+       so the API, the worker and the review room cannot disagree about it: it
+       covers what sharp opens, Photoshop's two containers, the camera RAW
+       families through libraw, and HEIC through libheif. */
     if (isStillSource(filename)) return "image";
     if (extension === "pdf") return "pdf";
     return "file";

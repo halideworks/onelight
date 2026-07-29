@@ -26,9 +26,18 @@
    original. It is rendered on demand, once, for the formats a browser cannot
    open (TIFF, PSD, EXR, DPX), and cached as a rendition from then on. */
 
-import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, symlink } from "node:fs/promises";
 import path from "node:path";
-import { isFfmpegStill, isStillSource } from "@onelight/core";
+import {
+  isFfmpegStill,
+  isHeifStill,
+  isPhotoshopStill,
+  isRawStill,
+  isSharpStill,
+  isStillSource,
+} from "@onelight/core";
+import { readNetpbm } from "./netpbm.js";
+import { readPsdComposite } from "./psd-image.js";
 import { runProcess } from "./run-process.js";
 
 /* Loaded lazily for the same reason annotation-svg.ts does it: importing
@@ -83,9 +92,15 @@ export const STILL_FULL_MAX_EDGE = 8192;
 export {
   BROWSER_STILL_EXTENSIONS,
   FFMPEG_STILL_EXTENSIONS,
+  HEIF_STILL_EXTENSIONS,
+  PHOTOSHOP_STILL_EXTENSIONS,
+  RAW_STILL_EXTENSIONS,
   SHARP_STILL_EXTENSIONS,
   isBrowserStill,
   isFfmpegStill,
+  isHeifStill,
+  isPhotoshopStill,
+  isRawStill,
   isSharpStill,
   isStillSource,
   needsStillFull,
@@ -134,28 +149,134 @@ export const buildStillDecodeArgs = (
   outputPath,
 ];
 
-/** Decodes a source sharp cannot open into a PNG beside it, returning the path
-    to render from. Callers clean up via the returned `cleanup`. */
+/* RAW as libraw's own tool renders it: half-size demosaic (plenty for a 2048
+   review still and several times faster than a full one), the white balance
+   the photographer set in camera, sRGB, 16 bits, TIFF out. -a would guess at
+   the white balance; -w shows them the picture they took.
+
+   The output is netpbm rather than TIFF on purpose: dcraw's TIFF is not
+   something the libvips in this image will open, and netpbm has no tags to
+   disagree about (see netpbm.ts). dcraw_emu names its output after its input
+   and will not be argued out of it, so the caller hands it a path inside the
+   work directory, a symlink to the real source, and reads back that path
+   plus ".ppm". */
+export const buildRawDecodeArgs = (linkedSource: string): string[] => [
+  "-w",
+  "-h",
+  "-o",
+  "1",
+  "-6",
+  linkedSource,
+];
+
+/** HEIC and HEIF through libheif, which is the only decoder here that opens
+    them. PNG out, so nothing is thrown away twice. */
+export const buildHeifDecodeArgs = (
+  source: string,
+  outputPath: string,
+): string[] => [source, outputPath];
+
+interface OpenedSource {
+  /** A path sharp can open, when the decode produced a file. */
+  file?: string;
+  /** Interleaved RGB, when the decode happened in this process. */
+  raw?: { data: Uint8Array; width: number; height: number };
+  cleanup: () => Promise<void>;
+}
+
+const noCleanup = async (): Promise<void> => {};
+
+/** Whatever it takes to get pixels out of this file and into sharp. */
 const openable = async (
   source: string,
   workDirectory: string,
-  ffmpeg: string,
-): Promise<{ file: string; cleanup: () => Promise<void> }> => {
-  if (!isFfmpegStill(source)) return { file: source, cleanup: async () => {} };
+  tools: { ffmpeg: string; dcraw: string; heif: string },
+): Promise<OpenedSource> => {
+  if (isSharpStill(source)) return { file: source, cleanup: noCleanup };
+
+  /* Photoshop first, and in this process: ffmpeg refuses PSB outright, and
+     one reader handles both containers. A PSD it cannot make sense of (an
+     exotic compression, say) falls through to ffmpeg, which is where PSDs
+     were read before this. */
+  if (isPhotoshopStill(source)) {
+    try {
+      const composite = readPsdComposite(await readFile(source));
+      return {
+        raw: {
+          data: composite.data,
+          width: composite.width,
+          height: composite.height,
+        },
+        cleanup: noCleanup,
+      };
+    } catch (error) {
+      if (!isFfmpegStill(source)) throw error;
+      console.warn(
+        `[onelight-worker] reading ${path.basename(source)} directly failed, falling back to ffmpeg: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
   await mkdir(workDirectory, { recursive: true });
-  const decoded = path.join(
-    workDirectory,
-    `.decode-${path.basename(source)}.png`,
-  );
-  await runProcess(ffmpeg, buildStillDecodeArgs(source, decoded));
-  if (!(await fileExists(decoded)))
-    throw new Error(`ffmpeg decoded no image from ${path.basename(source)}.`);
-  return {
-    file: decoded,
-    cleanup: async () => {
-      await rm(decoded, { force: true }).catch(() => undefined);
-    },
+  const decodeTo = async (
+    extension: string,
+    command: string,
+    args: (output: string) => string[],
+  ): Promise<OpenedSource> => {
+    const decoded = path.join(
+      workDirectory,
+      `.decode-${path.basename(source)}.${extension}`,
+    );
+    await runProcess(command, args(decoded));
+    if (!(await fileExists(decoded)))
+      throw new Error(
+        `${path.basename(command)} decoded no image from ${path.basename(source)}.`,
+      );
+    return {
+      file: decoded,
+      cleanup: async () => {
+        await rm(decoded, { force: true }).catch(() => undefined);
+      },
+    };
   };
+
+  if (isRawStill(source)) {
+    /* A symlink rather than a copy: a RAW is tens of megabytes and the
+       decoder only ever reads it. The blob store is never written to. */
+    const linked = path.join(workDirectory, `.raw-${path.basename(source)}`);
+    await rm(linked, { force: true }).catch(() => undefined);
+    await symlink(source, linked);
+    const decoded = `${linked}.ppm`;
+    const cleanup = async (): Promise<void> => {
+      await rm(linked, { force: true }).catch(() => undefined);
+      await rm(decoded, { force: true }).catch(() => undefined);
+    };
+    try {
+      await runProcess(tools.dcraw, buildRawDecodeArgs(linked));
+      if (!(await fileExists(decoded)))
+        throw new Error(
+          `dcraw_emu decoded no image from ${path.basename(source)}.`,
+        );
+      const image = readNetpbm(await readFile(decoded));
+      await cleanup();
+      return {
+        raw: { data: image.data, width: image.width, height: image.height },
+        cleanup: noCleanup,
+      };
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
+  }
+  if (isHeifStill(source))
+    return decodeTo("png", tools.heif, (output) =>
+      buildHeifDecodeArgs(source, output),
+    );
+  return decodeTo("png", tools.ffmpeg, (output) =>
+    buildStillDecodeArgs(source, output),
+  );
 };
 
 /* Every rung is written to a temp name and renamed on success, the same
@@ -165,22 +286,40 @@ export const renderStillRung = async (
   source: string,
   outputPath: string,
   rung: StillRung,
-  options: { ffmpeg?: string; maxEdge?: number } = {},
+  options: {
+    ffmpeg?: string;
+    dcraw?: string;
+    heif?: string;
+    maxEdge?: number;
+  } = {},
 ): Promise<StillRenderResult> => {
-  const ffmpeg = options.ffmpeg ?? process.env.FFMPEG_PATH ?? "ffmpeg";
+  const tools = {
+    ffmpeg: options.ffmpeg ?? process.env.FFMPEG_PATH ?? "ffmpeg",
+    dcraw: options.dcraw ?? process.env.DCRAW_PATH ?? "dcraw_emu",
+    heif: options.heif ?? process.env.HEIF_DEC_PATH ?? "heif-dec",
+  };
   const sharp = await loadSharp();
   const directory = path.dirname(outputPath);
   await mkdir(directory, { recursive: true });
-  const opened = await openable(source, directory, ffmpeg);
+  const opened = await openable(source, directory, tools);
   const temporary = path.join(directory, `.tmp-${path.basename(outputPath)}`);
   try {
     /* failOn "none" so a truncated JPEG with a good first two thirds still
        produces a picture; a reviewer being shown most of a frame beats being
        shown a monogram and the word "failed". */
-    const input = sharp(opened.file, {
-      failOn: "none",
-      limitInputPixels: false,
-    });
+    const input = opened.raw
+      ? sharp(opened.raw.data, {
+          raw: {
+            width: opened.raw.width,
+            height: opened.raw.height,
+            channels: 3,
+          },
+          limitInputPixels: false,
+        })
+      : sharp(opened.file as string, {
+          failOn: "none",
+          limitInputPixels: false,
+        });
     const metadata = await input.metadata();
     /* rotate() with no argument means "apply the EXIF orientation", and it
        must come before resize or the fit box is measured on the wrong axis. */
