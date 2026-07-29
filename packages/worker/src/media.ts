@@ -7,6 +7,7 @@ import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
 import { ALL_FORMATS, FilePathSource, Input } from "mediabunny";
 import { PROCESS_IDLE_TIMEOUT_MS, runProcess } from "./run-process.js";
 import {
+  STILL_FULL_RUNG,
   STILL_LADDER,
   describeStillFile,
   isStillSource,
@@ -2242,7 +2243,9 @@ export const stillRungFor = (
   outputKind: string,
 ): StillRung | undefined =>
   isStillSource(sourceKey)
-    ? STILL_LADDER.find((rung) => rung.kind === outputKind)
+    ? [...STILL_LADDER, STILL_FULL_RUNG].find(
+        (rung) => rung.kind === outputKind,
+      )
     : undefined;
 
 const fileReady = async (file: string): Promise<boolean> => {

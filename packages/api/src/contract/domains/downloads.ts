@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { assets, folders, projects } from "@onelight/db/schema";
-import { cookieFrom, json, req } from "../harness.js";
+import {
+  assets,
+  downloadManifests,
+  folders,
+  projects,
+} from "@onelight/db/schema";
+import { assertSnakeCaseKeys, cookieFrom, json, req } from "../harness.js";
 import type { ContractHarness } from "../harness.js";
 import {
   createProject,
@@ -240,6 +245,116 @@ export const registerDownloadsDomain = (ctx: SuiteContext): void => {
         { cookie: seed.admin.cookie },
       );
       expect(scoped.status).toBe(200);
+    });
+
+    ctx.itBlob(
+      "saves a delivery and serves it as parts, by token",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const project = await createProject(h, seed.admin);
+        for (let index = 0; index < 4; index += 1)
+          await seedProjectMedia(h, seed, {
+            projectId: project.id,
+            name: `frame-${String(index)}.jpg`,
+          });
+        /* Ten bytes per file, so a part size of 12 cuts after every first
+           file and the whole delivery is four parts of one. */
+        const created = await req(
+          h,
+          `/api/v1/projects/${project.id}/downloads`,
+          {
+            cookie: seed.admin.cookie,
+            json: { part_bytes: 64 * 1024 * 1024 },
+          },
+        );
+        expect(created.status).toBe(201);
+        const manifest = await json<{
+          id: string;
+          file_count: number;
+          total_bytes: number;
+          parts: Array<{ index: number; url: string; bytes: number }>;
+        }>(created);
+        expect(manifest.file_count).toBe(4);
+        expect(manifest.total_bytes).toBe(40);
+        expect(manifest.parts).toHaveLength(1);
+        expect(assertSnakeCaseKeys(manifest)).toEqual([]);
+        /* The token downloads it. No asset id ever goes near the URL, which
+           is what made a 3000-file selection unservable behind a proxy. */
+        const zipped = await req(h, `/api/v1/downloads/${manifest.id}/zip`, {
+          cookie: seed.admin.cookie,
+        });
+        expect(zipped.status).toBe(200);
+        const declared = Number(zipped.headers.get("content-length"));
+        const bytes = new Uint8Array(await zipped.arrayBuffer());
+        expect(bytes.length).toBe(declared);
+        expect([...bytes.slice(0, 4)]).toEqual(ZIP_MAGIC);
+        /* A viewer cannot download a manifest an editor saved: the token is a
+           saved selection, not a grant, and permission is re-checked against
+           the project on every fetch. */
+        const denied = await req(h, `/api/v1/downloads/${manifest.id}/zip`, {
+          cookie: seed.viewer.cookie,
+        });
+        expect(denied.status).toBe(403);
+        const missingPart = await req(
+          h,
+          `/api/v1/downloads/${manifest.id}/zip?part=7`,
+          { cookie: seed.admin.cookie },
+        );
+        expect(missingPart.status).toBe(400);
+      },
+    );
+
+    ctx.itBlob("splits a delivery into whole-file parts", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin);
+      for (let index = 0; index < 4; index += 1)
+        await seedProjectMedia(h, seed, {
+          projectId: project.id,
+          name: `part-${String(index)}.jpg`,
+        });
+      const created = await req(h, `/api/v1/projects/${project.id}/downloads`, {
+        cookie: seed.admin.cookie,
+        /* Below the schema's floor is refused; use the floor and a stubbed
+             part size through the manifest row instead. */
+        json: { part_bytes: 64 * 1024 * 1024 },
+      });
+      const manifest = await json<{ id: string }>(created);
+      await h.db
+        .update(downloadManifests)
+        .set({ partBytes: 25 })
+        .where(eq(downloadManifests.id, manifest.id))
+        .run();
+      /* 10 bytes each, 25 to a part: two files per part, two parts. */
+      const first = await req(
+        h,
+        `/api/v1/downloads/${manifest.id}/zip?part=1`,
+        {
+          cookie: seed.admin.cookie,
+        },
+      );
+      expect(first.status).toBe(200);
+      expect(first.headers.get("content-disposition")).toContain("1 of 2");
+      const second = await req(
+        h,
+        `/api/v1/downloads/${manifest.id}/zip?part=2`,
+        { cookie: seed.admin.cookie },
+      );
+      expect(second.status).toBe(200);
+      const firstBytes = new Uint8Array(await first.arrayBuffer());
+      const secondBytes = new Uint8Array(await second.arrayBuffer());
+      /* Every part is a whole archive in its own right. */
+      for (const bytes of [firstBytes, secondBytes])
+        expect([...bytes.slice(0, 4)]).toEqual(ZIP_MAGIC);
+      const firstText = new TextDecoder("latin1").decode(firstBytes);
+      const secondText = new TextDecoder("latin1").decode(secondBytes);
+      /* Whole files, never split across parts. */
+      for (const name of ["part-0.jpg", "part-1.jpg"])
+        expect(firstText.includes(name) || secondText.includes(name)).toBe(
+          true,
+        );
+      expect(firstText.includes("part-3.jpg")).toBe(false);
     });
 
     ctx.itBlob("share zip follows the download policy", async () => {

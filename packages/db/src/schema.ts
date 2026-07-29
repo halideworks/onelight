@@ -366,6 +366,9 @@ export const assets = sqliteTable(
     displayTransfer: text("display_transfer", {
       enum: ["srgb", "gamma22", "bt1886"],
     }),
+    /* The photographer's own shortlist, which is not the client's approval:
+       when it was picked, or null. */
+    selectedAt: integer("selected_at"),
     deletedAt: integer("deleted_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
@@ -377,6 +380,10 @@ export const assets = sqliteTable(
       table.id,
     ),
     stackIndex: index("assets_stack_idx").on(table.projectId, table.stackKey),
+    selectedIndex: index("assets_selected_idx").on(
+      table.projectId,
+      table.selectedAt,
+    ),
   }),
 );
 
@@ -1018,6 +1025,35 @@ export const exportJobs = sqliteTable("export_jobs", {
   finishedAt: integer("finished_at"),
 });
 
+/** A chosen delivery, so it can be downloaded by a short token instead of a
+    query string carrying every asset id, and served as several archives
+    rather than one impossible file. */
+export const downloadManifests = sqliteTable(
+  "download_manifests",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id),
+    name: text("name").notNull().default(""),
+    assetIdsJson: text("asset_ids_json").notNull().default("[]"),
+    folderId: text("folder_id"),
+    /** Bytes per archive when the delivery is split; null is one archive. */
+    partBytes: integer("part_bytes"),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (table) => ({
+    projectIndex: index("download_manifests_project_idx").on(
+      table.projectId,
+      table.id,
+    ),
+  }),
+);
+
 export const workspaceRelations = relations(workspaces, ({ many }) => ({
   users: many(users),
   projects: many(projects),
@@ -1066,6 +1102,7 @@ export const schema = {
   exportJobs,
   auditLog,
   appSettings,
+  downloadManifests,
 };
 
 export type Workspace = typeof workspaces.$inferSelect;

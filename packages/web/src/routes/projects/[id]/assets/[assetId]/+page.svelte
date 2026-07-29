@@ -21,7 +21,7 @@
   import { copyText } from '$lib/clipboard.js';
   import { dismissable } from '$lib/dismiss.js';
   import { holdRepeat } from '$lib/hold-repeat.js';
-  import { replaceState } from '$app/navigation';
+  import { goto, replaceState } from '$app/navigation';
   import { api, apiDelete, apiPatch, apiPost, apiPut, messageFrom } from '$lib/api.js';
   import { uploadFile } from '$lib/upload.js';
   import { projectEvents } from '$lib/sse.svelte.js';
@@ -46,6 +46,8 @@
     kind: string;
     status: string;
     current_version_id: string | null;
+    folder_id?: string | null;
+    selected?: boolean;
     has_thumbnail?: boolean;
     display_transfer?: 'srgb' | 'bt1886' | null;
     updated_at?: number;
@@ -855,6 +857,8 @@
     const pid = projectId;
     if (pid) {
       void loadMembers(pid);
+      /* The folder's order, for [ and ] and for the neighbour prefetch. */
+      void loadSiblings();
       /* The project's public identity, for the address bar and the links
          out; the page works before it arrives. */
       void api<{ id: string; public_id: string; name: string; my_role?: string | null }>(
@@ -1528,6 +1532,184 @@
     }
   };
 
+
+  /* ---- moving through the folder ----
+
+     Reviewing a delivery meant going back to the grid between every frame:
+     there was no way from one asset to the next inside the room. The folder's
+     order is the room's order, and the neighbours are prefetched so the next
+     picture is already decoded when it is asked for.
+
+     The list is paged in behind the room rather than blocking it, because a
+     folder can hold a whole shoot. */
+  type Sibling = { id: string; public_id: string; name: string };
+  let siblings = $state<Sibling[]>([]);
+  let siblingCursor: string | null = null;
+  let siblingsComplete = $state(false);
+  let siblingsLoading = false;
+
+  const siblingIndex = $derived.by(() => {
+    const current = asset;
+    return current
+      ? siblings.findIndex((entry) => entry.id === current.id)
+      : -1;
+  });
+  const prevSibling = $derived(
+    siblingIndex > 0 ? (siblings[siblingIndex - 1] ?? null) : null
+  );
+  const nextSibling = $derived(
+    siblingIndex >= 0 ? (siblings[siblingIndex + 1] ?? null) : null
+  );
+
+  const loadSiblingPage = async (): Promise<boolean> => {
+    const pid = projectId;
+    if (!pid || siblingsLoading || siblingsComplete) return false;
+    siblingsLoading = true;
+    try {
+      const query = new URLSearchParams({ limit: '200' });
+      if (asset?.folder_id) query.set('folder_id', asset.folder_id);
+      if (siblingCursor) query.set('cursor', siblingCursor);
+      const page = await api<{
+        items: Sibling[];
+        next_cursor: string | null;
+      }>(`/api/v1/projects/${pid}/assets?${query.toString()}`);
+      const known = new Set(siblings.map((entry) => entry.id));
+      siblings = [
+        ...siblings,
+        ...page.items.filter((entry) => !known.has(entry.id))
+      ];
+      siblingCursor = page.next_cursor;
+      siblingsComplete = !page.next_cursor;
+      return true;
+    } catch {
+      siblingsComplete = true;
+      return false;
+    } finally {
+      siblingsLoading = false;
+    }
+  };
+
+  /* Enough pages to know where this asset sits, and one more so there is a
+     next to go to. A deep folder pages in the background; the buttons appear
+     as soon as the neighbours are known. */
+  const loadSiblings = async (): Promise<void> => {
+    siblings = [];
+    siblingCursor = null;
+    siblingsComplete = false;
+    for (let step = 0; step < 40; step += 1) {
+      if (!(await loadSiblingPage())) break;
+      const current = asset;
+      const index = current
+        ? siblings.findIndex((entry) => entry.id === current.id)
+        : -1;
+      if (index >= 0 && (index + 1 < siblings.length || siblingsComplete)) break;
+    }
+  };
+
+  /* The next picture, fetched before it is asked for. Two small requests
+     against a cache the browser will hit anyway when the room opens, which is
+     the difference between stepping through a shoot and waiting through one.
+     Deliberately only the next one: prefetching a whole folder is how a
+     review tool becomes the reason the office wifi is slow. */
+  let prefetched = new Set<string>();
+  const prefetchSibling = async (sibling: Sibling | null): Promise<void> => {
+    if (!sibling || prefetched.has(sibling.id)) return;
+    prefetched.add(sibling.id);
+    try {
+      const versionList = await api<{ items: Array<{ id: string }> }>(
+        `/api/v1/assets/${sibling.id}/versions`
+      );
+      const current = versionList.items[0];
+      if (!current) return;
+      const listing = await api<{ items: Rendition[] }>(
+        `/api/v1/versions/${current.id}/renditions`
+      );
+      const still = pickStill(listing.items);
+      const url = still ? urlForRendition(still) : null;
+      if (url) await fetch(url, { mode: 'cors', credentials: 'include' });
+    } catch {
+      /* A prefetch that fails costs nothing: the room fetches it again. */
+    }
+  };
+
+  $effect(() => {
+    const next = nextSibling;
+    if (next) void prefetchSibling(next);
+  });
+
+  const goToSibling = (sibling: Sibling | null): void => {
+    if (!sibling) return;
+    void goto(
+      `/projects/${projectSeg}/assets/${pretty(sibling.public_id, sibling.name)}`,
+      { keepFocus: true, noScroll: true }
+    );
+  };
+
+  /* ---- keyboard triage ----
+
+     A shoot is approved in one pass, from the keyboard, without the mouse
+     ever leaving the desk: A approves, X asks for changes, U clears the
+     decision, and [ and ] move through the folder. The bracket keys rather
+     than the arrows because the arrows step frames in the player, and a room
+     that serves both a movie and a photograph cannot take them for this. */
+  /* The shortlist toggle. A photographer picks before anyone approves, and
+     the list of picked filenames is the thing the retoucher works from. */
+  const toggleSelected = async (): Promise<void> => {
+    if (!asset) return;
+    try {
+      asset = await apiPatch<Asset>(`/api/v1/assets/${asset.id}`, {
+        selected: !asset.selected
+      });
+      error = '';
+    } catch (caught) {
+      error = messageFrom(caught, 'The select could not be changed.');
+    }
+  };
+
+  const TRIAGE_KEYS: Record<string, string> = {
+    a: 'approved',
+    x: 'changes_requested',
+    u: 'none',
+    r: 'in_review'
+  };
+
+  const typingIn = (target: EventTarget | null): boolean => {
+    const node = target as HTMLElement | null;
+    if (!node) return false;
+    const tag = node.tagName;
+    return (
+      tag === 'INPUT' ||
+      tag === 'TEXTAREA' ||
+      tag === 'SELECT' ||
+      node.isContentEditable === true
+    );
+  };
+
+  const onRoomKeydown = (event: KeyboardEvent): void => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (typingIn(event.target)) return;
+    if (event.key.toLowerCase() === 's') {
+      event.preventDefault();
+      void toggleSelected();
+      return;
+    }
+    if (event.key === '[') {
+      event.preventDefault();
+      goToSibling(prevSibling);
+      return;
+    }
+    if (event.key === ']') {
+      event.preventDefault();
+      goToSibling(nextSibling);
+      return;
+    }
+    const status = TRIAGE_KEYS[event.key.toLowerCase()];
+    if (status && asset) {
+      event.preventDefault();
+      void updateApproval(status);
+    }
+  };
+
   const seekToComment = (comment: Comment): void => {
     if (comment.frame_in === null) return;
     /* A ranged note re-arms its marks, so the span shows on the timeline
@@ -1550,6 +1732,8 @@
 </script>
 
 <svelte:head><title>{asset?.name ?? 'Review room'} | Onelight</title></svelte:head>
+
+<svelte:window onkeydown={onRoomKeydown} />
 
 <main class="review">
   <header class="topbar">
@@ -1746,6 +1930,42 @@
           </div>
         {/if}
       </div>
+      <!-- Through the folder without going back to it. The keys are the fast
+           path (A, X, U to decide, [ and ] to move); the buttons are how
+           anyone finds out the keys exist. -->
+      <button
+        type="button"
+        class="quiet pick"
+        class:picked={asset.selected}
+        onclick={() => void toggleSelected()}
+        aria-pressed={asset.selected ? 'true' : 'false'}
+        title="Shortlist this frame (S)"
+      >{asset.selected ? 'Selected' : 'Select'}</button>
+      {#if prevSibling || nextSibling}
+        <span class="stepper">
+          <button
+            type="button"
+            class="quiet"
+            disabled={!prevSibling}
+            title={prevSibling ? `Previous: ${prevSibling.name} ([)` : 'First in this folder'}
+            onclick={() => goToSibling(prevSibling)}
+            aria-label="Previous asset"
+          >&#8592;</button>
+          {#if siblingIndex >= 0}
+            <span class="stepcount tc">
+              {siblingIndex + 1}{siblingsComplete ? ` of ${siblings.length}` : ''}
+            </span>
+          {/if}
+          <button
+            type="button"
+            class="quiet"
+            disabled={!nextSibling}
+            title={nextSibling ? `Next: ${nextSibling.name} (])` : 'Last in this folder'}
+            onclick={() => goToSibling(nextSibling)}
+            aria-label="Next asset"
+          >&#8594;</button>
+        </span>
+      {/if}
       <label class="approval">Approval
         <select value={asset.status} onchange={(event) => updateApproval((event.currentTarget as HTMLSelectElement).value)}>
           <option value="none">No decision</option>
@@ -2292,6 +2512,9 @@
   .caret { color: var(--n-600); font-size: 10px; }
   .vpanel { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 280px; padding: 6px; background: var(--n-150); border-radius: var(--radius-lg); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); }
   .grow { flex: 1; }
+  .pick[aria-pressed='true'] { background: var(--accent); color: var(--n-000); }
+  .stepper { display: flex; align-items: center; gap: 6px; }
+  .stepcount { color: var(--n-600); font-size: var(--text-13); min-width: 3ch; text-align: center; }
   .approval { display: flex; align-items: center; gap: 8px; color: var(--n-600); font-size: var(--text-13); }
   select, input, textarea { border: 0; border-radius: var(--radius); background: var(--n-200); color: var(--n-900); padding: 8px 10px; }
 

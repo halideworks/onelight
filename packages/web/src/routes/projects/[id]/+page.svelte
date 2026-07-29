@@ -38,6 +38,7 @@
     name: string;
     kind: string;
     status: string;
+    selected?: boolean;
     current_version_id?: string | null;
     deleted_at?: number | null;
     created_at: number;
@@ -149,8 +150,13 @@
 
   /* One place decides what the grid is showing: a folder, or everything. A
      share's contents live on the share's own page now. */
+  /* The shortlist filter. A photographer picks frames, then wants to see only
+     those, then wants the list of their names to hand to the retoucher. */
+  let selectsOnly = $state(false);
   const listSuffix = (): string =>
-    selectedFolder ? `&folder_id=${encodeURIComponent(selectedFolder)}` : '';
+    `${selectedFolder ? `&folder_id=${encodeURIComponent(selectedFolder)}` : ''}${
+      selectsOnly ? '&selected=1' : ''
+    }`;
 
   /* The project's own bin. Workspace settings has an admin-only ledger of
      everything trashed anywhere; what a person in a room needs is what THEY
@@ -1134,6 +1140,52 @@
   const initialView = (): 'grid' | 'list' =>
     typeof localStorage !== 'undefined' && localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'grid';
   let view = $state<'grid' | 'list'>(initialView());
+  const toggleSelectsOnly = (): void => {
+    selectsOnly = !selectsOnly;
+    const id = projectId;
+    if (id) void loadAssets(id);
+  };
+
+  /* The picks as a list of filenames, which is the artifact that otherwise
+     gets rebuilt by hand in a spreadsheet. Pages through the whole shortlist
+     rather than exporting whatever happens to be loaded. */
+  const exportSelects = async (): Promise<void> => {
+    const id = projectId;
+    if (!id) return;
+    const names: string[] = [];
+    let cursor: string | null = null;
+    try {
+      for (let page = 0; page < 200; page += 1) {
+        const query: string = `limit=200&selected=1${
+          selectedFolder ? `&folder_id=${encodeURIComponent(selectedFolder)}` : ''
+        }${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+        const answer: { items: Asset[]; next_cursor: string | null } = await api<{
+          items: Asset[];
+          next_cursor: string | null;
+        }>(`/api/v1/projects/${id}/assets?${query}`);
+        for (const entry of answer.items) names.push(entry.name);
+        cursor = answer.next_cursor;
+        if (!cursor) break;
+      }
+    } catch (caught) {
+      error = messageFrom(caught, 'The selects could not be listed.');
+      return;
+    }
+    if (!names.length) {
+      error = 'Nothing is selected yet.';
+      return;
+    }
+    const blob = new Blob([`${names.join('\n')}\n`], {
+      type: 'text/plain;charset=utf-8'
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${(selectedName || 'selects').replace(/[^\w.-]+/g, '_')}-selects.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const setView = (next: 'grid' | 'list'): void => {
     view = next;
     try {
@@ -1457,20 +1509,48 @@
     };
   };
 
-  const downloadSelection = (): void => {
+  /* A delivery is saved first, then fetched by token.
+
+     Passing the selection in the query string is about 81 KB of URL for 3000
+     files: Caddy tolerates it, an nginx default and the Cloudflare URL cap do
+     not. Saving it also lets the server hand back several archives instead of
+     one impossible file, which is what a client on hotel wifi actually needs. */
+  const PART_BYTES = 25 * 1024 * 1024 * 1024;
+  let deliveryParts = $state<Array<{ index: number; bytes: number; url: string }>>([]);
+  let deliveryName = $state('');
+
+  const saveDelivery = async (body: Record<string, unknown>): Promise<void> => {
     const id = projectId;
-    if (!id || selected.length === 0) return;
-    window.location.assign(
-      `/api/v1/projects/${id}/zip?asset_ids=${encodeURIComponent(selected.join(','))}`
-    );
+    if (!id) return;
+    try {
+      const manifest = await apiPost<{
+        name: string;
+        file_count: number;
+        parts: Array<{ index: number; bytes: number; url: string }>;
+      }>(`/api/v1/projects/${id}/downloads`, { ...body, part_bytes: PART_BYTES });
+      const only = manifest.parts.length === 1 ? manifest.parts[0] : null;
+      if (only) {
+        deliveryParts = [];
+        window.location.assign(only.url);
+        return;
+      }
+      /* More than one archive: a browser cannot be told to start several
+         downloads at once without being treated as a pop-up, so the parts are
+         listed and taken one at a time. */
+      deliveryName = manifest.name;
+      deliveryParts = manifest.parts;
+    } catch (caught) {
+      error = messageFrom(caught, 'The download could not be prepared.');
+    }
+  };
+
+  const downloadSelection = (): void => {
+    if (selected.length === 0) return;
+    void saveDelivery({ asset_ids: [...selected] });
   };
 
   const downloadFolder = (folderId: string): void => {
-    const id = projectId;
-    if (id)
-      window.location.assign(
-        `/api/v1/projects/${id}/zip?folder_id=${encodeURIComponent(folderId)}`
-      );
+    void saveDelivery({ folder_id: folderId });
   };
 
   /* ---- batch operations ---- */
@@ -2587,6 +2667,18 @@
             </span>
           {/if}
           {#if !showTrash}
+            <button
+              type="button"
+              class="viewbtn"
+              aria-pressed={selectsOnly}
+              onclick={toggleSelectsOnly}
+              title="Show only the shortlist"
+            >Selects</button>
+            {#if selectsOnly}
+              <button type="button" class="quiet" onclick={() => void exportSelects()}>
+                Export list
+              </button>
+            {/if}
             <div class="views" role="group" aria-label="View mode">
               <button type="button" class="viewbtn" aria-pressed={view === 'grid'} onclick={() => setView('grid')}>Grid</button>
               <button type="button" class="viewbtn" aria-pressed={view === 'list'} onclick={() => setView('list')}>List</button>
@@ -2658,6 +2750,25 @@
               </span>
               <button type="button" class="quiet danger" onclick={() => void trashSelected()}>Trash</button>
               <button type="button" class="quiet" onclick={() => { selected = []; anchor = null; }}>Clear</button>
+            {/if}
+            {#if deliveryParts.length > 0}
+              <!-- A delivery too large for one archive comes back as several,
+                   each complete and resumable on its own. -->
+              <div class="parts" role="status">
+                <p class="matchline">
+                  <strong>{deliveryName || 'This delivery'}</strong>
+                  is {deliveryParts.length} archives. Take them one at a time; each is
+                  complete on its own and resumes if it stops.
+                </p>
+                <div class="matchactions">
+                  {#each deliveryParts as part (part.index)}
+                    <a class="uploadbtn ready" href={part.url} download>
+                      Part {part.index} ({formatBytes(part.bytes)})
+                    </a>
+                  {/each}
+                  <button type="button" class="quiet" onclick={() => (deliveryParts = [])}>Done</button>
+                </div>
+              </div>
             {/if}
             {#if !batch.running && batch.errors.length > 0}
               <ul class="batch-errors">
@@ -3213,6 +3324,8 @@
      several thousand files does not push the browser off the bottom of the
      page. */
   .queue { list-style: none; margin: var(--pad) 0 0; padding: 0; display: grid; gap: 2px; max-height: 52vh; overflow-y: auto; overscroll-behavior: contain; }
+  .parts { margin-top: var(--pad); padding: 12px 14px; border-radius: var(--radius); background: var(--ink-100); display: grid; gap: 10px; }
+  .parts a.uploadbtn { text-decoration: none; display: inline-flex; align-items: center; }
   .matchoffer { margin-top: var(--pad); padding: 12px 14px; border-radius: var(--radius); background: var(--ink-100); display: grid; gap: 10px; }
   .matchline { margin: 0; font-size: var(--text-14); }
   .matchactions { display: flex; flex-wrap: wrap; gap: 8px; }

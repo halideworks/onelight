@@ -177,6 +177,15 @@ const assetsHaveStackKey = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes("stack_key"));
 };
 
+const assetsHaveSelectedAt = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("selected_at"));
+};
+
 const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -545,6 +554,22 @@ export const d1Migrations: D1Migration[] = [
     statements: [
       "ALTER TABLE assets ADD COLUMN stack_key TEXT NOT NULL DEFAULT ''",
       "CREATE INDEX assets_stack_idx ON assets(project_id, stack_key)",
+    ],
+  },
+  {
+    name: "0030_download_manifests.sql",
+    applied: (binding) => tableExists(binding, "download_manifests"),
+    statements: [
+      "CREATE TABLE download_manifests (\n  id TEXT PRIMARY KEY,\n  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,\n  created_by TEXT NOT NULL REFERENCES users(id),\n  name TEXT NOT NULL DEFAULT '',\n  asset_ids_json TEXT NOT NULL DEFAULT '[]',\n  folder_id TEXT,\n  part_bytes INTEGER,\n  created_at INTEGER NOT NULL,\n  expires_at INTEGER NOT NULL\n)",
+      "CREATE INDEX download_manifests_project_idx ON download_manifests(project_id, id)",
+    ],
+  },
+  {
+    name: "0031_asset_selects.sql",
+    applied: assetsHaveSelectedAt,
+    statements: [
+      "ALTER TABLE assets ADD COLUMN selected_at INTEGER",
+      "CREATE INDEX assets_selected_idx ON assets(project_id, selected_at)",
     ],
   },
 ];

@@ -8760,6 +8760,19 @@
                     "has_thumbnail": {
                       "type": "boolean"
                     },
+                    "selected": {
+                      "type": "boolean"
+                    },
+                    "selected_at": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "display_transfer": {
                       "anyOf": [
                         {
@@ -8804,6 +8817,8 @@
                     "description",
                     "tags",
                     "has_thumbnail",
+                    "selected",
+                    "selected_at",
                     "display_transfer",
                     "deleted_at",
                     "created_at",
@@ -20532,6 +20547,15 @@
             }
           },
           {
+            "name": "selected",
+            "in": "query",
+            "required": false,
+            "description": "Pass 1 for the shortlist only.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "share_id",
             "in": "query",
             "required": false,
@@ -20608,6 +20632,19 @@
                           },
                           "has_thumbnail": {
                             "type": "boolean"
+                          },
+                          "selected": {
+                            "type": "boolean"
+                          },
+                          "selected_at": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
                           "display_transfer": {
                             "anyOf": [
@@ -20810,6 +20847,8 @@
                           "description",
                           "tags",
                           "has_thumbnail",
+                          "selected",
+                          "selected_at",
                           "display_transfer",
                           "deleted_at",
                           "created_at",
@@ -21158,6 +21197,19 @@
                           "has_thumbnail": {
                             "type": "boolean"
                           },
+                          "selected": {
+                            "type": "boolean"
+                          },
+                          "selected_at": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "display_transfer": {
                             "anyOf": [
                               {
@@ -21208,6 +21260,8 @@
                           "description",
                           "tags",
                           "has_thumbnail",
+                          "selected",
+                          "selected_at",
                           "display_transfer",
                           "deleted_at",
                           "created_at",
@@ -21344,6 +21398,19 @@
                     "has_thumbnail": {
                       "type": "boolean"
                     },
+                    "selected": {
+                      "type": "boolean"
+                    },
+                    "selected_at": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "display_transfer": {
                       "anyOf": [
                         {
@@ -21388,6 +21455,8 @@
                     "description",
                     "tags",
                     "has_thumbnail",
+                    "selected",
+                    "selected_at",
                     "display_transfer",
                     "deleted_at",
                     "created_at",
@@ -21477,6 +21546,9 @@
                       "approved",
                       "changes_requested"
                     ]
+                  },
+                  "selected": {
+                    "type": "boolean"
                   },
                   "description": {
                     "type": "string",
@@ -21569,6 +21641,19 @@
                     "has_thumbnail": {
                       "type": "boolean"
                     },
+                    "selected": {
+                      "type": "boolean"
+                    },
+                    "selected_at": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "display_transfer": {
                       "anyOf": [
                         {
@@ -21613,6 +21698,8 @@
                     "description",
                     "tags",
                     "has_thumbnail",
+                    "selected",
+                    "selected_at",
                     "display_transfer",
                     "deleted_at",
                     "created_at",
@@ -21818,6 +21905,19 @@
                     "has_thumbnail": {
                       "type": "boolean"
                     },
+                    "selected": {
+                      "type": "boolean"
+                    },
+                    "selected_at": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "display_transfer": {
                       "anyOf": [
                         {
@@ -21862,6 +21962,8 @@
                     "description",
                     "tags",
                     "has_thumbnail",
+                    "selected",
+                    "selected_at",
                     "display_transfer",
                     "deleted_at",
                     "created_at",
@@ -22344,6 +22446,19 @@
                         "has_thumbnail": {
                           "type": "boolean"
                         },
+                        "selected": {
+                          "type": "boolean"
+                        },
+                        "selected_at": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "display_transfer": {
                           "anyOf": [
                             {
@@ -22388,6 +22503,8 @@
                         "description",
                         "tags",
                         "has_thumbnail",
+                        "selected",
+                        "selected_at",
                         "display_transfer",
                         "deleted_at",
                         "created_at",
@@ -23073,6 +23190,19 @@
                     "has_thumbnail": {
                       "type": "boolean"
                     },
+                    "selected": {
+                      "type": "boolean"
+                    },
+                    "selected_at": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "display_transfer": {
                       "anyOf": [
                         {
@@ -23117,6 +23247,8 @@
                     "description",
                     "tags",
                     "has_thumbnail",
+                    "selected",
+                    "selected_at",
                     "display_transfer",
                     "deleted_at",
                     "created_at",
@@ -24358,6 +24490,114 @@
         }
       }
     },
+    "/api/v1/versions/{id}/still-full": {
+      "get": {
+        "summary": "The still at 1:1. A source a browser can decode answers with the original; a TIFF, PSD, EXR or DPX answers with a full-size rendition, rendering it on first request and 202 while it does.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "const": "ready"
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": [
+                        "original",
+                        "rendition"
+                      ]
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "source",
+                    "url"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "The full-size still is being rendered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/versions/{id}/download": {
       "get": {
         "summary": "Signed download for a version: kind=original (editor) or kind=proxy (viewer).",
@@ -24473,6 +24713,234 @@
             "in": "query",
             "required": false,
             "description": "Comma-separated asset ids to include.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Binary payload",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/downloads": {
+      "post": {
+        "summary": "Save a delivery: a folder, a selection, or the whole project, optionally split into archives of at most part_bytes. Answers with one URL per part. Replaces passing every asset id in a query string, which a proxy refuses at a few hundred files.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "folder_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "asset_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 100000
+                  },
+                  "part_bytes": {
+                    "type": "integer",
+                    "minimum": 67108864,
+                    "maximum": 1099511627776
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "file_count": {
+                      "type": "integer"
+                    },
+                    "total_bytes": {
+                      "type": "integer"
+                    },
+                    "expires_at": {
+                      "type": "integer"
+                    },
+                    "parts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "index": {
+                            "type": "integer"
+                          },
+                          "file_count": {
+                            "type": "integer"
+                          },
+                          "bytes": {
+                            "type": "integer"
+                          },
+                          "url": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "index",
+                          "file_count",
+                          "bytes",
+                          "url"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "file_count",
+                    "total_bytes",
+                    "expires_at",
+                    "parts"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downloads/{id}/zip": {
+      "get": {
+        "summary": "One archive of a saved delivery, streamed, with an exact length and honest range resume. ?part=N picks the part.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "part",
+            "in": "query",
+            "required": false,
+            "description": "Which part of a split delivery, from 1.",
             "schema": {
               "type": "string"
             }

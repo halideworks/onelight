@@ -28,6 +28,7 @@
 
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { isFfmpegStill, isStillSource } from "@onelight/core";
 import { runProcess } from "./run-process.js";
 
 /* Loaded lazily for the same reason annotation-svg.ts does it: importing
@@ -76,58 +77,19 @@ export const STILL_FULL_RUNG: StillRung = {
     browser for a texture no browser will allocate. */
 export const STILL_FULL_MAX_EDGE = 8192;
 
-/* Extensions sharp opens directly. Everything else that is still pictorial
-   goes through ffmpeg first. Kept as data because it is the table an operator
-   reads when asking "why did my .psb not work". */
-export const SHARP_STILL_EXTENSIONS = [
-  "jpg",
-  "jpeg",
-  "jpe",
-  "jfif",
-  "png",
-  "tif",
-  "tiff",
-  "webp",
-  "gif",
-  "avif",
-] as const;
-
-export const FFMPEG_STILL_EXTENSIONS = ["psd", "exr", "dpx"] as const;
-
-/* Formats a browser decodes on its own, so 1:1 zoom can point at the original
-   file instead of a rendition. A TIFF or a PSD is not among them, which is the
-   whole reason still_full exists. */
-export const BROWSER_STILL_EXTENSIONS = [
-  "jpg",
-  "jpeg",
-  "jpe",
-  "jfif",
-  "png",
-  "webp",
-  "gif",
-  "avif",
-] as const;
-
-const extensionOf = (filename: string): string =>
-  filename.toLowerCase().split(".").pop() ?? "";
-
-export const isSharpStill = (filename: string): boolean =>
-  (SHARP_STILL_EXTENSIONS as readonly string[]).includes(extensionOf(filename));
-
-export const isFfmpegStill = (filename: string): boolean =>
-  (FFMPEG_STILL_EXTENSIONS as readonly string[]).includes(
-    extensionOf(filename),
-  );
-
-export const isStillSource = (filename: string): boolean =>
-  isSharpStill(filename) || isFfmpegStill(filename);
-
-/** Whether a browser can open this file directly, which decides whether the
-    1:1 zoom needs a still_full rendition at all. */
-export const isBrowserStill = (filename: string): boolean =>
-  (BROWSER_STILL_EXTENSIONS as readonly string[]).includes(
-    extensionOf(filename),
-  );
+/* The format table lives in core: the API needs it to decide what an image
+   is, and the review room needs it to decide whether 1:1 zoom can use the
+   original. Re-exported here so this module still reads as the whole story. */
+export {
+  BROWSER_STILL_EXTENSIONS,
+  FFMPEG_STILL_EXTENSIONS,
+  SHARP_STILL_EXTENSIONS,
+  isBrowserStill,
+  isFfmpegStill,
+  isSharpStill,
+  isStillSource,
+  needsStillFull,
+} from "@onelight/core";
 
 export interface StillRenderResult {
   width: number;
@@ -334,8 +296,3 @@ export const describeStillFile = async (
 /** The rungs an image version gets at ingest. */
 export const stillLadderFor = (filename: string): StillRung[] =>
   isStillSource(filename) ? STILL_LADDER : [];
-
-/** Whether this source needs a still_full rendition for 1:1 zoom, or whether
-    the original serves. */
-export const needsStillFull = (filename: string): boolean =>
-  isStillSource(filename) && !isBrowserStill(filename);

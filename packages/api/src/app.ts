@@ -38,6 +38,8 @@ import {
   randomBytes,
   utf8,
   verifyTotp,
+  isStillSource,
+  needsStillFull,
   sha256,
   sha256Hex,
   stackKeyOf,
@@ -61,6 +63,7 @@ import {
   commentAttachments,
   commentReactions,
   auditLog,
+  downloadManifests,
   exportJobs,
   folders,
   identities,
@@ -1332,28 +1335,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       return "audio";
     /* What the stills pipeline can render, and nothing else: a file that
        lands as "image" and cannot be decoded is a card with no picture, which
-       is worse than an honest "file". sharp reads the first group directly;
-       ffmpeg decodes psd, exr and dpx for it (see packages/worker/stills.ts).
-       RAW and HEIC are absent on purpose: this image carries no decoder for
-       either, so they stay files until one is added. */
-    if (
-      [
-        "jpg",
-        "jpeg",
-        "jpe",
-        "jfif",
-        "png",
-        "tif",
-        "tiff",
-        "webp",
-        "gif",
-        "avif",
-        "psd",
-        "exr",
-        "dpx",
-      ].includes(extension ?? "")
-    )
-      return "image";
+       is worse than an honest "file". The table is in core (stills-format.ts)
+       so the API, the worker and the review room cannot disagree about it. */
+    if (isStillSource(filename)) return "image";
     if (extension === "pdf") return "pdf";
     return "file";
   };
@@ -1375,6 +1359,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
        /assets/:id/thumbnail?v=updated_at from it; no signed URL is needed
        because every internal surface that shows it is already authenticated. */
     has_thumbnail: Boolean(asset.thumbnailBlobKey),
+    /* The photographer's shortlist, distinct from the client's approval. */
+    selected: asset.selectedAt !== null,
+    selected_at: asset.selectedAt,
     /* The editor's reference-render transfer override, or null for auto. The
        client resolves the effective transfer from this plus the source color
        tag; viewers receive it read-only. */
@@ -10616,6 +10603,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
        check, rather than a second asset list that only shares use. The share
        must belong to this project; otherwise the filter would be a way to read
        one project's asset rows through another's permission check. */
+    /* selected=1 narrows the list to the shortlist, which is what the grid's
+       Selects filter and the list export both ask for. */
+    const selectedOnly = c.req.query("selected") === "1";
     const shareId = c.req.query("share_id");
     if (shareId) {
       const share = (
@@ -10637,6 +10627,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           eq(assets.projectId, c.req.param("id")),
           isNull(assets.deletedAt),
           folderId ? eq(assets.folderId, folderId) : undefined,
+          selectedOnly ? isNotNull(assets.selectedAt) : undefined,
           shareId
             ? inArray(
                 assets.id,
@@ -10815,6 +10806,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           : {}),
         ...(body.folder_id === undefined ? {} : { folderId: body.folder_id }),
         ...(body.status ? { status: body.status } : {}),
+        ...(body.selected === undefined
+          ? {}
+          : { selectedAt: body.selected ? env.clock.now() : null }),
         ...(body.description === undefined
           ? {}
           : { description: body.description }),
@@ -11481,6 +11475,108 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     });
   });
 
+  /* The picture at 1:1, for a source a browser cannot open.
+
+     A JPEG or a PNG needs nothing here: the original is a file the browser
+     decodes, so zooming past the review still just fetches it. A TIFF, a PSD,
+     an EXR or a DPX is not something any browser will draw, so the full-size
+     rung is rendered for them, once, the first time anyone actually zooms.
+
+     Making it at ingest instead would cost seconds and megabytes per file on
+     a delivery where most frames are never opened at all. */
+  api.get("/versions/:id/still-full", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const version = (
+      await env.db
+        .select()
+        .from(assetVersions)
+        .where(eq(assetVersions.id, c.req.param("id")))
+        .limit(1)
+        .all()
+    )[0];
+    if (!version) throw errors.notFound();
+    const asset = await assetForActor(version.assetId, actor);
+    if (asset.kind !== "image")
+      throw errors.validation("This version is not a still.");
+    const store = requireBlobStore();
+    void store;
+    /* The original serves as its own full-size picture wherever a browser can
+       decode it. */
+    if (!needsStillFull(version.originalFilename))
+      return c.json({
+        status: "ready",
+        source: "original",
+        url: await privateMediaUrl(
+          { versionId: version.id },
+          version.originalBlobKey,
+        ),
+      });
+    const existing = (
+      await env.db
+        .select()
+        .from(renditions)
+        .where(
+          and(
+            eq(renditions.versionId, version.id),
+            eq(renditions.kind, "still_full"),
+            isNull(renditions.shareId),
+          ),
+        )
+        .limit(1)
+        .all()
+    )[0];
+    if (existing)
+      return c.json({
+        status: "ready",
+        source: "rendition",
+        url: await privateMediaUrl({ versionId: version.id }, existing.blobKey),
+      });
+    /* Not made yet: ask for it and tell the client to come back. The
+       idempotency key means a hundred viewers zooming at once queue one job. */
+    const now = env.clock.now();
+    const idempotencyKey = `still_full:${version.id}`;
+    const queued = (
+      await env.db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(eq(jobs.idempotencyKey, idempotencyKey))
+        .limit(1)
+        .all()
+    )[0];
+    if (!queued)
+      await env.db
+        .insert(jobs)
+        .values({
+          id: env.ids.ulid(),
+          kind: "transcode",
+          payloadJson: JSON.stringify({
+            workspace_id: asset.projectId ? actor.workspaceId : null,
+            project_id: asset.projectId,
+            asset_id: asset.id,
+            version_id: version.id,
+            blob_key: version.originalBlobKey,
+            only: ["still_full"],
+          }),
+          idempotencyKey,
+          status: "queued",
+          /* Someone is looking at the screen waiting for this. */
+          priority: 1,
+          capabilityJson: "{}",
+          maxAttempts: 3,
+          attempts: 0,
+          runAfter: now,
+          createdAt: now,
+          startedAt: null,
+          heartbeatAt: null,
+          leaseExpiresAt: null,
+          finishedAt: null,
+          error: null,
+          workerId: null,
+        })
+        .run();
+    return c.json({ status: "processing" }, 202);
+  });
+
   /* Caption tracks ride the renditions listing internally and the share
      asset detail publicly; these routes are how they get there. The upload
      is raw WebVTT, one track per language, replace-on-put -- simple enough
@@ -11563,19 +11659,16 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     });
   });
 
-  /* A folder, a selection, or the whole project as one streamed zip of
-     originals. Editor for the same reason the single original is: this is
-     the negative, not the screener. */
-  api.get("/projects/:id/zip", requireAuth, async (c) => {
-    const actor = userFromContext(c);
-    const projectId = c.req.param("id");
-    await requireProject(projectId, actor, "editor");
+  /* The entries a project download is made of: the current version of every
+     chosen asset, filed under its folder path, with duplicate names made
+     unique. Shared by the query-string zip and the manifest download. */
+  const projectZipEntries = async (
+    projectId: string,
+    options: { folderId: string | null; assetIds: string[] },
+  ): Promise<{ entries: ZipEntry[]; scopeName: string }> => {
     const store = requireBlobStore();
-    const folderId = c.req.query("folder_id") ?? null;
-    const wantedIds = (c.req.query("asset_ids") ?? "")
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter(Boolean);
+    const folderId = options.folderId;
+    const wantedIds = options.assetIds;
     /* The folder tree, for archive paths and for expanding a folder pick
        into its descendants. */
     const folderRows = (await env.db
@@ -11665,13 +11758,166 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             .limit(1)
             .all()
         )[0]?.name ?? "project");
-    const zipName = `${
+    return { entries, scopeName };
+  };
+
+  const zipNameOf = (scopeName: string, suffix = ""): string =>
+    `${
       scopeName
         .replace(/[^\w.-]+/g, "_")
         .replace(/^_+|_+$/g, "")
         .slice(0, 80) || "files"
-    }.zip`;
-    return serveZip(c, entries, zipName);
+    }${suffix}.zip`;
+
+  /* A folder, a selection, or the whole project as one streamed zip of
+     originals. Editor for the same reason the single original is: this is
+     the negative, not the screener. */
+  api.get("/projects/:id/zip", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const projectId = c.req.param("id");
+    await requireProject(projectId, actor, "editor");
+    const { entries, scopeName } = await projectZipEntries(projectId, {
+      folderId: c.req.query("folder_id") ?? null,
+      assetIds: (c.req.query("asset_ids") ?? "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    });
+    return serveZip(c, entries, zipNameOf(scopeName));
+  });
+
+  /* A delivery chosen once, downloaded by a short token, and split into
+     archives a person can actually receive.
+
+     Two things were wrong with handing a browser one URL. The selection rode
+     in the query string, which is about 81 KB for 3000 files: fine on Caddy,
+     refused by an nginx default and past the Cloudflare 16 KB URL cap. And a
+     single 150 GB archive is a bad unit of delivery even when it resumes
+     correctly, which ours does.
+
+     A manifest is POSTed once. The reply says how many archives it is and how
+     big each one is, and each part is an ordinary zip: exact length, ETag,
+     ranged resume. Parts are cut on entry boundaries, so a part is always a
+     set of whole files. */
+  const MANIFEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+  const manifestParts = (
+    entries: ZipEntry[],
+    partBytes: number | null,
+  ): ZipEntry[][] => {
+    if (!partBytes || partBytes <= 0) return entries.length ? [entries] : [];
+    const parts: ZipEntry[][] = [];
+    let current: ZipEntry[] = [];
+    let size = 0;
+    for (const entry of entries) {
+      /* A file larger than the part size gets its own part rather than being
+         cut in half: a part must always be a set of whole files. */
+      if (current.length && size + entry.size > partBytes) {
+        parts.push(current);
+        current = [];
+        size = 0;
+      }
+      current.push(entry);
+      size += entry.size;
+    }
+    if (current.length) parts.push(current);
+    return parts;
+  };
+
+  api.post("/projects/:id/downloads", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const projectId = c.req.param("id");
+    await requireProject(projectId, actor, "editor");
+    const body = await jsonBody(c, bodies.downloadManifestCreate);
+    if (body.folder_id)
+      await requireDestinationFolder(projectId, body.folder_id);
+    const { entries, scopeName } = await projectZipEntries(projectId, {
+      folderId: body.folder_id ?? null,
+      assetIds: body.asset_ids ?? [],
+    });
+    const partBytes = body.part_bytes ?? null;
+    const parts = manifestParts(entries, partBytes);
+    const id = env.ids.ulid();
+    const now = env.clock.now();
+    await env.db
+      .insert(downloadManifests)
+      .values({
+        id,
+        projectId,
+        createdBy: actor.id,
+        name: scopeName,
+        assetIdsJson: JSON.stringify(body.asset_ids ?? []),
+        folderId: body.folder_id ?? null,
+        partBytes,
+        createdAt: now,
+        expiresAt: now + MANIFEST_TTL_MS,
+      })
+      .run();
+    return c.json(
+      {
+        id,
+        name: scopeName,
+        file_count: entries.length,
+        total_bytes: entries.reduce((sum, entry) => sum + entry.size, 0),
+        expires_at: now + MANIFEST_TTL_MS,
+        parts: parts.map((part, index) => ({
+          index: index + 1,
+          file_count: part.length,
+          bytes: zipLength(part),
+          url: `/api/v1/downloads/${id}/zip${
+            parts.length > 1 ? `?part=${String(index + 1)}` : ""
+          }`,
+        })),
+      },
+      201,
+    );
+  });
+
+  api.get("/downloads/:id/zip", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const manifest = (
+      await env.db
+        .select()
+        .from(downloadManifests)
+        .where(eq(downloadManifests.id, c.req.param("id")))
+        .limit(1)
+        .all()
+    )[0];
+    if (!manifest) throw errors.notFound();
+    if (manifest.expiresAt <= env.clock.now())
+      throw errors.notFound("This download has expired.");
+    /* The manifest is a saved selection, not a grant: permission is checked
+       now, against the project, exactly as the direct zip does. */
+    await requireProject(manifest.projectId, actor, "editor");
+    const assetIds = Array.isArray(parseJsonValue(manifest.assetIdsJson))
+      ? (parseJsonValue(manifest.assetIdsJson) as string[])
+      : [];
+    const { entries, scopeName } = await projectZipEntries(manifest.projectId, {
+      folderId: manifest.folderId,
+      assetIds,
+    });
+    const parts = manifestParts(entries, manifest.partBytes);
+    if (!parts.length) throw errors.notFound("Nothing to download.");
+    const requested = Number(c.req.query("part") ?? 1);
+    if (
+      !Number.isInteger(requested) ||
+      requested < 1 ||
+      requested > parts.length
+    )
+      throw errors.validation("That part is not in this download.", {
+        parts: parts.length,
+      });
+    const part = parts[requested - 1] as ZipEntry[];
+    return serveZip(
+      c,
+      part,
+      zipNameOf(
+        scopeName,
+        parts.length > 1
+          ? ` (${String(requested)} of ${String(parts.length)})`
+          : "",
+      ),
+    );
   });
 
   api.put("/versions/:id/captions", requireAuth, async (c) => {

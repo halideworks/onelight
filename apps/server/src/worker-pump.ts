@@ -21,12 +21,15 @@ import {
   zipStream,
 } from "@onelight/core";
 import type { MediaInfo } from "@onelight/core";
+import type { PlannedRendition } from "@onelight/worker";
 import {
   buildPdfReport,
   compositeAnnotation,
   parseAnnotationStrokes,
   planRenditions,
   primaryRenditionKinds,
+  STILL_FULL_RUNG,
+  STILL_LADDER,
 } from "@onelight/worker";
 import type { ReportComment } from "@onelight/worker";
 import {
@@ -1073,6 +1076,17 @@ export const sweepShuttleAudioJobs = async (db: AppDb): Promise<number> => {
    the probe found. A still is both at once: its ladder is the same whatever
    ffprobe says, so the worker renders it in the same call that probes it, and
    3000 of them cost 3000 jobs rather than 6000. */
+/* The file a named still rung is written to. Only the stills ladder is
+   addressable this way; anything else is a planning error rather than a
+   request. */
+const stillFilenameFor = (kind: string): string => {
+  const rung = [...STILL_LADDER, STILL_FULL_RUNG].find(
+    (entry) => entry.kind === kind,
+  );
+  if (!rung) throw new Error(`Unknown rendition kind requested: ${kind}.`);
+  return rung.filename;
+};
+
 const registerWorkerRenditions = async (
   db: AppDb,
   payload: JobPayload,
@@ -1398,7 +1412,18 @@ const processJob = async (
     colorAssumed: true,
     ...(parseObject(version.mediaInfoJson) as Partial<MediaInfo>),
   };
-  const planned = planRenditions(assetKind, mediaInfo);
+  /* A transcode asked for one named rendition renders only that. The stills
+     full-size rung arrives this way: it is made on demand, the first time
+     someone zooms past the review still on a source no browser can decode. */
+  const onlyKinds = Array.isArray(payload.only)
+    ? payload.only.filter((kind): kind is string => typeof kind === "string")
+    : [];
+  const planned: PlannedRendition[] = onlyKinds.length
+    ? onlyKinds.map((kind) => ({
+        kind,
+        filename: stillFilenameFor(kind),
+      }))
+    : planRenditions(assetKind, mediaInfo);
   if (!planned.length) {
     await db
       .update(assetVersions)

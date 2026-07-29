@@ -8,6 +8,7 @@ export * from "./ids.js";
 export * from "./palettes.js";
 export * from "./peaks.js";
 export * from "./stack-key.js";
+export * from "./stills-format.js";
 export * from "./permissions.js";
 export * from "./time.js";
 export * from "./ports.js";

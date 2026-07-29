@@ -5581,6 +5581,8 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
+                            selected: boolean;
+                            selected_at: number | null;
                             display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
@@ -12158,6 +12160,8 @@ export interface paths {
                     cursor?: string;
                     /** @description Filter by folder. */
                     folder_id?: string;
+                    /** @description Pass 1 for the shortlist only. */
+                    selected?: string;
                     /** @description Filter to the assets in one of this project's shares. */
                     share_id?: string;
                 };
@@ -12190,6 +12194,8 @@ export interface paths {
                                 description: string;
                                 tags: string[];
                                 has_thumbnail: boolean;
+                                selected: boolean;
+                                selected_at: number | null;
                                 display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                                 deleted_at: number | null;
                                 created_at: number;
@@ -12494,6 +12500,8 @@ export interface paths {
                                 description: string;
                                 tags: string[];
                                 has_thumbnail: boolean;
+                                selected: boolean;
+                                selected_at: number | null;
                                 display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                                 deleted_at: number | null;
                                 created_at: number;
@@ -12587,6 +12595,8 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
+                            selected: boolean;
+                            selected_at: number | null;
                             display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
@@ -12708,6 +12718,7 @@ export interface paths {
                         folder_id?: string | null;
                         /** @enum {string} */
                         status?: "none" | "in_review" | "approved" | "changes_requested";
+                        selected?: boolean;
                         description?: string;
                         tags?: string[];
                         /** @enum {string} */
@@ -12736,6 +12747,8 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
+                            selected: boolean;
+                            selected_at: number | null;
                             display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
@@ -12890,6 +12903,8 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
+                            selected: boolean;
+                            selected_at: number | null;
                             display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
@@ -13131,6 +13146,8 @@ export interface paths {
                                 description: string;
                                 tags: string[];
                                 has_thumbnail: boolean;
+                                selected: boolean;
+                                selected_at: number | null;
                                 display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                                 deleted_at: number | null;
                                 created_at: number;
@@ -13519,6 +13536,8 @@ export interface paths {
                             description: string;
                             tags: string[];
                             has_thumbnail: boolean;
+                            selected: boolean;
+                            selected_at: number | null;
                             display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
                             deleted_at: number | null;
                             created_at: number;
@@ -13926,6 +13945,97 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/versions/{id}/still-full": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The still at 1:1. A source a browser can decode answers with the original; a TIFF, PSD, EXR or DPX answers with a full-size rendition, rendering it on first request and 202 while it does. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @constant */
+                            status: "ready";
+                            /** @enum {string} */
+                            source: "original" | "rendition";
+                            url: string;
+                        };
+                    };
+                };
+                /** @description The full-size still is being rendered. */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            status: string;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/versions/{id}/download": {
         parameters: {
             query?: never;
@@ -14021,6 +14131,177 @@ export interface paths {
                     folder_id?: string;
                     /** @description Comma-separated asset ids to include. */
                     asset_ids?: string;
+                };
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Binary payload */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/zip": string;
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/downloads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Save a delivery: a folder, a selection, or the whole project, optionally split into archives of at most part_bytes. Answers with one URL per part. Replaces passing every asset id in a query string, which a proxy refuses at a few hundred files. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        folder_id?: string | null;
+                        asset_ids?: string[];
+                        part_bytes?: number;
+                    };
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            name: string;
+                            file_count: number;
+                            total_bytes: number;
+                            expires_at: number;
+                            parts: {
+                                index: number;
+                                file_count: number;
+                                bytes: number;
+                                url: string;
+                            }[];
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/downloads/{id}/zip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One archive of a saved delivery, streamed, with an exact length and honest range resume. ?part=N picks the part. */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Which part of a split delivery, from 1. */
+                    part?: string;
                 };
                 header?: never;
                 path: {

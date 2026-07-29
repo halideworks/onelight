@@ -532,10 +532,25 @@ export const bodies = {
       .min(1)
       .max(MAX_ATTACH_BATCH),
   }),
+  /* A chosen delivery, saved once and downloaded by token. Splitting is
+     opt-in: a client asking for parts gets archives of at most part_bytes,
+     cut on file boundaries. */
+  downloadManifestCreate: z.object({
+    folder_id: z.string().nullable().optional(),
+    asset_ids: z.array(z.string()).max(100000).optional(),
+    part_bytes: z
+      .number()
+      .int()
+      .min(64 * 1024 * 1024)
+      .max(1024 * 1024 * 1024 * 1024)
+      .optional(),
+  }),
   assetPatch: z.object({
     name: z.string().min(1).max(500).optional(),
     folder_id: z.string().nullable().optional(),
     status: approvalStatus.optional(),
+    /** The photographer's shortlist, not the client's approval. */
+    selected: z.boolean().optional(),
     description: z.string().max(10000).optional(),
     tags: z.array(z.string().min(1).max(100)).max(100).optional(),
     /* Reference-render transfer override for this asset. "auto" clears it to
@@ -982,6 +997,10 @@ const asset = z.object({
   /* True when a picture was chosen for this asset, overriding the generated
      poster: GET /assets/:id/thumbnail serves it. */
   has_thumbnail: z.boolean(),
+  /* On the photographer's shortlist. Distinct from status, which is the
+     client's decision. */
+  selected: z.boolean(),
+  selected_at: timestamp.nullable(),
   /* This asset's reference-render transfer override; null means auto, which
      resolves from the project's house standard and then the source tag. */
   display_transfer: z.enum(["srgb", "gamma22", "bt1886"]).nullable(),
@@ -1962,6 +1981,9 @@ export const routeDocs: Record<string, RouteDoc> = {
     query: {
       ...paging,
       folder_id: { description: "Filter by folder." },
+      selected: {
+        description: "Pass 1 for the shortlist only.",
+      },
       share_id: {
         description: "Filter to the assets in one of this project's shares.",
       },
@@ -2091,6 +2113,53 @@ export const routeDocs: Record<string, RouteDoc> = {
         }),
       ),
     },
+  },
+  "GET /versions/:id/still-full": {
+    summary:
+      "The still at 1:1. A source a browser can decode answers with the original; a TIFF, PSD, EXR or DPX answers with a full-size rendition, rendering it on first request and 202 while it does.",
+    responses: {
+      "200": ok(
+        z.object({
+          status: z.literal("ready"),
+          source: z.enum(["original", "rendition"]),
+          url: z.string(),
+        }),
+      ),
+      "202": ok(
+        z.object({ status: z.string() }),
+        "The full-size still is being rendered.",
+      ),
+    },
+  },
+  "POST /projects/:id/downloads": {
+    summary:
+      "Save a delivery: a folder, a selection, or the whole project, optionally split into archives of at most part_bytes. Answers with one URL per part. Replaces passing every asset id in a query string, which a proxy refuses at a few hundred files.",
+    request: bodies.downloadManifestCreate,
+    responses: {
+      "201": created(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          file_count: z.number().int(),
+          total_bytes: z.number().int(),
+          expires_at: timestamp,
+          parts: z.array(
+            z.object({
+              index: z.number().int(),
+              file_count: z.number().int(),
+              bytes: z.number().int(),
+              url: z.string(),
+            }),
+          ),
+        }),
+      ),
+    },
+  },
+  "GET /downloads/:id/zip": {
+    summary:
+      "One archive of a saved delivery, streamed, with an exact length and honest range resume. ?part=N picks the part.",
+    query: { part: { description: "Which part of a split delivery, from 1." } },
+    responses: { "200": binary("application/zip") },
   },
   "GET /assets/:id": { responses: { "200": ok(asset) } },
   "PATCH /assets/:id": {
