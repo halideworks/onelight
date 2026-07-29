@@ -1,6 +1,8 @@
 # Stills at scale: 3000-image ingest, batch versioning, and delivery
 
-Status: plan, 2026-07-29. Nothing here is implemented yet.
+Status: built, 2026-07-29. `e63bf7d`, `6820e56`, `7a0e413`, `dcfcb84`.
+The measurements below are what the plan was derived from; what shipped, and
+what did not, is at the end under "What shipped".
 
 Origin: a working photographer's two complaints about frame.io.
 
@@ -307,3 +309,58 @@ reason to switch rather than merely the absence of a reason not to.
   and a regenerated `openapi.json`.
 - The review room's neutrality rule still holds for stills: the contact sheet and
   the still viewer are grey. The share room in presentation mode is not.
+
+## What shipped
+
+All four phases, in four commits, with the repo's gates green at each one
+(typecheck, eslint, prettier, 761 Node tests, the D1 conformance leg,
+db:check, openapi:check, svelte-check).
+
+**S0, `e63bf7d`.** The stills renderer (`packages/worker/src/stills.ts`), on
+sharp, with ffmpeg as the decoder for PSD, EXR and DPX. EXIF orientation is
+applied and the ICC profile is converted to sRGB rather than ignored. The
+ladder is a 640 JPEG poster and a 2048 WebP review still; `still_tiles` is
+retired but still read. Migration 0028. A bounded sweep backfills every image
+version that has no `still_review`, which is both the JPEGs that never got a
+poster and everything transcoded before the ladder. The upload queue, the
+asset browser and the share room are windowed on measured cell geometry
+(`packages/web/src/lib/virtual.ts`, unit tested); the queue holds a budget of
+object URLs; upload progress keeps running totals instead of walking the
+queue; the share room is paged, and the share endpoints that hold one asset or
+one comment ask for that row instead of reading the whole share.
+
+**S1, `6820e56`.** `MEDIA_CONCURRENCY` slots in the pump, defaulting to cores
+minus two, each claiming its next job on completion. Exports get their own
+slot. The worker holds a status read open until its job settles. A still is
+probed and rendered in one call. `POST /projects/:id/uploads/direct` takes a
+small file whole; the browser uploads four at a time and lands them through
+`POST /projects/:id/assets/batch`, one project event per batch. The resume
+ledger is bounded.
+
+**S2, `7a0e413`.** `assets.stack_key` (migration 0029) plus the normalizer in
+`packages/core/src/stack-key.ts`, which strips version tokens and never strips
+a bare trailing number. `POST /projects/:id/versions/match` is a dry run that
+refuses to guess on a tie; `POST /projects/:id/versions/batch` commits with one
+event and one notification. The uploader shows the offer as one line and one
+button and holds only the landing, not the transfer, while it is open.
+
+**S3, `dcfcb84`.** Next and previous in the review room over the folder's own
+order, with the next picture prefetched; A/X/U/R decide, S shortlists, `[` and
+`]` move. Selects are a column (migration 0031), filterable in the grid and
+exportable as a plain list. Deliveries are POSTed manifests downloaded by token
+(migration 0030), split into whole-file parts. `GET /versions/:id/still-full`
+answers with the original where a browser can decode it and renders a
+full-size rung once where it cannot.
+
+### Not built
+
+- **Wipe and onion-skin compare.** The still viewer already loads the previous
+  version for A/B; making it a wipe with synchronised zoom is player work that
+  did not fit this pass. The A/B toggle stands.
+- **RAW and HEIC ingest.** Neither libvips as we ship it nor the worker image's
+  ffmpeg can decode them, so they stay `kind: file` rather than landing as
+  images with no picture. Adding libraw or libheif to the worker image is the
+  whole of the work; the format table in `packages/core/src/stills-format.ts`
+  is where it would be declared.
+- **PSB** (Photoshop's large document format) is version 2 of the PSD
+  container and ffmpeg's decoder refuses it.
