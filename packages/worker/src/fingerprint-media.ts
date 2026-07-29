@@ -23,6 +23,19 @@ import {
 } from "@onelight/core";
 import { runProcess } from "./run-process.js";
 
+/* Nobody waits on a fingerprint.
+
+   The match endpoint is a dry run that reports "pending" and is asked again,
+   and the backfill is a library being catalogued. Meanwhile these passes are
+   full decodes: measured on nyx, one motion contour took 342% of a four core
+   box that also serves the site. So every pass yields, the same way the
+   software AV1 encode does, and the decode is capped so a single clip cannot
+   take the machine even when the box is otherwise idle. An idle box still
+   gives it everything going spare; the moment a request arrives, the request
+   wins. */
+const FINGERPRINT_NICENESS = 19;
+const FINGERPRINT_THREADS = ["-threads", "2", "-filter_threads", "1"];
+
 const loadSharp = async () => (await import("sharp")).default;
 
 /** The sample geometry a difference hash wants: one column wider than tall. */
@@ -95,6 +108,7 @@ export const buildClipFrameArgs = (
 ): string[] => [
   "-hide_banner",
   "-y",
+  ...FINGERPRINT_THREADS,
   "-ss",
   seconds.toFixed(3),
   "-i",
@@ -143,6 +157,9 @@ export const fingerprintClip = async (
         await runProcess(
           ffmpeg,
           buildClipFrameArgs(source, duration * fraction, frame),
+          undefined,
+          undefined,
+          FINGERPRINT_NICENESS,
         );
         const raw = await sharp(frame, { failOn: "none" })
           .greyscale()
@@ -190,6 +207,7 @@ export const AUDIO_WINDOW_COUNT = 65;
 export const buildAudioEnvelopeArgs = (source: string): string[] => [
   "-hide_banner",
   "-nostats",
+  ...FINGERPRINT_THREADS,
   "-i",
   source,
   "-map",
@@ -242,7 +260,13 @@ export const fingerprintAudio = async (
   const ffmpeg = options.ffmpeg ?? process.env.FFMPEG_PATH ?? "ffmpeg";
   if (!(options.durationSeconds > 0)) return null;
   try {
-    const result = await runProcess(ffmpeg, buildAudioEnvelopeArgs(source));
+    const result = await runProcess(
+      ffmpeg,
+      buildAudioEnvelopeArgs(source),
+      undefined,
+      undefined,
+      FINGERPRINT_NICENESS,
+    );
     /* ametadata prints to stdout; astats itself logs to stderr. */
     const levels = parseRmsLevels(`${result.stdout}\n${result.stderr}`);
     if (levels.length < 16 || isSilentEnvelope(levels)) return null;
@@ -274,6 +298,7 @@ export const MOTION_WINDOW_COUNT = 65;
 export const buildMotionEnvelopeArgs = (source: string): string[] => [
   "-hide_banner",
   "-nostats",
+  ...FINGERPRINT_THREADS,
   "-i",
   source,
   "-map",
@@ -308,7 +333,13 @@ export const fingerprintMotion = async (
 ): Promise<string | null> => {
   const ffmpeg = options.ffmpeg ?? process.env.FFMPEG_PATH ?? "ffmpeg";
   try {
-    const result = await runProcess(ffmpeg, buildMotionEnvelopeArgs(source));
+    const result = await runProcess(
+      ffmpeg,
+      buildMotionEnvelopeArgs(source),
+      undefined,
+      undefined,
+      FINGERPRINT_NICENESS,
+    );
     const levels = parseMotionLevels(`${result.stdout}\n${result.stderr}`);
     if (levels.length < MOTION_WINDOW_COUNT) return null;
     const windows = resampleEnvelope(levels, MOTION_WINDOW_COUNT);

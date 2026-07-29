@@ -779,3 +779,23 @@ the absolute threshold for its tier.
 And nothing is a dead end any more. A file that could not be placed comes back
 with the shortlist that was closest, so the answer is "pick one of these"
 rather than "no match": the evidence was real, it just was not decisive.
+
+### What it costs the box, and who pays
+
+Watching the backfill run on prod: one fingerprint ffmpeg at 342% CPU on a four
+core machine that also serves the site, at niceness 0. That is the motion pass
+being a full decode of every clip in the library, and it is the wrong priority
+for it: nobody waits on a fingerprint. The match endpoint is a dry run that
+reports "pending" and gets asked again, and the backfill is a library being
+catalogued.
+
+So all three passes now run at niceness 19, the same as the software AV1
+encode, and cap the decode at two threads. Both, because they do different
+things: niceness makes the work yield the moment a request arrives, and the
+thread cap stops one clip taking the machine on an otherwise idle box.
+
+The cap is safe because the decode is deterministic: measured on the same file,
+the per frame contour is bit identical at default threads, at two and at one
+(checksum 1223.175175 in all three), and two threads was in fact the FASTEST of
+the three on a busy box, 4.5 s against 6.9 s, because it stops fighting
+itself.
