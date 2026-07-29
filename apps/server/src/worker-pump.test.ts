@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
@@ -15,6 +16,7 @@ import {
   workspaces,
 } from "@onelight/db";
 import {
+  startWorkerPump,
   sweepReKindStills,
   sweepShuttleAudioJobs,
   sweepStillLadderJobs,
@@ -741,4 +743,161 @@ describe("re-kinding files that have become stills", () => {
       sqlite.close();
     }
   });
+});
+
+describe("fingerprint jobs, against a stand-in worker", () => {
+  /* The pump and the worker agree on an envelope: everything the worker
+     returns is nested under `result`, as media_info and renditions are.
+     Reading fingerprints from the top level instead typechecked on both
+     sides and killed every job three times over, so the contract is tested
+     where it actually lives: over HTTP, through the real pump. */
+  it("writes what the worker answers onto the upload and the version", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    const answered: string[] = [];
+    const server = createServer((request, response) => {
+      if (request.method === "POST") {
+        let body = "";
+        request.on("data", (chunk: Buffer) => (body += chunk.toString()));
+        request.on("end", () => {
+          const parsed = JSON.parse(body) as {
+            job_id: string;
+            kind: string;
+            sources?: Array<{ id: string }>;
+          };
+          answered.push(parsed.kind);
+          jobResults.set(parsed.job_id, {
+            job_id: parsed.job_id,
+            status: "complete",
+            /* Exactly the shape apps/worker sends. */
+            result: {
+              fingerprints: (parsed.sources ?? []).map((source) => ({
+                id: source.id,
+                content_hash: "0f1e2d3c4b5a6978",
+                capture_key: "2026:07:29 14:03:11.470|nikon z 9|",
+                state: "ready" as const,
+              })),
+            },
+          });
+          response.writeHead(202, { "content-type": "application/json" });
+          response.end(JSON.stringify({ accepted: true }));
+        });
+        return;
+      }
+      const id = (request.url ?? "").split("?")[0]?.split("/").pop() ?? "";
+      const result = jobResults.get(id);
+      response.writeHead(result ? 200 : 404, {
+        "content-type": "application/json",
+      });
+      response.end(JSON.stringify(result ?? { error: "not found" }));
+    });
+    const jobResults = new Map<string, unknown>();
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const port = (server.address() as { port: number }).port;
+    let stop: (() => void) | undefined;
+    try {
+      await db
+        .insert(workspaces)
+        .values({ id: "ws-1", name: "Studio", createdAt: 1 })
+        .run();
+      await db
+        .insert(users)
+        .values({
+          id: "user-1",
+          workspaceId: "ws-1",
+          email: "owner@example.com",
+          name: "Owner",
+          role: "admin",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      await db
+        .insert(projects)
+        .values({
+          id: "project-1",
+          workspaceId: "ws-1",
+          name: "Shoot",
+          palette: "kuro",
+          createdBy: "user-1",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      await db
+        .insert(uploadSessions)
+        .values({
+          id: "upload-1",
+          workspaceId: "ws-1",
+          projectId: "project-1",
+          createdBy: "user-1",
+          clientFilename: "renamed.tif",
+          relativePath: "",
+          size: 10,
+          checksumCrc32c: "abc",
+          blobKey: "ws-1/project-1/uploads/upload-1/renamed.tif",
+          status: "completed",
+          createdAt: 1,
+          completedAt: 1,
+        })
+        .run();
+      await db
+        .insert(jobs)
+        .values({
+          id: "job-print",
+          kind: "fingerprint",
+          payloadJson: JSON.stringify({
+            workspace_id: "ws-1",
+            project_id: "project-1",
+            upload_ids: ["upload-1"],
+          }),
+          idempotencyKey: "fingerprint:test",
+          status: "queued",
+          priority: 1,
+          capabilityJson: "{}",
+          maxAttempts: 3,
+          attempts: 0,
+          runAfter: Date.now(),
+          createdAt: Date.now(),
+        })
+        .run();
+
+      stop = startWorkerPump(db, {
+        workerUrl: `http://127.0.0.1:${String(port)}`,
+        workerSecret: "test-secret",
+        blobRoot: "/tmp",
+      });
+
+      const deadline = Date.now() + 15_000;
+      let row: { contentHash: string | null } | undefined;
+      while (Date.now() < deadline) {
+        row = (
+          await db
+            .select()
+            .from(uploadSessions)
+            .where(eq(uploadSessions.id, "upload-1"))
+            .all()
+        )[0];
+        if (row?.contentHash) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(answered).toContain("fingerprint");
+      expect(row?.contentHash).toBe("0f1e2d3c4b5a6978");
+      const finished = (
+        await db
+          .select()
+          .from(uploadSessions)
+          .where(eq(uploadSessions.id, "upload-1"))
+          .all()
+      )[0];
+      expect(finished?.captureKey).toContain("nikon z 9");
+      expect(finished?.fingerprintState).toBe("ready");
+    } finally {
+      stop?.();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      sqlite.close();
+    }
+  }, 20_000);
 });

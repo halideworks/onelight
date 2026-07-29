@@ -16,12 +16,8 @@ import {
   captureKeyOf,
   contentDistance,
 } from "@onelight/core";
-import {
-  fingerprintClip,
-  fingerprintSprite,
-  fingerprintStill,
-  isFlat,
-} from "./fingerprint-media.js";
+import { fingerprintClip, isFlat } from "./fingerprint-media.js";
+import { fingerprintStillSource } from "./stills.js";
 import { runProcess } from "./run-process.js";
 
 const ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg";
@@ -107,18 +103,18 @@ describe.skipIf(!hasFfmpeg)("fingerprinting a still", () => {
       const burst = await writeJpeg("burst.jpg", scene({ shift: 3 }));
       const other = await writeJpeg("other.jpg", scene({ shift: 400 }));
 
-      const base = (await fingerprintStill(frame)).contentHash as string;
+      const base = (await fingerprintStillSource(frame)).contentHash as string;
       const toRetouch = contentDistance(
         base,
-        (await fingerprintStill(retouched)).contentHash as string,
+        (await fingerprintStillSource(retouched)).contentHash as string,
       );
       const toBurst = contentDistance(
         base,
-        (await fingerprintStill(burst)).contentHash as string,
+        (await fingerprintStillSource(burst)).contentHash as string,
       );
       const toOther = contentDistance(
         base,
-        (await fingerprintStill(other)).contentHash as string,
+        (await fingerprintStillSource(other)).contentHash as string,
       );
 
       /* The retouch is the nearest thing to the frame. */
@@ -144,8 +140,8 @@ describe.skipIf(!hasFfmpeg)("fingerprinting a still", () => {
       })
         .png()
         .toFile(reencoded);
-      const a = (await fingerprintStill(original)).contentHash as string;
-      const b = (await fingerprintStill(reencoded)).contentHash as string;
+      const a = (await fingerprintStillSource(original)).contentHash as string;
+      const b = (await fingerprintStillSource(reencoded)).contentHash as string;
       expect(contentDistance(a, b)).toBeLessThan(CONTENT_MATCH_MIN_MARGIN);
     },
   );
@@ -168,7 +164,7 @@ describe.skipIf(!hasFfmpeg)("fingerprinting a still", () => {
         })
         .jpeg()
         .toFile(file);
-      const print = await fingerprintStill(file);
+      const print = await fingerprintStillSource(file);
       expect(print.capture.takenAt).toContain("2026:07:29 14:03:11");
       expect(captureKeyOf(print.capture)).toBeTruthy();
     },
@@ -178,7 +174,7 @@ describe.skipIf(!hasFfmpeg)("fingerprinting a still", () => {
     "has no identity to offer for a bare file",
     async () => {
       const file = await writeJpeg("bare.jpg", scene({}));
-      const print = await fingerprintStill(file);
+      const print = await fingerprintStillSource(file);
       expect(captureKeyOf(print.capture)).toBeNull();
       /* But it still has a picture, which is the whole point of tier three. */
       expect(print.contentHash).toMatch(/^[0-9a-f]{16}$/);
@@ -271,40 +267,6 @@ describe.skipIf(!hasFfmpeg)("fingerprinting a clip", () => {
       ).toBeNull();
     },
   );
-
-  it.skipIf(!sharpAvailable)(
-    "takes a clip's signature from the sprite the pipeline already made",
-    async () => {
-      const sprite = path.join(directory, "sprite.png");
-      /* The same montage geometry the transcode builds: a 10x10 tile grid. */
-      await runProcess(ffmpeg, [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        "testsrc2=size=320x240:rate=25:duration=100",
-        "-vf",
-        "fps=1,scale=160:90,tile=10x10",
-        "-frames:v",
-        "1",
-        sprite,
-      ]);
-      const signature = await fingerprintSprite(sprite, {
-        columns: 10,
-        rows: 10,
-        tiles: 100,
-      });
-      expect(signature).toMatch(/^[0-9a-f]{16}(:[0-9a-f]{16}){3}$/);
-      /* A montage whose frames run out before the sampling points gets no
-         signature rather than one made of padding. */
-      expect(
-        await fingerprintSprite(sprite, { columns: 10, rows: 10, tiles: 6 }),
-      ).toBeNull();
-    },
-  );
 });
 
 describe("a signature is only comparable to its own shape", () => {
@@ -319,7 +281,7 @@ describe("a signature is only comparable to its own shape", () => {
   it("keeps the file honest about what it could not do", async () => {
     await writeFile(path.join(directory, "not-media.txt"), "hello");
     await expect(
-      fingerprintStill(path.join(directory, "not-media.txt")),
+      fingerprintStillSource(path.join(directory, "not-media.txt")),
     ).rejects.toBeInstanceOf(Error);
   });
 });

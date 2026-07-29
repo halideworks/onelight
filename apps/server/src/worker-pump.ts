@@ -70,13 +70,17 @@ interface WorkerResponse {
       meta: Record<string, unknown>;
     }>;
     failures?: Array<{ kind: string; error: string }>;
+    /* The worker nests everything it returns under `result`, exactly as it
+       does for media_info and renditions. */
+    fingerprints?: Array<{
+      id: string;
+      content_hash: string | null;
+      capture_key: string | null;
+      state: "ready" | "skipped" | "failed";
+    }>;
+    /* What the version IS, returned beside its renditions. */
+    fingerprint?: { content_hash?: string; capture_key?: string };
   };
-  fingerprints?: Array<{
-    id: string;
-    content_hash: string | null;
-    capture_key: string | null;
-    state: "ready" | "skipped" | "failed";
-  }>;
   error?: string;
 }
 interface JobPayload {
@@ -1257,6 +1261,17 @@ const registerWorkerRenditions = async (
 ): Promise<void> => {
   if (!state.result?.renditions)
     throw new Error(state.error ?? "Transcode failed.");
+  /* What the version is, as opposed to what files were written for it. */
+  const print = state.result.fingerprint;
+  if (print?.content_hash || print?.capture_key)
+    await db
+      .update(assetVersions)
+      .set({
+        ...(print.content_hash ? { contentHash: print.content_hash } : {}),
+        ...(print.capture_key ? { captureKey: print.capture_key } : {}),
+      })
+      .where(eq(assetVersions.id, version.id))
+      .run();
   const failures = state.result.failures ?? [];
   for (const failure of failures)
     console.warn(
@@ -1276,25 +1291,6 @@ const registerWorkerRenditions = async (
       continue;
     }
     const meta = { ...rendition.meta };
-    /* The fingerprint rides in on whichever rendition carried it (the review
-       still, or the sprite) and belongs on the version, not on a rendition:
-       it is what the version IS, and the matcher reads it from there. */
-    const contentHash =
-      typeof meta.content_hash === "string" ? meta.content_hash : undefined;
-    const captureKey =
-      typeof meta.capture_key === "string" ? meta.capture_key : undefined;
-    if (contentHash || captureKey) {
-      delete meta.content_hash;
-      delete meta.capture_key;
-      await db
-        .update(assetVersions)
-        .set({
-          ...(contentHash ? { contentHash } : {}),
-          ...(captureKey ? { captureKey } : {}),
-        })
-        .where(eq(assetVersions.id, version.id))
-        .run();
-    }
     const vttPath =
       typeof meta.vtt_path === "string" ? meta.vtt_path : undefined;
     if (vttPath) {
@@ -1465,10 +1461,10 @@ const processJob = async (
       job.id,
       workerId,
     );
-    if (state.status !== "complete" || !state.fingerprints)
+    if (state.status !== "complete" || !state.result?.fingerprints)
       throw new Error(state.error ?? "Fingerprinting failed.");
     const isVersion = new Set(versionRows.map((row) => row.id));
-    for (const print of state.fingerprints) {
+    for (const print of state.result.fingerprints) {
       if (isVersion.has(print.id)) {
         await db
           .update(assetVersions)
@@ -1492,7 +1488,9 @@ const processJob = async (
     }
     /* Anything the worker did not answer for is marked so the matcher stops
        waiting on it. */
-    const answered = new Set(state.fingerprints.map((print) => print.id));
+    const answered = new Set(
+      state.result.fingerprints.map((print) => print.id),
+    );
     for (const row of rows)
       if (!answered.has(row.id))
         await db

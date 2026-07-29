@@ -29,6 +29,8 @@
 import { mkdir, readFile, rename, rm, stat, symlink } from "node:fs/promises";
 import path from "node:path";
 import {
+  captureIdentityFromExif,
+  dHashFromLuma,
   isFfmpegStill,
   isHeifStill,
   isPhotoshopStill,
@@ -36,6 +38,7 @@ import {
   isSharpStill,
   isStillSource,
 } from "@onelight/core";
+import type { CaptureIdentity } from "@onelight/core";
 import { readNetpbm } from "./netpbm.js";
 import { readPsdComposite } from "./psd-image.js";
 import { runProcess } from "./run-process.js";
@@ -429,6 +432,59 @@ export const profileNameOf = (icc: Uint8Array): string | undefined => {
     return undefined;
   } catch {
     return undefined;
+  }
+};
+
+/* The identity of a still, taken through the same decoder as its ladder.
+
+   Doing this with sharp alone was wrong the moment RAW, HEIC and Photoshop
+   arrived: sharp cannot open any of them, so the formats most likely to be
+   delivered as a renamed second pass were the ones with no identity at all.
+   It routes through openable() like everything else here. */
+export const fingerprintStillSource = async (
+  source: string,
+  options: { ffmpeg?: string; dcraw?: string; heif?: string } = {},
+): Promise<{ contentHash: string | null; capture: CaptureIdentity }> => {
+  const tools = {
+    ffmpeg: options.ffmpeg ?? process.env.FFMPEG_PATH ?? "ffmpeg",
+    dcraw: options.dcraw ?? process.env.DCRAW_PATH ?? "dcraw_emu",
+    heif: options.heif ?? process.env.HEIF_DEC_PATH ?? "heif-dec",
+  };
+  const sharp = await loadSharp();
+  const directory = path.join(path.dirname(source), ".print");
+  const opened = await openable(source, directory, "print", tools);
+  try {
+    const input = opened.raw
+      ? sharp(opened.raw.data, {
+          raw: {
+            width: opened.raw.width,
+            height: opened.raw.height,
+            channels: 3,
+          },
+          limitInputPixels: STILL_MAX_PIXELS,
+        })
+      : sharp(opened.file as string, {
+          failOn: "none",
+          limitInputPixels: STILL_MAX_PIXELS,
+        });
+    const metadata = await input.metadata();
+    /* Orientation first, or a portrait frame never matches its own
+       re-export. */
+    const raw = await input
+      .rotate()
+      .greyscale()
+      .resize({ width: 9, height: 8, fit: "fill" })
+      .raw()
+      .toBuffer();
+    return {
+      contentHash: dHashFromLuma(new Uint8Array(raw), 9, 8),
+      capture: captureIdentityFromExif(metadata.exif),
+    };
+  } finally {
+    await opened.cleanup();
+    await rm(directory, { recursive: true, force: true }).catch(
+      () => undefined,
+    );
   }
 };
 

@@ -515,3 +515,30 @@ already on their way, so the offer in the uploader improves under the reader
 rather than making them wait: the name tier answers before a byte moves, and
 the other two arrive a moment later. A bounded sweep does the same for a
 library that predates any of this.
+
+### Proved on a running stack
+
+An original frame, the frame beside it in the burst, and a clip, all landed as
+assets. Then a second pass under names sharing nothing with them:
+
+```
+Smith_Wedding_047_final.jpg -> DSC_1234.jpg   [capture-time]
+no-metadata-at-all.png      -> (no match)     [ambiguous] distance 1
+Reel1_graded_v2.mp4         -> A001C001.mp4   [capture-time]
+```
+
+The renamed retouch found its original with no help from its filename, and so
+did the re-graded clip. The third is the safety property doing its job: with
+its metadata stripped, that same retouch sits one bit from the right frame and
+three from the frame beside it, so the matcher refuses to choose and hands back
+both. Before the clips were given a creation time, the same run matched the
+video perceptually at distance 1, so both tiers are proved for both kinds.
+
+Two bugs came out of running it rather than reading it. The pump read the
+worker's answer from the top level when everything the worker returns is
+nested under `result`, so every fingerprint job died three times and went dead;
+there is now a test that drives the real pump against a stand-in worker over
+HTTP, and it fails without the fix. And the first version fingerprinted stills
+with sharp directly, which cannot open a PSD, a RAW or a HEIC: the formats most
+likely to arrive as a renamed second pass were the only ones with no identity
+at all. It routes through the same decoder as the ladder now.

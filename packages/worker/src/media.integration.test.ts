@@ -144,6 +144,11 @@ describe.skipIf(!hasFfmpeg)("media integration (real ffmpeg)", () => {
       expect(
         result.renditions.map((rendition) => rendition.kind).sort(),
       ).toEqual(["poster", "still_review"]);
+      /* The identity comes back beside the renditions, for every format the
+         ladder can render. Taking it with sharp alone left PSD, RAW and HEIC
+         with no identity at all, which are the formats most likely to arrive
+         as a renamed second pass. */
+      expect(result.fingerprint?.content_hash).toMatch(/^[0-9a-f]{16}$/);
       for (const output of outputs)
         expect((await stat(output.path)).size).toBeGreaterThan(0);
       /* The intermediate ffmpeg decode a PSD needs must not be left in the
@@ -198,5 +203,52 @@ describe.skipIf(!hasFfmpeg)("media integration (real ffmpeg)", () => {
       const plane = Buffer.alloc(width * height, 180);
       await writeFile(file, Buffer.concat([header, plane, plane, plane]));
     });
+  });
+
+  it("returns a clip's identity beside its renditions", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "onelight-mi-"));
+    try {
+      const source = path.join(dir, "clip.mp4");
+      await runProcess(ffmpeg, [
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=duration=6:size=320x240:rate=12",
+        "-pix_fmt",
+        "yuv420p",
+        "-metadata",
+        "creation_time=2026-07-29T14:03:11.470000Z",
+        "-y",
+        source,
+      ]);
+      const info = await probeFile(source);
+      const outputs = [
+        {
+          kind: "proxy_540",
+          path: path.join(dir, "proxy_540.mp4"),
+          height: 540,
+        },
+      ];
+      const result = await runTranscode(
+        {
+          id: "clip-job",
+          sourceKey: source,
+          outputs: outputs.map((output) => ({
+            kind: output.kind,
+            key: output.path,
+          })),
+          mediaInfo: info,
+        },
+        outputs,
+      );
+      /* Four hashes, one per sampling point along the clip. */
+      expect(result.fingerprint?.content_hash).toMatch(
+        /^[0-9a-f]{16}(:[0-9a-f]{16}){3}$/,
+      );
+      /* And the creation time the file carries, which a re-export keeps. */
+      expect(result.fingerprint?.capture_key).toContain("2026-07-29t14:03:11");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

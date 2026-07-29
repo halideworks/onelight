@@ -18,7 +18,7 @@ import {
   exactWebCodecString,
   extractStill,
   fingerprintClip,
-  fingerprintStill,
+  fingerprintStillSource,
   hardwareAccelerationName,
   playableRenditionMetadata,
   probeFile,
@@ -191,7 +191,7 @@ const runFingerprints = async (
   for (const entry of sources) {
     try {
       if (isStillSource(entry.path)) {
-        const print = await fingerprintStill(entry.path);
+        const print = await fingerprintStillSource(entry.path, { ffmpeg });
         out.push({
           id: entry.id,
           content_hash: print.contentHash,
@@ -319,7 +319,15 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
         status: "complete",
         media_info: mediaInfo,
         ...(rendered
-          ? { renditions: rendered.renditions, failures: rendered.failures }
+          ? {
+              renditions: rendered.renditions,
+              failures: rendered.failures,
+              /* A still is probed and rendered in one call, so its identity
+                 comes back through this reply and not the transcode one. */
+              ...(rendered.fingerprint
+                ? { fingerprint: rendered.fingerprint }
+                : {}),
+            }
           : {}),
       };
       jobs.set(body.job_id, {
@@ -336,6 +344,7 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
       status: "complete",
       renditions: result.renditions,
       failures: result.failures,
+      ...(result.fingerprint ? { fingerprint: result.fingerprint } : {}),
     };
     jobs.set(body.job_id, {
       status: "complete",

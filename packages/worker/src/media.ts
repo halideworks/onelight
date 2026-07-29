@@ -9,9 +9,10 @@ import {
 } from "@onelight/core";
 import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
 import { ALL_FORMATS, FilePathSource, Input } from "mediabunny";
-import { fingerprintSprite, fingerprintStill } from "./fingerprint-media.js";
+import { fingerprintClip } from "./fingerprint-media.js";
 import { PROCESS_IDLE_TIMEOUT_MS, runProcess } from "./run-process.js";
 import {
+  fingerprintStillSource,
   STILL_FULL_RUNG,
   STILL_LADDER,
   describeStillFile,
@@ -51,6 +52,10 @@ export interface PlannedRendition {
 
 export interface TranscodeRunResult extends TranscodeResult {
   failures: Array<{ kind: string; error: string }>;
+  /* What this version IS, for matching a later pass against it. Returned
+     beside the renditions rather than smuggled inside one of them: it belongs
+     to the version, not to any file the job happened to write. */
+  fingerprint?: { content_hash?: string; capture_key?: string };
 }
 
 const asString = (value: unknown): string | undefined =>
@@ -2288,6 +2293,7 @@ export const runTranscode = async (
   const acceleration = accelerationFrom(hardware);
   const renditions: TranscodeRunResult["renditions"] = [];
   const failures: TranscodeRunResult["failures"] = [];
+  let fingerprint: TranscodeRunResult["fingerprint"];
 
   /* Fast path: emit every SDR video rendition from one decode instead of
      decoding the source once per rendition. Only outputs that do not already
@@ -2370,15 +2376,19 @@ export const runTranscode = async (
         const meta = (await fileReady(output.path))
           ? await describeStillFile(output.path, rung)
           : await renderStillRung(job.sourceKey, output.path, rung, { ffmpeg });
-        /* The review rung carries the fingerprint, because it is the one rung
-           every still gets and the file is open anyway. */
-        const extra: Record<string, unknown> = {};
+        /* Taken while the file is open anyway, off the rung every still
+           gets. */
         if (output.kind === "still_review")
           try {
-            const print = await fingerprintStill(job.sourceKey);
-            if (print.contentHash) extra.content_hash = print.contentHash;
-            const key = captureKeyOf(print.capture);
-            if (key) extra.capture_key = key;
+            const print = await fingerprintStillSource(job.sourceKey, {
+              ffmpeg,
+            });
+            fingerprint = {
+              ...(print.contentHash ? { content_hash: print.contentHash } : {}),
+              ...(captureKeyOf(print.capture)
+                ? { capture_key: captureKeyOf(print.capture) as string }
+                : {}),
+            };
           } catch (error) {
             /* A file that will not give up its identity is still a picture. */
             console.warn(
@@ -2390,7 +2400,7 @@ export const runTranscode = async (
         renditions.push({
           kind: output.kind,
           key: output.path,
-          meta: { ...meta, ...extra },
+          meta: { ...meta },
         });
         continue;
       }
@@ -2532,38 +2542,8 @@ export const runTranscode = async (
           );
       }
       if (output.height !== undefined) meta.height = output.height;
-      if (output.kind === "sprite") {
+      if (output.kind === "sprite")
         meta.vtt_path = await writeSpriteVtt(job, output.path);
-        /* Four points along the clip, read back out of the montage that was
-           just built rather than by decoding the movie a second time. */
-        try {
-          const duration = durationSeconds(job.mediaInfo);
-          const interval = spriteInterval(job.mediaInfo);
-          const tiles = Math.min(
-            100,
-            Math.max(1, Math.ceil(duration / interval)),
-          );
-          const signature = await fingerprintSprite(output.path, {
-            columns: 10,
-            rows: 10,
-            tiles,
-          });
-          if (signature) meta.content_hash = signature;
-        } catch (error) {
-          console.warn(
-            `[onelight-worker] sprite fingerprint failed for job ${job.id}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-        const key = captureKeyOf(
-          captureIdentityFromTags(
-            (job.mediaInfo.format?.tags as Record<string, unknown>) ?? {},
-            job.mediaInfo.sourceTimecodeStart ?? null,
-          ),
-        );
-        if (key) meta.capture_key = key;
-      }
       if (output.kind === "shuttle_audio_2x") meta.shuttle_rate = 2;
       if (output.kind === "shuttle_audio_4x") meta.shuttle_rate = 4;
       if (output.kind === "reference_audio_1x") meta.reference_rate = 1;
@@ -2590,7 +2570,34 @@ export const runTranscode = async (
       failures.push({ kind: output.kind, error: message });
     }
   }
-  return { renditions, failures };
+  /* A clip is signed the same way an upload is: four seeks at fixed fractions
+     of its own length. Taking it from the sprite instead would have been free,
+     and wrong: the montage's tiles only land on those fractions when it has a
+     full hundred of them, so a shorter clip would be signed at different
+     moments than the file it is meant to match. */
+  if (!fingerprint && videoStream(job.mediaInfo)) {
+    const duration = durationSeconds(job.mediaInfo);
+    const signature = await fingerprintClip(job.sourceKey, {
+      durationSeconds: duration,
+      workDirectory: path.dirname(
+        outputPaths[0]?.path ?? path.dirname(job.sourceKey),
+      ),
+      ffmpeg,
+      tag: `version-${job.id}`,
+    }).catch(() => null);
+    const key = captureKeyOf(
+      captureIdentityFromTags(
+        (job.mediaInfo.format.tags as Record<string, unknown>) ?? {},
+        job.mediaInfo.sourceTimecodeStart ?? null,
+      ),
+    );
+    if (signature || key)
+      fingerprint = {
+        ...(signature ? { content_hash: signature } : {}),
+        ...(key ? { capture_key: key } : {}),
+      };
+  }
+  return { renditions, failures, ...(fingerprint ? { fingerprint } : {}) };
 };
 
 // Shared single-output convention: an existing finished file is reused, the
