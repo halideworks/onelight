@@ -312,8 +312,9 @@ reason to switch rather than merely the absence of a reason not to.
 
 ## What shipped
 
-All four phases, in four commits, with the repo's gates green at each one
-(typecheck, eslint, prettier, 761 Node tests, the D1 conformance leg,
+All four phases, then the three formats and the compare mode that the first
+pass left out, then a full review of the lot. Gates green at every commit
+(typecheck, eslint, prettier, the Node suite, the D1 conformance leg,
 db:check, openapi:check, svelte-check).
 
 **S0, `e63bf7d`.** The stills renderer (`packages/worker/src/stills.ts`), on
@@ -352,7 +353,7 @@ exportable as a plain list. Deliveries are POSTed manifests downloaded by token
 answers with the original where a browser can decode it and renders a
 full-size rung once where it cannot.
 
-### Not built
+### Left out of the first pass, built after it
 
 - **Compare**: the wipe and the blink were already there, and both already
   ride the picture's own transform, so a comparison at 400% compares the same
@@ -432,3 +433,36 @@ a double edge and anything that did not reads as one, which is the question a
 retouch round actually asks. The three modes answer three different questions:
 the wipe is the honest side-by-side, the blink catches a small shift that is
 invisible side by side, and the onion catches alignment.
+
+## What the review found
+
+Reading the whole campaign back (`6475488`, `259e8fd`) turned up nine
+defects that no test could see, which is the argument for reading it:
+
+- The media concurrency cap could be overshot, because the slot was counted
+  after the claim rather than before it and two callers reach that gate at
+  once whenever a job finishes while the tick is also looking for work.
+- The re-kind sweep could never see past its first batch: rows that are not
+  stills stay files, so the same two hundred were read every pass.
+- sharp was opening files with its pixel limit disabled, which turns a
+  decompression bomb into a dead worker. Uploads reach it from transfer
+  links, so that bound is a security property.
+- Two jobs can legitimately render the same version at once and shared a
+  decode temp path, so one could delete the intermediate the other was
+  reading.
+- A file dropped while an attach batch was landing could be stranded.
+- The stack key backfill drained too slowly to be safe: batch versioning
+  matches against that column, and an upload arriving first silently matched
+  nothing.
+- A filename of ".." named the directory above the upload rather than a file
+  in it.
+- Stepping through a folder threw the sibling list away and re-paged it at
+  every asset, so the next button got slower the further into a shoot you
+  went.
+- A newly landed upload was spliced into the grid even when the grid was
+  filtered to the shortlist.
+
+The test for the re-kind sweep is worth singling out: the first version of
+it passed against the broken code, because the rows it looked for happened
+to be inserted first. It now inserts two hundred and fifty plain files ahead
+of them, and fails without the fix.
