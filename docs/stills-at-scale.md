@@ -906,3 +906,19 @@ decode between two pipelines, and the sharing would have meant either a full
 resolution raw buffer in memory or a hash taken from the rung instead of the
 source, which would have changed every hash in the library. Measured, then
 dropped.
+
+### Proved against the deployed database
+
+The optimisation is only correct if the deployed worker still produces the
+numbers already stored, so three real spots were re-signed through the new
+single-decode GPU path and compared hash for hash against what prod holds:
+
+```
+BILLS_CC.mov      picture, motion, audio: all match what is stored
+CARDINALS_CC.mov  picture, motion, audio: all match what is stored
+EAGLES_CC.mov     picture, motion, audio: all match what is stored
+```
+
+Nothing in the library needs re-signing, which is the point: this was a speed
+change and not a scheme change, and the scheme version in the sweep's key stays
+where it is.
