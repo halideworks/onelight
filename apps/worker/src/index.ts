@@ -8,10 +8,17 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { MediaInfo, TranscodeJob } from "@onelight/core";
 import {
+  captureIdentityFromTags,
+  captureKeyOf,
+  isStillSource,
+} from "@onelight/core";
+import {
   DEFAULT_WATERMARK_FONTFILE,
   SOFTWARE_ACCELERATION,
   exactWebCodecString,
   extractStill,
+  fingerprintClip,
+  fingerprintStill,
   hardwareAccelerationName,
   playableRenditionMetadata,
   probeFile,
@@ -30,9 +37,13 @@ interface WorkerOutput {
   path: string;
   height?: number;
 }
+interface FingerprintSource {
+  id: string;
+  path: string;
+}
 interface WorkerRequest {
   job_id: string;
-  kind: "probe" | "transcode" | "still" | "watermark";
+  kind: "probe" | "transcode" | "still" | "watermark" | "fingerprint";
   timestamp?: number;
   source_path?: string;
   source_url?: string;
@@ -46,6 +57,7 @@ interface WorkerRequest {
   tokens?: WatermarkTokens;
   callback_url?: string;
   callback_secret?: string;
+  sources?: FingerprintSource[];
 }
 interface JobState {
   status: "queued" | "processing" | "complete" | "failed";
@@ -160,9 +172,84 @@ const runOutputs = async (
   );
 };
 
+/* What a file is, apart from its name: an exact capture identity where the
+   file carries one, and a perceptual signature that only ever narrows. Both
+   are computed here because both need a decoder, and a batch of them is one
+   job so a delivery costs a handful rather than one per file. */
+const runFingerprints = async (
+  sources: FingerprintSource[],
+): Promise<
+  Array<{
+    id: string;
+    content_hash: string | null;
+    capture_key: string | null;
+    state: "ready" | "skipped" | "failed";
+  }>
+> => {
+  await mkdir(workRoot, { recursive: true });
+  const out = [];
+  for (const entry of sources) {
+    try {
+      if (isStillSource(entry.path)) {
+        const print = await fingerprintStill(entry.path);
+        out.push({
+          id: entry.id,
+          content_hash: print.contentHash,
+          capture_key: captureKeyOf(print.capture),
+          state: "ready" as const,
+        });
+        continue;
+      }
+      const info = await probeFile(entry.path);
+      const duration = Number(info.format.duration ?? 0);
+      const signature = await fingerprintClip(entry.path, {
+        durationSeconds: duration,
+        workDirectory: workRoot,
+        ffmpeg,
+        tag: entry.id,
+      });
+      out.push({
+        id: entry.id,
+        content_hash: signature,
+        capture_key: captureKeyOf(
+          captureIdentityFromTags(
+            (info.format.tags as Record<string, unknown>) ?? {},
+            info.sourceTimecodeStart ?? null,
+          ),
+        ),
+        /* A file with neither identity is not a failure: a screen grab has
+           no capture time and a flat clip has no usable signature. */
+        state: "ready" as const,
+      });
+    } catch {
+      out.push({
+        id: entry.id,
+        content_hash: null,
+        capture_key: null,
+        state: "failed" as const,
+      });
+    }
+  }
+  return out;
+};
+
 const runJob = async (body: WorkerRequest): Promise<void> => {
   jobs.set(body.job_id, { status: "processing" });
   try {
+    if (body.kind === "fingerprint") {
+      const complete = {
+        job_id: body.job_id,
+        status: "complete",
+        fingerprints: await runFingerprints(body.sources ?? []),
+      };
+      jobs.set(body.job_id, {
+        status: "complete",
+        result: complete,
+        finishedAt: Date.now(),
+      });
+      await callback(body, complete);
+      return;
+    }
     const source = sourceFor(body);
     // Still and watermark jobs run against an already-probed proxy; the
     // single output lands via the same temp-name-and-rename convention as
@@ -355,7 +442,9 @@ const handler = async (
     const body = JSON.parse(bodyText) as WorkerRequest;
     if (
       !body.job_id ||
-      !["probe", "transcode", "still", "watermark"].includes(body.kind)
+      !["probe", "transcode", "still", "watermark", "fingerprint"].includes(
+        body.kind,
+      )
     ) {
       json(response, 400, { error: "invalid job" });
       return;

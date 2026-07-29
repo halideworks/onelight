@@ -38,6 +38,9 @@ import {
   randomBytes,
   utf8,
   verifyTotp,
+  contentDistance,
+  CONTENT_MATCH_MAX_DISTANCE,
+  CONTENT_MATCH_MIN_MARGIN,
   isStillSource,
   needsStillFull,
   sha256,
@@ -10977,6 +10980,36 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     }>,
   ) => {
     const keys = new Set(files.map((file) => stackKeyOf(file.filename)));
+    /* What the uploads themselves are, where they have been fingerprinted.
+       An upload is not a version yet, so its identity lives on the session. */
+    const uploadIds = files
+      .map((file) => file.upload_id)
+      .filter((id): id is string => Boolean(id));
+    const uploadRows = uploadIds.length
+      ? ((await env.db
+          .select({
+            id: uploadSessions.id,
+            projectId: uploadSessions.projectId,
+            captureKey: uploadSessions.captureKey,
+            contentHash: uploadSessions.contentHash,
+            fingerprintState: uploadSessions.fingerprintState,
+          })
+          .from(uploadSessions)
+          .where(inArray(uploadSessions.id, uploadIds))
+          .all()) as Array<{
+          id: string;
+          projectId: string;
+          captureKey: string | null;
+          contentHash: string | null;
+          fingerprintState: string;
+        }>)
+      : [];
+    const uploadById = new Map(
+      uploadRows
+        .filter((row) => row.projectId === projectId)
+        .map((row) => [row.id, row]),
+    );
+
     /* One indexed query for the whole batch, whatever its size. */
     const candidates = (await env.db
       .select({
@@ -11001,6 +11034,44 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       folderId: string | null;
       currentVersionId: string | null;
     }>;
+
+    /* Tiers two and three need every asset in the project, not only the ones
+       whose name already matched, and they need what each one's current
+       version IS. One join, once per batch: the comparison itself is
+       arithmetic over 64 bit strings, which is fast enough that no index
+       beyond this is worth having at a project's scale. */
+    const wantsFingerprint = [...uploadById.values()].some(
+      (row) => row.captureKey ?? row.contentHash,
+    );
+    const fingerprinted = wantsFingerprint
+      ? ((await env.db
+          .select({
+            id: assets.id,
+            name: assets.name,
+            captureKey: assetVersions.captureKey,
+            contentHash: assetVersions.contentHash,
+          })
+          .from(assets)
+          .innerJoin(
+            assetVersions,
+            eq(assets.currentVersionId, assetVersions.id),
+          )
+          .where(and(eq(assets.projectId, projectId), isNull(assets.deletedAt)))
+          .all()) as Array<{
+          id: string;
+          name: string;
+          captureKey: string | null;
+          contentHash: string | null;
+        }>)
+      : [];
+    const byCaptureKey = new Map<string, Array<{ id: string; name: string }>>();
+    for (const row of fingerprinted) {
+      if (!row.captureKey) continue;
+      const list = byCaptureKey.get(row.captureKey) ?? [];
+      list.push({ id: row.id, name: row.name });
+      byCaptureKey.set(row.captureKey, list);
+    }
+    const hashed = fingerprinted.filter((row) => Boolean(row.contentHash));
     const byKey = new Map<string, typeof candidates>();
     for (const candidate of candidates) {
       const list = byKey.get(candidate.stackKey) ?? [];
@@ -11064,14 +11135,155 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             asset_name: candidate.name,
           })),
         };
+      /* The name said nothing. Ask what the file IS.
+
+         Tier two, the capture identity, is exact and decides on its own: the
+         instant a frame was taken plus the body that took it, or a clip's
+         creation time and source timecode. A key shared by two assets is a
+         conflict, like any other tie.
+
+         Tier three, the picture itself, only ever narrows. Measured, a frame
+         sits one bit from its own retouch and three from the next frame of
+         the same burst, so a threshold alone would pair a sequence with
+         itself. The winner has to open a clear margin over the runner up, and
+         it is offered as a suggestion either way. */
+      const upload = file.upload_id
+        ? uploadById.get(file.upload_id)
+        : undefined;
+      if (upload?.captureKey) {
+        const byCapture = byCaptureKey.get(upload.captureKey) ?? [];
+        if (byCapture.length === 1) {
+          const match = byCapture[0] as { id: string; name: string };
+          return {
+            ...wire,
+            asset_id: match.id,
+            asset_name: match.name,
+            rule: "capture-time" as const,
+            candidates: [],
+          };
+        }
+        if (byCapture.length > 1)
+          return {
+            ...wire,
+            asset_id: null,
+            asset_name: null,
+            rule: "ambiguous" as const,
+            candidates: byCapture.map((candidate) => ({
+              asset_id: candidate.id,
+              asset_name: candidate.name,
+            })),
+          };
+      }
+      if (upload?.contentHash && hashed.length) {
+        let best: { id: string; name: string; distance: number } | null = null;
+        let runnerUp = Number.MAX_SAFE_INTEGER;
+        for (const row of hashed) {
+          const distance = contentDistance(
+            upload.contentHash,
+            row.contentHash as string,
+          );
+          if (!best || distance < best.distance) {
+            if (best) runnerUp = best.distance;
+            best = { id: row.id, name: row.name, distance };
+          } else if (distance < runnerUp) runnerUp = distance;
+        }
+        if (best && best.distance <= CONTENT_MATCH_MAX_DISTANCE) {
+          const margin = runnerUp - best.distance;
+          if (margin >= CONTENT_MATCH_MIN_MARGIN)
+            return {
+              ...wire,
+              asset_id: best.id,
+              asset_name: best.name,
+              rule: "perceptual" as const,
+              distance: best.distance,
+              candidates: [],
+            };
+          /* Two pictures this close to each other are two frames of a
+             sequence, and choosing between them is a coin toss. */
+          return {
+            ...wire,
+            asset_id: null,
+            asset_name: null,
+            rule: "ambiguous" as const,
+            distance: best.distance,
+            candidates: hashed
+              .filter(
+                (row) =>
+                  contentDistance(
+                    upload.contentHash as string,
+                    row.contentHash as string,
+                  ) <=
+                  best.distance + CONTENT_MATCH_MIN_MARGIN,
+              )
+              .slice(0, 6)
+              .map((row) => ({ asset_id: row.id, asset_name: row.name })),
+          };
+        }
+      }
       return {
         ...wire,
         asset_id: null,
         asset_name: null,
-        rule: "none" as const,
+        /* Still being identified: the client is told to come back rather
+           than told there is no match. */
+        rule: upload?.fingerprintState === "pending" ? "pending" : "none",
         candidates: [],
       };
     });
+  };
+
+  /* Identifying an upload needs a decoder, so it happens in the worker, in
+     batches. The match endpoint asks for what it is missing and answers with
+     what it has; a client that cares about the other two tiers polls until
+     nothing is pending. A file whose name already matched is never queued,
+     because the answer is already known. */
+  const FINGERPRINT_BATCH = 50;
+
+  const requestFingerprints = async (
+    projectId: string,
+    workspaceId: string,
+    uploadIds: string[],
+  ): Promise<void> => {
+    if (!uploadIds.length) return;
+    const now = env.clock.now();
+    for (let from = 0; from < uploadIds.length; from += FINGERPRINT_BATCH) {
+      const slice = uploadIds.slice(from, from + FINGERPRINT_BATCH);
+      const idempotencyKey = `fingerprint:${await sha256Hex(slice.join(","))}`;
+      const existing = await env.db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(eq(jobs.idempotencyKey, idempotencyKey))
+        .limit(1)
+        .all();
+      if (existing.length) continue;
+      await env.db
+        .insert(jobs)
+        .values({
+          id: env.ids.ulid(),
+          kind: "fingerprint",
+          payloadJson: JSON.stringify({
+            workspace_id: workspaceId,
+            project_id: projectId,
+            upload_ids: slice,
+          }),
+          idempotencyKey,
+          status: "queued",
+          /* Someone is waiting on the answer to a question they just asked. */
+          priority: 1,
+          capabilityJson: "{}",
+          maxAttempts: 3,
+          attempts: 0,
+          runAfter: now,
+          createdAt: now,
+          startedAt: null,
+          heartbeatAt: null,
+          leaseExpiresAt: null,
+          finishedAt: null,
+          error: null,
+          workerId: null,
+        })
+        .run();
+    }
   };
 
   api.post("/projects/:id/versions/match", requireAuth, async (c) => {
@@ -11084,11 +11296,22 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       body.folder_id ?? null,
       body.files,
     );
+    /* Everything the name could not place, and whose bytes have not been
+       looked at yet. */
+    const waiting = items
+      .filter((item) => item.rule === "pending")
+      .map((item) => item.upload_id)
+      .filter((id): id is string => Boolean(id));
+    if (waiting.length)
+      await requestFingerprints(projectId, actor.workspaceId, waiting);
     return c.json({
       items,
       matched: items.filter((item) => item.asset_id !== null).length,
       ambiguous: items.filter((item) => item.rule === "ambiguous").length,
       unmatched: items.filter((item) => item.rule === "none").length,
+      /* Ask again when this is not zero: the other two tiers need the file
+         to have been opened. */
+      pending: waiting.length,
     });
   });
 

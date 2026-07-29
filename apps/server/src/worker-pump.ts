@@ -3,7 +3,17 @@ import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { cpus } from "node:os";
 import path from "node:path";
-import { and, asc, eq, gt, inArray, isNotNull, isNull, lt } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+} from "drizzle-orm";
 import {
   exportAvidText,
   exportAvidXml,
@@ -45,6 +55,7 @@ import {
   renditions,
   shareAssets,
   shares,
+  uploadSessions,
 } from "@onelight/db/schema";
 import { claimNextJob, completeJob, failJob, heartbeatJob } from "@onelight/db";
 import type { AppDb } from "@onelight/db";
@@ -60,6 +71,12 @@ interface WorkerResponse {
     }>;
     failures?: Array<{ kind: string; error: string }>;
   };
+  fingerprints?: Array<{
+    id: string;
+    content_hash: string | null;
+    capture_key: string | null;
+    state: "ready" | "skipped" | "failed";
+  }>;
   error?: string;
 }
 interface JobPayload {
@@ -968,6 +985,97 @@ export const sweepStackKeys = async (db: AppDb): Promise<number> => {
   return rows.length;
 };
 
+/* Fingerprints for a library that predates them.
+
+   Matching by capture identity or by the picture can only answer for assets
+   that have been looked at, so an upgrade has to walk what is already there.
+   Bounded per pass like every other sweep, at a priority below ordinary work
+   because nobody is waiting on it, and skipped entirely for kinds that have
+   no picture to hash.
+
+   The mark that a version has been looked at is a content hash OR a capture
+   key; a version with neither after a successful pass (a screen grab with no
+   metadata and a flat frame) would be re-queued forever, so the job's own
+   idempotency key is what stops it: once it exists, the sweep leaves it. */
+const FINGERPRINT_SWEEP_INTERVAL_MS = 60_000;
+const FINGERPRINT_SWEEP_LIMIT = 4;
+const FINGERPRINT_SWEEP_BATCH = 25;
+
+export const sweepFingerprints = async (db: AppDb): Promise<number> => {
+  const candidates = await db
+    .select({
+      id: assetVersions.id,
+      workspaceId: projects.workspaceId,
+      projectId: assets.projectId,
+    })
+    .from(assetVersions)
+    .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+    .innerJoin(projects, eq(assets.projectId, projects.id))
+    .where(
+      and(
+        inArray(assets.kind, ["image", "video"]),
+        isNull(assets.deletedAt),
+        isNull(assetVersions.deletedAt),
+        isNull(assetVersions.contentHash),
+        isNull(assetVersions.captureKey),
+        eq(assetVersions.transcodeStatus, "ready"),
+      ),
+    )
+    .orderBy(desc(assetVersions.createdAt))
+    .limit(FINGERPRINT_SWEEP_BATCH * FINGERPRINT_SWEEP_LIMIT)
+    .all();
+  if (!candidates.length) return 0;
+  const now = Date.now();
+  let enqueued = 0;
+  for (
+    let from = 0;
+    from < candidates.length && enqueued < FINGERPRINT_SWEEP_LIMIT;
+    from += FINGERPRINT_SWEEP_BATCH
+  ) {
+    const slice = candidates.slice(from, from + FINGERPRINT_SWEEP_BATCH);
+    const first = slice[0];
+    if (!first) break;
+    const idempotencyKey = `fingerprint:v1:${first.id}`;
+    const existing = await db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(eq(jobs.idempotencyKey, idempotencyKey))
+      .limit(1)
+      .all();
+    if (existing.length) continue;
+    await db
+      .insert(jobs)
+      .values({
+        id: new UlidGenerator().ulid(),
+        kind: "fingerprint",
+        payloadJson: JSON.stringify({
+          workspace_id: first.workspaceId,
+          project_id: first.projectId,
+          version_ids: slice.map((row) => row.id),
+        }),
+        idempotencyKey,
+        status: "queued",
+        /* Nobody is waiting: an upload happening now must not queue behind
+           a library being catalogued. */
+        priority: -1,
+        capabilityJson: "{}",
+        maxAttempts: 3,
+        attempts: 0,
+        runAfter: now,
+        createdAt: now,
+        startedAt: null,
+        heartbeatAt: null,
+        leaseExpiresAt: null,
+        finishedAt: null,
+        error: null,
+        workerId: null,
+      })
+      .run();
+    enqueued += 1;
+  }
+  return enqueued;
+};
+
 export const sweepShuttleAudioJobs = async (db: AppDb): Promise<number> => {
   let enqueued = 0;
   let offset = 0;
@@ -1168,6 +1276,25 @@ const registerWorkerRenditions = async (
       continue;
     }
     const meta = { ...rendition.meta };
+    /* The fingerprint rides in on whichever rendition carried it (the review
+       still, or the sprite) and belongs on the version, not on a rendition:
+       it is what the version IS, and the matcher reads it from there. */
+    const contentHash =
+      typeof meta.content_hash === "string" ? meta.content_hash : undefined;
+    const captureKey =
+      typeof meta.capture_key === "string" ? meta.capture_key : undefined;
+    if (contentHash || captureKey) {
+      delete meta.content_hash;
+      delete meta.capture_key;
+      await db
+        .update(assetVersions)
+        .set({
+          ...(contentHash ? { contentHash } : {}),
+          ...(captureKey ? { captureKey } : {}),
+        })
+        .where(eq(assetVersions.id, version.id))
+        .run();
+    }
     const vttPath =
       typeof meta.vtt_path === "string" ? meta.vtt_path : undefined;
     if (vttPath) {
@@ -1288,6 +1415,93 @@ const processJob = async (
   workerId: string,
 ): Promise<void> => {
   const payload = parsePayload(job.payloadJson);
+  if (job.kind === "fingerprint") {
+    /* A batch of uploads, identified so the matcher can offer them as new
+       versions of something. Nothing here touches an asset: an upload is not
+       a version yet, and may never become one. */
+    const stringIds = (value: unknown): string[] =>
+      Array.isArray(value)
+        ? value.filter((entry): entry is string => typeof entry === "string")
+        : [];
+    const ids = stringIds(payload.upload_ids);
+    /* The same job identifies existing versions, for a library that predates
+       fingerprinting: same decoder, same arithmetic, a different row to
+       write it on. */
+    const versionIds = stringIds(payload.version_ids);
+    if (!ids.length && !versionIds.length) return;
+    const rows = ids.length
+      ? await db
+          .select()
+          .from(uploadSessions)
+          .where(inArray(uploadSessions.id, ids))
+          .all()
+      : [];
+    const versionRows = versionIds.length
+      ? await db
+          .select()
+          .from(assetVersions)
+          .where(inArray(assetVersions.id, versionIds))
+          .all()
+      : [];
+    const sources = [
+      ...rows
+        .filter((row) => row.status === "completed")
+        .map((row) => ({ id: row.id, path: path.join(blobRoot, row.blobKey) })),
+      ...versionRows.map((row) => ({
+        id: row.id,
+        path: path.join(blobRoot, row.originalBlobKey),
+      })),
+    ];
+    if (!sources.length) return;
+    await sendJob(workerUrl, workerSecret, {
+      job_id: job.id,
+      kind: "fingerprint",
+      sources,
+    });
+    const state = await waitForWorker(
+      db,
+      workerUrl,
+      workerSecret,
+      job.id,
+      workerId,
+    );
+    if (state.status !== "complete" || !state.fingerprints)
+      throw new Error(state.error ?? "Fingerprinting failed.");
+    const isVersion = new Set(versionRows.map((row) => row.id));
+    for (const print of state.fingerprints) {
+      if (isVersion.has(print.id)) {
+        await db
+          .update(assetVersions)
+          .set({
+            contentHash: print.content_hash,
+            captureKey: print.capture_key,
+          })
+          .where(eq(assetVersions.id, print.id))
+          .run();
+        continue;
+      }
+      await db
+        .update(uploadSessions)
+        .set({
+          contentHash: print.content_hash,
+          captureKey: print.capture_key,
+          fingerprintState: print.state,
+        })
+        .where(eq(uploadSessions.id, print.id))
+        .run();
+    }
+    /* Anything the worker did not answer for is marked so the matcher stops
+       waiting on it. */
+    const answered = new Set(state.fingerprints.map((print) => print.id));
+    for (const row of rows)
+      if (!answered.has(row.id))
+        await db
+          .update(uploadSessions)
+          .set({ fingerprintState: "skipped" })
+          .where(eq(uploadSessions.id, row.id))
+          .run();
+    return;
+  }
   const sourceKey = payload.blob_key;
   const versionId = payload.version_id;
   if (!sourceKey || !versionId)
@@ -2097,6 +2311,7 @@ export const startWorkerPump = (
   let lastShuttleAudioSweep = 0;
   let lastStillLadderSweep = 0;
   let lastStackKeySweep = 0;
+  let lastFingerprintSweep = 0;
   let reclaimedOnStart = false;
 
   /* Media jobs, up to `slots` at a time. Claiming is already race-safe: the
@@ -2291,6 +2506,13 @@ export const startWorkerPump = (
           lastStillLadderSweep = now;
           await sweep("still re-kind", () => sweepReKindStills(db));
           await sweep("still ladder", () => sweepStillLadderJobs(db));
+        }
+        if (
+          mediaEnabled &&
+          now - lastFingerprintSweep >= FINGERPRINT_SWEEP_INTERVAL_MS
+        ) {
+          lastFingerprintSweep = now;
+          await sweep("fingerprint", () => sweepFingerprints(db));
         }
         if (
           mediaEnabled &&

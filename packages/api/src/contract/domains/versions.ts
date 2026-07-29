@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { jobs, projectEvents, projects } from "@onelight/db/schema";
+import {
+  assetVersions,
+  jobs,
+  projectEvents,
+  projects,
+  uploadSessions,
+} from "@onelight/db/schema";
 import { errorCode, json, req } from "../harness.js";
 import type { ContractHarness } from "../harness.js";
 import {
@@ -618,6 +624,254 @@ export const registerVersionsDomain = (ctx: SuiteContext): void => {
       expect(body.failures.map((failure) => failure.upload_id)).toEqual([
         pending.id,
       ]);
+    });
+
+    /* --- what a file IS, when its name says nothing --- */
+
+    const fingerprintUpload = async (
+      h: ContractHarness,
+      uploadId: string,
+      fields: { captureKey?: string; contentHash?: string },
+    ): Promise<void> => {
+      await h.db
+        .update(uploadSessions)
+        .set({
+          ...(fields.captureKey ? { captureKey: fields.captureKey } : {}),
+          ...(fields.contentHash ? { contentHash: fields.contentHash } : {}),
+          fingerprintState: "ready",
+        })
+        .where(eq(uploadSessions.id, uploadId))
+        .run();
+    };
+
+    const fingerprintVersion = async (
+      h: ContractHarness,
+      versionId: string,
+      fields: { captureKey?: string; contentHash?: string },
+    ): Promise<void> => {
+      await h.db
+        .update(assetVersions)
+        .set({
+          ...(fields.captureKey ? { captureKey: fields.captureKey } : {}),
+          ...(fields.contentHash ? { contentHash: fields.contentHash } : {}),
+        })
+        .where(eq(assetVersions.id, versionId))
+        .run();
+    };
+
+    const landAsset = async (
+      h: ContractHarness,
+      seed: ReturnType<SuiteContext["seed"]>,
+      projectId: string,
+      name: string,
+    ): Promise<{ assetId: string; versionId: string }> => {
+      const upload = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId,
+        userId: seed.admin.id,
+        filename: name,
+      });
+      const created = await req(h, `/api/v1/projects/${projectId}/assets`, {
+        cookie: seed.admin.cookie,
+        json: { upload_id: upload.id },
+      });
+      const body = await json<{ id: string; version_id: string }>(created);
+      return { assetId: body.id, versionId: body.version_id };
+    };
+
+    it("pairs a renamed retouch by the instant it was taken", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Capture" });
+      const original = await landAsset(h, seed, project.id, "DSC_1234.NEF");
+      const decoy = await landAsset(h, seed, project.id, "DSC_1235.NEF");
+      await fingerprintVersion(h, original.versionId, {
+        captureKey: "2026:07:29 14:03:11.470|nikon z 9 3005421|",
+      });
+      await fingerprintVersion(h, decoy.versionId, {
+        captureKey: "2026:07:29 14:03:12.470|nikon z 9 3005421|",
+      });
+      /* The delivery comes back under a name that shares nothing with the
+         original: only the capture identity can join them. */
+      const upload = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+        filename: "Smith_Wedding_047_final.tif",
+      });
+      await fingerprintUpload(h, upload.id, {
+        captureKey: "2026:07:29 14:03:11.470|nikon z 9 3005421|",
+      });
+      const response = await req(
+        h,
+        `/api/v1/projects/${project.id}/versions/match`,
+        {
+          cookie: seed.admin.cookie,
+          json: {
+            files: [
+              { filename: "Smith_Wedding_047_final.tif", upload_id: upload.id },
+            ],
+          },
+        },
+      );
+      const body = await json<{
+        items: Array<{
+          asset_id: string | null;
+          asset_name: string;
+          rule: string;
+        }>;
+        matched: number;
+        pending: number;
+      }>(response);
+      expect(body.matched).toBe(1);
+      expect(body.pending).toBe(0);
+      expect(body.items[0]?.rule).toBe("capture-time");
+      expect(body.items[0]?.asset_name).toBe("DSC_1234.NEF");
+      expect(body.items[0]?.asset_id).toBe(original.assetId);
+    });
+
+    it("refuses a capture key two assets share", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Twins" });
+      const a = await landAsset(h, seed, project.id, "A.jpg");
+      const b = await landAsset(h, seed, project.id, "B.jpg");
+      const shared = "2026:07:29 14:03:11.470|nikon z 9|";
+      await fingerprintVersion(h, a.versionId, { captureKey: shared });
+      await fingerprintVersion(h, b.versionId, { captureKey: shared });
+      const upload = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+        filename: "renamed.tif",
+      });
+      await fingerprintUpload(h, upload.id, { captureKey: shared });
+      const body = await json<{
+        items: Array<{
+          asset_id: string | null;
+          rule: string;
+          candidates: unknown[];
+        }>;
+        ambiguous: number;
+      }>(
+        await req(h, `/api/v1/projects/${project.id}/versions/match`, {
+          cookie: seed.admin.cookie,
+          json: { files: [{ filename: "renamed.tif", upload_id: upload.id }] },
+        }),
+      );
+      expect(body.ambiguous).toBe(1);
+      expect(body.items[0]?.asset_id).toBeNull();
+      expect(body.items[0]?.candidates).toHaveLength(2);
+    });
+
+    it("suggests by the picture, and refuses when two frames are equally close", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Burst" });
+      const target = await landAsset(h, seed, project.id, "frame-a.jpg");
+      const neighbour = await landAsset(h, seed, project.id, "frame-b.jpg");
+      /* One bit from the upload, and far from anything else: the retouch. */
+      await fingerprintVersion(h, target.versionId, {
+        contentHash: "0000000000000001",
+      });
+      /* Far away: a different set-up. */
+      await fingerprintVersion(h, neighbour.versionId, {
+        contentHash: "ffffffffffff0000",
+      });
+      const upload = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+        filename: "totally-different-name.png",
+      });
+      await fingerprintUpload(h, upload.id, {
+        contentHash: "0000000000000000",
+      });
+      const clear = await json<{
+        items: Array<{
+          rule: string;
+          asset_id: string | null;
+          distance?: number;
+        }>;
+      }>(
+        await req(h, `/api/v1/projects/${project.id}/versions/match`, {
+          cookie: seed.admin.cookie,
+          json: {
+            files: [
+              { filename: "totally-different-name.png", upload_id: upload.id },
+            ],
+          },
+        }),
+      );
+      expect(clear.items[0]?.rule).toBe("perceptual");
+      expect(clear.items[0]?.asset_id).toBe(target.assetId);
+      expect(clear.items[0]?.distance).toBe(1);
+
+      /* Now make the neighbour a burst frame: three bits away, which is what
+         a real sequence looks like. The margin rule has to refuse. */
+      await fingerprintVersion(h, neighbour.versionId, {
+        contentHash: "0000000000000007",
+      });
+      const tie = await json<{
+        items: Array<{
+          rule: string;
+          asset_id: string | null;
+          candidates: unknown[];
+        }>;
+        ambiguous: number;
+      }>(
+        await req(h, `/api/v1/projects/${project.id}/versions/match`, {
+          cookie: seed.admin.cookie,
+          json: {
+            files: [
+              { filename: "totally-different-name.png", upload_id: upload.id },
+            ],
+          },
+        }),
+      );
+      expect(tie.ambiguous).toBe(1);
+      expect(tie.items[0]?.asset_id).toBeNull();
+      expect(tie.items[0]?.rule).toBe("ambiguous");
+      expect((tie.items[0]?.candidates ?? []).length).toBeGreaterThan(1);
+    });
+
+    it("says it is still working rather than saying there is no match", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Pending" });
+      await landAsset(h, seed, project.id, "known.jpg");
+      const upload = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+        filename: "unknown-name.tif",
+      });
+      const body = await json<{
+        items: Array<{ rule: string }>;
+        pending: number;
+        unmatched: number;
+      }>(
+        await req(h, `/api/v1/projects/${project.id}/versions/match`, {
+          cookie: seed.admin.cookie,
+          json: {
+            files: [{ filename: "unknown-name.tif", upload_id: upload.id }],
+          },
+        }),
+      );
+      expect(body.items[0]?.rule).toBe("pending");
+      expect(body.pending).toBe(1);
+      expect(body.unmatched).toBe(0);
+      /* And the work was queued, once, for the batch. */
+      const queued = await h.db.select().from(jobs).all();
+      const fingerprints = queued.filter((row) => row.kind === "fingerprint");
+      expect(fingerprints).toHaveLength(1);
+      expect(
+        (
+          JSON.parse(fingerprints[0]?.payloadJson ?? "{}") as {
+            upload_ids: string[];
+          }
+        ).upload_ids,
+      ).toEqual([upload.id]);
     });
 
     it("refuses matching and batching from a viewer", async () => {

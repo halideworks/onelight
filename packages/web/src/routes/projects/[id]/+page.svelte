@@ -1708,11 +1708,24 @@
      per-row dropdown. */
   type MatchItem = {
     filename: string;
+    upload_id?: string;
     asset_id: string | null;
     asset_name: string | null;
     rule: string;
     version_token: string | null;
+    distance?: number;
     candidates: Array<{ asset_id: string; asset_name: string }>;
+  };
+  /* What each rule is called where a person can see it. The name tiers are
+     one thing to a human; what matters is whether the answer came from the
+     name, from the camera, or from the picture. */
+  const MATCH_RULE_LABEL: Record<string, string> = {
+    'exact-name': 'by name',
+    'stack-key': 'by name',
+    'stack-key-in-folder': 'by name',
+    'different-extension': 'by name',
+    'capture-time': 'by capture time',
+    perceptual: 'by the picture'
   };
   let matchOffer = $state<{
     matched: number;
@@ -1731,40 +1744,105 @@
      itself the way the app behaved before there was a question. */
   const MATCH_OFFER_TIMEOUT_MS = 90_000;
 
+  /* Asked once on the filenames alone, then again as the files land.
+
+     The name tier answers before a byte moves. The other two need the file to
+     have been opened, which happens in the worker while the bytes are already
+     on their way, so the offer is re-asked with the upload ids and improves
+     under the reader rather than making them wait for it. */
+  const askForMatches = async (
+    entries: Array<{ filename: string; relativePath?: string; uploadId?: string }>
+  ): Promise<{
+    items: MatchItem[];
+    matched: number;
+    ambiguous: number;
+    unmatched: number;
+    pending: number;
+  } | null> => {
+    const id = projectId;
+    if (!id || entries.length === 0) return null;
+    const folder = selectedFolder;
+    try {
+      return await apiPost(`/api/v1/projects/${id}/versions/match`, {
+        ...(folder ? { folder_id: folder } : {}),
+        files: entries.map((entry) => ({
+          filename: entry.filename,
+          ...(entry.relativePath ? { relative_path: entry.relativePath } : {}),
+          ...(entry.uploadId ? { upload_id: entry.uploadId } : {})
+        }))
+      });
+    } catch {
+      return null;
+    }
+  };
+
+  const applyMatchResult = (
+    result: {
+      items: MatchItem[];
+      matched: number;
+      ambiguous: number;
+      unmatched: number;
+      pending: number;
+    },
+    total: number
+  ): void => {
+    const next = new Map(matchByName);
+    for (const item of result.items)
+      if (item.asset_id) next.set(item.filename, item);
+    matchByName = next;
+    if (next.size === 0) return;
+    /* An offer already answered is not reopened: a late fingerprint must not
+       undo a decision someone already made. */
+    if (matchOffer?.answered) return;
+    matchOffer = {
+      matched: next.size,
+      ambiguous: result.ambiguous,
+      unmatched: result.unmatched,
+      total,
+      answered: false
+    };
+    if (matchTimer) clearTimeout(matchTimer);
+    matchTimer = setTimeout(() => dismissVersionMatches(), MATCH_OFFER_TIMEOUT_MS);
+  };
+
   const offerVersionMatches = async (files: PendingFile[]): Promise<void> => {
     const id = projectId;
     if (!id || files.length === 0) return;
-    const folder = selectedFolder;
-    try {
-      const result = await apiPost<{
-        items: MatchItem[];
-        matched: number;
-        ambiguous: number;
-        unmatched: number;
-      }>(`/api/v1/projects/${id}/versions/match`, {
-        ...(folder ? { folder_id: folder } : {}),
-        files: files.map((entry) => ({
-          filename: entry.file.name,
-          ...(entry.relativePath ? { relative_path: entry.relativePath } : {})
+    const result = await askForMatches(
+      files.map((entry) => ({
+        filename: entry.file.name,
+        ...(entry.relativePath ? { relativePath: entry.relativePath } : {})
+      }))
+    );
+    if (!result || id !== projectId) return;
+    applyMatchResult(result, files.length);
+  };
+
+  /* The second ask, once bytes exist to look at. Runs from the attach buffer,
+     which is exactly where a file has been stored and not yet landed. */
+  const MATCH_POLL_MS = 2500;
+  const MATCH_POLL_TRIES = 12;
+
+  const offerFingerprintMatches = async (
+    batch: Array<{ item: UploadItem; uploadId: string }>
+  ): Promise<void> => {
+    const id = projectId;
+    if (!id || batch.length === 0) return;
+    const undecided = batch.filter(
+      (entry) => !entry.item.versionOf && !matchByName.has(entry.item.file.name)
+    );
+    if (!undecided.length) return;
+    for (let attempt = 0; attempt < MATCH_POLL_TRIES; attempt += 1) {
+      const result = await askForMatches(
+        undecided.map((entry) => ({
+          filename: entry.item.file.name,
+          uploadId: entry.uploadId
         }))
-      });
-      if (id !== projectId) return;
-      if (result.matched === 0) return;
-      const next = new Map(matchByName);
-      for (const item of result.items)
-        if (item.asset_id) next.set(item.filename, item);
-      matchByName = next;
-      matchOffer = {
-        matched: result.matched,
-        ambiguous: result.ambiguous,
-        unmatched: result.unmatched,
-        total: files.length,
-        answered: false
-      };
-      if (matchTimer) clearTimeout(matchTimer);
-      matchTimer = setTimeout(() => dismissVersionMatches(), MATCH_OFFER_TIMEOUT_MS);
-    } catch {
-      /* No offer; every file is a new asset, which is what it was before. */
+      );
+      if (!result || id !== projectId) return;
+      applyMatchResult(result, tally.count || undecided.length);
+      if (result.pending === 0) return;
+      await new Promise((resolve) => setTimeout(resolve, MATCH_POLL_MS));
     }
   };
 
@@ -1779,6 +1857,22 @@
     }
     answerOffer();
   };
+
+  /* How the matches were made, in the order a person would say it. A file
+     matched by its picture is a suggestion and the line says so. */
+  const matchHow = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const item of matchByName.values()) {
+      const label = MATCH_RULE_LABEL[item.rule] ?? item.rule;
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    if (counts.size === 0) return '';
+    if (counts.size === 1) return [...counts.keys()][0];
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([label, count]) => `${String(count)} ${label}`)
+      .join(', ');
+  });
 
   const dismissVersionMatches = (): void => {
     matchByName = new Map();
@@ -2056,6 +2150,9 @@
   const queueAttach = (item: UploadItem, uploadId: string): void => {
     item.status = 'landing';
     attachPending.push({ item, uploadId });
+    /* The bytes exist now, so the other two tiers can be asked about this
+       file. It runs beside the queue rather than in front of it. */
+    void offerFingerprintMatches([{ item, uploadId }]);
     if (attachPending.length >= ATTACH_BATCH) {
       void flushAttach();
       return;
@@ -2560,7 +2657,7 @@
                 <strong>{matchOffer.matched.toLocaleString()}</strong>
                 of {matchOffer.total.toLocaleString()}
                 {matchOffer.total === 1 ? 'file matches an asset' : 'files match assets'}
-                already in {selectedName}.
+                already in {selectedName}{matchHow ? `, ${matchHow}` : ''}.
               </p>
               <div class="matchactions">
                 <button type="button" class="uploadbtn ready" onclick={applyVersionMatches}>
@@ -2623,7 +2720,11 @@
                       bind:value={item.versionOf}
                       label={`New version of, for ${item.file.name}`}
                       placeholder={matchByName.get(item.file.name)?.asset_name
-                        ? `Matches ${matchByName.get(item.file.name)?.asset_name}`
+                        ? `${matchByName.get(item.file.name)?.asset_name} (${
+                            MATCH_RULE_LABEL[
+                              matchByName.get(item.file.name)?.rule ?? ''
+                            ] ?? 'matched'
+                          })`
                         : 'New version of...'}
                       disabled={item.status === 'done' || item.status === 'quarantined'}
                     />

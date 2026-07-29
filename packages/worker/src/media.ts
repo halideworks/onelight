@@ -2,9 +2,14 @@ import { spawn } from "node:child_process";
 import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { cpus } from "node:os";
 import path from "node:path";
-import { encodePeaks } from "@onelight/core";
+import {
+  captureIdentityFromTags,
+  captureKeyOf,
+  encodePeaks,
+} from "@onelight/core";
 import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
 import { ALL_FORMATS, FilePathSource, Input } from "mediabunny";
+import { fingerprintSprite, fingerprintStill } from "./fingerprint-media.js";
 import { PROCESS_IDLE_TIMEOUT_MS, runProcess } from "./run-process.js";
 import {
   STILL_FULL_RUNG,
@@ -2365,10 +2370,27 @@ export const runTranscode = async (
         const meta = (await fileReady(output.path))
           ? await describeStillFile(output.path, rung)
           : await renderStillRung(job.sourceKey, output.path, rung, { ffmpeg });
+        /* The review rung carries the fingerprint, because it is the one rung
+           every still gets and the file is open anyway. */
+        const extra: Record<string, unknown> = {};
+        if (output.kind === "still_review")
+          try {
+            const print = await fingerprintStill(job.sourceKey);
+            if (print.contentHash) extra.content_hash = print.contentHash;
+            const key = captureKeyOf(print.capture);
+            if (key) extra.capture_key = key;
+          } catch (error) {
+            /* A file that will not give up its identity is still a picture. */
+            console.warn(
+              `[onelight-worker] fingerprint failed for ${path.basename(job.sourceKey)}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
         renditions.push({
           kind: output.kind,
           key: output.path,
-          meta: { ...meta },
+          meta: { ...meta, ...extra },
         });
         continue;
       }
@@ -2510,8 +2532,38 @@ export const runTranscode = async (
           );
       }
       if (output.height !== undefined) meta.height = output.height;
-      if (output.kind === "sprite")
+      if (output.kind === "sprite") {
         meta.vtt_path = await writeSpriteVtt(job, output.path);
+        /* Four points along the clip, read back out of the montage that was
+           just built rather than by decoding the movie a second time. */
+        try {
+          const duration = durationSeconds(job.mediaInfo);
+          const interval = spriteInterval(job.mediaInfo);
+          const tiles = Math.min(
+            100,
+            Math.max(1, Math.ceil(duration / interval)),
+          );
+          const signature = await fingerprintSprite(output.path, {
+            columns: 10,
+            rows: 10,
+            tiles,
+          });
+          if (signature) meta.content_hash = signature;
+        } catch (error) {
+          console.warn(
+            `[onelight-worker] sprite fingerprint failed for job ${job.id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+        const key = captureKeyOf(
+          captureIdentityFromTags(
+            (job.mediaInfo.format?.tags as Record<string, unknown>) ?? {},
+            job.mediaInfo.sourceTimecodeStart ?? null,
+          ),
+        );
+        if (key) meta.capture_key = key;
+      }
       if (output.kind === "shuttle_audio_2x") meta.shuttle_rate = 2;
       if (output.kind === "shuttle_audio_4x") meta.shuttle_rate = 4;
       if (output.kind === "reference_audio_1x") meta.reference_rate = 1;

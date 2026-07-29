@@ -186,6 +186,17 @@ const assetsHaveSelectedAt = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.sql?.includes("selected_at"));
 };
 
+const versionsHaveFingerprints = async (
+  binding: D1Database,
+): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'asset_versions'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("content_hash"));
+};
+
 const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -570,6 +581,18 @@ export const d1Migrations: D1Migration[] = [
     statements: [
       "ALTER TABLE assets ADD COLUMN selected_at INTEGER",
       "CREATE INDEX assets_selected_idx ON assets(project_id, selected_at)",
+    ],
+  },
+  {
+    name: "0032_fingerprints.sql",
+    applied: versionsHaveFingerprints,
+    statements: [
+      "ALTER TABLE asset_versions ADD COLUMN capture_key TEXT",
+      "ALTER TABLE asset_versions ADD COLUMN content_hash TEXT",
+      "CREATE INDEX asset_versions_capture_idx ON asset_versions(capture_key)",
+      "ALTER TABLE upload_sessions ADD COLUMN capture_key TEXT",
+      "ALTER TABLE upload_sessions ADD COLUMN content_hash TEXT",
+      "ALTER TABLE upload_sessions ADD COLUMN fingerprint_state TEXT NOT NULL DEFAULT 'pending'",
     ],
   },
 ];

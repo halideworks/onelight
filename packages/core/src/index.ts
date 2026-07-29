@@ -4,6 +4,7 @@ export * from "./crypto-password.js";
 export * from "./crypto.js";
 export * from "./crc32c.js";
 export * from "./errors.js";
+export * from "./fingerprint.js";
 export * from "./ids.js";
 export * from "./palettes.js";
 export * from "./peaks.js";

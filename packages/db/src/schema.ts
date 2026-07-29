@@ -298,6 +298,15 @@ export const uploadSessions = sqliteTable(
     status: text("status", {
       enum: ["pending", "uploading", "completed", "quarantined", "aborted"],
     }).notNull(),
+    /* The same two identities as a version carries, for a file that is not a
+       version yet: the matcher is asked about uploads. */
+    captureKey: text("capture_key"),
+    contentHash: text("content_hash"),
+    fingerprintState: text("fingerprint_state", {
+      enum: ["pending", "ready", "skipped", "failed"],
+    })
+      .notNull()
+      .default("pending"),
     createdAt: integer("created_at").notNull(),
     completedAt: integer("completed_at"),
   },
@@ -414,6 +423,11 @@ export const assetVersions = sqliteTable(
     dropFrame: integer("drop_frame", { mode: "boolean" }),
     durationFrames: integer("duration_frames"),
     colorJson: text("color_json").notNull().default("{}"),
+    /* What this version is, apart from its name (migration 0032). The capture
+       key is exact and the content hash is a suggestion; see
+       packages/core/src/fingerprint.ts for why they are treated differently. */
+    captureKey: text("capture_key"),
+    contentHash: text("content_hash"),
     transcodeStatus: text("transcode_status", {
       enum: ["pending", "processing", "ready", "failed", "skipped"],
     })
@@ -426,6 +440,7 @@ export const assetVersions = sqliteTable(
   },
   (table) => ({
     assetVersionUnique: unique().on(table.assetId, table.versionNo),
+    captureIndex: index("asset_versions_capture_idx").on(table.captureKey),
     assetIndex: index("asset_versions_asset_idx").on(
       table.assetId,
       table.versionNo,

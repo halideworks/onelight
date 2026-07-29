@@ -2067,7 +2067,7 @@ export const routeDocs: Record<string, RouteDoc> = {
   },
   "POST /projects/:id/versions/match": {
     summary:
-      "Dry run: which of these filenames look like new versions of assets already in the project. Writes nothing. A filename matching more than one asset comes back as ambiguous with its candidates rather than a guess.",
+      "Dry run: which of these files look like new versions of assets already in the project. Writes nothing. Three tiers, strongest first: the name, the capture identity the file carries (the instant a frame was taken and the body that took it, or a clip's creation time and source timecode), and the picture itself, which only ever narrows and must beat its runner up by a clear margin. Anything matching more than one asset comes back as ambiguous with its candidates rather than a guess. Uploads that have not been opened yet come back as pending; ask again.",
     request: bodies.versionMatchRequest,
     responses: {
       "200": ok(
@@ -2080,7 +2080,12 @@ export const routeDocs: Record<string, RouteDoc> = {
               version_token: z.string().nullable(),
               asset_id: z.string().nullable(),
               asset_name: z.string().nullable(),
+              /* How it was matched: by name, by the capture identity the
+                 file carries, or by the picture itself. "pending" means the
+                 file has not been opened yet; ask again. */
               rule: z.string(),
+              /* Bits of difference, when the picture was what matched. */
+              distance: z.number().int().optional(),
               candidates: z.array(
                 z.object({ asset_id: z.string(), asset_name: z.string() }),
               ),
@@ -2089,6 +2094,8 @@ export const routeDocs: Record<string, RouteDoc> = {
           matched: z.number().int(),
           ambiguous: z.number().int(),
           unmatched: z.number().int(),
+          /* Files still being identified. Non-zero means ask again. */
+          pending: z.number().int(),
         }),
       ),
     },

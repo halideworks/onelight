@@ -466,3 +466,52 @@ The test for the re-kind sweep is worth singling out: the first version of
 it passed against the broken code, because the rows it looked for happened
 to be inserted first. It now inserts two hundred and fifty plain files ahead
 of them, and fails without the fix.
+
+## Matching by what a file is, not what it is called
+
+Name matching covers the ordinary case and misses the one that hurts: a
+retoucher renames everything, and `DSC_1234.NEF` comes back as
+`Smith_Wedding_047_final.tif`. Two further identities close that gap, and they
+are trusted very differently. Both work for clips as well as frames.
+
+**Capture identity is exact.** A photograph carries the instant it was taken to
+the sub-second plus the body that took it; a clip carries its creation time,
+its camera tags and its source timecode. A re-export from Lightroom or Resolve
+keeps them, and two frames a second apart differ in the field itself, so this
+cannot slide onto the neighbouring frame. It decides on its own. A key two
+assets share is a conflict, like any other tie. It is nearly free: sharp
+already hands us the EXIF block on every still we decode, and ffprobe already
+gives us the format tags on every clip.
+
+A creation time on its own is not enough to pair on, and the code says so: a
+batch export stamps a hundred files with the same second, so the key needs a
+sub-second, a body or a timecode beside it or there is no key.
+
+**The picture itself only ever narrows.** A 64 bit difference hash, measured on
+this machine:
+
+| pair | distance |
+|---|---|
+| a frame against its own retouch | 1 |
+| a frame against the next frame of the same burst | 3 |
+| a frame against a different set-up | 35 |
+
+That is the whole argument for how it is used. Against unrelated content the
+signal is enormous; against the frame beside it in a sequence, 1 versus 3 is
+noise, and a shoot is nothing but sequences. So a threshold alone would pair a
+burst with itself, which is the same catastrophe as stripping a trailing
+number. The winner must beat the runner up by a clear margin, and if it does
+not, the answer is ambiguous with its candidates rather than a guess.
+
+A clip is signed at four points along its own length rather than once, because
+two takes of the same set-up share an opening frame and diverge later. The four
+come out of the sprite the pipeline already builds, so a clip that has been
+transcoded costs nothing extra; one that has not is seeked four times. A sample
+that is flat (black, a fade, a white card) voids the whole signature, because
+otherwise every clip with a fade in it looks like every other.
+
+Uploads are fingerprinted by a worker job in batches while their bytes are
+already on their way, so the offer in the uploader improves under the reader
+rather than making them wait: the name tier answers before a byte moves, and
+the other two arrive a moment later. A bounded sweep does the same for a
+library that predates any of this.
