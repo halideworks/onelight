@@ -1729,6 +1729,14 @@
     audio: 'by the sound',
     'shared-footage': 'by shared footage'
   };
+  /* The weakest tier says how much footage it found, because a suggestion
+     nobody can weigh is a suggestion nobody trusts. */
+  const matchLabelFor = (match: { rule: string; share?: number } | undefined): string => {
+    if (!match) return 'matched';
+    if (match.rule === 'shared-footage' && typeof match.share === 'number')
+      return `${String(match.share)}% shared footage`;
+    return MATCH_RULE_LABEL[match.rule] ?? 'matched';
+  };
   let matchOffer = $state<{
     matched: number;
     ambiguous: number;
@@ -2722,11 +2730,9 @@
                       bind:value={item.versionOf}
                       label={`New version of, for ${item.file.name}`}
                       placeholder={matchByName.get(item.file.name)?.asset_name
-                        ? `${matchByName.get(item.file.name)?.asset_name} (${
-                            MATCH_RULE_LABEL[
-                              matchByName.get(item.file.name)?.rule ?? ''
-                            ] ?? 'matched'
-                          })`
+                        ? `${matchByName.get(item.file.name)?.asset_name} (${matchLabelFor(
+                            matchByName.get(item.file.name)
+                          )})`
                         : 'New version of...'}
                       disabled={item.status === 'done' || item.status === 'quarantined'}
                     />
