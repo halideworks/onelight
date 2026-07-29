@@ -1005,6 +1005,7 @@ describe("fingerprint jobs, against a stand-in worker", () => {
                 id: source.id,
                 content_hash: "0f1e2d3c4b5a6978",
                 capture_key: "2026:07:29 14:03:11.470|nikon z 9|",
+                audio_hash: "cd95422f42931325",
                 state: "ready" as const,
               })),
             },
@@ -1123,6 +1124,10 @@ describe("fingerprint jobs, against a stand-in worker", () => {
           .all()
       )[0];
       expect(finished?.captureKey).toContain("nikon z 9");
+      /* The sound too: the matcher reads it off the upload session, and the
+         last time an answer was read from the wrong place in this envelope
+         every job died silently. */
+      expect(finished?.audioHash).toBe("cd95422f42931325");
       expect(finished?.fingerprintState).toBe("ready");
     } finally {
       stop?.();
