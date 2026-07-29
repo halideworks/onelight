@@ -40,11 +40,13 @@ import {
   verifyTotp,
   AUDIO_MATCH_MAX_DISTANCE,
   MOTION_MATCH_MAX_DISTANCE,
-  contentDistance,
-  contentOverlap,
+  bitDistance,
+  bitsContentDistance,
+  bitsContentOverlap,
+  contentBits,
+  hashBits,
   CONTENT_MATCH_MAX_DISTANCE,
   CONTENT_MATCH_MIN_MARGIN,
-  hashDistance,
   SHOT_OVERLAP_MIN,
   SHOT_OVERLAP_MIN_MARGIN,
   isStillSource,
@@ -57,7 +59,7 @@ import {
   zipLength,
   zipStreamFrom,
 } from "@onelight/core";
-import type { ZipEntry } from "@onelight/core";
+import type { ContentBits, HashBits, ZipEntry } from "@onelight/core";
 import type {
   MultipartBlobStore,
   StoredMailSettings,
@@ -11240,13 +11242,59 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         "shared-footage": SHOT_OVERLAP_MIN_MARGIN,
       } as const;
 
+      /* Every hash is read once, not once per comparison.
+
+         This is a product: three thousand delivered files against a three
+         thousand file library is nine million comparisons inside one request,
+         and measured, comparing them as hex strings costs 1.4 us each, which
+         is thirteen seconds of a blocked event loop. Parsed to numbers up
+         front, the same nine million comparisons are arithmetic. */
+      type Signed = {
+        id: string;
+        name: string;
+        captureKey: string | null;
+        audio: HashBits | null;
+        motion: HashBits | null;
+        content: ContentBits | null;
+      };
+      const signed: Signed[] = fingerprinted.map((row) => ({
+        id: row.id,
+        name: row.name,
+        captureKey: row.captureKey,
+        audio: row.audioHash ? hashBits(row.audioHash) : null,
+        motion: row.motionHash ? hashBits(row.motionHash) : null,
+        content: row.contentHash ? contentBits(row.contentHash) : null,
+      }));
+      /* And a capture key is an exact match, so it is a lookup rather than a
+         scan of every asset in the project. */
+      const byCaptureKey = new Map<string, Signed[]>();
+      for (const row of signed) {
+        if (!row.captureKey) continue;
+        const list = byCaptureKey.get(row.captureKey) ?? [];
+        list.push(row);
+        byCaptureKey.set(row.captureKey, list);
+      }
+
       const evidenceFor = (
         upload: (typeof uploadRows)[number] | undefined,
       ): Evidence[] => {
         if (!upload) return [];
         const out: Evidence[] = [];
-        for (const row of fingerprinted) {
-          if (upload.captureKey && row.captureKey === upload.captureKey) {
+        const uploadAudio = upload.audioHash
+          ? hashBits(upload.audioHash)
+          : null;
+        const uploadMotion = upload.motionHash
+          ? hashBits(upload.motionHash)
+          : null;
+        const uploadContent = upload.contentHash
+          ? contentBits(upload.contentHash)
+          : null;
+        /* A clip has a point per sample and a frame has one, and only a clip
+           can share footage: a single frame has a position, which the tier
+           above already judges. */
+        const sharesFootage = (uploadContent?.length ?? 0) > 1;
+        if (upload.captureKey)
+          for (const row of byCaptureKey.get(upload.captureKey) ?? [])
             out.push({
               assetId: row.id,
               assetName: row.name,
@@ -11255,10 +11303,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               score: 0,
               margin: MARGIN.capture,
             });
+        for (const row of signed) {
+          if (upload.captureKey && row.captureKey === upload.captureKey)
             continue;
-          }
-          if (upload.audioHash && row.audioHash) {
-            const distance = hashDistance(upload.audioHash, row.audioHash);
+          if (uploadAudio && row.audio) {
+            const distance = bitDistance(uploadAudio, row.audio);
             if (distance <= AUDIO_MATCH_MAX_DISTANCE) {
               out.push({
                 assetId: row.id,
@@ -11272,8 +11321,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               continue;
             }
           }
-          if (upload.motionHash && row.motionHash) {
-            const distance = hashDistance(upload.motionHash, row.motionHash);
+          if (uploadMotion && row.motion) {
+            const distance = bitDistance(uploadMotion, row.motion);
             if (distance <= MOTION_MATCH_MAX_DISTANCE) {
               out.push({
                 assetId: row.id,
@@ -11287,10 +11336,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               continue;
             }
           }
-          if (upload.contentHash && row.contentHash) {
-            const distance = contentDistance(
-              upload.contentHash,
-              row.contentHash,
+          if (uploadContent && row.content) {
+            /* The ceiling lets this stop counting as soon as the answer cannot
+               be inside the threshold, which is almost every pair. */
+            const distance = bitsContentDistance(
+              uploadContent,
+              row.content,
+              CONTENT_MATCH_MAX_DISTANCE,
             );
             if (distance <= CONTENT_MATCH_MAX_DISTANCE) {
               out.push({
@@ -11304,10 +11356,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               });
               continue;
             }
-            /* Only a clip has positions to share; a single frame has one, and
-               the tier above already judged it. */
-            if (upload.contentHash.includes(":")) {
-              const share = contentOverlap(upload.contentHash, row.contentHash);
+            if (sharesFootage) {
+              const share = bitsContentOverlap(uploadContent, row.content);
               if (share >= SHOT_OVERLAP_MIN)
                 out.push({
                   assetId: row.id,

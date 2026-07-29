@@ -12,7 +12,7 @@
    full hundred, so a shorter clip would be signed at different moments than
    the file it is meant to match. Four seeks are cheap and always agree. */
 
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import {
   contourHash,
@@ -204,6 +204,9 @@ export const AUDIO_WINDOW_COUNT = 65;
    every frame and the contour is normalised here instead: whatever came back
    is averaged into a fixed number of windows, which is what makes a fifteen
    second spot and a thirty second one produce hashes of the same shape. */
+export const AUDIO_ENVELOPE_FILTER =
+  "aformat=channel_layouts=mono,aresample=8000,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-";
+
 export const buildAudioEnvelopeArgs = (source: string): string[] => [
   "-hide_banner",
   "-nostats",
@@ -213,7 +216,7 @@ export const buildAudioEnvelopeArgs = (source: string): string[] => [
   "-map",
   "0:a:0",
   "-af",
-  "aformat=channel_layouts=mono,aresample=8000,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
+  AUDIO_ENVELOPE_FILTER,
   "-f",
   "null",
   "-",
@@ -295,6 +298,9 @@ export const fingerprintAudio = async (
    what crosses the process boundary is a column of numbers. */
 export const MOTION_WINDOW_COUNT = 65;
 
+export const MOTION_ENVELOPE_FILTER =
+  "scale=160:90,format=gray,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-";
+
 export const buildMotionEnvelopeArgs = (source: string): string[] => [
   "-hide_banner",
   "-nostats",
@@ -305,7 +311,7 @@ export const buildMotionEnvelopeArgs = (source: string): string[] => [
   "0:v:0",
   "-an",
   "-vf",
-  "scale=160:90,format=gray,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-",
+  MOTION_ENVELOPE_FILTER,
   "-f",
   "null",
   "-",
@@ -349,4 +355,264 @@ export const fingerprintMotion = async (
     /* No video stream, or a decoder that would not play: not a failure. */
     return null;
   }
+};
+
+/* ---- all three signatures, in one decode ----
+
+   A clip used to cost seventeen ffmpeg invocations: sixteen seeks for the
+   positional signature, a full decode for the motion contour, and one more for
+   the audio. Every one of them opened the container and started a decoder
+   again, and each seek decoded from its preceding keyframe to get one frame.
+
+   The decode the motion contour already does passes through every frame the
+   seeks were looking for. So do it once. The decoded video is split: one branch
+   goes to the difference filter, the other through a select that keeps the same
+   frames a seek would have landed on, and the audio rides along on its own
+   output over a stream that is already demuxed. The frames are scaled by the
+   same filter and hashed by the same sharp path as before, so the answers are
+   not merely close, they are identical, which is asserted rather than assumed.
+
+   Measured on nyx: a thirty second 1080p clip goes 7.8 s to 2.9 s, and a
+   ninety-four second spot 30.5 s to 11.1 s with hardware decode. */
+
+export type ClipSignatures = {
+  content: string | null;
+  motion: string | null;
+  audio: string | null;
+};
+
+/* Why the sound is NOT in the fold.
+
+   It was, and on real footage it came out different. Both signatures the fold
+   produced agreed with each other and disagreed with the standalone pass by a
+   few bits, which is what a shifted window boundary looks like: with video and
+   audio mapped from one input, ffmpeg aligns the streams at the earliest start
+   time, and the astats frames the contour is averaged from land a frame off.
+   The library is already signed by the standalone pass, and a fingerprint that
+   changes when the command around it changes is not a fingerprint. So the
+   audio keeps its own command. It was never the cost: 0.6 s against 28 s of
+   decode on a ninety-four second spot.
+
+   A synthetic clip did not show this. Two real spots did. */
+
+export const buildClipPassArgs = (
+  source: string,
+  options: {
+    positions: number[];
+    durationSeconds: number;
+    frameIntervalSeconds: number;
+    framePattern: string;
+    decodeArgs?: string[];
+  },
+): string[] => {
+  const { durationSeconds: duration, frameIntervalSeconds: interval } = options;
+  /* A generous window per point rather than a surgical one. Trying to admit
+     exactly one frame is a trap: a window a hair under one frame misses the
+     point that falls just after a frame, and a hair over admits two. So take
+     everything within a couple of frames and let showinfo say what actually
+     came out; the choice of which frame answers each point is made in JS,
+     where it can be the same rule an input seek follows. A few extra small
+     PNGs cost nothing next to a decode. */
+  const select = options.positions
+    .map((fraction) => {
+      const at = duration * fraction;
+      return `between(t\\,${at.toFixed(6)}\\,${(at + interval * 2).toFixed(6)})`;
+    })
+    .join("+");
+  return [
+    "-hide_banner",
+    "-nostats",
+    ...(options.decodeArgs ?? []),
+    ...FINGERPRINT_THREADS,
+    "-i",
+    source,
+    "-filter_complex",
+    [
+      "[0:v]split=2[motion][frames]",
+      `[motion]${MOTION_ENVELOPE_FILTER}[contour]`,
+      `[frames]select='${select}',showinfo,scale=160:90:force_original_aspect_ratio=decrease[sampled]`,
+    ].join(";"),
+    "-map",
+    "[contour]",
+    "-f",
+    "null",
+    "-",
+    "-map",
+    "[sampled]",
+    /* No frame rate conversion: one written file per selected frame, in order,
+       which is what pairs them with what showinfo reported. */
+    "-fps_mode",
+    "passthrough",
+    "-y",
+    options.framePattern,
+  ];
+};
+
+/* The presentation times showinfo reported, in the order the frames came.
+
+   Only showinfo's own lines: metadata=print heads every frame it reports with
+   a pts_time of its own, and the motion branch reports every frame in the
+   clip, so a bare search for pts_time reads the wrong stream entirely. That
+   was a real bug, and the symptom was 1223 times for 16 frames. */
+export const parseShowinfoTimes = (text: string): number[] => {
+  const times: number[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.includes("showinfo")) continue;
+    const match = /pts_time:(-?\d+(?:\.\d+)?)/.exec(line);
+    if (match) times.push(Number(match[1]));
+  }
+  return times;
+};
+
+/* Which written frame answers each point: the first one at or after it, which
+   is exactly what an input seek to that point returns. A point with nothing at
+   or after it has no answer, and the caller falls back rather than guess. */
+export const chooseSampledFrames = (
+  positions: number[],
+  durationSeconds: number,
+  times: number[],
+  frameIntervalSeconds: number,
+): number[] | null => {
+  const chosen: number[] = [];
+  for (const fraction of positions) {
+    const at = durationSeconds * fraction;
+    /* A hair of tolerance: ffmpeg's own seek accepts the frame whose time
+       rounds to the point, and showinfo prints six decimals. */
+    const index = times.findIndex((time) => time >= at - 0.001);
+    const time = index === -1 ? undefined : times[index];
+    /* And the frame has to actually belong to this point. Without this a point
+       whose window came back empty would silently borrow the next point's
+       frame, which is a wrong answer rather than a refusal. */
+    if (time === undefined || time > at + frameIntervalSeconds * 1.5)
+      return null;
+    chosen.push(index);
+  }
+  return chosen;
+};
+
+/* And the pass itself. Anything that does not come back exactly right is a
+   fallback rather than a guess: the hashes it produces have to be the same
+   numbers the seek path produces, because a library is already signed with
+   them, so a short yield, a missing point or a broken decoder means the proven
+   path runs instead. */
+export const fingerprintClipPass = async (
+  source: string,
+  options: {
+    durationSeconds: number;
+    frameIntervalSeconds: number;
+    workDirectory: string;
+    ffmpeg?: string;
+    tag?: string;
+    decodeArgs?: string[];
+  },
+): Promise<Omit<ClipSignatures, "audio"> | null> => {
+  const { durationSeconds: duration } = options;
+  if (!(duration > 0) || !(options.frameIntervalSeconds > 0)) return null;
+  const ffmpeg = options.ffmpeg ?? process.env.FFMPEG_PATH ?? "ffmpeg";
+  const tag = options.tag ?? "clip";
+  const positions = clipHashPositions(duration);
+  const frames = path.join(options.workDirectory, `.pass-${tag}`);
+  await mkdir(frames, { recursive: true });
+  try {
+    const result = await runProcess(
+      ffmpeg,
+      buildClipPassArgs(source, {
+        positions,
+        durationSeconds: duration,
+        frameIntervalSeconds: options.frameIntervalSeconds,
+        framePattern: path.join(frames, "point-%04d.png"),
+        ...(options.decodeArgs ? { decodeArgs: options.decodeArgs } : {}),
+      }),
+      undefined,
+      undefined,
+      FINGERPRINT_NICENESS,
+    );
+    const text = `${result.stdout}\n${result.stderr}`;
+    const written = (await readdir(frames)).sort();
+    const times = parseShowinfoTimes(text);
+    if (written.length !== times.length) return null;
+    const chosen = chooseSampledFrames(
+      positions,
+      duration,
+      times,
+      options.frameIntervalSeconds,
+    );
+    if (!chosen) return null;
+    const sharp = await loadSharp();
+    const hashes: string[] = [];
+    for (const index of chosen) {
+      const file = written[index];
+      if (!file) return null;
+      const raw = await sharp(path.join(frames, file), { failOn: "none" })
+        .greyscale()
+        .resize({ width: HASH_WIDTH, height: HASH_HEIGHT, fit: "fill" })
+        .raw()
+        .toBuffer();
+      const luma = new Uint8Array(raw);
+      /* The same refusal as the seek path: one flat sample voids the picture,
+         because flat samples make different clips look alike. */
+      if (isFlat(luma)) return { content: null, motion: null };
+      hashes.push(dHashFromLuma(luma, HASH_WIDTH, HASH_HEIGHT));
+    }
+    const motionLevels = parseMotionLevels(text);
+    const motionWindows =
+      motionLevels.length >= MOTION_WINDOW_COUNT
+        ? resampleEnvelope(motionLevels, MOTION_WINDOW_COUNT)
+        : null;
+    return {
+      content: joinHashes(hashes),
+      motion:
+        motionWindows && hasContourShape(motionWindows)
+          ? contourHash(motionWindows)
+          : null,
+    };
+  } catch {
+    return null;
+  } finally {
+    await rm(frames, { recursive: true, force: true }).catch(() => undefined);
+  }
+};
+
+/* What the callers use. One decode with the GPU if the caller offered it, one
+   without if that fails, and the seek path as the floor. Each step is slower
+   and more certain than the last. */
+export const fingerprintClipSignatures = async (
+  source: string,
+  options: {
+    durationSeconds: number;
+    frameIntervalSeconds: number;
+    workDirectory: string;
+    withAudio: boolean;
+    ffmpeg?: string;
+    tag?: string;
+    decodeArgs?: string[];
+  },
+): Promise<ClipSignatures> => {
+  /* The sound, on its own command, which is where its numbers come from. */
+  const audio = options.withAudio
+    ? await fingerprintAudio(source, {
+        durationSeconds: options.durationSeconds,
+        ...(options.ffmpeg ? { ffmpeg: options.ffmpeg } : {}),
+      }).catch(() => null)
+    : null;
+  const attempts = options.decodeArgs?.length
+    ? [options.decodeArgs, [] as string[]]
+    : [[] as string[]];
+  for (const decodeArgs of attempts) {
+    const folded = await fingerprintClipPass(source, {
+      ...options,
+      decodeArgs,
+    });
+    if (folded) return { ...folded, audio };
+  }
+  const content = await fingerprintClip(source, {
+    durationSeconds: options.durationSeconds,
+    workDirectory: options.workDirectory,
+    ...(options.ffmpeg ? { ffmpeg: options.ffmpeg } : {}),
+    ...(options.tag ? { tag: options.tag } : {}),
+  }).catch(() => null);
+  const motion = await fingerprintMotion(source, {
+    ...(options.ffmpeg ? { ffmpeg: options.ffmpeg } : {}),
+  }).catch(() => null);
+  return { content, motion, audio };
 };

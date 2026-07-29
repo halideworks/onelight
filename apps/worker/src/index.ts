@@ -17,9 +17,9 @@ import {
   SOFTWARE_ACCELERATION,
   exactWebCodecString,
   extractStill,
-  fingerprintAudio,
-  fingerprintMotion,
-  fingerprintClip,
+  fingerprintClipSignatures,
+  frameIntervalSeconds,
+  hardwareDecodeArgs,
   fingerprintStillSource,
   hardwareAccelerationName,
   playableRenditionMetadata,
@@ -206,22 +206,23 @@ const runFingerprints = async (
       }
       const info = await probeFile(entry.path);
       const duration = Number(info.format.duration ?? 0);
-      const signature = await fingerprintClip(entry.path, {
+      /* One decode for the picture, the cut and the sound, on the GPU where
+         the codec allows it: the same numbers the seek path produces, for a
+         third of the time. */
+      const signatures = await fingerprintClipSignatures(entry.path, {
         durationSeconds: duration,
+        frameIntervalSeconds: frameIntervalSeconds(info),
         workDirectory: workRoot,
+        withAudio: info.streams.some((stream) => stream.codec_type === "audio"),
         ffmpeg,
         tag: entry.id,
+        decodeArgs: hardwareDecodeArgs(info, hardwareAcceleration),
       });
-      const audio = await fingerprintAudio(entry.path, {
-        durationSeconds: duration,
-        ffmpeg,
-      });
-      const motion = await fingerprintMotion(entry.path, { ffmpeg });
       out.push({
         id: entry.id,
-        content_hash: signature,
-        audio_hash: audio,
-        motion_hash: motion,
+        content_hash: signatures.content,
+        audio_hash: signatures.audio,
+        motion_hash: signatures.motion,
         capture_key: captureKeyOf(
           captureIdentityFromTags(
             (info.format.tags as Record<string, unknown>) ?? {},

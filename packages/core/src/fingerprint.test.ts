@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONTENT_MATCH_MAX_DISTANCE,
+  bitDistance,
+  bitsContentDistance,
+  bitsContentOverlap,
+  contentBits,
+  hashBits,
   AUDIO_MATCH_MAX_DISTANCE,
   CONTENT_MATCH_MIN_MARGIN,
   SHOT_OVERLAP_MIN,
@@ -496,5 +502,80 @@ describe("contourHash", () => {
 
   it("refuses to hash what it cannot compare", () => {
     expect(() => contourHash([1])).toThrow(/windows/);
+  });
+});
+
+describe("the numeric form of a hash", () => {
+  /* The bulk matcher compares in numbers and everything else compares in
+     strings, so the two have to be the same function. Checked over pseudo
+     random hashes rather than argued about. */
+  const hex = (seed: number): string => {
+    let out = "";
+    let state = seed * 2654435761;
+    for (let index = 0; index < 16; index += 1) {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      out += ((state >>> 11) & 0xf).toString(16);
+    }
+    return out;
+  };
+
+  it("answers exactly what the string form answers", () => {
+    for (let seed = 1; seed <= 400; seed += 1) {
+      const left = hex(seed);
+      const right = hex(seed + 977);
+      const ours = hashBits(left);
+      const theirs = hashBits(right);
+      if (!ours || !theirs) throw new Error("a generated hash was not one");
+      expect(bitDistance(ours, theirs)).toBe(hashDistance(left, right));
+    }
+  });
+
+  it("answers exactly what the string form answers for a whole clip", () => {
+    for (let seed = 1; seed <= 120; seed += 1) {
+      const left = Array.from({ length: 16 }, (_, index) =>
+        hex(seed * 31 + index),
+      ).join(":");
+      const right = Array.from({ length: 16 }, (_, index) =>
+        hex(seed * 31 + index + (seed % 3 === 0 ? 0 : 613)),
+      ).join(":");
+      const ours = contentBits(left) as NonNullable<
+        ReturnType<typeof contentBits>
+      >;
+      const theirs = contentBits(right) as NonNullable<
+        ReturnType<typeof contentBits>
+      >;
+      expect(bitsContentDistance(ours, theirs)).toBe(
+        contentDistance(left, right),
+      );
+      expect(bitsContentOverlap(ours, theirs)).toBe(
+        contentOverlap(left, right),
+      );
+    }
+  });
+
+  it("refuses a ceiling it cannot meet instead of reporting a wrong number", () => {
+    const near = contentBits("0000000000000000:0000000000000001") as never;
+    const far = contentBits("ffffffffffffffff:ffffffffffffffff") as never;
+    /* Under the ceiling the answer is the answer. */
+    expect(bitsContentDistance(near, near, CONTENT_MATCH_MAX_DISTANCE)).toBe(0);
+    /* Over it, the caller only needs to know it is out of reach, and stopping
+       early is the whole point. */
+    expect(bitsContentDistance(near, far, CONTENT_MATCH_MAX_DISTANCE)).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+    /* Without a ceiling it still counts the whole thing. */
+    expect(bitsContentDistance(near, far)).toBe(
+      contentDistance(
+        "0000000000000000:0000000000000001",
+        "ffffffffffffffff:ffffffffffffffff",
+      ),
+    );
+  });
+
+  it("says no to anything that is not a 64 bit hash", () => {
+    expect(hashBits("abc")).toBeNull();
+    expect(hashBits("zzzzzzzzzzzzzzzz")).toBeNull();
+    expect(contentBits("")).toBeNull();
+    expect(contentBits("0f0f0f0f0f0f0f0f:nope")).toBeNull();
   });
 });

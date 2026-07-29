@@ -826,3 +826,83 @@ The library also shows the guards working rather than failing: the six clips
 with no contour are HDR bench fixtures of 1, 5 and 21 frames, which is fewer
 frames than there are windows, plus a static colour bar chart, which has no
 shape to hash.
+
+## Making it fast
+
+Two things were slow, both measured before and after rather than guessed at.
+
+### One decode instead of seventeen
+
+A clip cost seventeen ffmpeg invocations: sixteen seeks for the positional
+signature, one full decode for the motion contour, one more for the audio.
+Every invocation opened the container and started a decoder again, and each
+seek decoded from its preceding keyframe to produce one frame.
+
+The decode the motion contour already does passes through every frame the seeks
+were looking for. So it is one command now: the decoded video is split, one
+branch to the difference filter and the other through a select that keeps the
+same frames a seek would have landed on, chosen in JS by the same rule an input
+seek follows. The frames are scaled by the same filter and hashed by the same
+sharp path, so the answers are identical rather than merely close, and the tests
+assert that on real media.
+
+Hardware decode goes with it, using the same conservative helper the transcode
+already had: h264, hevc, vp9 and av1 only, no HDR, and no `hwaccel_output_format`,
+so frames come back to system memory and every filter keeps its tested pixel
+path. That last part is what makes it safe: the hardware decoder is bit exact
+for a conforming stream, and the scaler stays in software, so the hash cannot
+move. Verified: the per frame contour checksum is identical at default threads,
+at two threads, and on the GPU.
+
+Measured on real footage, all three signatures identical in every row:
+
+| clip | before | after | |
+|---|---|---|---|
+| 94 s 1080p h264 | 30.4 s | 13.3 s | 2.3x |
+| 30 s 1080x1920 h264 | 16.9 s | 6.5 s | 2.6x |
+| 10.7 s 4K HEVC | 64.6 s | 10.1 s | **6.4x** |
+
+The 4K row is the shape of the old waste: sixteen seeks each decoding from a
+keyframe at 4K cost more than decoding the entire clip once.
+
+**The sound stays in its own command**, and this is the one place the fold was
+wrong. Folded in, it came out a few bits different on two real spots while
+agreeing with itself: with video and audio mapped from one input, ffmpeg aligns
+the streams at the earliest start time and the astats frames the contour is
+averaged from land a frame off. The library is already signed by the standalone
+pass, and a fingerprint that changes when the command around it changes is not
+a fingerprint. A synthetic clip did not show this; two real ones did. It was
+never the cost anyway: 0.6 s against 28 s of decode.
+
+### Reading each hash once instead of nine million times
+
+Matching a batch is a product. Three thousand delivered files against a three
+thousand file library is nine million comparisons, inside one API request, and
+the comparison was parsing the same hex strings over and over: 1.4 us a pair,
+which is **thirteen seconds of a blocked event loop** for that delivery.
+
+So a hash now has a numeric form, two 32 bit halves, and the matcher parses each
+side once before comparing. A capture key is an exact match, so it is a Map
+lookup rather than a scan of every asset. The positional comparison takes a
+ceiling and stops counting once the answer cannot be inside the threshold, which
+is almost every pair.
+
+| comparison | before | after | |
+|---|---|---|---|
+| 3000 stills against 3000 | 9.1 s | 45 ms | **203x** |
+| 200 clips against 200 | 671 ms | 9 ms | 75x |
+
+The string form is still the definition, and a property test over hundreds of
+generated hashes asserts the two agree, on the distance, on the overlap and on
+the refusals.
+
+### What was measured and left alone
+
+A still is decoded twice, once for its review rung and once for its
+fingerprint, which looked like the same waste. It is not: libvips shrinks on
+load, so decoding straight to a 9x8 hash costs 44 ms against the 848 ms the
+2048 rung takes for a 24 megapixel frame. Five percent is not worth sharing a
+decode between two pipelines, and the sharing would have meant either a full
+resolution raw buffer in memory or a hash taken from the rung instead of the
+source, which would have changed every hash in the library. Measured, then
+dropped.

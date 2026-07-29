@@ -26,6 +26,8 @@ import {
   clipHashPositions,
   fingerprintAudio,
   fingerprintClip,
+  fingerprintClipPass,
+  fingerprintClipSignatures,
   fingerprintMotion,
   isFlat,
   parseRmsLevels,
@@ -682,4 +684,129 @@ describe.skipIf(!hasFfmpeg)("a re-edit against a colour pass", () => {
       await rm(dir, { recursive: true, force: true });
     }
   }, 180_000);
+
+  it("gets the same three answers out of one decode as out of seventeen", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "onelight-onepass-"));
+    try {
+      /* A clip with cuts and a soundtrack, which is the shape the fold has to
+         handle: sixteen sample frames, a motion contour and an audio contour,
+         all out of one pass. */
+      const shots = [
+        "testsrc2=size=320x240:rate=24",
+        "smptebars=size=320x240:rate=24",
+        "testsrc=size=320x240:rate=24",
+      ].map((source, index) => {
+        const file = path.join(dir, `s${String(index)}.mp4`);
+        const result = spawnSync("ffmpeg", [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-y",
+          "-f",
+          "lavfi",
+          "-i",
+          source,
+          "-f",
+          "lavfi",
+          "-i",
+          `sine=frequency=${String(220 + index * 90)}:duration=3,tremolo=f=${String(1.3 + index)}:d=0.8`,
+          "-t",
+          "3",
+          "-shortest",
+          "-pix_fmt",
+          "yuv420p",
+          "-c:v",
+          "libx264",
+          "-preset",
+          "ultrafast",
+          "-c:a",
+          "aac",
+          file,
+        ]);
+        if (result.status !== 0)
+          throw new Error(String(result.stderr).slice(0, 300));
+        return file;
+      });
+      const list = path.join(dir, "list.txt");
+      spawnSync("sh", [
+        "-c",
+        `printf "file '%s'\n" ${[0, 1, 2, 1, 0, 2].map((index) => shots[index] as string).join(" ")} > ${list}`,
+      ]);
+      const clip = path.join(dir, "clip.mp4");
+      const joined = spawnSync("ffmpeg", [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        list,
+        "-c",
+        "copy",
+        clip,
+      ]);
+      if (joined.status !== 0)
+        throw new Error(String(joined.stderr).slice(0, 300));
+
+      const duration = 18;
+      /* The proven path: sixteen seeks, a decode for the contour, a decode for
+         the audio. */
+      const seeks = await fingerprintClip(clip, {
+        durationSeconds: duration,
+        workDirectory: dir,
+        tag: "seeks",
+      });
+      const motion = await fingerprintMotion(clip);
+      const audio = await fingerprintAudio(clip, {
+        durationSeconds: duration,
+      });
+      expect(seeks?.split(":")).toHaveLength(CLIP_HASH_POSITIONS.length);
+      expect(motion).toMatch(/^[0-9a-f]{16}$/);
+      expect(audio).toMatch(/^[0-9a-f]{16}$/);
+
+      /* And the fold. Not close: the same numbers, because a library is
+         already signed with them. */
+      const folded = await fingerprintClipPass(clip, {
+        durationSeconds: duration,
+        frameIntervalSeconds: 1 / 24,
+        workDirectory: dir,
+        tag: "folded",
+      });
+      expect(folded).not.toBeNull();
+      expect(folded?.content).toBe(seeks);
+      expect(folded?.motion).toBe(motion);
+
+      /* The wrapper adds the sound, which keeps its own command because
+         folding it in moved its answer on real footage. */
+      const together = await fingerprintClipSignatures(clip, {
+        durationSeconds: duration,
+        frameIntervalSeconds: 1 / 24,
+        workDirectory: dir,
+        withAudio: true,
+        tag: "together",
+      });
+      expect(together.content).toBe(seeks);
+      expect(together.motion).toBe(motion);
+      expect(together.audio).toBe(audio);
+
+      /* And it answers the same when offered a decoder it cannot use: a bad
+         decode argument must fall back, not fail. */
+      const viaFallback = await fingerprintClipSignatures(clip, {
+        durationSeconds: duration,
+        frameIntervalSeconds: 1 / 24,
+        workDirectory: dir,
+        withAudio: true,
+        tag: "fallback",
+        decodeArgs: ["-hwaccel", "definitely-not-a-decoder"],
+      });
+      expect(viaFallback.content).toBe(seeks);
+      expect(viaFallback.motion).toBe(motion);
+      expect(viaFallback.audio).toBe(audio);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 240_000);
 });

@@ -9,11 +9,7 @@ import {
 } from "@onelight/core";
 import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
 import { ALL_FORMATS, FilePathSource, Input } from "mediabunny";
-import {
-  fingerprintAudio,
-  fingerprintClip,
-  fingerprintMotion,
-} from "./fingerprint-media.js";
+import { fingerprintClipSignatures } from "./fingerprint-media.js";
 import { PROCESS_IDLE_TIMEOUT_MS, runProcess } from "./run-process.js";
 import {
   fingerprintStillSource,
@@ -578,7 +574,7 @@ const nvdecArgs = (device: string): string[] => [
   device,
 ];
 
-const hardwareDecodeArgs = (
+export const hardwareDecodeArgs = (
   mediaInfo: MediaInfo,
   acceleration: HardwareAcceleration,
 ): string[] => {
@@ -1083,6 +1079,16 @@ const durationSeconds = (mediaInfo: MediaInfo): number =>
     ? (mediaInfo.durationFrames * mediaInfo.frameRateDen) /
       mediaInfo.frameRateNum
     : 0;
+
+/* How long one frame lasts, which is the window a single-decode fingerprint
+   selects its sample frames in. Falls back to a common rate rather than zero:
+   a window of zero would select nothing and the fingerprint would fall back to
+   seeking for no reason. */
+export const frameIntervalSeconds = (mediaInfo: MediaInfo): number => {
+  const stream = videoStream(mediaInfo);
+  const rate = stream ? probedFrameRate(stream) : undefined;
+  return rate && rate.num > 0 ? rate.den / rate.num : 1 / 24;
+};
 
 // One 10x10 sprite sheet covers the whole duration: at most 100 tiles, so
 // the tile interval grows with duration and is never below 2 seconds.
@@ -2585,36 +2591,31 @@ export const runTranscode = async (
      full hundred of them, so a shorter clip would be signed at different
      moments than the file it is meant to match. */
   if (!fingerprint && videoStream(job.mediaInfo)) {
-    const duration = durationSeconds(job.mediaInfo);
-    const signature = await fingerprintClip(job.sourceKey, {
-      durationSeconds: duration,
+    /* All three of the picture and sound signatures come out of a single
+       decode, on the GPU where the codec allows it. */
+    const signatures = await fingerprintClipSignatures(job.sourceKey, {
+      durationSeconds: durationSeconds(job.mediaInfo),
+      frameIntervalSeconds: frameIntervalSeconds(job.mediaInfo),
       workDirectory: path.dirname(
         outputPaths[0]?.path ?? path.dirname(job.sourceKey),
       ),
+      withAudio: Boolean(audioStream(job.mediaInfo)),
       ffmpeg,
       tag: `version-${job.id}`,
-    }).catch(() => null);
+      decodeArgs: hardwareDecodeArgs(job.mediaInfo, acceleration),
+    });
     const key = captureKeyOf(
       captureIdentityFromTags(
         (job.mediaInfo.format.tags as Record<string, unknown>) ?? {},
         job.mediaInfo.sourceTimecodeStart ?? null,
       ),
     );
-    /* And what it sounds like, which is what a colour pass keeps. */
-    const audio = await fingerprintAudio(job.sourceKey, {
-      durationSeconds: duration,
-      ffmpeg,
-    }).catch(() => null);
-    /* And what it does over its length, for the colour pass with no audio. */
-    const motion = await fingerprintMotion(job.sourceKey, { ffmpeg }).catch(
-      () => null,
-    );
-    if (signature || key || audio || motion)
+    if (signatures.content || key || signatures.audio || signatures.motion)
       fingerprint = {
-        ...(signature ? { content_hash: signature } : {}),
+        ...(signatures.content ? { content_hash: signatures.content } : {}),
         ...(key ? { capture_key: key } : {}),
-        ...(audio ? { audio_hash: audio } : {}),
-        ...(motion ? { motion_hash: motion } : {}),
+        ...(signatures.audio ? { audio_hash: signatures.audio } : {}),
+        ...(signatures.motion ? { motion_hash: signatures.motion } : {}),
       };
   }
   return { renditions, failures, ...(fingerprint ? { fingerprint } : {}) };
