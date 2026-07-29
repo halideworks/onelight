@@ -13,6 +13,8 @@ import {
   isNotNull,
   isNull,
   lt,
+  or,
+  sql,
 } from "drizzle-orm";
 import {
   exportAvidText,
@@ -35,6 +37,7 @@ import type { MediaInfo } from "@onelight/core";
 import type { PlannedRendition } from "@onelight/worker";
 import {
   buildPdfReport,
+  CLIP_HASH_POSITIONS,
   compositeAnnotation,
   parseAnnotationStrokes,
   planRenditions,
@@ -1005,7 +1008,14 @@ export const sweepStackKeys = async (db: AppDb): Promise<number> => {
    The mark that a version has been looked at is a content hash OR a capture
    key; a version with neither after a successful pass (a screen grab with no
    metadata and a flat frame) would be re-queued forever, so the job's own
-   idempotency key is what stops it: once it exists, the sweep leaves it. */
+   idempotency key is what stops it: once it exists, the sweep leaves it.
+
+   Clips get a second reason to be swept. A clip signed before the post
+   production tiers carries a four point signature and no audio, and neither
+   the shot overlap nor the sound can say anything about it. Counting the
+   separators in the hash is the honest test of which scheme signed it, and it
+   settles: a re-signed clip has the current count and drops out whether or
+   not it turned out to have any audio. */
 const FINGERPRINT_SWEEP_INTERVAL_MS = 60_000;
 const FINGERPRINT_SWEEP_LIMIT = 4;
 const FINGERPRINT_SWEEP_BATCH = 25;
@@ -1025,10 +1035,19 @@ export const sweepFingerprints = async (db: AppDb): Promise<number> => {
         inArray(assets.kind, ["image", "video"]),
         isNull(assets.deletedAt),
         isNull(assetVersions.deletedAt),
-        isNull(assetVersions.contentHash),
-        isNull(assetVersions.captureKey),
-        isNull(assetVersions.audioHash),
         eq(assetVersions.transcodeStatus, "ready"),
+        or(
+          and(
+            isNull(assetVersions.contentHash),
+            isNull(assetVersions.captureKey),
+            isNull(assetVersions.audioHash),
+          ),
+          and(
+            eq(assets.kind, "video"),
+            isNotNull(assetVersions.contentHash),
+            sql`length(${assetVersions.contentHash}) - length(replace(${assetVersions.contentHash}, ':', '')) <> ${CLIP_HASH_POSITIONS.length - 1}`,
+          ),
+        ),
       ),
     )
     .orderBy(desc(assetVersions.createdAt))
@@ -1045,7 +1064,9 @@ export const sweepFingerprints = async (db: AppDb): Promise<number> => {
     const slice = candidates.slice(from, from + FINGERPRINT_SWEEP_BATCH);
     const first = slice[0];
     if (!first) break;
-    const idempotencyKey = `fingerprint:v1:${first.id}`;
+    /* The scheme is part of the key: a library signed by the old one has to
+       be offered again, and a key that never changes would refuse it. */
+    const idempotencyKey = `fingerprint:v2:${first.id}`;
     const existing = await db
       .select({ id: jobs.id })
       .from(jobs)

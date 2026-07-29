@@ -15,8 +15,10 @@ import {
   users,
   workspaces,
 } from "@onelight/db";
+import { CLIP_HASH_POSITIONS } from "@onelight/worker";
 import {
   startWorkerPump,
+  sweepFingerprints,
   sweepReKindStills,
   sweepShuttleAudioJobs,
   sweepStillLadderJobs,
@@ -647,6 +649,147 @@ describe("still ladder backfill", () => {
       await seedStill(db, { kinds: ["poster", "still_review"] });
       expect(await sweepStillLadderJobs(db)).toBe(0);
       expect(await db.select().from(jobs).all()).toHaveLength(0);
+    } finally {
+      sqlite.close();
+    }
+  });
+});
+
+describe("fingerprint backfill for a library signed by the old scheme", () => {
+  const seedLibrary = async (
+    db: ReturnType<typeof createNodeDb>["db"],
+    rows: Array<{
+      id: string;
+      kind: "image" | "video";
+      contentHash: string | null;
+    }>,
+  ): Promise<void> => {
+    await db
+      .insert(workspaces)
+      .values({ id: "ws-1", name: "Studio", createdAt: 1 })
+      .run();
+    await db
+      .insert(users)
+      .values({
+        id: "user-1",
+        workspaceId: "ws-1",
+        email: "owner@example.com",
+        name: "Owner",
+        role: "admin",
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    await db
+      .insert(projects)
+      .values({
+        id: "project-1",
+        workspaceId: "ws-1",
+        name: "Shoot",
+        palette: "kuro",
+        createdBy: "user-1",
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    for (const [index, row] of rows.entries()) {
+      await db
+        .insert(uploadSessions)
+        .values({
+          id: `upload-${row.id}`,
+          workspaceId: "ws-1",
+          projectId: "project-1",
+          createdBy: "user-1",
+          clientFilename: `${row.id}.mov`,
+          relativePath: "",
+          size: 10,
+          checksumCrc32c: "abc",
+          blobKey: `ws-1/project-1/uploads/upload-${row.id}/${row.id}.mov`,
+          status: "completed",
+          createdAt: index + 1,
+          completedAt: index + 1,
+        })
+        .run();
+      await db
+        .insert(assets)
+        .values({
+          id: `asset-${row.id}`,
+          projectId: "project-1",
+          name: `${row.id}.mov`,
+          kind: row.kind,
+          currentVersionId: row.id,
+          createdAt: index + 1,
+          updatedAt: index + 1,
+        })
+        .run();
+      await db
+        .insert(assetVersions)
+        .values({
+          id: row.id,
+          assetId: `asset-${row.id}`,
+          uploadSessionId: `upload-${row.id}`,
+          versionNo: 1,
+          originalBlobKey: `ws-1/project-1/${row.id}`,
+          originalFilename: `${row.id}.mov`,
+          size: 10,
+          checksumCrc32c: "abc",
+          uploadedBy: "user-1",
+          transcodeStatus: "ready",
+          ...(row.contentHash ? { contentHash: row.contentHash } : {}),
+          createdAt: index + 1,
+        })
+        .run();
+    }
+  };
+
+  const hashes = (count: number): string =>
+    new Array(count).fill("0f0f0f0f0f0f0f0f").join(":");
+
+  it("re-signs a clip signed at four points and leaves the current ones alone", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seedLibrary(db, [
+        /* The old scheme: four points, no audio, no shot list. */
+        { id: "stale-clip", kind: "video", contentHash: hashes(4) },
+        /* The current one, silent, so it will never gain an audio hash and
+           must not be swept forever on account of it. */
+        {
+          id: "current-clip",
+          kind: "video",
+          contentHash: hashes(CLIP_HASH_POSITIONS.length),
+        },
+        /* A still is signed once by design and is not stale. */
+        { id: "still", kind: "image", contentHash: "0f0f0f0f0f0f0f0f" },
+      ]);
+      expect(await sweepFingerprints(db)).toBe(1);
+      const queued = await db.select().from(jobs).all();
+      expect(queued).toHaveLength(1);
+      expect(queued[0]?.kind).toBe("fingerprint");
+      expect(queued[0]?.priority).toBeLessThan(0);
+      const payload = JSON.parse(queued[0]?.payloadJson ?? "{}") as {
+        version_ids: string[];
+      };
+      expect(payload.version_ids).toEqual(["stale-clip"]);
+      /* Idempotent: a second pass adds nothing. */
+      expect(await sweepFingerprints(db)).toBe(0);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("still picks up a version nothing has ever looked at", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seedLibrary(db, [
+        { id: "unsigned", kind: "image", contentHash: null },
+      ]);
+      expect(await sweepFingerprints(db)).toBe(1);
+      const payload = JSON.parse(
+        (await db.select().from(jobs).all())[0]?.payloadJson ?? "{}",
+      ) as { version_ids: string[] };
+      expect(payload.version_ids).toEqual(["unsigned"]);
     } finally {
       sqlite.close();
     }
