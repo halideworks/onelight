@@ -14,7 +14,12 @@
 
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { dHashFromLuma, joinHashes } from "@onelight/core";
+import {
+  audioHashFromEnvelope,
+  dHashFromLuma,
+  isSilentEnvelope,
+  joinHashes,
+} from "@onelight/core";
 import { runProcess } from "./run-process.js";
 
 const loadSharp = async () => (await import("sharp")).default;
@@ -43,7 +48,21 @@ export const isFlat = (luma: Uint8Array): boolean => {
    is a version with a pipeline behind it. The sampling points are the same
    fractions the sprite's tiles fall on, so a signature taken here is
    comparable with one taken from a sprite later. */
-export const CLIP_HASH_POSITIONS = [0.12, 0.34, 0.56, 0.78];
+/* Sixteen points, not four.
+
+   Four was enough to say "the same cut, differently graded", because the
+   samples line up. It is nowhere near enough to recognise a re-edit, where
+   the question is how much of the FOOTAGE is shared and the answer is a
+   fraction: four samples can only answer in quarters. Sixteen makes the
+   overlap score mean something, and sixteen seeks is still a fixed cost that
+   does not care how long the clip is.
+
+   They avoid both ends, where a slate, a fade or black would make every clip
+   look like every other. */
+export const CLIP_HASH_POSITIONS = Array.from(
+  { length: 16 },
+  (_, index) => 0.06 + (index * 0.88) / 15,
+);
 
 export const buildClipFrameArgs = (
   source: string,
@@ -111,4 +130,86 @@ export const fingerprintClip = async (
   return hashes.length === CLIP_HASH_POSITIONS.length
     ? joinHashes(hashes)
     : null;
+};
+
+/* ---- what a clip sounds like ----
+
+   A loudness contour, decoded once at a low rate: mono, 8 kHz, and reduced to
+   one number per window. ffmpeg's astats does the reduction, so nothing but a
+   little text crosses the process boundary. Silence produces no signature,
+   because a silent slate would otherwise sound like every other silent slate.
+
+   This is the tier that answers a colour pass: a grade changes every pixel and
+   not one sample of the audio. */
+export const AUDIO_WINDOW_COUNT = 65;
+
+/* astats resets by FRAME, not by seconds, and how many frames a clip has
+   depends on its sample rate and the resampler's block size. So it measures
+   every frame and the contour is normalised here instead: whatever came back
+   is averaged into a fixed number of windows, which is what makes a fifteen
+   second spot and a thirty second one produce hashes of the same shape. */
+export const buildAudioEnvelopeArgs = (source: string): string[] => [
+  "-hide_banner",
+  "-nostats",
+  "-i",
+  source,
+  "-map",
+  "0:a:0",
+  "-af",
+  "aformat=channel_layouts=mono,aresample=8000,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
+  "-f",
+  "null",
+  "-",
+];
+
+/** The measured frames, averaged into a fixed number of windows. */
+export const resampleEnvelope = (
+  levels: number[],
+  windows: number,
+): number[] => {
+  if (levels.length < windows) return levels;
+  const out: number[] = [];
+  for (let index = 0; index < windows; index += 1) {
+    const from = Math.floor((index * levels.length) / windows);
+    const to = Math.max(
+      from + 1,
+      Math.floor(((index + 1) * levels.length) / windows),
+    );
+    let total = 0;
+    for (let at = from; at < to; at += 1) total += levels[at] as number;
+    out.push(total / (to - from));
+  }
+  return out;
+};
+
+/** The windows astats printed, in order. */
+export const parseRmsLevels = (text: string): number[] => {
+  const levels: number[] = [];
+  for (const line of text.split("\n")) {
+    const match = /RMS_level=(-?\d+(?:\.\d+)?|-inf)/.exec(line);
+    if (!match) continue;
+    const value = match[1] as string;
+    /* astats speaks in dBFS; silence is -inf. Back to a linear amplitude so
+       the contour compares as loudness rather than as decibels. */
+    levels.push(value === "-inf" ? 0 : 10 ** (Number(value) / 20));
+  }
+  return levels;
+};
+
+export const fingerprintAudio = async (
+  source: string,
+  options: { durationSeconds: number; ffmpeg?: string },
+): Promise<string | null> => {
+  const ffmpeg = options.ffmpeg ?? process.env.FFMPEG_PATH ?? "ffmpeg";
+  if (!(options.durationSeconds > 0)) return null;
+  try {
+    const result = await runProcess(ffmpeg, buildAudioEnvelopeArgs(source));
+    /* ametadata prints to stdout; astats itself logs to stderr. */
+    const levels = parseRmsLevels(`${result.stdout}\n${result.stderr}`);
+    if (levels.length < 16 || isSilentEnvelope(levels)) return null;
+    return audioHashFromEnvelope(resampleEnvelope(levels, AUDIO_WINDOW_COUNT));
+  } catch {
+    /* No audio stream, or a decoder that would not play: not a failure. */
+    return null;
+  }
 };

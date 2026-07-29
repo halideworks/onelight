@@ -38,9 +38,14 @@ import {
   randomBytes,
   utf8,
   verifyTotp,
+  AUDIO_MATCH_MAX_DISTANCE,
   contentDistance,
+  contentOverlap,
   CONTENT_MATCH_MAX_DISTANCE,
   CONTENT_MATCH_MIN_MARGIN,
+  hashDistance,
+  SHOT_OVERLAP_MIN,
+  SHOT_OVERLAP_MIN_MARGIN,
   isStillSource,
   needsStillFull,
   sha256,
@@ -10992,6 +10997,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             projectId: uploadSessions.projectId,
             captureKey: uploadSessions.captureKey,
             contentHash: uploadSessions.contentHash,
+            audioHash: uploadSessions.audioHash,
             fingerprintState: uploadSessions.fingerprintState,
           })
           .from(uploadSessions)
@@ -11001,6 +11007,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           projectId: string;
           captureKey: string | null;
           contentHash: string | null;
+          audioHash: string | null;
           fingerprintState: string;
         }>)
       : [];
@@ -11041,7 +11048,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
        arithmetic over 64 bit strings, which is fast enough that no index
        beyond this is worth having at a project's scale. */
     const wantsFingerprint = [...uploadById.values()].some(
-      (row) => row.captureKey ?? row.contentHash,
+      (row) => row.captureKey ?? row.contentHash ?? row.audioHash,
     );
     const fingerprinted = wantsFingerprint
       ? ((await env.db
@@ -11050,6 +11057,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             name: assets.name,
             captureKey: assetVersions.captureKey,
             contentHash: assetVersions.contentHash,
+            audioHash: assetVersions.audioHash,
           })
           .from(assets)
           .innerJoin(
@@ -11062,6 +11070,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           name: string;
           captureKey: string | null;
           contentHash: string | null;
+          audioHash: string | null;
         }>)
       : [];
     const byCaptureKey = new Map<string, Array<{ id: string; name: string }>>();
@@ -11072,6 +11081,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       byCaptureKey.set(row.captureKey, list);
     }
     const hashed = fingerprinted.filter((row) => Boolean(row.contentHash));
+    const sounded = fingerprinted.filter((row) => Boolean(row.audioHash));
     const byKey = new Map<string, typeof candidates>();
     for (const candidate of candidates) {
       const list = byKey.get(candidate.stackKey) ?? [];
@@ -11174,6 +11184,46 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             })),
           };
       }
+      /* Sound, before picture. A colour pass rewrites every pixel and not one
+         sample of the audio, so two exports of the same cut sound identical
+         while their pictures drift. It is the tier that answers a grade
+         confidently, and unlike a creation time it cannot be faked by a
+         re-export. */
+      if (upload?.audioHash && sounded.length) {
+        const near = sounded
+          .map((row) => ({
+            row,
+            distance: hashDistance(
+              upload.audioHash as string,
+              row.audioHash as string,
+            ),
+          }))
+          .filter((entry) => entry.distance <= AUDIO_MATCH_MAX_DISTANCE)
+          .sort((left, right) => left.distance - right.distance);
+        const only = near[0];
+        if (near.length === 1 && only)
+          return {
+            ...wire,
+            asset_id: only.row.id,
+            asset_name: only.row.name,
+            rule: "audio" as const,
+            distance: only.distance,
+            candidates: [],
+          };
+        if (near.length > 1)
+          /* Several cuts of one soundtrack is a music video's whole shape, so
+             this refuses rather than picks. */
+          return {
+            ...wire,
+            asset_id: null,
+            asset_name: null,
+            rule: "ambiguous" as const,
+            candidates: near.slice(0, 6).map((entry) => ({
+              asset_id: entry.row.id,
+              asset_name: entry.row.name,
+            })),
+          };
+      }
       if (upload?.contentHash && hashed.length) {
         let best: { id: string; name: string; distance: number } | null = null;
         let runnerUp = Number.MAX_SAFE_INTEGER;
@@ -11218,6 +11268,52 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               .slice(0, 6)
               .map((row) => ({ asset_id: row.id, asset_name: row.name })),
           };
+        }
+
+        /* Nothing lined up, which is exactly what a re-edit does: the same
+           footage appears at different times, so every sampled position
+           disagrees and the distance is huge. Ask how much of the footage is
+           shared instead of where it sits. Only a clip has positions to
+           share, and the bar is high, because this is the case where the
+           pictures genuinely differ and the honest evidence is a lot of
+           material in common. */
+        if (upload.contentHash.includes(":")) {
+          const overlaps = hashed
+            .map((row) => ({
+              row,
+              share: contentOverlap(
+                upload.contentHash as string,
+                row.contentHash as string,
+              ),
+            }))
+            .sort((left, right) => right.share - left.share);
+          const top = overlaps[0];
+          if (top && top.share >= SHOT_OVERLAP_MIN) {
+            const margin = top.share - (overlaps[1]?.share ?? 0);
+            if (margin >= SHOT_OVERLAP_MIN_MARGIN)
+              return {
+                ...wire,
+                asset_id: top.row.id,
+                asset_name: top.row.name,
+                rule: "shared-footage" as const,
+                share: Math.round(top.share * 100),
+                candidates: [],
+              };
+            return {
+              ...wire,
+              asset_id: null,
+              asset_name: null,
+              rule: "ambiguous" as const,
+              share: Math.round(top.share * 100),
+              candidates: overlaps
+                .filter((entry) => entry.share >= SHOT_OVERLAP_MIN)
+                .slice(0, 6)
+                .map((entry) => ({
+                  asset_id: entry.row.id,
+                  asset_name: entry.row.name,
+                })),
+            };
+          }
         }
       }
       return {

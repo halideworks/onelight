@@ -12,11 +12,21 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  AUDIO_MATCH_MAX_DISTANCE,
   CONTENT_MATCH_MIN_MARGIN,
+  SHOT_OVERLAP_MIN,
   captureKeyOf,
   contentDistance,
+  contentOverlap,
+  hashDistance,
 } from "@onelight/core";
-import { fingerprintClip, isFlat } from "./fingerprint-media.js";
+import {
+  fingerprintAudio,
+  fingerprintClip,
+  isFlat,
+  parseRmsLevels,
+  resampleEnvelope,
+} from "./fingerprint-media.js";
 import { fingerprintStillSource } from "./stills.js";
 import { runProcess } from "./run-process.js";
 
@@ -230,7 +240,7 @@ describe.skipIf(!hasFfmpeg)("fingerprinting a clip", () => {
         ffmpeg,
         tag: "two",
       });
-      expect(first).toMatch(/^[0-9a-f]{16}(:[0-9a-f]{16}){3}$/);
+      expect(first).toMatch(/^[0-9a-f]{16}(:[0-9a-f]{16}){15}$/);
       /* The same clip, twice: identical. */
       expect(contentDistance(first as string, again as string)).toBe(0);
       /* A different clip: nowhere near. */
@@ -284,4 +294,215 @@ describe("a signature is only comparable to its own shape", () => {
       fingerprintStillSource(path.join(directory, "not-media.txt")),
     ).rejects.toBeInstanceOf(Error);
   });
+});
+
+describe("parseRmsLevels", () => {
+  it("reads what astats prints, and treats silence as silence", () => {
+    const levels = parseRmsLevels(
+      [
+        "frame:0 pts:0 pts_time:0",
+        "lavfi.astats.Overall.RMS_level=-20.997745",
+        "frame:1 pts:170 pts_time:0.02125",
+        "lavfi.astats.Overall.RMS_level=-inf",
+        "noise that is not a level",
+      ].join("\n"),
+    );
+    expect(levels).toHaveLength(2);
+    expect(levels[0]).toBeGreaterThan(0);
+    expect(levels[1]).toBe(0);
+  });
+});
+
+describe("resampleEnvelope", () => {
+  it("averages many frames into a fixed number of windows", () => {
+    const levels = Array.from({ length: 300 }, (_, index) => index);
+    const windows = resampleEnvelope(levels, 65);
+    expect(windows).toHaveLength(65);
+    /* Monotonic in, monotonic out. */
+    expect(windows[0]).toBeLessThan(windows[64] as number);
+  });
+
+  it("leaves a short contour alone rather than inventing detail", () => {
+    expect(resampleEnvelope([1, 2, 3], 65)).toHaveLength(3);
+  });
+});
+
+describe.skipIf(!hasFfmpeg)("what a clip sounds like", () => {
+  const withAudio = async (
+    name: string,
+    tone: string,
+    video = "testsrc2=size=320x240:rate=12",
+    extra: string[] = [],
+  ): Promise<string> => {
+    const file = path.join(directory, name);
+    await runProcess(ffmpeg, [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      tone,
+      "-f",
+      "lavfi",
+      "-i",
+      video,
+      "-map",
+      "1:v",
+      "-map",
+      "0:a",
+      "-shortest",
+      "-pix_fmt",
+      "yuv420p",
+      ...extra,
+      file,
+    ]);
+    return file;
+  };
+
+  it("matches a colour pass, where the picture moved and the sound did not", async () => {
+    const tone =
+      "sine=frequency=440:duration=6,volume=0.6:enable='between(t,2,4)'";
+    const graded = await withAudio("grade-a.mp4", tone);
+    /* The same cut, regraded and re-encoded: a different picture, the same
+       soundtrack. This is the case a positional picture hash can miss and the
+       audio cannot. */
+    const regraded = await withAudio(
+      "grade-b.mp4",
+      tone,
+      "testsrc2=size=320x240:rate=12",
+      ["-vf", "eq=brightness=0.15:saturation=1.6"],
+    );
+    const first = await fingerprintAudio(graded, {
+      durationSeconds: 6,
+      ffmpeg,
+    });
+    const second = await fingerprintAudio(regraded, {
+      durationSeconds: 6,
+      ffmpeg,
+    });
+    expect(first).toMatch(/^[0-9a-f]+$/);
+    expect(hashDistance(first as string, second as string)).toBeLessThanOrEqual(
+      AUDIO_MATCH_MAX_DISTANCE,
+    );
+  });
+
+  it("separates two different soundtracks of the same length", async () => {
+    const one = await withAudio(
+      "sound-a.mp4",
+      "sine=frequency=440:duration=6,volume=0.2:enable='between(t,1,2)'",
+    );
+    const other = await withAudio(
+      "sound-b.mp4",
+      "sine=frequency=440:duration=6,volume=0.2:enable='between(t,4,5)'",
+    );
+    const first = await fingerprintAudio(one, { durationSeconds: 6, ffmpeg });
+    const second = await fingerprintAudio(other, {
+      durationSeconds: 6,
+      ffmpeg,
+    });
+    expect(hashDistance(first as string, second as string)).toBeGreaterThan(
+      AUDIO_MATCH_MAX_DISTANCE,
+    );
+  });
+
+  it("has nothing to say about silence or about no audio at all", async () => {
+    const silent = await withAudio(
+      "silent.mp4",
+      "anullsrc=channel_layout=mono:sample_rate=48000:duration=6",
+    );
+    expect(
+      await fingerprintAudio(silent, { durationSeconds: 6, ffmpeg }),
+    ).toBeNull();
+    const mute = path.join(directory, "mute.mp4");
+    await runProcess(ffmpeg, [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc2=size=320x240:rate=12:duration=4",
+      "-pix_fmt",
+      "yuv420p",
+      mute,
+    ]);
+    expect(
+      await fingerprintAudio(mute, { durationSeconds: 4, ffmpeg }),
+    ).toBeNull();
+  });
+});
+
+describe.skipIf(!hasFfmpeg)("a re-edit against a colour pass", () => {
+  it.skipIf(!sharpAvailable)(
+    "reads as reused footage even when every position disagrees",
+    async () => {
+      const source = path.join(directory, "edit-a.mp4");
+      /* Two halves that genuinely look nothing like each other, so a sample
+         taken from one is never mistaken for a sample from the other. A
+         single synthetic pattern will not do: testsrc2 at six seconds still
+         looks like testsrc2 at twelve. */
+      await runProcess(ffmpeg, [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=320x240:rate=12:duration=6",
+        "-f",
+        "lavfi",
+        "-i",
+        "smptebars=size=320x240:rate=12:duration=6",
+        "-filter_complex",
+        "[0:v][1:v]concat=n=2:v=1[out]",
+        "-map",
+        "[out]",
+        "-pix_fmt",
+        "yuv420p",
+        source,
+      ]);
+      /* The "re-edit": the same footage, trimmed and reordered. */
+      const reedit = path.join(directory, "edit-b.mp4");
+      await runProcess(ffmpeg, [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        source,
+        "-filter_complex",
+        "[0:v]trim=start=6:end=12,setpts=PTS-STARTPTS[a];[0:v]trim=start=0:end=6,setpts=PTS-STARTPTS[b];[a][b]concat=n=2:v=1[out]",
+        "-map",
+        "[out]",
+        "-pix_fmt",
+        "yuv420p",
+        reedit,
+      ]);
+      const first = (await fingerprintClip(source, {
+        durationSeconds: 12,
+        workDirectory: directory,
+        ffmpeg,
+        tag: "edit-a",
+      })) as string;
+      const second = (await fingerprintClip(reedit, {
+        durationSeconds: 12,
+        workDirectory: directory,
+        ffmpeg,
+        tag: "edit-b",
+      })) as string;
+      /* Position by position these two look like different clips, which is
+         what a re-edit does to a positional hash. */
+      expect(contentDistance(first, second)).toBeGreaterThan(
+        CONTENT_MATCH_MIN_MARGIN,
+      );
+      /* As sets, most of the footage is the same footage. */
+      expect(contentOverlap(second, first)).toBeGreaterThanOrEqual(
+        SHOT_OVERLAP_MIN,
+      );
+    },
+  );
 });

@@ -631,13 +631,14 @@ export const registerVersionsDomain = (ctx: SuiteContext): void => {
     const fingerprintUpload = async (
       h: ContractHarness,
       uploadId: string,
-      fields: { captureKey?: string; contentHash?: string },
+      fields: { captureKey?: string; contentHash?: string; audioHash?: string },
     ): Promise<void> => {
       await h.db
         .update(uploadSessions)
         .set({
           ...(fields.captureKey ? { captureKey: fields.captureKey } : {}),
           ...(fields.contentHash ? { contentHash: fields.contentHash } : {}),
+          ...(fields.audioHash ? { audioHash: fields.audioHash } : {}),
           fingerprintState: "ready",
         })
         .where(eq(uploadSessions.id, uploadId))
@@ -647,13 +648,14 @@ export const registerVersionsDomain = (ctx: SuiteContext): void => {
     const fingerprintVersion = async (
       h: ContractHarness,
       versionId: string,
-      fields: { captureKey?: string; contentHash?: string },
+      fields: { captureKey?: string; contentHash?: string; audioHash?: string },
     ): Promise<void> => {
       await h.db
         .update(assetVersions)
         .set({
           ...(fields.captureKey ? { captureKey: fields.captureKey } : {}),
           ...(fields.contentHash ? { contentHash: fields.contentHash } : {}),
+          ...(fields.audioHash ? { audioHash: fields.audioHash } : {}),
         })
         .where(eq(assetVersions.id, versionId))
         .run();
@@ -833,6 +835,200 @@ export const registerVersionsDomain = (ctx: SuiteContext): void => {
       expect(tie.items[0]?.asset_id).toBeNull();
       expect(tie.items[0]?.rule).toBe("ambiguous");
       expect((tie.items[0]?.candidates ?? []).length).toBeGreaterThan(1);
+    });
+
+    it("matches a re-grade by its sound when nothing else can tell two spots apart", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Spots" });
+      /* The commercial case: both spots are thirty seconds, both start at
+         01:00:00:00, both were exported this afternoon. Length, timecode and
+         creation time all say the same thing about both, so only the sound
+         can tell them apart. */
+      const hero = await landAsset(
+        h,
+        seed,
+        project.id,
+        "20260729_1010_hero.mov",
+      );
+      const other = await landAsset(
+        h,
+        seed,
+        project.id,
+        "20260729_1012_alt.mov",
+      );
+      await fingerprintVersion(h, hero.versionId, {
+        audioHash: "0f0f0f0f0f0f0f01",
+        contentHash: "ffffffffffffffff",
+      });
+      await fingerprintVersion(h, other.versionId, {
+        audioHash: "f0f0f0f0f0f0f0f0",
+        contentHash: "ffffffffffffff00",
+      });
+      const upload = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+        filename: "HERO_CC_v3.mov",
+      });
+      /* The grade rewrote the picture and left the audio alone. */
+      await fingerprintUpload(h, upload.id, {
+        audioHash: "0f0f0f0f0f0f0f03",
+        contentHash: "0000000000000000",
+      });
+      const body = await json<{
+        items: Array<{
+          rule: string;
+          asset_id: string | null;
+          distance?: number;
+        }>;
+        matched: number;
+      }>(
+        await req(h, `/api/v1/projects/${project.id}/versions/match`, {
+          cookie: seed.admin.cookie,
+          json: {
+            files: [{ filename: "HERO_CC_v3.mov", upload_id: upload.id }],
+          },
+        }),
+      );
+      expect(body.matched).toBe(1);
+      expect(body.items[0]?.rule).toBe("audio");
+      expect(body.items[0]?.asset_id).toBe(hero.assetId);
+      expect(body.items[0]?.distance).toBe(1);
+
+      /* Now give the other spot the same soundtrack, which is what a music
+         video is. Two cuts of one track must not be told apart by sound. */
+      await fingerprintVersion(h, other.versionId, {
+        audioHash: "0f0f0f0f0f0f0f02",
+      });
+      const tie = await json<{
+        items: Array<{
+          rule: string;
+          asset_id: string | null;
+          candidates: unknown[];
+        }>;
+        ambiguous: number;
+      }>(
+        await req(h, `/api/v1/projects/${project.id}/versions/match`, {
+          cookie: seed.admin.cookie,
+          json: {
+            files: [{ filename: "HERO_CC_v3.mov", upload_id: upload.id }],
+          },
+        }),
+      );
+      expect(tie.ambiguous).toBe(1);
+      expect(tie.items[0]?.asset_id).toBeNull();
+      expect(tie.items[0]?.candidates).toHaveLength(2);
+    });
+
+    it("matches a re-edit by the footage two cuts share", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Cuts" });
+      /* Eight sampled frames, each far from the others: a shot vocabulary. */
+      const shots = [
+        "ffffffffffffffff",
+        "0000000000000000",
+        "ffffffff00000000",
+        "00000000ffffffff",
+        "ff00ff00ff00ff00",
+        "00ff00ff00ff00ff",
+        "f0f0f0f0f0f0f0f0",
+        "0f0f0f0f0f0f0f0f",
+      ] as const;
+      const spare = ["ffff0000ffff0000", "0000ffff0000ffff"] as const;
+      const cut = (order: number[]): string =>
+        order.map((index) => shots[index] as string).join(":");
+      const v1 = await landAsset(
+        h,
+        seed,
+        project.id,
+        "20260729_1010_music.mov",
+      );
+      const unrelated = await landAsset(
+        h,
+        seed,
+        project.id,
+        "20260729_1400_bts.mov",
+      );
+      /* The first cut: the same material, in a different order. */
+      await fingerprintVersion(h, v1.versionId, {
+        contentHash: cut([2, 0, 4, 1, 6, 3, 5, 7]),
+      });
+      /* Another clip from the same shoot day that shares no footage. */
+      await fingerprintVersion(h, unrelated.versionId, {
+        contentHash: new Array(8).fill(spare[0]).join(":"),
+      });
+      const upload = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+        filename: "MusicVid_ReCut.mov",
+      });
+      await fingerprintUpload(h, upload.id, {
+        contentHash: cut([0, 1, 2, 3, 4, 5, 6, 7]),
+      });
+      const body = await json<{
+        items: Array<{ rule: string; asset_id: string | null; share?: number }>;
+        matched: number;
+      }>(
+        await req(h, `/api/v1/projects/${project.id}/versions/match`, {
+          cookie: seed.admin.cookie,
+          json: {
+            files: [{ filename: "MusicVid_ReCut.mov", upload_id: upload.id }],
+          },
+        }),
+      );
+      expect(body.matched).toBe(1);
+      expect(body.items[0]?.rule).toBe("shared-footage");
+      expect(body.items[0]?.asset_id).toBe(v1.assetId);
+      expect(body.items[0]?.share).toBe(100);
+
+      /* Two earlier cuts of the same material is the real hazard: which one
+         is this a version of? Nobody knows, so it must not choose. */
+      await fingerprintVersion(h, unrelated.versionId, {
+        contentHash: cut([7, 6, 5, 4, 3, 2, 1, 0]),
+      });
+      const tie = await json<{
+        items: Array<{
+          rule: string;
+          asset_id: string | null;
+          candidates: unknown[];
+        }>;
+        ambiguous: number;
+      }>(
+        await req(h, `/api/v1/projects/${project.id}/versions/match`, {
+          cookie: seed.admin.cookie,
+          json: {
+            files: [{ filename: "MusicVid_ReCut.mov", upload_id: upload.id }],
+          },
+        }),
+      );
+      expect(tie.ambiguous).toBe(1);
+      expect(tie.items[0]?.asset_id).toBeNull();
+      expect(tie.items[0]?.candidates).toHaveLength(2);
+
+      /* And a stack of stills must never reach this tier: single frames have
+         no shot list to share, only a position, which tier three already
+         judged and rejected. */
+      const still = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+        filename: "a-frame.jpg",
+      });
+      await fingerprintUpload(h, still.id, { contentHash: spare[1] });
+      const stills = await json<{
+        items: Array<{ rule: string; asset_id: string | null }>;
+        unmatched: number;
+      }>(
+        await req(h, `/api/v1/projects/${project.id}/versions/match`, {
+          cookie: seed.admin.cookie,
+          json: { files: [{ filename: "a-frame.jpg", upload_id: still.id }] },
+        }),
+      );
+      expect(stills.items[0]?.rule).toBe("none");
+      expect(stills.items[0]?.asset_id).toBeNull();
     });
 
     it("says it is still working rather than saying there is no match", async () => {

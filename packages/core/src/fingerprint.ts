@@ -90,6 +90,38 @@ export const contentDistance = (left: string, right: string): number => {
    actually protects the answer. */
 export const CONTENT_MATCH_MAX_DISTANCE = 12;
 
+/* How much of one clip's footage turns up in another's.
+
+   A positional comparison answers "is this the same cut, differently graded":
+   the samples line up because nothing moved. It answers nothing about a
+   re-edit, where the same footage appears at different times and every
+   position disagrees. Comparing the samples as a SET does: a v2 that reuses
+   most of its shots keeps most of its hashes, wherever they now sit.
+
+   Scored as the fraction of the incoming samples that find a near neighbour
+   anywhere in the candidate, which is deliberately asymmetric: a thirty
+   second cut-down of a two minute film should read as almost entirely made of
+   that film, and the film should not read as made of the cut-down. */
+export const SHOT_NEAR_BITS = 8;
+
+export const contentOverlap = (incoming: string, candidate: string): number => {
+  const ours = incoming.split(":").filter(Boolean);
+  const theirs = candidate.split(":").filter(Boolean);
+  if (!ours.length || !theirs.length) return 0;
+  let found = 0;
+  for (const hash of ours)
+    if (theirs.some((other) => hashDistance(hash, other) <= SHOT_NEAR_BITS))
+      found += 1;
+  return found / ours.length;
+};
+
+/* The share of a clip that has to be recognisable before a re-edit is worth
+   offering, and the lead the best candidate must hold over the next. Both are
+   deliberately steep: an edit is the case where the pictures genuinely differ,
+   so the evidence has to be a lot of footage, not a little. */
+export const SHOT_OVERLAP_MIN = 0.6;
+export const SHOT_OVERLAP_MIN_MARGIN = 0.2;
+
 /* And the gap the winner must open over the runner up. The measurement that
    set this: a retouch sits 1 bit from its original and the next frame of the
    burst sits 3, so anything under a clear margin is a coin toss between two
@@ -105,15 +137,32 @@ export interface CaptureIdentity {
   timecode?: string | undefined;
 }
 
-/* The identity is only used when it is specific enough to be one. A creation
-   time alone is not: a batch export stamps a hundred files with the same
-   second. It needs the sub-second, or a body, or a timecode beside it. */
+/* Timecodes that identify nothing. Post starts a programme at one of these by
+   convention, so every commercial in a project shares one and a key resting on
+   it is not a key. Four spots in a real project all carried 01:00:00:00. */
+const GENERIC_TIMECODES = new Set([
+  "00:00:00:00",
+  "01:00:00:00",
+  "00:00:00;00",
+  "01:00:00;00",
+  "10:00:00:00",
+]);
+
+/* The identity is only used when it is specific enough to be one.
+
+   A creation time alone is not: a batch export stamps a hundred files with the
+   same second. Neither is a timecode everyone starts on. What is left is a
+   sub-second stamp, a named camera, or a timecode that actually says where in
+   a reel this came from. */
 export const captureKeyOf = (identity: CaptureIdentity): string | null => {
   const takenAt = (identity.takenAt ?? "").trim();
   const body = (identity.body ?? "").trim();
   const timecode = (identity.timecode ?? "").trim();
-  if (!takenAt && !timecode) return null;
-  const specific = /[.,]\d/.test(takenAt) || Boolean(body) || Boolean(timecode);
+  const distinctiveTimecode =
+    Boolean(timecode) && !GENERIC_TIMECODES.has(timecode);
+  if (!takenAt && !distinctiveTimecode) return null;
+  const specific =
+    /[.,]\d*[1-9]/.test(takenAt) || Boolean(body) || distinctiveTimecode;
   if (!specific) return null;
   return [takenAt, body, timecode]
     .map((part) => part.replace(/\s+/g, " ").toLowerCase())
@@ -239,7 +288,12 @@ export const captureIdentityFromExif = (
   };
 };
 
-/** The capture identity of a clip, from ffprobe's format and stream tags. */
+/** The capture identity of a clip, from ffprobe's format and stream tags.
+
+    A rendered timeline is deliberately given nothing to match on: what it
+    carries is the moment it was exported, which differs for every pass of the
+    same cut and is identical across a batch of unrelated spots. Only a file
+    that names the camera that shot it keeps its time. */
 export const captureIdentityFromTags = (
   tags: Record<string, unknown>,
   sourceTimecode?: string | null,
@@ -265,9 +319,55 @@ export const captureIdentityFromTags = (
   ]
     .filter((part) => Boolean(part))
     .join(" ");
+  /* No camera named it, so the time on it is an export's, not a capture's. */
+  const cameraKnown = Boolean(body);
   return {
-    ...(taken ? { takenAt: taken } : {}),
+    ...(taken && cameraKnown ? { takenAt: taken } : {}),
     ...(body ? { body } : {}),
     ...(sourceTimecode ? { timecode: sourceTimecode } : {}),
   };
 };
+
+/* ---- what a clip sounds like ----
+
+   The tier that actually answers a colour pass. A grade changes every pixel
+   and not one sample of the audio, so two exports of the same cut sound
+   identical while their pictures drift; a re-edit is the other way round.
+   Together they say which kind of second pass this is.
+
+   The signature is a loudness contour, not the samples: it survives a
+   re-encode, a format change and a level-preserving export, and it does not
+   survive a different cut. Each bit is one window against the next, which is
+   the same trick the picture hash uses and is why an overall level change
+   moves nothing. */
+export const audioHashFromEnvelope = (windows: number[]): string => {
+  if (windows.length < 2) throw new Error("An audio hash needs windows.");
+  let hash = "";
+  let nibble = 0;
+  let bits = 0;
+  for (let index = 0; index + 1 < windows.length; index += 1) {
+    nibble =
+      (nibble << 1) |
+      ((windows[index] as number) > (windows[index + 1] as number) ? 1 : 0);
+    bits += 1;
+    if (bits === 4) {
+      hash += nibble.toString(16);
+      nibble = 0;
+      bits = 0;
+    }
+  }
+  if (bits) hash += (nibble << (4 - bits)).toString(16);
+  return hash;
+};
+
+/* Silence has no contour: a black-and-silent slate would otherwise sound like
+   every other one. */
+export const AUDIO_SILENCE_FLOOR = 1e-4;
+
+export const isSilentEnvelope = (windows: number[]): boolean =>
+  windows.every((value) => value <= AUDIO_SILENCE_FLOOR);
+
+/* How close two soundtracks must be to count as the same one. Tight, because
+   this tier is the confident one: the same audio through two encoders differs
+   in a handful of window comparisons at most. */
+export const AUDIO_MATCH_MAX_DISTANCE = 6;

@@ -41,23 +41,81 @@ const withoutExtension = (name: string): string => {
 const VERSION_TOKENS: RegExp[] = [
   /[ _.-]*\(\s*\d+\s*\)$/,
   /[ _.-]*copy(?:[ _.-]*\d+)?$/i,
-  /[ _.-]+(?:v|ver|version|rev|revision)[ _.-]?\d+$/i,
+  /[ _.-]+(?:v|ver|version|rev|revision)[ _.-]?\d+(?:\.\d+)*$/i,
   /[ _.-]+final(?:[ _.-]?\d+)?$/i,
 ];
 
-/** The trailing version token, if the name carries one. */
+/* And a version token in the MIDDLE of a name, which is where post-production
+   actually puts it: WorldCup_Argentina_v5.58_BR_US_EN_30s_1080x1920.mp4 is one
+   deliverable and v5.59 is the next pass of the same one. The delimiters on
+   both sides are required, so a word like "Level7" or "Revenant" survives, and
+   the point release is part of the token: v5.58 and v5.6 are both versions,
+   not a version and a number. */
+const INNER_VERSION_TOKEN =
+  /([ _.-])(?:v|ver|version|rev|revision)[ _.-]?\d+(?:\.\d+)*(?=[ _.-])/gi;
+
+/* A release stamp: the date, and optionally the time, that a post house puts
+   at the FRONT of an export. 20260729_1515_jonmusicvideo.mov is the 15:15 pass
+   of jonmusicvideo, and tomorrow's pass of the same timeline is the same
+   thing under a new stamp, which is exactly what a version is.
+
+   Only at the front, and this matters. A date anywhere else is part of the
+   name (DSC_20260729.jpg is one frame, and stripping its date would fold a
+   whole day's shooting into one identity), and a bare number is never a date
+   at all: the token has to be date-shaped and has to parse as a plausible
+   one. */
+const LEADING_STAMP =
+  /^(\d{4})[-_.]?(\d{2})[-_.]?(\d{2})(?:[ _.tT-]+(\d{2})[-_.:]?(\d{2})(?:[-_.:]?(\d{2}))?)?(?=[ _.-])/;
+
+const plausibleDate = (year: number, month: number, day: number): boolean =>
+  year >= 1990 &&
+  year <= 2100 &&
+  month >= 1 &&
+  month <= 12 &&
+  day >= 1 &&
+  day <= 31;
+
+/** The date and time a name is stamped with, when it carries one at the front. */
+export const releaseStampOf = (name: string): string | null => {
+  const match = LEADING_STAMP.exec(name.trim());
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match;
+  if (
+    !plausibleDate(Number(year), Number(month), Number(day)) ||
+    (hour !== undefined && Number(hour) > 23) ||
+    (minute !== undefined && Number(minute) > 59)
+  )
+    return null;
+  return `${year}-${month}-${day}${
+    hour === undefined ? "" : `T${hour}:${minute}${second ? `:${second}` : ""}`
+  }`;
+};
+
+const withoutLeadingStamp = (stem: string): string => {
+  if (!releaseStampOf(stem)) return stem;
+  const stripped = stem.replace(LEADING_STAMP, "").replace(/^[ _.-]+/, "");
+  /* A name that is nothing but its stamp keeps the stamp: the date is then
+     the only identity the file has. */
+  return stripped.trim() ? stripped : stem;
+};
+
+/** The version token a name carries, wherever it sits, or its release stamp
+    when the stamp is what tells two passes apart. */
 export const versionTokenOf = (name: string): string | null => {
   const stem = withoutExtension(name);
   for (const pattern of VERSION_TOKENS) {
     const match = pattern.exec(stem);
     if (match) return match[0].replace(/^[ _.-]+/, "");
   }
-  return null;
+  const inner = new RegExp(INNER_VERSION_TOKEN.source, "i").exec(stem);
+  if (inner) return inner[0].replace(/^[ _.-]+/, "");
+  return releaseStampOf(stem);
 };
 
 /** The identity two files share when one is a new version of the other. */
 export const stackKeyOf = (name: string): string => {
-  let stem = withoutExtension(name.trim());
+  let stem = withoutLeadingStamp(withoutExtension(name.trim()));
+  stem = stem.replace(INNER_VERSION_TOKEN, "$1");
   /* Repeated because a name can carry more than one: "shot_v2 copy 3". */
   for (let pass = 0; pass < 4; pass += 1) {
     const before = stem;

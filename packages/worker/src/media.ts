@@ -9,7 +9,7 @@ import {
 } from "@onelight/core";
 import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
 import { ALL_FORMATS, FilePathSource, Input } from "mediabunny";
-import { fingerprintClip } from "./fingerprint-media.js";
+import { fingerprintAudio, fingerprintClip } from "./fingerprint-media.js";
 import { PROCESS_IDLE_TIMEOUT_MS, runProcess } from "./run-process.js";
 import {
   fingerprintStillSource,
@@ -55,7 +55,11 @@ export interface TranscodeRunResult extends TranscodeResult {
   /* What this version IS, for matching a later pass against it. Returned
      beside the renditions rather than smuggled inside one of them: it belongs
      to the version, not to any file the job happened to write. */
-  fingerprint?: { content_hash?: string; capture_key?: string };
+  fingerprint?: {
+    content_hash?: string;
+    capture_key?: string;
+    audio_hash?: string;
+  };
 }
 
 const asString = (value: unknown): string | undefined =>
@@ -2591,10 +2595,16 @@ export const runTranscode = async (
         job.mediaInfo.sourceTimecodeStart ?? null,
       ),
     );
-    if (signature || key)
+    /* And what it sounds like, which is what a colour pass keeps. */
+    const audio = await fingerprintAudio(job.sourceKey, {
+      durationSeconds: duration,
+      ffmpeg,
+    }).catch(() => null);
+    if (signature || key || audio)
       fingerprint = {
         ...(signature ? { content_hash: signature } : {}),
         ...(key ? { capture_key: key } : {}),
+        ...(audio ? { audio_hash: audio } : {}),
       };
   }
   return { renditions, failures, ...(fingerprint ? { fingerprint } : {}) };

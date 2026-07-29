@@ -13234,7 +13234,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Dry run: which of these files look like new versions of assets already in the project. Writes nothing. Three tiers, strongest first: the name, the capture identity the file carries (the instant a frame was taken and the body that took it, or a clip's creation time and source timecode), and the picture itself, which only ever narrows and must beat its runner up by a clear margin. Anything matching more than one asset comes back as ambiguous with its candidates rather than a guess. Uploads that have not been opened yet come back as pending; ask again. */
+        /** Dry run: which of these files look like new versions of assets already in the project. Writes nothing. The tiers, strongest first: the name (with a leading date-time release stamp and inner version tokens ignored); the capture identity the file carries, which is only trusted when a camera vouches for it; the audio, which a colour pass leaves untouched and so identifies a re-grade of the same cut; the picture in position, which must beat its runner up by a clear margin; and, for clips whose pictures no longer line up at all, how much footage two cuts share. Anything matching more than one asset comes back as ambiguous with its candidates rather than a guess. Uploads that have not been opened yet come back as pending; ask again. */
         post: {
             parameters: {
                 query?: never;
@@ -13273,6 +13273,7 @@ export interface paths {
                                 asset_name: string | null;
                                 rule: string;
                                 distance?: number;
+                                share?: number;
                                 candidates: {
                                     asset_id: string;
                                     asset_name: string;

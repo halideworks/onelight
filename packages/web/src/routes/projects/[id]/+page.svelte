@@ -1725,7 +1725,9 @@
     'stack-key-in-folder': 'by name',
     'different-extension': 'by name',
     'capture-time': 'by capture time',
-    perceptual: 'by the picture'
+    perceptual: 'by the picture',
+    audio: 'by the sound',
+    'shared-footage': 'by shared footage'
   };
   let matchOffer = $state<{
     matched: number;

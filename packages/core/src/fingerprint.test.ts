@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUDIO_MATCH_MAX_DISTANCE,
   CONTENT_MATCH_MIN_MARGIN,
+  SHOT_OVERLAP_MIN,
+  audioHashFromEnvelope,
+  contentOverlap,
+  isSilentEnvelope,
   captureIdentityFromExif,
   captureIdentityFromTags,
   captureKeyOf,
@@ -115,10 +120,19 @@ describe("captureKeyOf", () => {
         body: "NIKON Z 9 3005421",
       }),
     ).toBeTruthy();
+    /* A timecode everyone starts on adds nothing, so this one rests on the
+       time alone and is refused; a timecode that says where in the reel it
+       came from is evidence. */
     expect(
       captureKeyOf({
         takenAt: "2026-07-29T14:03:11Z",
         timecode: "01:00:00:00",
+      }),
+    ).toBeNull();
+    expect(
+      captureKeyOf({
+        takenAt: "2026-07-29T14:03:11Z",
+        timecode: "14:22:07:11",
       }),
     ).toBeTruthy();
   });
@@ -331,9 +345,45 @@ describe("captureIdentityFromTags", () => {
     expect(captureKeyOf(identity)).toBeTruthy();
   });
 
-  it("makes a key from a timecode alone, which a re-export keeps", () => {
-    const identity = captureIdentityFromTags({}, "10:00:00:00");
-    expect(captureKeyOf(identity)).toBeTruthy();
+  it("gives a rendered timeline no identity at all", () => {
+    /* This is what a Resolve or Premiere export carries: the moment it was
+       written, and the timecode every programme starts on. It differs for
+       every pass of the same cut, so it never joins two versions, and a batch
+       export makes it identical across unrelated spots, so it WOULD join
+       those. Four of these sat in a real project sharing 01:00:00:00. */
+    const render = captureIdentityFromTags(
+      { creation_time: "2026-07-14T04:08:34.000000Z", encoder: "Lavf61.7.103" },
+      "01:00:00:00",
+    );
+    expect(render.takenAt).toBeUndefined();
+    expect(captureKeyOf(render)).toBeNull();
+    /* Two spots exported in the same second must not become versions. */
+    const sibling = captureIdentityFromTags(
+      { creation_time: "2026-07-14T04:08:34.000000Z" },
+      "01:00:00:00",
+    );
+    expect(captureKeyOf(sibling)).toBeNull();
+  });
+
+  it("keeps a camera original's identity", () => {
+    const camera = captureIdentityFromTags(
+      {
+        creation_time: "2026-07-14T04:08:34.000000Z",
+        "com.apple.quicktime.make": "Blackmagic Design",
+        "com.apple.quicktime.model": "URSA Cine 12K",
+      },
+      "01:00:00:00",
+    );
+    expect(captureKeyOf(camera)).toBeTruthy();
+  });
+
+  it("makes a key from a timecode that is not one everyone starts on", () => {
+    expect(
+      captureKeyOf(captureIdentityFromTags({}, "14:22:07:11")),
+    ).toBeTruthy();
+    /* But never from the two that identify nothing. */
+    expect(captureKeyOf(captureIdentityFromTags({}, "01:00:00:00"))).toBeNull();
+    expect(captureKeyOf(captureIdentityFromTags({}, "00:00:00:00"))).toBeNull();
   });
 
   it("has no key for a clip with neither", () => {
@@ -348,5 +398,110 @@ describe("the margin rule", () => {
        let a sequence pair with itself, which is the one thing this may never
        do. */
     expect(CONTENT_MATCH_MIN_MARGIN).toBeGreaterThan(3 - 1);
+  });
+});
+
+describe("contentOverlap", () => {
+  const hashes = [
+    "0f1e2d3c4b5a6978",
+    "1122334455667788",
+    "99aabbccddeeff00",
+    "0102030405060708",
+    "f0e0d0c0b0a09080",
+  ];
+  const clip = (parts: string[]): string => parts.join(":");
+
+  it("recognises a re-edit that reuses its footage in another order", () => {
+    /* Every sample still turns up, at different positions. Position by
+       position these two disagree completely; as sets they are the same
+       material, which is what a re-edit is. */
+    const first = clip(hashes);
+    const shuffled = clip([
+      hashes[3]!,
+      hashes[0]!,
+      hashes[4]!,
+      hashes[1]!,
+      hashes[2]!,
+    ]);
+    expect(contentOverlap(first, shuffled)).toBe(1);
+    expect(contentDistance(first, shuffled)).toBeGreaterThan(20);
+  });
+
+  it("scores a partial reuse as a fraction, and reads one way", () => {
+    const long = clip(hashes);
+    /* A cut-down made of three of the five shots: almost all of the cut-down
+       is in the film. */
+    const cutDown = clip([hashes[0]!, hashes[2]!, hashes[4]!]);
+    expect(contentOverlap(cutDown, long)).toBe(1);
+    /* And the film is only three fifths made of the cut-down. */
+    expect(contentOverlap(long, cutDown)).toBeCloseTo(0.6, 5);
+  });
+
+  it("gives an unrelated clip almost nothing", () => {
+    const unrelated = clip([
+      "ffffffffffffffff",
+      "aaaaaaaaaaaaaaaa",
+      "5555555555555555",
+    ]);
+    expect(contentOverlap(unrelated, clip(hashes))).toBeLessThan(
+      SHOT_OVERLAP_MIN,
+    );
+  });
+
+  it("counts a shot that was regraded rather than replaced", () => {
+    /* A grade moves a few bits, not most of them. */
+    const graded = clip(["0f1e2d3c4b5a6979", "1122334455667789"]);
+    expect(contentOverlap(graded, clip(hashes))).toBe(1);
+  });
+
+  it("is zero rather than undefined for an empty signature", () => {
+    expect(contentOverlap("", clip(hashes))).toBe(0);
+    expect(contentOverlap(clip(hashes), "")).toBe(0);
+  });
+});
+
+describe("audioHashFromEnvelope", () => {
+  const contour = (build: (index: number) => number, count = 65): number[] =>
+    Array.from({ length: count }, (_, index) => build(index));
+
+  it("is unmoved by an overall level change, which is what a mix bus does", () => {
+    const quiet = contour((index) => Math.sin(index / 3) + 1.2);
+    const loud = quiet.map((value) => value * 3.5);
+    expect(audioHashFromEnvelope(quiet)).toBe(audioHashFromEnvelope(loud));
+  });
+
+  it("separates two different soundtracks", () => {
+    const one = audioHashFromEnvelope(
+      contour((index) => Math.sin(index / 3) + 1.2),
+    );
+    const other = audioHashFromEnvelope(
+      contour((index) => Math.cos(index / 1.7) + 1.4),
+    );
+    expect(hashDistance(one, other)).toBeGreaterThan(AUDIO_MATCH_MAX_DISTANCE);
+  });
+
+  it("survives a small amount of re-encoding noise", () => {
+    const clean = contour((index) => Math.sin(index / 3) + 1.2);
+    const encoded = clean.map(
+      (value, index) => value + (index % 7 === 0 ? 0.0008 : -0.0006),
+    );
+    expect(
+      hashDistance(
+        audioHashFromEnvelope(clean),
+        audioHashFromEnvelope(encoded),
+      ),
+    ).toBeLessThanOrEqual(AUDIO_MATCH_MAX_DISTANCE);
+  });
+
+  it("calls silence silence, so two silent slates do not sound alike", () => {
+    expect(isSilentEnvelope(contour(() => 0))).toBe(true);
+    expect(isSilentEnvelope(contour(() => 1e-9))).toBe(true);
+    expect(isSilentEnvelope(contour((index) => (index % 2 ? 0.4 : 0.1)))).toBe(
+      false,
+    );
+  });
+
+  it("refuses to hash what it cannot compare", () => {
+    expect(() => audioHashFromEnvelope([1])).toThrow(/windows/);
   });
 });

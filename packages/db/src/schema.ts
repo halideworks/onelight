@@ -302,6 +302,7 @@ export const uploadSessions = sqliteTable(
        version yet: the matcher is asked about uploads. */
     captureKey: text("capture_key"),
     contentHash: text("content_hash"),
+    audioHash: text("audio_hash"),
     fingerprintState: text("fingerprint_state", {
       enum: ["pending", "ready", "skipped", "failed"],
     })
@@ -428,6 +429,8 @@ export const assetVersions = sqliteTable(
        packages/core/src/fingerprint.ts for why they are treated differently. */
     captureKey: text("capture_key"),
     contentHash: text("content_hash"),
+    /** What it sounds like: a colour pass keeps its soundtrack exactly. */
+    audioHash: text("audio_hash"),
     transcodeStatus: text("transcode_status", {
       enum: ["pending", "processing", "ready", "failed", "skipped"],
     })

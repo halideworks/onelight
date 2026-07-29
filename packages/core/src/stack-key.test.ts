@@ -64,6 +64,83 @@ describe("stackKeyOf", () => {
   });
 });
 
+describe("a post house's naming", () => {
+  it("treats a leading date and time as the version, not the identity", () => {
+    /* DATE_TIME_TIMELINE: tomorrow's pass of the same timeline is the same
+       timeline. This is the convention the whole tier exists for. */
+    const monday = stackKeyOf("20260729_1515_jonmusicvideo.mov");
+    expect(monday).toBe("jonmusicvideo");
+    for (const name of [
+      "20260730_0930_jonmusicvideo.mov",
+      "2026-07-30_0930_jonmusicvideo.mov",
+      "20260730T0930_jonmusicvideo.mov",
+      "20260730 0930 jonmusicvideo.mov",
+      "20260730_jonmusicvideo.mov",
+      "20260730_093015_jonmusicvideo.mov",
+    ])
+      expect(stackKeyOf(name), name).toBe(monday);
+  });
+
+  it("strips a version token in the middle, point release and all", () => {
+    /* A real deliverable name: the version sits in the middle and the rest
+       says which cut-down it is, which is NOT something to collapse. */
+    const a = stackKeyOf(
+      "WorldCup_Argentina_v5.58_BR_US_EN_30s_1080x1920_MP4_YTShorts_Organic.mp4",
+    );
+    const b = stackKeyOf(
+      "WorldCup_Argentina_v5.59_BR_US_EN_30s_1080x1920_MP4_YTShorts_Organic.mp4",
+    );
+    const c = stackKeyOf(
+      "WorldCup_Argentina_v6_BR_US_EN_30s_1080x1920_MP4_YTShorts_Organic.mp4",
+    );
+    expect(a).toBe(b);
+    expect(a).toBe(c);
+    expect(a).not.toContain("v5");
+    /* A different deliverable of the same spot is a different asset: the
+       1080x1920 Shorts cut and the master are not versions of each other. */
+    expect(
+      stackKeyOf(
+        "WorldCup_Argentina_v5.58_BR_US_EN_30s_1080x1920_Master_Owned.mov",
+      ),
+    ).not.toBe(a);
+    /* And a different spot is a different spot. */
+    expect(
+      stackKeyOf(
+        "WorldCup_Spain_v31_BR_US_EN_30s_1080x1920_MP4_YTShorts_Organic.mp4",
+      ),
+    ).not.toBe(a);
+  });
+
+  it("leaves a date that is not a release stamp alone", () => {
+    /* A date in the middle or at the end is part of the name. Stripping it
+       would fold a whole day of shooting into one identity. */
+    expect(stackKeyOf("DSC_20260729.jpg")).not.toBe(
+      stackKeyOf("DSC_20260730.jpg"),
+    );
+    expect(stackKeyOf("shoot_20260729_final.jpg")).toContain("20260729");
+    /* And a number that is not date-shaped is never a stamp. */
+    expect(stackKeyOf("0431_hero.jpg")).not.toBe(stackKeyOf("0432_hero.jpg"));
+    expect(stackKeyOf("20261345_1515_name.mov")).toContain("20261345");
+  });
+
+  it("keeps a word that merely starts with v or contains a version-ish run", () => {
+    expect(stackKeyOf("Revenant_trailer.mov")).toBe("revenant-trailer");
+    expect(stackKeyOf("level7_boss.mov")).toBe("level7-boss");
+    expect(stackKeyOf("v2_only.mov")).toBe("v2-only");
+  });
+
+  it("still refuses to collapse a numbered sequence", () => {
+    /* The rule the whole matcher rests on, restated against the new
+       stripping: a shoot is a run of numbered frames. */
+    expect(stackKeyOf("A001C002_20260729.mov")).not.toBe(
+      stackKeyOf("A001C003_20260729.mov"),
+    );
+    expect(stackKeyOf("20260729_1515_shot_001.mov")).not.toBe(
+      stackKeyOf("20260729_1515_shot_002.mov"),
+    );
+  });
+});
+
 describe("versionTokenOf", () => {
   it("names the token it found, for the line the UI shows", () => {
     expect(versionTokenOf("IMG_0431_v2.jpg")).toBe("v2");

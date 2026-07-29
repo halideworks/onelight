@@ -17,6 +17,7 @@ import {
   SOFTWARE_ACCELERATION,
   exactWebCodecString,
   extractStill,
+  fingerprintAudio,
   fingerprintClip,
   fingerprintStillSource,
   hardwareAccelerationName,
@@ -183,6 +184,7 @@ const runFingerprints = async (
     id: string;
     content_hash: string | null;
     capture_key: string | null;
+    audio_hash?: string | null;
     state: "ready" | "skipped" | "failed";
   }>
 > => {
@@ -208,9 +210,14 @@ const runFingerprints = async (
         ffmpeg,
         tag: entry.id,
       });
+      const audio = await fingerprintAudio(entry.path, {
+        durationSeconds: duration,
+        ffmpeg,
+      });
       out.push({
         id: entry.id,
         content_hash: signature,
+        audio_hash: audio,
         capture_key: captureKeyOf(
           captureIdentityFromTags(
             (info.format.tags as Record<string, unknown>) ?? {},

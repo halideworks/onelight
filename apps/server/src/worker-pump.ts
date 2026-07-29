@@ -76,10 +76,15 @@ interface WorkerResponse {
       id: string;
       content_hash: string | null;
       capture_key: string | null;
+      audio_hash?: string | null;
       state: "ready" | "skipped" | "failed";
     }>;
     /* What the version IS, returned beside its renditions. */
-    fingerprint?: { content_hash?: string; capture_key?: string };
+    fingerprint?: {
+      content_hash?: string;
+      capture_key?: string;
+      audio_hash?: string;
+    };
   };
   error?: string;
 }
@@ -1022,6 +1027,7 @@ export const sweepFingerprints = async (db: AppDb): Promise<number> => {
         isNull(assetVersions.deletedAt),
         isNull(assetVersions.contentHash),
         isNull(assetVersions.captureKey),
+        isNull(assetVersions.audioHash),
         eq(assetVersions.transcodeStatus, "ready"),
       ),
     )
@@ -1263,12 +1269,13 @@ const registerWorkerRenditions = async (
     throw new Error(state.error ?? "Transcode failed.");
   /* What the version is, as opposed to what files were written for it. */
   const print = state.result.fingerprint;
-  if (print?.content_hash || print?.capture_key)
+  if (print?.content_hash || print?.capture_key || print?.audio_hash)
     await db
       .update(assetVersions)
       .set({
         ...(print.content_hash ? { contentHash: print.content_hash } : {}),
         ...(print.capture_key ? { captureKey: print.capture_key } : {}),
+        ...(print.audio_hash ? { audioHash: print.audio_hash } : {}),
       })
       .where(eq(assetVersions.id, version.id))
       .run();
@@ -1471,6 +1478,9 @@ const processJob = async (
           .set({
             contentHash: print.content_hash,
             captureKey: print.capture_key,
+            ...(print.audio_hash === undefined
+              ? {}
+              : { audioHash: print.audio_hash }),
           })
           .where(eq(assetVersions.id, print.id))
           .run();
@@ -1481,6 +1491,9 @@ const processJob = async (
         .set({
           contentHash: print.content_hash,
           captureKey: print.capture_key,
+          ...(print.audio_hash === undefined
+            ? {}
+            : { audioHash: print.audio_hash }),
           fingerprintState: print.state,
         })
         .where(eq(uploadSessions.id, print.id))

@@ -503,12 +503,18 @@ burst with itself, which is the same catastrophe as stripping a trailing
 number. The winner must beat the runner up by a clear margin, and if it does
 not, the answer is ambiguous with its candidates rather than a guess.
 
-A clip is signed at four points along its own length rather than once, because
-two takes of the same set-up share an opening frame and diverge later. The four
-come out of the sprite the pipeline already builds, so a clip that has been
-transcoded costs nothing extra; one that has not is seeked four times. A sample
-that is flat (black, a fade, a white card) voids the whole signature, because
-otherwise every clip with a fade in it looks like every other.
+A clip is signed at sixteen points along its own length rather than once,
+because two takes of the same set-up share an opening frame and diverge later,
+and because sixteen samples are enough to be a shot list rather than a
+signature (see below). Each point is a seek; a flat sample (black, a fade, a
+white card) is dropped, because otherwise every clip with a fade in it looks
+like every other.
+
+The first version took those points out of the sprite the pipeline already
+builds, for free. That was wrong and the arithmetic says so: the sprite's tiles
+sit at fixed fractions of the duration that only coincide with the sampling
+positions when the tile count happens to line up. It was deleted rather than
+patched.
 
 Uploads are fingerprinted by a worker job in batches while their bytes are
 already on their way, so the offer in the uploader improves under the reader
@@ -542,3 +548,75 @@ HTTP, and it fails without the fix. And the first version fingerprinted stills
 with sharp directly, which cannot open a PSD, a RAW or a HEIC: the formats most
 likely to arrive as a renamed second pass were the only ones with no identity
 at all. It routes through the same decoder as the ladder now.
+
+## Post production, where none of the above is true
+
+Everything above assumes a camera. Post does not have one. A timeline export
+carries no body, no lens and no capture instant: what it carries is the moment
+somebody hit render. Four spots cut for the same campaign are all fifteen
+seconds, all start at `01:00:00:00`, and were all exported the same afternoon,
+so length, timecode and creation time say the same thing about all four. The
+first version of the matcher would have paired them confidently and at random.
+
+Four changes make the post case work.
+
+**The name tier learned the convention.** Files are commonly named
+`DATE_TIME_TIMELINE NAME`, as in `20260729_1515_jonmusicvideo.mov`, and the
+stamp is the one part guaranteed to change between v1 and v2. A leading
+date-time stamp is now dropped before the key is taken, and so are inner
+version tokens including point releases, so `20260729_1515_jonmusic.mov`,
+`20260801_0902_jonmusic.mov` and `jonmusic_v5.58.mov` share a key. Everybody
+has a variation on the convention, so the stamp matcher is deliberately loose
+about separators and takes the time part only if it is there. A bare trailing
+number is still never stripped: `spot_01` and `spot_02` are two spots, and that
+rule has not moved.
+
+**Capture identity now demands a camera.** A rendered timeline is given no
+identity at all unless something in the tags names a body, and the generic
+start timecodes (`00:00:00:00`, `01:00:00:00`, `10:00:00:00` and their
+drop-frame spellings) are treated as saying nothing. This is a deletion, not an
+addition: the tier used to answer on a render time alone, which is precisely
+the answer that pairs four spots at random. It now stays quiet and lets a lower
+tier speak.
+
+**Sound identifies a grade.** A colour pass rewrites every pixel and does not
+touch one sample of the audio. So a loudness contour, sixty-five windows of RMS
+taken over the whole clip and hashed the same way a picture is, is identical
+across a re-grade and different across two cuts. It sits above the picture
+tiers for exactly that reason, and it refuses when more than one asset shares
+the track, because a music video is nothing but cuts of one song. Silence
+yields no hash: a slate with no audio must not match every other silent clip.
+
+**Shared footage identifies a re-edit.** When the positions no longer line up
+at all, which is what a re-edit does to a clip's signature, the question stops
+being *where* the frames sit and becomes *how many of them appear anywhere in
+the other cut*. Sixteen samples give a shot list; the fraction of the incoming
+list found within eight bits of anything in the candidate is the overlap. The
+bar is high (60% shared, and a 20 point margin over the runner up) because this
+is the tier operating where the pictures genuinely differ. Only clips reach it:
+a single frame has no shot list, only a position, which the tier above already
+judged.
+
+So the order, strongest first, is: name, capture identity with a camera behind
+it, audio, picture in position, shared footage. Reading that list as a story
+about a job: the name answers when the convention held, the camera answers for
+originals, the sound answers a grade, the position answers a retouch, and the
+overlap answers a re-cut.
+
+### What each tier costs
+
+The audio contour is one ffmpeg pass with `astats` over a mono 8 kHz
+downmix, no decode of the picture at all. `astats`'s `reset` counts frames
+rather than seconds, so the window count is normalised in JS afterwards rather
+than trusted from the filter. Sixteen seeks replace four; on the clips measured
+here that is the difference between a fingerprint being free and it costing a
+second or two, which is paid once per upload in a worker job.
+
+### Proved on real media
+
+A clip re-graded through `eq=brightness` matches its original's audio hash
+inside the threshold, while a clip carrying a different soundtrack does not.
+Silence yields null. A re-edit of the same material shows a positional
+`contentDistance` far past the picture threshold and a `contentOverlap` at or
+above 0.6 in the same pair, which is the exact shape the two tiers are there to
+tell apart.

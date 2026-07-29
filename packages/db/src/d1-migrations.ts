@@ -197,6 +197,15 @@ const versionsHaveFingerprints = async (
   return Boolean(row?.sql?.includes("content_hash"));
 };
 
+const versionsHaveAudioHash = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'asset_versions'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("audio_hash"));
+};
+
 const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -593,6 +602,14 @@ export const d1Migrations: D1Migration[] = [
       "ALTER TABLE upload_sessions ADD COLUMN capture_key TEXT",
       "ALTER TABLE upload_sessions ADD COLUMN content_hash TEXT",
       "ALTER TABLE upload_sessions ADD COLUMN fingerprint_state TEXT NOT NULL DEFAULT 'pending'",
+    ],
+  },
+  {
+    name: "0033_audio_fingerprint.sql",
+    applied: versionsHaveAudioHash,
+    statements: [
+      "ALTER TABLE asset_versions ADD COLUMN audio_hash TEXT",
+      "ALTER TABLE upload_sessions ADD COLUMN audio_hash TEXT",
     ],
   },
 ];

@@ -17,6 +17,12 @@ import {
   runProcess,
   runTranscode,
 } from "./media.js";
+import { CLIP_HASH_POSITIONS } from "./fingerprint-media.js";
+import {
+  AUDIO_MATCH_MAX_DISTANCE,
+  contentDistance,
+  hashDistance,
+} from "@onelight/core";
 
 const ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg";
 const ffprobe = process.env.FFPROBE_PATH ?? "ffprobe";
@@ -241,14 +247,115 @@ describe.skipIf(!hasFfmpeg)("media integration (real ffmpeg)", () => {
         },
         outputs,
       );
-      /* Four hashes, one per sampling point along the clip. */
-      expect(result.fingerprint?.content_hash).toMatch(
-        /^[0-9a-f]{16}(:[0-9a-f]{16}){3}$/,
+      /* One hash per sampling point along the clip: a shot list, not a
+         signature. */
+      expect(result.fingerprint?.content_hash?.split(":")).toHaveLength(
+        CLIP_HASH_POSITIONS.length,
       );
-      /* And the creation time the file carries, which a re-export keeps. */
-      expect(result.fingerprint?.capture_key).toContain("2026-07-29t14:03:11");
+      expect(result.fingerprint?.content_hash).toMatch(
+        /^[0-9a-f]{16}(:[0-9a-f]{16})+$/,
+      );
+      /* Nothing named a camera, so the creation time is a render's and buys
+         no identity. This is the four-spots case: every export this
+         afternoon carries this afternoon. */
+      expect(result.fingerprint?.capture_key ?? null).toBeNull();
+      /* Silent, so no audio hash: a slate must not match every other slate. */
+      expect(result.fingerprint?.audio_hash ?? null).toBeNull();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("identifies a camera original by its tags and a graded copy by its sound", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "onelight-audio-"));
+    try {
+      /* mp4 and mov drop tags they do not know unless asked to keep them,
+         which is why this writes .mov with use_metadata_tags: a real camera
+         file carries make and model in udta. */
+      const make = (name: string, extra: string[]): string => {
+        const file = path.join(dir, name);
+        spawnSync("ffmpeg", [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-f",
+          "lavfi",
+          "-i",
+          "testsrc2=duration=6:size=320x240:rate=12",
+          "-f",
+          "lavfi",
+          "-i",
+          "sine=frequency=320:duration=6,tremolo=f=1.7:d=0.9",
+          "-pix_fmt",
+          "yuv420p",
+          "-shortest",
+          "-movflags",
+          "use_metadata_tags",
+          "-metadata",
+          "creation_time=2026-07-29T14:03:11.470000Z",
+          ...extra,
+          "-y",
+          file,
+        ]);
+        return file;
+      };
+      /* The camera original: something named the body, so its time counts. */
+      const original = make("A001C001.mov", [
+        "-metadata",
+        "make=Blackmagic Design",
+        "-metadata",
+        "model=URSA Mini Pro",
+      ]);
+      /* The grade that comes back: no camera tags any more, a different
+         picture, the same audio. */
+      const graded = make("HERO_CC_v2.mov", [
+        "-vf",
+        "eq=brightness=0.12:saturation=1.4",
+      ]);
+      const sign = async (file: string) => {
+        const info = await probeFile(file);
+        const outputs = [
+          {
+            kind: "proxy_540",
+            path: path.join(dir, `${path.basename(file)}-proxy.mp4`),
+            height: 540,
+          },
+        ];
+        return runTranscode(
+          {
+            id: `job-${path.basename(file)}`,
+            sourceKey: file,
+            outputs: outputs.map((output) => ({
+              kind: output.kind,
+              key: output.path,
+            })),
+            mediaInfo: info,
+          },
+          outputs,
+        );
+      };
+      const first = await sign(original);
+      const second = await sign(graded);
+      /* A camera vouched for the time, so there is an identity. */
+      expect(first.fingerprint?.capture_key).toContain("2026-07-29t14:03:11");
+      expect(first.fingerprint?.capture_key).toContain("blackmagic");
+      expect(second.fingerprint?.capture_key ?? null).toBeNull();
+      /* The grade moved the picture and left the sound alone, which is the
+         whole reason sound sits above picture for a colour pass. */
+      expect(
+        hashDistance(
+          first.fingerprint?.audio_hash as string,
+          second.fingerprint?.audio_hash as string,
+        ),
+      ).toBeLessThanOrEqual(AUDIO_MATCH_MAX_DISTANCE);
+      expect(
+        contentDistance(
+          first.fingerprint?.content_hash as string,
+          second.fingerprint?.content_hash as string,
+        ),
+      ).toBeGreaterThan(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
