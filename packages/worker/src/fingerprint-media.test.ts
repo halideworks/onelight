@@ -21,6 +21,8 @@ import {
   hashDistance,
 } from "@onelight/core";
 import {
+  CLIP_HASH_POSITIONS,
+  clipHashPositions,
   fingerprintAudio,
   fingerprintClip,
   isFlat,
@@ -505,4 +507,60 @@ describe.skipIf(!hasFfmpeg)("a re-edit against a colour pass", () => {
       );
     },
   );
+
+  it("signs a clip too short to hold the full grid, and a single frame", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "onelight-short-"));
+    try {
+      const render = (name: string, args: string[]): string => {
+        const file = path.join(dir, name);
+        spawnSync("ffmpeg", [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-f",
+          "lavfi",
+          ...args,
+          "-pix_fmt",
+          "yuv420p",
+          "-y",
+          file,
+        ]);
+        return file;
+      };
+      /* A one second sting: four points fit, sixteen do not. */
+      const sting = render("sting.mp4", [
+        "-i",
+        "testsrc2=duration=1:size=160x120:rate=24",
+      ]);
+      /* And a single frame in a container, which is what an HDR still
+         delivered as .mkv is. The first version gave both of these no
+         signature at all. */
+      const frame = render("frame.mkv", [
+        "-i",
+        "testsrc2=duration=0.041:size=160x120:rate=24",
+      ]);
+      const short = await fingerprintClip(sting, {
+        durationSeconds: 1,
+        workDirectory: dir,
+        tag: "sting",
+      });
+      expect(short?.split(":")).toHaveLength(clipHashPositions(1).length);
+      expect(clipHashPositions(1).length).toBeLessThan(
+        CLIP_HASH_POSITIONS.length,
+      );
+      const single = await fingerprintClip(frame, {
+        durationSeconds: 0.041,
+        workDirectory: dir,
+        tag: "frame",
+      });
+      expect(single).toMatch(/^[0-9a-f]{16}$/);
+      /* Counts differ, so a sting is never compared positionally with a spot,
+         which is the property that keeps a short signature honest. */
+      expect(contentDistance(single as string, short as string)).toBe(
+        Number.MAX_SAFE_INTEGER,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

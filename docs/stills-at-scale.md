@@ -650,3 +650,15 @@ One more thing the real library shows: an asset can legitimately hold versions
 with different audio. Two uploads of the same World Cup cut share a hash to the
 bit, and the Spanish master filed under the same asset does not. The audio tier
 answers nothing there, which is correct, and the name tier already had it.
+
+And the five clips the sweep left with no signature at all turned out to be
+41 ms single frame HDR deliveries. Sixteen seeks into one frame is fifteen
+seeks past the end, and ffmpeg writes nothing rather than failing, so the whole
+signature was refused. The grid now shrinks for a clip too short to space
+sixteen points a quarter second apart, down to a single point at the start when
+there is one frame to sample. The count is part of the signature, so a short
+clip is only ever compared positionally with another of the same count, which
+is right: it is a still that happens to be in a container. Only in the shrunk
+regime is a missing tail sample tolerated, because that is where the reported
+duration and the last frame disagree; a clip long enough for the full grid
+still samples all sixteen or none.

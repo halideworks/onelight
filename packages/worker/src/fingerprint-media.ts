@@ -64,6 +64,29 @@ export const CLIP_HASH_POSITIONS = Array.from(
   (_, index) => 0.06 + (index * 0.88) / 15,
 );
 
+/* A clip shorter than the grid is spaced on cannot answer sixteen distinct
+   seeks: the same frame comes back over and over, or nothing does past the
+   end. A 41 ms single frame delivery is a real thing, and the first version
+   gave it no signature at all. So the grid shrinks for short clips, to the
+   points that can land on their own frame, and one is a valid answer. A count
+   is part of the signature, so a short clip only ever compares positionally
+   with another of the same count, which is what we want: it is a still that
+   happens to be in a container. */
+const MIN_SAMPLE_GAP_SECONDS = 0.25;
+
+export const clipHashPositions = (durationSeconds: number): number[] => {
+  const room = Math.floor(durationSeconds / MIN_SAMPLE_GAP_SECONDS);
+  if (room >= CLIP_HASH_POSITIONS.length) return CLIP_HASH_POSITIONS;
+  const count = Math.max(1, room);
+  /* A clip with one frame has no interior: any nonzero seek lands past the
+     only picture in it and ffmpeg writes nothing. Measured, not assumed. */
+  if (count === 1) return [0];
+  return Array.from(
+    { length: count },
+    (_, index) => 0.06 + (index * 0.88) / (count - 1),
+  );
+};
+
 export const buildClipFrameArgs = (
   source: string,
   seconds: number,
@@ -99,23 +122,37 @@ export const fingerprintClip = async (
   const tag = options.tag ?? "clip";
   const hashes: string[] = [];
   const written: string[] = [];
+  const positions = clipHashPositions(duration);
+  /* Where the grid has shrunk, the clip is short enough that the last point
+     can land between the final frame and the reported duration, and ffmpeg
+     writes nothing rather than failing loudly. Stopping there and keeping
+     what came out is deterministic for a given file, which is all a
+     signature needs; a clip long enough for the full grid still has to
+     sample all sixteen or none. */
+  const tolerateShortTail = positions.length < CLIP_HASH_POSITIONS.length;
   try {
-    for (const [index, fraction] of CLIP_HASH_POSITIONS.entries()) {
+    for (const [index, fraction] of positions.entries()) {
       const frame = path.join(
         workDirectory,
         `.print-${tag}-${String(index)}.png`,
       );
       written.push(frame);
-      await runProcess(
-        ffmpeg,
-        buildClipFrameArgs(source, duration * fraction, frame),
-      );
-      const raw = await sharp(frame, { failOn: "none" })
-        .greyscale()
-        .resize({ width: HASH_WIDTH, height: HASH_HEIGHT, fit: "fill" })
-        .raw()
-        .toBuffer();
-      const luma = new Uint8Array(raw);
+      let luma: Uint8Array;
+      try {
+        await runProcess(
+          ffmpeg,
+          buildClipFrameArgs(source, duration * fraction, frame),
+        );
+        const raw = await sharp(frame, { failOn: "none" })
+          .greyscale()
+          .resize({ width: HASH_WIDTH, height: HASH_HEIGHT, fit: "fill" })
+          .raw()
+          .toBuffer();
+        luma = new Uint8Array(raw);
+      } catch (error) {
+        if (tolerateShortTail && hashes.length) break;
+        throw error;
+      }
       /* Same rule as the sprite: one flat sample and the whole signature is
          refused, because flat samples make different clips look alike. */
       if (isFlat(luma)) return null;
@@ -127,7 +164,8 @@ export const fingerprintClip = async (
     for (const frame of written)
       await rm(frame, { force: true }).catch(() => undefined);
   }
-  return hashes.length === CLIP_HASH_POSITIONS.length
+  if (!hashes.length) return null;
+  return tolerateShortTail || hashes.length === positions.length
     ? joinHashes(hashes)
     : null;
 };

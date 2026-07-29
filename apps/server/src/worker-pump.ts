@@ -1017,6 +1017,10 @@ export const sweepStackKeys = async (db: AppDb): Promise<number> => {
    settles: a re-signed clip has the current count and drops out whether or
    not it turned out to have any audio. */
 const FINGERPRINT_SWEEP_INTERVAL_MS = 60_000;
+/* Below this a clip cannot land sixteen seeks on sixteen different frames, so
+   it is signed at fewer points by design. Matches the sampler's own rule in
+   packages/worker/src/fingerprint-media.ts. */
+const FULL_CLIP_GRID_SECONDS = CLIP_HASH_POSITIONS.length * 0.25;
 const FINGERPRINT_SWEEP_LIMIT = 4;
 const FINGERPRINT_SWEEP_BATCH = 25;
 
@@ -1045,7 +1049,18 @@ export const sweepFingerprints = async (db: AppDb): Promise<number> => {
           and(
             eq(assets.kind, "video"),
             isNotNull(assetVersions.contentHash),
-            sql`length(${assetVersions.contentHash}) - length(replace(${assetVersions.contentHash}, ':', '')) <> ${CLIP_HASH_POSITIONS.length - 1}`,
+            sql`length(${assetVersions.contentHash}) - length(replace(${assetVersions.contentHash}, ':', '')) < ${CLIP_HASH_POSITIONS.length - 1}`,
+            /* A clip too short to hold the full grid is signed at fewer
+               points on purpose, so a short signature is not evidence of the
+               old scheme for it. Without this the sweep would offer a one
+               frame delivery again every minute forever. */
+            sql`(
+              ${assetVersions.durationFrames} is null
+              or ${assetVersions.frameRateNum} is null
+              or ${assetVersions.frameRateDen} is null
+              or ${assetVersions.frameRateNum} = 0
+              or (${assetVersions.durationFrames} * 1.0 * ${assetVersions.frameRateDen} / ${assetVersions.frameRateNum}) >= ${FULL_CLIP_GRID_SECONDS}
+            )`,
           ),
         ),
       ),

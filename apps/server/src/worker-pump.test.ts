@@ -662,6 +662,7 @@ describe("fingerprint backfill for a library signed by the old scheme", () => {
       id: string;
       kind: "image" | "video";
       contentHash: string | null;
+      durationFrames?: number;
     }>,
   ): Promise<void> => {
     await db
@@ -736,6 +737,13 @@ describe("fingerprint backfill for a library signed by the old scheme", () => {
           uploadedBy: "user-1",
           transcodeStatus: "ready",
           ...(row.contentHash ? { contentHash: row.contentHash } : {}),
+          ...(row.durationFrames === undefined
+            ? {}
+            : {
+                durationFrames: row.durationFrames,
+                frameRateNum: 24,
+                frameRateDen: 1,
+              }),
           createdAt: index + 1,
         })
         .run();
@@ -820,6 +828,38 @@ describe("fingerprint backfill for a library signed by the old scheme", () => {
       expect([...big.slice(24), ...small].sort()).toEqual(
         ["clip-00", big[24] as string].sort(),
       );
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("leaves a clip too short to hold the full grid alone", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seedLibrary(db, [
+        /* One frame at 24fps: 41 ms, signed at one point on purpose. A short
+           signature is not evidence of the old scheme here, and offering it
+           again every minute forever is what the naive test would do. */
+        {
+          id: "one-frame",
+          kind: "video",
+          contentHash: "0f0f0f0f0f0f0f0f",
+          durationFrames: 1,
+        },
+        /* Thirty seconds, signed at four: that one really is stale. */
+        {
+          id: "stale-spot",
+          kind: "video",
+          contentHash: hashes(4),
+          durationFrames: 720,
+        },
+      ]);
+      expect(await sweepFingerprints(db)).toBe(1);
+      const payload = JSON.parse(
+        (await db.select().from(jobs).all())[0]?.payloadJson ?? "{}",
+      ) as { version_ids: string[] };
+      expect(payload.version_ids).toEqual(["stale-spot"]);
     } finally {
       sqlite.close();
     }
