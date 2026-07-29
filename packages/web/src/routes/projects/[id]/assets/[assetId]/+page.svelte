@@ -1589,13 +1589,30 @@
     }
   };
 
+  /* Which folder the loaded list belongs to, so stepping through a folder
+     does not re-page it at every asset. Walking a shoot means arriving here
+     once per frame, and re-reading fifteen pages each time to find out where
+     frame 2501 sits would make the next button slower the further in you got. */
+  let siblingFolder: string | null | undefined;
+
   /* Enough pages to know where this asset sits, and one more so there is a
      next to go to. A deep folder pages in the background; the buttons appear
      as soon as the neighbours are known. */
   const loadSiblings = async (): Promise<void> => {
-    siblings = [];
-    siblingCursor = null;
-    siblingsComplete = false;
+    const current = asset;
+    if (!current) return;
+    const folder = current.folder_id ?? null;
+    if (siblingFolder !== folder) {
+      siblingFolder = folder;
+      siblings = [];
+      siblingCursor = null;
+      siblingsComplete = false;
+    } else {
+      /* The list already covers this asset and knows what follows it. */
+      const known = siblings.findIndex((entry) => entry.id === current.id);
+      if (known >= 0 && (known + 1 < siblings.length || siblingsComplete))
+        return;
+    }
     for (let step = 0; step < 40; step += 1) {
       if (!(await loadSiblingPage())) break;
       const current = asset;

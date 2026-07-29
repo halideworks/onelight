@@ -360,7 +360,8 @@
     arrivalTimer = null;
     const pending = [...arrivals];
     arrivals = new Set();
-    if (id !== projectId || showTrash || pending.length === 0) return;
+    if (id !== projectId || showTrash || selectsOnly || pending.length === 0)
+      return;
     const known = new Set(assets.map((asset) => asset.id));
     const fresh = pending.filter((assetId) => !known.has(assetId));
     if (fresh.length === 0) return;
@@ -1901,7 +1902,9 @@
   const adoptCreatedAssets = (
     landed: Array<{ asset: Asset; folderId: string | null }>
   ): void => {
-    if (showTrash || landed.length === 0) return;
+    /* A new asset is not on the shortlist, so it does not belong in a view
+       that is showing only the shortlist. */
+    if (showTrash || selectsOnly || landed.length === 0) return;
     const known = new Set(assets.map((asset) => asset.id));
     const fresh = landed
       .filter(
