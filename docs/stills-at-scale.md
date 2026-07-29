@@ -364,3 +364,24 @@ full-size rung once where it cannot.
   is where it would be declared.
 - **PSB** (Photoshop's large document format) is version 2 of the PSD
   container and ffmpeg's decoder refuses it.
+
+## Measured on the built stack (2026-07-29)
+
+An isolated compose project with both images rebuilt, MEDIA_CONCURRENCY=2, on
+nyx's four shared cores. Sources are 1600x1067 across the four formats.
+
+| | |
+|---|---|
+| 300 stills, upload | 3.8 s (direct path, 4 concurrent) |
+| 300 stills, ingest | 259.6 s for 312 versions and 312 jobs, 0 failed |
+| per still | 865 ms, with the harness polling the list on the same cores |
+| assets with no poster | 0 |
+| orientation 6 fixture | renders 1067x1600 portrait, `rotated: true` |
+| still-full, jpg and png | the original, no rendition made |
+| still-full, tif and psd | rendered once, on request |
+| second pass, 12 files | 12 matched, 0 ambiguous, landed as v2 in one call |
+| delivery | 445.6 MB as 7 parts; part 1's bytes matched its declared length |
+
+The run is what found the bug fixed in `4e22d09`: a targeted on-demand
+rendition job was running the full completion path and marking a perfectly
+good version failed. No test in the suite could see it.
