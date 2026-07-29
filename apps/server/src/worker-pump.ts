@@ -1054,14 +1054,47 @@ export const sweepFingerprints = async (db: AppDb): Promise<number> => {
     .limit(FINGERPRINT_SWEEP_BATCH * FINGERPRINT_SWEEP_LIMIT)
     .all();
   if (!candidates.length) return 0;
+  /* A version stays a candidate until the job that is signing it lands, and
+     signing twenty-five clips takes longer than the sweep's own interval, so
+     the naive sweep offers the same work again a minute later under a new
+     lead and the machine does it twice. The job's key cannot see that: it is
+     the lead version, not the members. So read what is already in flight and
+     leave it alone. */
+  const inFlight = await db
+    .select({ payloadJson: jobs.payloadJson })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.kind, "fingerprint"),
+        inArray(jobs.status, ["queued", "processing"]),
+      ),
+    )
+    .all();
+  const claimed = new Set<string>();
+  for (const row of inFlight) {
+    try {
+      const payload = JSON.parse(row.payloadJson) as {
+        version_ids?: unknown;
+      };
+      if (Array.isArray(payload.version_ids))
+        for (const id of payload.version_ids)
+          if (typeof id === "string") claimed.add(id);
+    } catch {
+      /* A payload we cannot read claims nothing. */
+    }
+  }
+  const pending = claimed.size
+    ? candidates.filter((row) => !claimed.has(row.id))
+    : candidates;
+  if (!pending.length) return 0;
   const now = Date.now();
   let enqueued = 0;
   for (
     let from = 0;
-    from < candidates.length && enqueued < FINGERPRINT_SWEEP_LIMIT;
+    from < pending.length && enqueued < FINGERPRINT_SWEEP_LIMIT;
     from += FINGERPRINT_SWEEP_BATCH
   ) {
-    const slice = candidates.slice(from, from + FINGERPRINT_SWEEP_BATCH);
+    const slice = pending.slice(from, from + FINGERPRINT_SWEEP_BATCH);
     const first = slice[0];
     if (!first) break;
     /* The scheme is part of the key: a library signed by the old one has to

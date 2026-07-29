@@ -620,3 +620,20 @@ Silence yields null. A re-edit of the same material shows a positional
 `contentDistance` far past the picture threshold and a `contentOverlap` at or
 above 0.6 in the same pair, which is the exact shape the two tiers are there to
 tell apart.
+
+### Measured on the real library
+
+Deployed, the backfill re-signed the library and the four spots that started
+this are the proof. `BILLS_CC.mov`, `CARDINALS_CC.mov` and `EAGLES_CC.mov` are
+all the same length, all start at `01:00:00:00`, and were all exported the same
+afternoon. After the deploy their capture keys are null, correctly, and their
+audio hashes are 28, 31 and 35 bits apart against a threshold of 6. Nothing
+except the sound could have told them apart, and the margin is not close.
+
+Two things came out of watching it run rather than reading it. Signing
+twenty-five clips takes longer than the sweep's own minute, and the job's
+idempotency key is its lead version rather than its members, so as soon as part
+of a batch landed the boundaries shifted and the same clips were offered again
+under a new lead: the machine signed five of them twice. The sweep now reads
+what is already in flight. And a clip with no fingerprint at all turned out to
+be an asset in the trash, which the sweep skips by design.

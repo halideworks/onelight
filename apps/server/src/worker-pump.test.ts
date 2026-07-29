@@ -778,6 +778,53 @@ describe("fingerprint backfill for a library signed by the old scheme", () => {
     }
   });
 
+  it("leaves a version alone while the job signing it is still in flight", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      /* Twenty-six stale clips: two batches. Signing twenty-five clips takes
+         minutes and the sweep comes round every minute, so the second pass
+         happens while the first job is still working. */
+      await seedLibrary(
+        db,
+        Array.from({ length: 26 }, (_, index) => ({
+          id: `clip-${String(index).padStart(2, "0")}`,
+          kind: "video" as const,
+          contentHash: hashes(4),
+        })),
+      );
+      expect(await sweepFingerprints(db)).toBe(2);
+      const queued = await db.select().from(jobs).all();
+      const batches = queued.map(
+        (row) =>
+          (JSON.parse(row.payloadJson) as { version_ids: string[] })
+            .version_ids,
+      );
+      const big = batches.find((batch) => batch.length > 1) ?? [];
+      const small = batches.find((batch) => batch.length === 1) ?? [];
+      expect(big).toHaveLength(25);
+      /* All but one of the big batch lands, which shifts every slice
+         boundary: the leftover becomes the lead of a new batch and the small
+         batch's member falls in behind it. Its job's key cannot see that, so
+         without a read of what is in flight the same clip is signed twice. */
+      for (const id of big.slice(0, 24))
+        await db
+          .update(assetVersions)
+          .set({ contentHash: hashes(CLIP_HASH_POSITIONS.length) })
+          .where(eq(assetVersions.id, id))
+          .run();
+      expect(await sweepFingerprints(db)).toBe(0);
+      const after = await db.select().from(jobs).all();
+      expect(after).toHaveLength(2);
+      /* And the two still in flight are exactly the two nobody re-offered. */
+      expect([...big.slice(24), ...small].sort()).toEqual(
+        ["clip-00", big[24] as string].sort(),
+      );
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it("still picks up a version nothing has ever looked at", async () => {
     const { db, sqlite } = createNodeDb(":memory:");
     applyNodeMigrations(sqlite);
