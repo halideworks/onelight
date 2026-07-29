@@ -662,6 +662,7 @@ describe("fingerprint backfill for a library signed by the old scheme", () => {
       id: string;
       kind: "image" | "video";
       contentHash: string | null;
+      motionHash?: string;
       durationFrames?: number;
     }>,
   ): Promise<void> => {
@@ -737,6 +738,7 @@ describe("fingerprint backfill for a library signed by the old scheme", () => {
           uploadedBy: "user-1",
           transcodeStatus: "ready",
           ...(row.contentHash ? { contentHash: row.contentHash } : {}),
+          ...(row.motionHash ? { motionHash: row.motionHash } : {}),
           ...(row.durationFrames === undefined
             ? {}
             : {
@@ -766,6 +768,7 @@ describe("fingerprint backfill for a library signed by the old scheme", () => {
           id: "current-clip",
           kind: "video",
           contentHash: hashes(CLIP_HASH_POSITIONS.length),
+          motionHash: "0f0f0f0f0f0f0f0f",
         },
         /* A still is signed once by design and is not stale. */
         { id: "still", kind: "image", contentHash: "0f0f0f0f0f0f0f0f" },
@@ -799,6 +802,7 @@ describe("fingerprint backfill for a library signed by the old scheme", () => {
           id: `clip-${String(index).padStart(2, "0")}`,
           kind: "video" as const,
           contentHash: hashes(4),
+          motionHash: "3f3f3f3f3f3f3f3f",
         })),
       );
       expect(await sweepFingerprints(db)).toBe(2);
@@ -845,6 +849,7 @@ describe("fingerprint backfill for a library signed by the old scheme", () => {
           id: "one-frame",
           kind: "video",
           contentHash: "0f0f0f0f0f0f0f0f",
+          motionHash: "1f1f1f1f1f1f1f1f",
           durationFrames: 1,
         },
         /* Thirty seconds, signed at four: that one really is stale. */
@@ -852,6 +857,7 @@ describe("fingerprint backfill for a library signed by the old scheme", () => {
           id: "stale-spot",
           kind: "video",
           contentHash: hashes(4),
+          motionHash: "2f2f2f2f2f2f2f2f",
           durationFrames: 720,
         },
       ]);
@@ -860,6 +866,44 @@ describe("fingerprint backfill for a library signed by the old scheme", () => {
         (await db.select().from(jobs).all())[0]?.payloadJson ?? "{}",
       ) as { version_ids: string[] };
       expect(payload.version_ids).toEqual(["stale-spot"]);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("re-signs a clip that has no motion contour", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seedLibrary(db, [
+        /* Signed by the current sampler, but before the motion contour
+           existed: the tier that answers a silent colour pass has nothing to
+           work with until this is re-signed. */
+        {
+          id: "no-motion",
+          kind: "video",
+          contentHash: hashes(CLIP_HASH_POSITIONS.length),
+          durationFrames: 720,
+        },
+        {
+          id: "complete",
+          kind: "video",
+          contentHash: hashes(CLIP_HASH_POSITIONS.length),
+          motionHash: "0f0f0f0f0f0f0f0f",
+          durationFrames: 720,
+        },
+        /* A still has no motion by definition and must be left alone. */
+        {
+          id: "still",
+          kind: "image",
+          contentHash: "0f0f0f0f0f0f0f0f",
+        },
+      ]);
+      expect(await sweepFingerprints(db)).toBe(1);
+      const payload = JSON.parse(
+        (await db.select().from(jobs).all())[0]?.payloadJson ?? "{}",
+      ) as { version_ids: string[] };
+      expect(payload.version_ids).toEqual(["no-motion"]);
     } finally {
       sqlite.close();
     }

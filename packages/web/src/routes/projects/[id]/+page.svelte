@@ -1727,6 +1727,7 @@
     'capture-time': 'by capture time',
     perceptual: 'by the picture',
     audio: 'by the sound',
+    motion: 'by the cut',
     'shared-footage': 'by shared footage'
   };
   /* The weakest tier says how much footage it found, because a suggestion

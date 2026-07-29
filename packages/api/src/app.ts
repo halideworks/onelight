@@ -39,6 +39,7 @@ import {
   utf8,
   verifyTotp,
   AUDIO_MATCH_MAX_DISTANCE,
+  MOTION_MATCH_MAX_DISTANCE,
   contentDistance,
   contentOverlap,
   CONTENT_MATCH_MAX_DISTANCE,
@@ -10998,6 +10999,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             captureKey: uploadSessions.captureKey,
             contentHash: uploadSessions.contentHash,
             audioHash: uploadSessions.audioHash,
+            motionHash: uploadSessions.motionHash,
             fingerprintState: uploadSessions.fingerprintState,
           })
           .from(uploadSessions)
@@ -11008,6 +11010,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           captureKey: string | null;
           contentHash: string | null;
           audioHash: string | null;
+          motionHash: string | null;
           fingerprintState: string;
         }>)
       : [];
@@ -11048,7 +11051,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
        arithmetic over 64 bit strings, which is fast enough that no index
        beyond this is worth having at a project's scale. */
     const wantsFingerprint = [...uploadById.values()].some(
-      (row) => row.captureKey ?? row.contentHash ?? row.audioHash,
+      (row) =>
+        row.captureKey ?? row.contentHash ?? row.audioHash ?? row.motionHash,
     );
     const fingerprinted = wantsFingerprint
       ? ((await env.db
@@ -11058,6 +11062,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             captureKey: assetVersions.captureKey,
             contentHash: assetVersions.contentHash,
             audioHash: assetVersions.audioHash,
+            motionHash: assetVersions.motionHash,
           })
           .from(assets)
           .innerJoin(
@@ -11071,24 +11076,41 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           captureKey: string | null;
           contentHash: string | null;
           audioHash: string | null;
+          motionHash: string | null;
         }>)
       : [];
-    const byCaptureKey = new Map<string, Array<{ id: string; name: string }>>();
-    for (const row of fingerprinted) {
-      if (!row.captureKey) continue;
-      const list = byCaptureKey.get(row.captureKey) ?? [];
-      list.push({ id: row.id, name: row.name });
-      byCaptureKey.set(row.captureKey, list);
-    }
-    const hashed = fingerprinted.filter((row) => Boolean(row.contentHash));
-    const sounded = fingerprinted.filter((row) => Boolean(row.audioHash));
     const byKey = new Map<string, typeof candidates>();
     for (const candidate of candidates) {
       const list = byKey.get(candidate.stackKey) ?? [];
       list.push(candidate);
       byKey.set(candidate.stackKey, list);
     }
-    return files.map((file) => {
+    /* ---- phase one: the name ----
+
+       Unchanged, and still first: a name that matches is a decision somebody
+       made on purpose. What is new is that a name match CLAIMS its asset, so
+       nothing weaker can land on the same one later in the batch. */
+    type Answer = {
+      filename: string;
+      upload_id?: string;
+      stack_key: string;
+      version_token: string | null;
+      asset_id: string | null;
+      asset_name: string | null;
+      rule: string;
+      distance?: number;
+      share?: number;
+      candidates: Array<{ asset_id: string; asset_name: string }>;
+    };
+    const answers = new Array<Answer | null>(files.length).fill(null);
+    const claimed = new Set<string>();
+    const unresolved: Array<{
+      index: number;
+      wire: Omit<Answer, "asset_id" | "asset_name" | "rule" | "candidates">;
+      upload: (typeof uploadRows)[number] | undefined;
+    }> = [];
+
+    for (const [index, file] of files.entries()) {
       const key = stackKeyOf(file.filename);
       const pool = byKey.get(key) ?? [];
       const exact = pool.filter(
@@ -11124,208 +11146,358 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       };
       if (chosen.length === 1) {
         const match = chosen[0] as (typeof candidates)[number];
-        return {
+        claimed.add(match.id);
+        answers[index] = {
           ...wire,
           asset_id: match.id,
           asset_name: match.name,
           rule,
           candidates: [],
         };
+        continue;
       }
-      if (chosen.length > 1)
+      if (chosen.length > 1) {
         /* Never guess. Two assets with the same identity is exactly the case
            where stacking the wrong way costs someone a day of work. */
-        return {
+        answers[index] = {
           ...wire,
           asset_id: null,
           asset_name: null,
-          rule: "ambiguous" as const,
+          rule: "ambiguous",
           candidates: chosen.map((candidate) => ({
             asset_id: candidate.id,
             asset_name: candidate.name,
           })),
         };
-      /* The name said nothing. Ask what the file IS.
-
-         Tier two, the capture identity, is exact and decides on its own: the
-         instant a frame was taken plus the body that took it, or a clip's
-         creation time and source timecode. A key shared by two assets is a
-         conflict, like any other tie.
-
-         Tier three, the picture itself, only ever narrows. Measured, a frame
-         sits one bit from its own retouch and three from the next frame of
-         the same burst, so a threshold alone would pair a sequence with
-         itself. The winner has to open a clear margin over the runner up, and
-         it is offered as a suggestion either way. */
-      const upload = file.upload_id
-        ? uploadById.get(file.upload_id)
-        : undefined;
-      if (upload?.captureKey) {
-        const byCapture = byCaptureKey.get(upload.captureKey) ?? [];
-        if (byCapture.length === 1) {
-          const match = byCapture[0] as { id: string; name: string };
-          return {
-            ...wire,
-            asset_id: match.id,
-            asset_name: match.name,
-            rule: "capture-time" as const,
-            candidates: [],
-          };
-        }
-        if (byCapture.length > 1)
-          return {
-            ...wire,
-            asset_id: null,
-            asset_name: null,
-            rule: "ambiguous" as const,
-            candidates: byCapture.map((candidate) => ({
-              asset_id: candidate.id,
-              asset_name: candidate.name,
-            })),
-          };
+        continue;
       }
-      /* Sound, before picture. A colour pass rewrites every pixel and not one
-         sample of the audio, so two exports of the same cut sound identical
-         while their pictures drift. It is the tier that answers a grade
-         confidently, and unlike a creation time it cannot be faked by a
-         re-export. */
-      if (upload?.audioHash && sounded.length) {
-        const near = sounded
-          .map((row) => ({
-            row,
-            distance: hashDistance(
-              upload.audioHash as string,
-              row.audioHash as string,
-            ),
-          }))
-          .filter((entry) => entry.distance <= AUDIO_MATCH_MAX_DISTANCE)
-          .sort((left, right) => left.distance - right.distance);
-        const only = near[0];
-        if (near.length === 1 && only)
-          return {
-            ...wire,
-            asset_id: only.row.id,
-            asset_name: only.row.name,
-            rule: "audio" as const,
-            distance: only.distance,
-            candidates: [],
-          };
-        if (near.length > 1)
-          /* Several cuts of one soundtrack is a music video's whole shape, so
-             this refuses rather than picks. */
-          return {
-            ...wire,
-            asset_id: null,
-            asset_name: null,
-            rule: "ambiguous" as const,
-            candidates: near.slice(0, 6).map((entry) => ({
-              asset_id: entry.row.id,
-              asset_name: entry.row.name,
-            })),
-          };
-      }
-      if (upload?.contentHash && hashed.length) {
-        let best: { id: string; name: string; distance: number } | null = null;
-        let runnerUp = Number.MAX_SAFE_INTEGER;
-        for (const row of hashed) {
-          const distance = contentDistance(
-            upload.contentHash,
-            row.contentHash as string,
-          );
-          if (!best || distance < best.distance) {
-            if (best) runnerUp = best.distance;
-            best = { id: row.id, name: row.name, distance };
-          } else if (distance < runnerUp) runnerUp = distance;
-        }
-        if (best && best.distance <= CONTENT_MATCH_MAX_DISTANCE) {
-          const margin = runnerUp - best.distance;
-          if (margin >= CONTENT_MATCH_MIN_MARGIN)
-            return {
-              ...wire,
-              asset_id: best.id,
-              asset_name: best.name,
-              rule: "perceptual" as const,
-              distance: best.distance,
-              candidates: [],
-            };
-          /* Two pictures this close to each other are two frames of a
-             sequence, and choosing between them is a coin toss. */
-          return {
-            ...wire,
-            asset_id: null,
-            asset_name: null,
-            rule: "ambiguous" as const,
-            distance: best.distance,
-            candidates: hashed
-              .filter(
-                (row) =>
-                  contentDistance(
-                    upload.contentHash as string,
-                    row.contentHash as string,
-                  ) <=
-                  best.distance + CONTENT_MATCH_MIN_MARGIN,
-              )
-              .slice(0, 6)
-              .map((row) => ({ asset_id: row.id, asset_name: row.name })),
-          };
-        }
+      unresolved.push({
+        index,
+        wire,
+        upload: file.upload_id ? uploadById.get(file.upload_id) : undefined,
+      });
+    }
 
-        /* Nothing lined up, which is exactly what a re-edit does: the same
-           footage appears at different times, so every sampled position
-           disagrees and the distance is huge. Ask how much of the footage is
-           shared instead of where it sits. Only a clip has positions to
-           share, and the bar is high, because this is the case where the
-           pictures genuinely differ and the honest evidence is a lot of
-           material in common. */
-        if (upload.contentHash.includes(":")) {
-          const overlaps = hashed
-            .map((row) => ({
-              row,
-              share: contentOverlap(
-                upload.contentHash as string,
-                row.contentHash as string,
-              ),
-            }))
-            .sort((left, right) => right.share - left.share);
-          const top = overlaps[0];
-          if (top && top.share >= SHOT_OVERLAP_MIN) {
-            const margin = top.share - (overlaps[1]?.share ?? 0);
-            if (margin >= SHOT_OVERLAP_MIN_MARGIN)
-              return {
-                ...wire,
-                asset_id: top.row.id,
-                asset_name: top.row.name,
-                rule: "shared-footage" as const,
-                share: Math.round(top.share * 100),
-                candidates: [],
-              };
-            return {
-              ...wire,
-              asset_id: null,
-              asset_name: null,
-              rule: "ambiguous" as const,
-              share: Math.round(top.share * 100),
-              candidates: overlaps
-                .filter((entry) => entry.share >= SHOT_OVERLAP_MIN)
-                .slice(0, 6)
-                .map((entry) => ({
-                  asset_id: entry.row.id,
-                  asset_name: entry.row.name,
-                })),
-            };
+    /* ---- phase two: what the file IS ----
+
+       The name said nothing, so ask the file. Five kinds of evidence, ranked,
+       and the rank is the argument:
+
+       CAPTURE (5) is exact: the instant a frame was taken plus the body that
+       took it. Only a camera can produce it, and a render never can.
+
+       AUDIO (4) answers a colour pass. A grade changes every pixel and not one
+       sample of the audio.
+
+       MOTION (3) answers the colour pass that arrives with NO audio, which is
+       common. How much the picture changes from frame to frame over the whole
+       clip is where the cuts are, and a grade cannot move a cut. Measured on
+       real spots: a day-for-night look moves the positional hash 18 bits, past
+       the picture threshold, while the motion contour barely moves at all.
+
+       POSITION (2) is the picture itself, sample against sample. Enormously
+       strong against unrelated content and useless between two frames of one
+       burst, hence a margin rather than a threshold.
+
+       FOOTAGE (1) is for the re-edit, where the positions no longer line up:
+       how much of the material appears anywhere in the other cut.
+
+       Then the part that makes weak evidence usable: this is decided for the
+       BATCH, not one file at a time. Ten graded spots against ten assets is a
+       pairing problem, and a pairing can be obvious even when no single
+       distance is decisive. So a pair is taken only when it is mutually the
+       best available on both sides by a margin, and taking it removes both
+       from everything that follows. Nothing is ever taken by elimination
+       alone: the absolute threshold for its tier still has to be cleared. */
+    if (unresolved.length) {
+      type Evidence = {
+        assetId: string;
+        assetName: string;
+        rule: string;
+        rank: number;
+        /* Higher is better, comparable only within a rank. */
+        score: number;
+        margin: number;
+        distance?: number;
+        share?: number;
+      };
+      const RANK = {
+        capture: 5,
+        audio: 4,
+        motion: 3,
+        perceptual: 2,
+        "shared-footage": 1,
+      } as const;
+      /* What "clearly better than the runner up" means, per tier. Capture keys
+         are exact, so any second holder of the same key is a conflict; the
+         contour tiers want a couple of bits of daylight; the picture tiers
+         carry the margins they were measured with. */
+      const MARGIN = {
+        capture: 0.5,
+        audio: 2,
+        motion: 3,
+        perceptual: CONTENT_MATCH_MIN_MARGIN,
+        "shared-footage": SHOT_OVERLAP_MIN_MARGIN,
+      } as const;
+
+      const evidenceFor = (
+        upload: (typeof uploadRows)[number] | undefined,
+      ): Evidence[] => {
+        if (!upload) return [];
+        const out: Evidence[] = [];
+        for (const row of fingerprinted) {
+          if (upload.captureKey && row.captureKey === upload.captureKey) {
+            out.push({
+              assetId: row.id,
+              assetName: row.name,
+              rule: "capture-time",
+              rank: RANK.capture,
+              score: 0,
+              margin: MARGIN.capture,
+            });
+            continue;
+          }
+          if (upload.audioHash && row.audioHash) {
+            const distance = hashDistance(upload.audioHash, row.audioHash);
+            if (distance <= AUDIO_MATCH_MAX_DISTANCE) {
+              out.push({
+                assetId: row.id,
+                assetName: row.name,
+                rule: "audio",
+                rank: RANK.audio,
+                score: -distance,
+                margin: MARGIN.audio,
+                distance,
+              });
+              continue;
+            }
+          }
+          if (upload.motionHash && row.motionHash) {
+            const distance = hashDistance(upload.motionHash, row.motionHash);
+            if (distance <= MOTION_MATCH_MAX_DISTANCE) {
+              out.push({
+                assetId: row.id,
+                assetName: row.name,
+                rule: "motion",
+                rank: RANK.motion,
+                score: -distance,
+                margin: MARGIN.motion,
+                distance,
+              });
+              continue;
+            }
+          }
+          if (upload.contentHash && row.contentHash) {
+            const distance = contentDistance(
+              upload.contentHash,
+              row.contentHash,
+            );
+            if (distance <= CONTENT_MATCH_MAX_DISTANCE) {
+              out.push({
+                assetId: row.id,
+                assetName: row.name,
+                rule: "perceptual",
+                rank: RANK.perceptual,
+                score: -distance,
+                margin: MARGIN.perceptual,
+                distance,
+              });
+              continue;
+            }
+            /* Only a clip has positions to share; a single frame has one, and
+               the tier above already judged it. */
+            if (upload.contentHash.includes(":")) {
+              const share = contentOverlap(upload.contentHash, row.contentHash);
+              if (share >= SHOT_OVERLAP_MIN)
+                out.push({
+                  assetId: row.id,
+                  assetName: row.name,
+                  rule: "shared-footage",
+                  rank: RANK["shared-footage"],
+                  score: share,
+                  margin: MARGIN["shared-footage"],
+                  share: Math.round(share * 100),
+                });
+            }
           }
         }
-      }
-      return {
-        ...wire,
-        asset_id: null,
-        asset_name: null,
-        /* Still being identified: the client is told to come back rather
-           than told there is no match. */
-        rule: upload?.fingerprintState === "pending" ? "pending" : "none",
-        candidates: [],
+        /* Strongest first, and only the strongest few are worth keeping: the
+           rest are noise a person would never be shown. */
+        out.sort((left, right) =>
+          left.rank === right.rank
+            ? right.score - left.score
+            : right.rank - left.rank,
+        );
+        return out.slice(0, 8);
       };
-    });
+
+      const evidence = new Map<number, Evidence[]>();
+      for (const entry of unresolved)
+        evidence.set(entry.index, evidenceFor(entry.upload));
+
+      /* Every file's evidence for a given asset, so the asset side of the
+         pairing can be judged as cheaply as the file side. */
+      const rivalsFor = new Map<
+        string,
+        Array<{ index: number; item: Evidence }>
+      >();
+      for (const [index, list] of evidence)
+        for (const item of list) {
+          const rivals = rivalsFor.get(item.assetId) ?? [];
+          rivals.push({ index, item });
+          rivalsFor.set(item.assetId, rivals);
+        }
+
+      /* Stable matching, which is the honest way to answer a batch.
+
+         Each file proposes to the asset it has the best evidence for. An asset
+         holds the best proposal it has seen and turns the rest away; a file
+         turned away proposes to its next candidate. It ends with no pair left
+         wanting each other more than what they got, which is the property a
+         per-file threshold cannot give you: ten graded spots against ten
+         assets settle each other, and one file's second choice becomes its
+         answer only once the file that really owned its first choice has it. */
+      const holds = new Map<string, { index: number; item: Evidence }>();
+      const nextOffer = new Map<number, number>();
+      const looking = unresolved
+        .map((entry) => entry.index)
+        .filter((index) => (evidence.get(index) ?? []).length > 0);
+      while (looking.length) {
+        const index = looking.pop() as number;
+        const list = evidence.get(index) ?? [];
+        let at = nextOffer.get(index) ?? 0;
+        while (at < list.length) {
+          const item = list[at] as Evidence;
+          at += 1;
+          /* A name match already took this one, and a name beats evidence. */
+          if (claimed.has(item.assetId)) continue;
+          const held = holds.get(item.assetId);
+          if (!held) {
+            holds.set(item.assetId, { index, item });
+            break;
+          }
+          const better =
+            item.rank === held.item.rank
+              ? item.score > held.item.score
+              : item.rank > held.item.rank;
+          if (better) {
+            holds.set(item.assetId, { index, item });
+            /* The one it displaced goes back to looking, from where it left
+               off, which is what makes this terminate. */
+            looking.push(held.index);
+            break;
+          }
+        }
+        nextOffer.set(index, at);
+      }
+
+      /* Then the part stable matching cannot judge: whether either side of a
+         pair actually prefers it. A pairing is only evidence if somebody is
+         distinguishable. If a file is within a hair of two assets and nothing
+         else claimed the other one, the pairing is arbitrary and must be
+         refused; the same on the asset's side, where two files fit equally
+         well and only one can be right. This is what keeps a single renamed
+         file among a burst of near-identical frames ambiguous, while letting a
+         whole campaign settle. */
+      const matchedFiles = new Set(
+        [...holds.values()].map((held) => held.index),
+      );
+      const assigned = new Map<number, Evidence>();
+      for (const [assetId, held] of holds) {
+        const list = evidence.get(held.index) ?? [];
+        const closeRival = list.find(
+          (item) =>
+            item.assetId !== assetId &&
+            item.rank === held.item.rank &&
+            held.item.score - item.score < held.item.margin,
+        );
+        /* The file cannot tell this asset from another one nobody wanted. */
+        if (closeRival && !holds.has(closeRival.assetId)) continue;
+        const closeClaimant = (rivalsFor.get(assetId) ?? []).find(
+          (rival) =>
+            rival.index !== held.index &&
+            !matchedFiles.has(rival.index) &&
+            rival.item.rank === held.item.rank &&
+            held.item.score - rival.item.score < held.item.margin,
+        );
+        /* The asset cannot tell this file from another one left over. */
+        if (closeClaimant) continue;
+        assigned.set(held.index, held.item);
+        claimed.add(assetId);
+      }
+
+      /* ---- and what to say about the rest ----
+
+         Never a dead end. A file nobody could place comes back with the
+         shortlist that was closest, so the answer is "pick one of these"
+         rather than "no match": the evidence was real, it just was not
+         decisive. Pending still wins, because the file has not been looked
+         at yet and the answer would be a lie. */
+      for (const entry of unresolved) {
+        const taken = assigned.get(entry.index);
+        if (taken) {
+          answers[entry.index] = {
+            ...entry.wire,
+            asset_id: taken.assetId,
+            asset_name: taken.assetName,
+            rule: taken.rule,
+            ...(taken.distance === undefined
+              ? {}
+              : { distance: taken.distance }),
+            ...(taken.share === undefined ? {} : { share: taken.share }),
+            candidates: [],
+          };
+          continue;
+        }
+        const list = evidence.get(entry.index) ?? [];
+        const top = list[0];
+        const shortlist = top
+          ? list
+              .filter((item) => item.rank === top.rank)
+              .slice(0, 6)
+              .map((item) => ({
+                asset_id: item.assetId,
+                asset_name: item.assetName,
+              }))
+          : [];
+        if (entry.upload?.fingerprintState === "pending" && !shortlist.length) {
+          answers[entry.index] = {
+            ...entry.wire,
+            asset_id: null,
+            asset_name: null,
+            /* Still being identified: the client is told to come back rather
+               than told there is no match. */
+            rule: "pending",
+            candidates: [],
+          };
+          continue;
+        }
+        answers[entry.index] = {
+          ...entry.wire,
+          asset_id: null,
+          asset_name: null,
+          /* More than one asset fits the evidence: a conflict, with its
+             candidates, which the person resolves in one click. */
+          rule: shortlist.length > 1 ? "ambiguous" : "none",
+          ...(top?.distance === undefined ? {} : { distance: top.distance }),
+          ...(top?.share === undefined ? {} : { share: top.share }),
+          candidates: shortlist,
+        };
+      }
+    }
+
+    return answers.map(
+      (answer, index) =>
+        answer ?? {
+          filename: (files[index] as (typeof files)[number]).filename,
+          stack_key: "",
+          version_token: null,
+          asset_id: null,
+          asset_name: null,
+          rule: "none",
+          candidates: [],
+        },
+    );
   };
 
   /* Identifying an upload needs a decoder, so it happens in the worker, in

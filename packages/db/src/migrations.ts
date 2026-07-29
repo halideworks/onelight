@@ -37,6 +37,7 @@ export const migrationFiles = [
   "0031_asset_selects.sql",
   "0032_fingerprints.sql",
   "0033_audio_fingerprint.sql",
+  "0034_motion_fingerprint.sql",
 ];
 
 const migrationPath = (file: string): string =>

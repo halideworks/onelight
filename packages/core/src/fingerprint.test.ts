@@ -3,7 +3,7 @@ import {
   AUDIO_MATCH_MAX_DISTANCE,
   CONTENT_MATCH_MIN_MARGIN,
   SHOT_OVERLAP_MIN,
-  audioHashFromEnvelope,
+  contourHash,
   contentOverlap,
   isSilentEnvelope,
   captureIdentityFromExif,
@@ -460,23 +460,19 @@ describe("contentOverlap", () => {
   });
 });
 
-describe("audioHashFromEnvelope", () => {
+describe("contourHash", () => {
   const contour = (build: (index: number) => number, count = 65): number[] =>
     Array.from({ length: count }, (_, index) => build(index));
 
   it("is unmoved by an overall level change, which is what a mix bus does", () => {
     const quiet = contour((index) => Math.sin(index / 3) + 1.2);
     const loud = quiet.map((value) => value * 3.5);
-    expect(audioHashFromEnvelope(quiet)).toBe(audioHashFromEnvelope(loud));
+    expect(contourHash(quiet)).toBe(contourHash(loud));
   });
 
   it("separates two different soundtracks", () => {
-    const one = audioHashFromEnvelope(
-      contour((index) => Math.sin(index / 3) + 1.2),
-    );
-    const other = audioHashFromEnvelope(
-      contour((index) => Math.cos(index / 1.7) + 1.4),
-    );
+    const one = contourHash(contour((index) => Math.sin(index / 3) + 1.2));
+    const other = contourHash(contour((index) => Math.cos(index / 1.7) + 1.4));
     expect(hashDistance(one, other)).toBeGreaterThan(AUDIO_MATCH_MAX_DISTANCE);
   });
 
@@ -486,10 +482,7 @@ describe("audioHashFromEnvelope", () => {
       (value, index) => value + (index % 7 === 0 ? 0.0008 : -0.0006),
     );
     expect(
-      hashDistance(
-        audioHashFromEnvelope(clean),
-        audioHashFromEnvelope(encoded),
-      ),
+      hashDistance(contourHash(clean), contourHash(encoded)),
     ).toBeLessThanOrEqual(AUDIO_MATCH_MAX_DISTANCE);
   });
 
@@ -502,6 +495,6 @@ describe("audioHashFromEnvelope", () => {
   });
 
   it("refuses to hash what it cannot compare", () => {
-    expect(() => audioHashFromEnvelope([1])).toThrow(/windows/);
+    expect(() => contourHash([1])).toThrow(/windows/);
   });
 });

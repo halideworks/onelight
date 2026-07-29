@@ -80,6 +80,7 @@ interface WorkerResponse {
       content_hash: string | null;
       capture_key: string | null;
       audio_hash?: string | null;
+      motion_hash?: string | null;
       state: "ready" | "skipped" | "failed";
     }>;
     /* What the version IS, returned beside its renditions. */
@@ -87,6 +88,7 @@ interface WorkerResponse {
       content_hash?: string;
       capture_key?: string;
       audio_hash?: string;
+      motion_hash?: string;
     };
   };
   error?: string;
@@ -1045,7 +1047,14 @@ export const sweepFingerprints = async (db: AppDb): Promise<number> => {
             isNull(assetVersions.contentHash),
             isNull(assetVersions.captureKey),
             isNull(assetVersions.audioHash),
+            isNull(assetVersions.motionHash),
           ),
+          /* A clip with no motion contour: every clip signed before that
+             tier existed. Not self-limiting on its own, because a static or
+             very short clip never gets one, so the job's own key is what
+             stops the offer repeating; the key carries the scheme version,
+             which is why the version had to move for this. */
+          and(eq(assets.kind, "video"), isNull(assetVersions.motionHash)),
           and(
             eq(assets.kind, "video"),
             isNotNull(assetVersions.contentHash),
@@ -1117,9 +1126,10 @@ export const sweepFingerprints = async (db: AppDb): Promise<number> => {
        whenever the sampler in packages/worker/src/fingerprint-media.ts
        changes, including when it changes what it does with clips it used to
        refuse: a version that got no signature is still a candidate, but its
-       old job's key would turn the offer away forever. v3 is the short clip
-       grid. */
-    const idempotencyKey = `fingerprint:v3:${first.id}`;
+       old job's key would turn the offer away forever. v3 was the short clip
+       grid; v4 added the motion contour, which every clip needs and none of
+       them has. */
+    const idempotencyKey = `fingerprint:v4:${first.id}`;
     const existing = await db
       .select({ id: jobs.id })
       .from(jobs)
@@ -1343,13 +1353,19 @@ const registerWorkerRenditions = async (
     throw new Error(state.error ?? "Transcode failed.");
   /* What the version is, as opposed to what files were written for it. */
   const print = state.result.fingerprint;
-  if (print?.content_hash || print?.capture_key || print?.audio_hash)
+  if (
+    print?.content_hash ||
+    print?.capture_key ||
+    print?.audio_hash ||
+    print?.motion_hash
+  )
     await db
       .update(assetVersions)
       .set({
         ...(print.content_hash ? { contentHash: print.content_hash } : {}),
         ...(print.capture_key ? { captureKey: print.capture_key } : {}),
         ...(print.audio_hash ? { audioHash: print.audio_hash } : {}),
+        ...(print.motion_hash ? { motionHash: print.motion_hash } : {}),
       })
       .where(eq(assetVersions.id, version.id))
       .run();
@@ -1555,6 +1571,9 @@ const processJob = async (
             ...(print.audio_hash === undefined
               ? {}
               : { audioHash: print.audio_hash }),
+            ...(print.motion_hash === undefined
+              ? {}
+              : { motionHash: print.motion_hash }),
           })
           .where(eq(assetVersions.id, print.id))
           .run();
@@ -1568,6 +1587,9 @@ const processJob = async (
           ...(print.audio_hash === undefined
             ? {}
             : { audioHash: print.audio_hash }),
+          ...(print.motion_hash === undefined
+            ? {}
+            : { motionHash: print.motion_hash }),
           fingerprintState: print.state,
         })
         .where(eq(uploadSessions.id, print.id))

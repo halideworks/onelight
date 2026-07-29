@@ -303,6 +303,8 @@ export const uploadSessions = sqliteTable(
     captureKey: text("capture_key"),
     contentHash: text("content_hash"),
     audioHash: text("audio_hash"),
+    /** And what it does over its length: the tier for a silent colour pass. */
+    motionHash: text("motion_hash"),
     fingerprintState: text("fingerprint_state", {
       enum: ["pending", "ready", "skipped", "failed"],
     })
@@ -431,6 +433,8 @@ export const assetVersions = sqliteTable(
     contentHash: text("content_hash"),
     /** What it sounds like: a colour pass keeps its soundtrack exactly. */
     audioHash: text("audio_hash"),
+    /** And what it does over its length: the tier for a silent colour pass. */
+    motionHash: text("motion_hash"),
     transcodeStatus: text("transcode_status", {
       enum: ["pending", "processing", "ready", "failed", "skipped"],
     })

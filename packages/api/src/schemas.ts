@@ -2067,7 +2067,7 @@ export const routeDocs: Record<string, RouteDoc> = {
   },
   "POST /projects/:id/versions/match": {
     summary:
-      "Dry run: which of these files look like new versions of assets already in the project. Writes nothing. The tiers, strongest first: the name (with a leading date-time release stamp and inner version tokens ignored); the capture identity the file carries, which is only trusted when a camera vouches for it; the audio, which a colour pass leaves untouched and so identifies a re-grade of the same cut; the picture in position, which must beat its runner up by a clear margin; and, for clips whose pictures no longer line up at all, how much footage two cuts share. Anything matching more than one asset comes back as ambiguous with its candidates rather than a guess. Uploads that have not been opened yet come back as pending; ask again.",
+      "Dry run: which of these files look like new versions of assets already in the project. Writes nothing. The tiers, strongest first: the name (with a leading date-time release stamp and inner version tokens ignored); the capture identity the file carries, which is only trusted when a camera vouches for it; the audio, which a colour pass leaves untouched; the motion contour, which answers the colour pass that arrives with no audio at all, because a grade cannot move a cut; the picture in position; and, for clips whose pictures no longer line up, how much footage two cuts share. The whole batch is solved together rather than file by file, as a stable pairing in which no asset takes two files, so evidence too fine to settle one file alone can still settle a campaign. Anything that stays indistinguishable comes back as ambiguous with its candidates rather than a guess. Uploads that have not been opened yet come back as pending; ask again.",
     request: bodies.versionMatchRequest,
     responses: {
       "200": ok(
@@ -2081,9 +2081,9 @@ export const routeDocs: Record<string, RouteDoc> = {
               asset_id: z.string().nullable(),
               asset_name: z.string().nullable(),
               /* How it was matched: by name, by the capture identity the
-                 file carries, by the audio, by the picture itself, or by the
-                 footage two cuts share. "pending" means the file has not been
-                 opened yet; ask again. */
+                 file carries, by the audio, by the motion contour, by the
+                 picture itself, or by the footage two cuts share. "pending"
+                 means the file has not been opened yet; ask again. */
               rule: z.string(),
               /* Bits of difference, when the picture or the sound was what
                  matched. */

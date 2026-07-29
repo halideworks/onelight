@@ -328,20 +328,22 @@ export const captureIdentityFromTags = (
   };
 };
 
-/* ---- what a clip sounds like ----
+/* ---- contours: what a clip does over its own length ----
 
-   The tier that actually answers a colour pass. A grade changes every pixel
-   and not one sample of the audio, so two exports of the same cut sound
-   identical while their pictures drift; a re-edit is the other way round.
-   Together they say which kind of second pass this is.
+   Two of these. A loudness contour answers a colour pass, because a grade
+   changes every pixel and not one sample of the audio. A MOTION contour
+   answers the same question when the colour pass arrives with no audio at
+   all, which is common: the shape of how much the picture changes from frame
+   to frame is where the cuts and the camera moves are, and that is the edit
+   rather than the colour.
 
-   The signature is a loudness contour, not the samples: it survives a
-   re-encode, a format change and a level-preserving export, and it does not
-   survive a different cut. Each bit is one window against the next, which is
-   the same trick the picture hash uses and is why an overall level change
-   moves nothing. */
-export const audioHashFromEnvelope = (windows: number[]): string => {
-  if (windows.length < 2) throw new Error("An audio hash needs windows.");
+   Both are contours, so both are hashed the same way, and the way is the
+   point: each bit is one window against the next. Nothing but the ORDER of
+   the windows survives, so any transform that scales the whole contour, a
+   quieter master or a flatter grade, moves no bit at all. It does not survive
+   a different cut, which is exactly the discrimination we want. */
+export const contourHash = (windows: number[]): string => {
+  if (windows.length < 2) throw new Error("A contour hash needs windows.");
   let hash = "";
   let nibble = 0;
   let bits = 0;
@@ -367,7 +369,36 @@ export const AUDIO_SILENCE_FLOOR = 1e-4;
 export const isSilentEnvelope = (windows: number[]): boolean =>
   windows.every((value) => value <= AUDIO_SILENCE_FLOOR);
 
+/* A contour with no shape is worse than no contour at all.
+
+   The hash asks "is this window above the next one", so a contour that barely
+   moves answers with whatever the encoder's noise did, and two unrelated
+   static clips can then agree by accident. A silence test is not enough for
+   motion, where a locked-off shot is not zero, just flat. So require the
+   contour to actually vary: the gap between its high and low deciles must
+   clear a fraction of its own mean. Relative, because absolute motion units
+   mean nothing across resolutions. */
+export const CONTOUR_MIN_RELATIVE_SPREAD = 0.08;
+
+export const hasContourShape = (windows: number[]): boolean => {
+  if (windows.length < 4) return false;
+  const sorted = [...windows].sort((left, right) => left - right);
+  const at = (fraction: number): number =>
+    sorted[
+      Math.min(sorted.length - 1, Math.floor(fraction * (sorted.length - 1)))
+    ] as number;
+  const mean = windows.reduce((sum, value) => sum + value, 0) / windows.length;
+  if (!(mean > 0)) return false;
+  return (at(0.9) - at(0.1)) / mean >= CONTOUR_MIN_RELATIVE_SPREAD;
+};
+
 /* How close two soundtracks must be to count as the same one. Tight, because
    this tier is the confident one: the same audio through two encoders differs
    in a handful of window comparisons at most. */
 export const AUDIO_MATCH_MAX_DISTANCE = 6;
+
+/* And how close two motion contours must be. Looser than audio, because a
+   grade does move the picture a little where audio does not move at all: a
+   crushed black or a blown highlight changes how much of the frame appears to
+   change. Measured against real spots in docs/stills-at-scale.md. */
+export const MOTION_MATCH_MAX_DISTANCE = 10;

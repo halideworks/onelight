@@ -13,6 +13,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   AUDIO_MATCH_MAX_DISTANCE,
+  MOTION_MATCH_MAX_DISTANCE,
   CONTENT_MATCH_MIN_MARGIN,
   SHOT_OVERLAP_MIN,
   captureKeyOf,
@@ -25,6 +26,7 @@ import {
   clipHashPositions,
   fingerprintAudio,
   fingerprintClip,
+  fingerprintMotion,
   isFlat,
   parseRmsLevels,
   resampleEnvelope,
@@ -563,4 +565,121 @@ describe.skipIf(!hasFfmpeg)("a re-edit against a colour pass", () => {
       await rm(dir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it("survives a violent grade and refuses a re-edit, with no audio anywhere", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "onelight-motion-"));
+    try {
+      const ff = (args: string[]): void => {
+        const result = spawnSync("ffmpeg", [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-y",
+          ...args,
+        ]);
+        if (result.status !== 0)
+          throw new Error(String(result.stderr).slice(0, 300));
+      };
+      /* A cut, built out of three shots that move at different rates, because
+         the whole claim is that the SHAPE of the motion is the edit. All
+         silent: this is the delivery that has no soundtrack to compare. */
+      const shot = (name: string, source: string): string => {
+        const file = path.join(dir, name);
+        ff([
+          "-f",
+          "lavfi",
+          "-i",
+          source,
+          "-t",
+          "2",
+          "-pix_fmt",
+          "yuv420p",
+          "-c:v",
+          "libx264",
+          "-preset",
+          "ultrafast",
+          "-an",
+          file,
+        ]);
+        return file;
+      };
+      const shots = [
+        shot("s0.mp4", "testsrc2=size=320x240:rate=24"),
+        shot("s1.mp4", "smptebars=size=320x240:rate=24"),
+        shot("s2.mp4", "testsrc=size=320x240:rate=24"),
+      ];
+      const join = (name: string, order: number[]): string => {
+        const list = path.join(dir, `${name}.txt`);
+        spawnSync("sh", [
+          "-c",
+          `printf "file '%s'\n" ${order.map((index) => shots[index] as string).join(" ")} > ${list}`,
+        ]);
+        const file = path.join(dir, name);
+        ff(["-f", "concat", "-safe", "0", "-i", list, "-c", "copy", file]);
+        return file;
+      };
+      const cut = join("cut.mp4", [0, 1, 2, 0, 1, 2, 0, 1]);
+      /* The colour pass: a day-for-night look, which is the grade that moved
+         the positional hash 18 bits on a real spot and left nothing for the
+         overlap tier either. */
+      const graded = path.join(dir, "graded.mp4");
+      ff([
+        "-i",
+        cut,
+        "-vf",
+        "colorbalance=rs=-0.3:bs=0.35,eq=brightness=-0.18:contrast=1.3:saturation=1.6",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-an",
+        graded,
+      ]);
+      /* And the re-edit: the same shots, a different order. */
+      const reedit = join("reedit.mp4", [2, 0, 1, 1, 2, 0, 1, 0]);
+      /* And a locked-off shot, which has no shape to speak of. */
+      const still = path.join(dir, "still.mp4");
+      ff([
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=gray:size=320x240:rate=24",
+        "-t",
+        "16",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-an",
+        still,
+      ]);
+
+      const original = await fingerprintMotion(cut);
+      const afterGrade = await fingerprintMotion(graded);
+      const afterEdit = await fingerprintMotion(reedit);
+      expect(original).toMatch(/^[0-9a-f]{16}$/);
+      expect(afterGrade).toMatch(/^[0-9a-f]{16}$/);
+      /* The grade cannot move a cut. */
+      expect(
+        hashDistance(original as string, afterGrade as string),
+      ).toBeLessThanOrEqual(MOTION_MATCH_MAX_DISTANCE);
+      /* The re-edit moves every one of them. */
+      expect(
+        hashDistance(original as string, afterEdit as string),
+      ).toBeGreaterThan(MOTION_MATCH_MAX_DISTANCE);
+      /* Nothing happens in a locked-off shot, so its contour is the encoder's
+         noise and must be refused rather than compared. */
+      expect(await fingerprintMotion(still)).toBeNull();
+      /* And there is no audio in any of this, which is the point. */
+      expect(
+        await fingerprintAudio(graded, { durationSeconds: 16 }),
+      ).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 180_000);
 });

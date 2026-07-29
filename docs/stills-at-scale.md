@@ -670,3 +670,112 @@ that key has to move whenever the sampler changes, including when the change is
 "it now signs clips it used to refuse". Deployed without the bump, the four one
 frame clips stayed unsigned and the sweep was right to leave them: it had
 already asked.
+
+## The colour pass with no sound
+
+The audio tier answers a grade because a grade cannot touch the audio. It
+cannot answer the grade that arrives with no audio at all, which is common:
+picture-only deliveries are normal in post. So what happens to such a file
+today, and is the picture enough on its own?
+
+Measured, thirty seconds of a real spot, sixteen samples, against grades of
+increasing violence:
+
+| what arrived | position | overlap | motion |
+|---|---|---|---|
+| mild lift | 0 | 1.00 | 2 |
+| heavy contrast + saturation | 3 | 0.94 | 3 |
+| s-curve | 4 | 1.00 | 3 |
+| log to 709 | 1 | 1.00 | 3 |
+| hue rotate 40 degrees | 1 | 1.00 | 3 |
+| black and white | 2 | 1.00 | 1 |
+| crushed blacks | 10 | 0.44 | 1 |
+| **day for night** | **18** | **0.00** | **3** |
+| reframed 5% | 10 | 0.31 | 4 |
+| half resolution | 1 | 1.00 | 2 |
+| re-edit of the same footage | 23 | 0.81 | 35 |
+| trimmed 10 frames at the head | 2 | 0.94 | 23 |
+| a different spot | 23 | 0.06 | 39 |
+
+The difference hash is far more grade-robust than it looks like it should be,
+and the reason is structural: each bit asks whether one pixel is brighter than
+the next, so any tone curve that preserves order preserves the bit. Lifts,
+gammas, s-curves, hue rotations and a black and white conversion all move it by
+four bits or less out of sixty-four.
+
+What breaks it is a grade that stops being monotonic in luma: **day for night**,
+which pushes red down and blue up and then crushes the whole thing, moves the
+picture 18 bits, past the threshold, and leaves not one sample within the
+overlap tier's per-sample bar either. Nothing answered it. That is the case
+this section exists for, and the thresholds cannot be relaxed to cover it: a
+re-edit of the same footage and a different spot entirely both sit at 23.
+
+### The motion contour
+
+So add the signal a grade cannot touch: how much the picture changes from frame
+to frame, over the whole clip. One number per frame, the mean absolute
+difference at 160x90 greyscale, resampled to 65 windows and hashed the same way
+the loudness contour is, each bit comparing one window with the next. Cuts are
+spikes, camera moves are plateaus, a locked-off shot is a floor. That shape is
+the edit.
+
+The right hand column is the measurement. Every grade, including day for night,
+moves it by **at most 4 bits**. The nearest thing that is not the same timeline
+is **23**. The threshold sits at 10, with 13 bits of daylight on both sides.
+
+It is deliberately a different question from the positional hash, and the two
+cover each other:
+
+- A trim of ten frames at the head is the same colour and a different timing:
+  position says 2 bits (matches), motion says 23 (declines).
+- Day for night is the same timing and a different colour: position says 18
+  (declines), motion says 3 (matches).
+
+Neither tier vetoes the other. Evidence is only ever recorded when it is within
+its own threshold, so a conform change is answered by the picture and a
+creative grade is answered by the cut.
+
+Two guards keep it honest. A clip with fewer frames than windows has nothing to
+contour. And a contour with no shape is worse than none at all: the hash asks
+"is this window above the next", so a locked-off shot answers with whatever the
+encoder's noise did, and two unrelated static clips can then agree by accident.
+The spread between the high and low deciles must clear 8% of the contour's own
+mean, relative because absolute motion units mean nothing across resolutions.
+A grey card clip is refused, which is the same rule silence gets.
+
+It costs one decode pass: 5.1 s for a thirty second 1080p clip on nyx, against
+6.5 s for the sixteen seeks the positional signature already pays. It is
+resolution-independent by measurement (half resolution moves it 2 bits), so it
+compares across a proxy and a master.
+
+## Solving the batch, not the file
+
+The other half of the answer is that a delivery does not usually arrive alone.
+Ten graded spots arrive for ten assets, and a pairing can be obvious when no
+single distance in it is decisive. Deciding each file independently threw that
+away, and worse: two files could each be told they were the new version of the
+same asset, and both would stack onto it.
+
+So the evidence tiers now solve the batch as a **stable matching**. Each file
+proposes to the asset it has the best evidence for; an asset holds the best
+proposal it has seen and turns the rest away; a file turned away proposes to
+its next candidate. It ends with no file and asset wanting each other more than
+what they each got, and with no asset holding two files.
+
+Stable matching alone would still answer when nobody is distinguishable, so two
+refusals sit on top of it. A pair is dropped if the file cannot tell its asset
+from another one **that nothing else claimed**, and dropped if the asset cannot
+tell its file from another one **left over**. Both are the old margin rule, now
+asked of the pairing rather than the file. That keeps a renamed frame among a
+burst ambiguous, exactly as before, while letting a campaign settle.
+
+Proved in the contract suite with an instance built to be cruel: three spots
+and three silent graded deliveries, each delivery one bit from its own spot and
+three from the next nearest, which is the margin. Sent one at a time, every file
+is refused. Sent as a batch, all three land on their own spot, and no asset
+takes two. Nothing is ever taken by elimination alone: a pair still has to clear
+the absolute threshold for its tier.
+
+And nothing is a dead end any more. A file that could not be placed comes back
+with the shortlist that was closest, so the answer is "pick one of these"
+rather than "no match": the evidence was real, it just was not decisive.

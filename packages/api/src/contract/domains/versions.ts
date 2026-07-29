@@ -631,7 +631,12 @@ export const registerVersionsDomain = (ctx: SuiteContext): void => {
     const fingerprintUpload = async (
       h: ContractHarness,
       uploadId: string,
-      fields: { captureKey?: string; contentHash?: string; audioHash?: string },
+      fields: {
+        captureKey?: string;
+        contentHash?: string;
+        audioHash?: string;
+        motionHash?: string;
+      },
     ): Promise<void> => {
       await h.db
         .update(uploadSessions)
@@ -639,6 +644,7 @@ export const registerVersionsDomain = (ctx: SuiteContext): void => {
           ...(fields.captureKey ? { captureKey: fields.captureKey } : {}),
           ...(fields.contentHash ? { contentHash: fields.contentHash } : {}),
           ...(fields.audioHash ? { audioHash: fields.audioHash } : {}),
+          ...(fields.motionHash ? { motionHash: fields.motionHash } : {}),
           fingerprintState: "ready",
         })
         .where(eq(uploadSessions.id, uploadId))
@@ -648,7 +654,12 @@ export const registerVersionsDomain = (ctx: SuiteContext): void => {
     const fingerprintVersion = async (
       h: ContractHarness,
       versionId: string,
-      fields: { captureKey?: string; contentHash?: string; audioHash?: string },
+      fields: {
+        captureKey?: string;
+        contentHash?: string;
+        audioHash?: string;
+        motionHash?: string;
+      },
     ): Promise<void> => {
       await h.db
         .update(assetVersions)
@@ -656,6 +667,7 @@ export const registerVersionsDomain = (ctx: SuiteContext): void => {
           ...(fields.captureKey ? { captureKey: fields.captureKey } : {}),
           ...(fields.contentHash ? { contentHash: fields.contentHash } : {}),
           ...(fields.audioHash ? { audioHash: fields.audioHash } : {}),
+          ...(fields.motionHash ? { motionHash: fields.motionHash } : {}),
         })
         .where(eq(assetVersions.id, versionId))
         .run();
@@ -1029,6 +1041,147 @@ export const registerVersionsDomain = (ctx: SuiteContext): void => {
       );
       expect(stills.items[0]?.rule).toBe("none");
       expect(stills.items[0]?.asset_id).toBeNull();
+    });
+
+    it("matches a silent colour pass by what the picture does over time", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Silent" });
+      const hero = await landAsset(
+        h,
+        seed,
+        project.id,
+        "20260729_1010_hero.mov",
+      );
+      const alt = await landAsset(h, seed, project.id, "20260729_1012_alt.mov");
+      /* Both spots are thirty seconds and neither delivery has audio, which is
+         common: the grade comes back as picture only. Measured on real spots, a
+         day-for-night look moves the positional hash 18 bits, past the picture
+         threshold, and leaves no sample within the overlap bar either. So the
+         positional evidence here is deliberately hopeless for both. */
+      await fingerprintVersion(h, hero.versionId, {
+        contentHash: new Array(16).fill("ffffffffffffffff").join(":"),
+        motionHash: "5d9952e971ba3a9b",
+      });
+      await fingerprintVersion(h, alt.versionId, {
+        contentHash: new Array(16).fill("ffffffff00000000").join(":"),
+        motionHash: "a266ad16845dc564",
+      });
+      const upload = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+        filename: "HERO_dayfornight.mov",
+      });
+      await fingerprintUpload(h, upload.id, {
+        contentHash: new Array(16).fill("0000000000000000").join(":"),
+        /* Three bits from the hero's contour, which is what every grade
+           measured did, and nowhere near the other spot. */
+        motionHash: "5d9952e971ba3a9c",
+      });
+      const body = await json<{
+        items: Array<{
+          rule: string;
+          asset_id: string | null;
+          distance?: number;
+        }>;
+        matched: number;
+      }>(
+        await req(h, `/api/v1/projects/${project.id}/versions/match`, {
+          cookie: seed.admin.cookie,
+          json: {
+            files: [{ filename: "HERO_dayfornight.mov", upload_id: upload.id }],
+          },
+        }),
+      );
+      expect(body.matched).toBe(1);
+      expect(body.items[0]?.rule).toBe("motion");
+      expect(body.items[0]?.asset_id).toBe(hero.assetId);
+      expect(body.items[0]?.distance).toBe(3);
+    });
+
+    it("pairs a batch of silent grades that no single file could settle alone", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Campaign" });
+      /* Three spots from one campaign, and three graded deliveries named after
+         the client rather than the timeline. Deliberately cruel: every delivery
+         is ONE bit from its own spot and THREE from the next nearest, and three
+         bits is the motion tier's margin, so file by file every one of them is
+         a coin toss and has to be refused. As a pairing there is exactly one
+         way to read it: each delivery prefers a different spot and each spot
+         prefers a different delivery. */
+      const spots = [
+        { name: "20260729_1000_bills.mov", motion: "0000000000000000" },
+        { name: "20260729_1005_eagles.mov", motion: "000000000000000f" },
+        { name: "20260729_1010_cards.mov", motion: "00000000000000f0" },
+      ];
+      const landed = [];
+      for (const spot of spots) {
+        const asset = await landAsset(h, seed, project.id, spot.name);
+        await fingerprintVersion(h, asset.versionId, {
+          motionHash: spot.motion,
+        });
+        landed.push({ ...spot, ...asset });
+      }
+      const deliveries = [
+        { filename: "BILLS_CC.mov", motion: "0000000000000001" },
+        { filename: "EAGLES_CC.mov", motion: "000000000000000e" },
+        { filename: "CARDS_CC.mov", motion: "00000000000000e0" },
+      ];
+      const files = [];
+      for (const delivery of deliveries) {
+        const upload = await seedCompletedUpload(h, {
+          workspaceId: seed.workspaceId,
+          projectId: project.id,
+          userId: seed.admin.id,
+          filename: delivery.filename,
+        });
+        await fingerprintUpload(h, upload.id, { motionHash: delivery.motion });
+        files.push({ filename: delivery.filename, upload_id: upload.id });
+      }
+
+      /* One at a time, the answer has to be a refusal: BILLS_CC is one bit
+         from bills and two from eagles, and one bit of daylight is not a
+         reason to choose. */
+      const alone = await json<{
+        items: Array<{ rule: string; asset_id: string | null }>;
+        ambiguous: number;
+      }>(
+        await req(h, `/api/v1/projects/${project.id}/versions/match`, {
+          cookie: seed.admin.cookie,
+          json: { files: [files[0] as (typeof files)[number]] },
+        }),
+      );
+      expect(alone.ambiguous).toBe(1);
+      expect(alone.items[0]?.asset_id).toBeNull();
+
+      /* The whole batch together, and the same evidence now reads clearly. */
+      const body = await json<{
+        items: Array<{
+          filename: string;
+          rule: string;
+          asset_name: string | null;
+        }>;
+        matched: number;
+        ambiguous: number;
+      }>(
+        await req(h, `/api/v1/projects/${project.id}/versions/match`, {
+          cookie: seed.admin.cookie,
+          json: { files },
+        }),
+      );
+      expect(body.matched).toBe(3);
+      expect(body.ambiguous).toBe(0);
+      const paired = new Map(
+        body.items.map((item) => [item.filename, item.asset_name]),
+      );
+      expect(paired.get("BILLS_CC.mov")).toBe("20260729_1000_bills.mov");
+      expect(paired.get("EAGLES_CC.mov")).toBe("20260729_1005_eagles.mov");
+      expect(paired.get("CARDS_CC.mov")).toBe("20260729_1010_cards.mov");
+      /* Uniqueness is what makes it safe: no asset took two of them, which the
+         old per-file matcher could not promise. */
+      expect(new Set([...paired.values()]).size).toBe(3);
     });
 
     it("says it is still working rather than saying there is no match", async () => {

@@ -9,7 +9,11 @@ import {
 } from "@onelight/core";
 import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
 import { ALL_FORMATS, FilePathSource, Input } from "mediabunny";
-import { fingerprintAudio, fingerprintClip } from "./fingerprint-media.js";
+import {
+  fingerprintAudio,
+  fingerprintClip,
+  fingerprintMotion,
+} from "./fingerprint-media.js";
 import { PROCESS_IDLE_TIMEOUT_MS, runProcess } from "./run-process.js";
 import {
   fingerprintStillSource,
@@ -59,6 +63,7 @@ export interface TranscodeRunResult extends TranscodeResult {
     content_hash?: string;
     capture_key?: string;
     audio_hash?: string;
+    motion_hash?: string;
   };
 }
 
@@ -2600,11 +2605,16 @@ export const runTranscode = async (
       durationSeconds: duration,
       ffmpeg,
     }).catch(() => null);
-    if (signature || key || audio)
+    /* And what it does over its length, for the colour pass with no audio. */
+    const motion = await fingerprintMotion(job.sourceKey, { ffmpeg }).catch(
+      () => null,
+    );
+    if (signature || key || audio || motion)
       fingerprint = {
         ...(signature ? { content_hash: signature } : {}),
         ...(key ? { capture_key: key } : {}),
         ...(audio ? { audio_hash: audio } : {}),
+        ...(motion ? { motion_hash: motion } : {}),
       };
   }
   return { renditions, failures, ...(fingerprint ? { fingerprint } : {}) };

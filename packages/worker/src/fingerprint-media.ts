@@ -15,7 +15,8 @@
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import {
-  audioHashFromEnvelope,
+  contourHash,
+  hasContourShape,
   dHashFromLuma,
   isSilentEnvelope,
   joinHashes,
@@ -245,9 +246,76 @@ export const fingerprintAudio = async (
     /* ametadata prints to stdout; astats itself logs to stderr. */
     const levels = parseRmsLevels(`${result.stdout}\n${result.stderr}`);
     if (levels.length < 16 || isSilentEnvelope(levels)) return null;
-    return audioHashFromEnvelope(resampleEnvelope(levels, AUDIO_WINDOW_COUNT));
+    return contourHash(resampleEnvelope(levels, AUDIO_WINDOW_COUNT));
   } catch {
     /* No audio stream, or a decoder that would not play: not a failure. */
+    return null;
+  }
+};
+
+/* ---- what a clip does over its own length ----
+
+   The same idea as the loudness contour, applied to the picture, for the case
+   the loudness contour cannot answer: a colour pass delivered with no audio,
+   which is common. One number per frame, the mean absolute difference between
+   this frame and the last, at 160x90 greyscale. Cuts are spikes, camera moves
+   are plateaus, a locked-off shot is a floor. That shape is the edit.
+
+   A grade is a per pixel transform and cannot move a cut, so the contour is
+   nearly untouched by one; a re-edit moves every spike. The hash only compares
+   each window against the next, so even a grade that flattens the whole
+   picture, which scales the differences down, moves no bit by scaling alone.
+
+   One decode pass, at a size chosen so the decode dominates and the filter
+   does not. tblend does the differencing and signalstats the reduction, so
+   what crosses the process boundary is a column of numbers. */
+export const MOTION_WINDOW_COUNT = 65;
+
+export const buildMotionEnvelopeArgs = (source: string): string[] => [
+  "-hide_banner",
+  "-nostats",
+  "-i",
+  source,
+  "-map",
+  "0:v:0",
+  "-an",
+  "-vf",
+  "scale=160:90,format=gray,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-",
+  "-f",
+  "null",
+  "-",
+];
+
+/** The per frame motion signalstats printed, in order. */
+export const parseMotionLevels = (text: string): number[] => {
+  const levels: number[] = [];
+  for (const line of text.split("\n")) {
+    const match = /signalstats\.YAVG=(-?\d+(?:\.\d+)?)/.exec(line);
+    if (!match) continue;
+    const value = Number(match[1]);
+    if (Number.isFinite(value)) levels.push(value);
+  }
+  return levels;
+};
+
+/* Fewer frames than windows and there is nothing to contour; a picture that
+   barely changes has no shape to speak of and its hash would be the encoder's
+   noise, so hasContourShape refuses it. Both are the motion equivalents of
+   silence. */
+export const fingerprintMotion = async (
+  source: string,
+  options: { ffmpeg?: string } = {},
+): Promise<string | null> => {
+  const ffmpeg = options.ffmpeg ?? process.env.FFMPEG_PATH ?? "ffmpeg";
+  try {
+    const result = await runProcess(ffmpeg, buildMotionEnvelopeArgs(source));
+    const levels = parseMotionLevels(`${result.stdout}\n${result.stderr}`);
+    if (levels.length < MOTION_WINDOW_COUNT) return null;
+    const windows = resampleEnvelope(levels, MOTION_WINDOW_COUNT);
+    if (!hasContourShape(windows)) return null;
+    return contourHash(windows);
+  } catch {
+    /* No video stream, or a decoder that would not play: not a failure. */
     return null;
   }
 };
