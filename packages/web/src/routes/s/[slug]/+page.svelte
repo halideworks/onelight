@@ -22,6 +22,7 @@
   import { replaceState } from '$app/navigation';
   import { annotationInkFor, annotationInkName, ANNOTATION_INKS } from '@onelight/player';
   import AttachmentImage from '$lib/AttachmentImage.svelte';
+  import { Virtual } from '$lib/virtual.svelte.js';
   import Avatar from '$lib/Avatar.svelte';
   import Lightbox from '$lib/Lightbox.svelte';
   import ProjectCover from '$lib/ProjectCover.svelte';
@@ -404,22 +405,69 @@
     })()
   );
 
+  /* A room is one page deep to start with and grows as the viewer scrolls.
+     A delivery can be thousands of frames; sending and drawing all of them at
+     once is what a room that size cannot survive. */
+  let nextCursor = $state<string | null>(null);
+  let loadingMore = $state(false);
+  const roomWindow = new Virtual({
+    scroller: 'window',
+    overscan: 2,
+    onEnd: () => {
+      if (nextCursor && !loadingMore) void loadMoreAssets();
+    }
+  });
+  $effect(() => {
+    roomWindow.total = assets.length;
+  });
+  const roomSlice = $derived(roomWindow.slice);
+
   const loadAssets = async (currentSlug: string): Promise<void> => {
     try {
-      assets = (await api<{ items: Asset[] }>(`/api/v1/s/${currentSlug}/assets`)).items;
+      const page = await api<{ items: Asset[]; next_cursor: string | null }>(
+        `/api/v1/s/${currentSlug}/assets`
+      );
+      assets = page.items;
+      nextCursor = page.next_cursor;
     } catch {
       /* Bootstrap assets remain. */
     }
   };
 
+  const loadMoreAssets = async (): Promise<void> => {
+    const currentSlug = slug;
+    const cursor = nextCursor;
+    if (!cursor || loadingMore) return;
+    loadingMore = true;
+    try {
+      const page = await api<{ items: Asset[]; next_cursor: string | null }>(
+        `/api/v1/s/${currentSlug}/assets?cursor=${encodeURIComponent(cursor)}`
+      );
+      if (currentSlug !== slug) return;
+      const known = new Set(assets.map((asset) => asset.id));
+      assets = [...assets, ...page.items.filter((asset) => !known.has(asset.id))];
+      nextCursor = page.next_cursor;
+    } catch {
+      /* The room keeps what it has; the next scroll tries again. */
+    } finally {
+      loadingMore = false;
+    }
+  };
+
   const load = async (currentSlug: string): Promise<void> => {
-    share = null; assets = []; selected = null; previewUrl = ''; comments = []; locked = false; error = '';
+    share = null; assets = []; nextCursor = null; selected = null; previewUrl = ''; comments = []; locked = false; error = '';
     viewerIdentity = null;
     try {
-      const payload = await api<{ share: unknown; viewer: unknown; assets: Asset[] }>(`/s/${currentSlug}`);
+      const payload = await api<{
+        share: unknown;
+        viewer: unknown;
+        assets: Asset[];
+        next_cursor?: string | null;
+      }>(`/s/${currentSlug}`);
       if (currentSlug !== slug) return;
       share = normalizeShare(payload.share);
       assets = payload.assets;
+      nextCursor = payload.next_cursor ?? null;
       if (payload.viewer) {
         const viewer = payload.viewer as Record<string, unknown>;
         viewerIdentity = {
@@ -427,7 +475,7 @@
           email: typeof viewer['email'] === 'string' ? viewer['email'] : null
         };
         await loadAssets(currentSlug);
-        openFromUrl();
+        await openFromUrl();
         autoOpen();
       } else if (share && share.kind === 'presentation' && !share.allow_comments) {
         /* A presentation that collects nothing has no business asking who
@@ -437,7 +485,7 @@
         if (currentSlug !== slug) return;
         viewerIdentity = { name: null, email: null };
         await loadAssets(currentSlug);
-        openFromUrl();
+        await openFromUrl();
         autoOpen();
       }
     } catch (caught) {
@@ -449,10 +497,19 @@
   /* Deep links: ?a= names the asset to open (share pages host several),
      ?f= the frame. location.search is read directly so the slug-keyed load
      effect never re-runs on our own ?f= rewrites. */
-  const openFromUrl = (): void => {
+  const openFromUrl = async (): Promise<void> => {
     const requested = new URLSearchParams(location.search).get('a');
     if (!requested) return;
-    const match = assets.find((candidate) => candidate.id === requested);
+    let match = assets.find((candidate) => candidate.id === requested);
+    /* The room only holds its first page, so a deep link into a large
+       delivery usually names something not loaded yet. Keep paging until it
+       turns up rather than silently opening nothing. */
+    while (!match && nextCursor) {
+      const before = assets.length;
+      await loadMoreAssets();
+      if (assets.length === before) break;
+      match = assets.find((candidate) => candidate.id === requested);
+    }
     if (match && selected?.id !== match.id) void openAsset(match, { fromUrl: true });
   };
 
@@ -474,7 +531,7 @@
       locked = false;
       error = '';
       await loadAssets(slug ?? '');
-      openFromUrl();
+      await openFromUrl();
       autoOpen();
     } catch (caught) {
       error = messageFrom(caught, 'Access could not be granted.');
@@ -1136,9 +1193,24 @@
         </span>
       {/if}
     </header>
-    <section class={`assets ${share.layout}`} aria-label="Shared assets">
-      {#each assets as asset, index (asset.id)}
-        <button class="asset" type="button" style={`--i: ${index};`} onclick={() => openAsset(asset)}>
+    <!-- Windowed, and paged from the server as the viewer approaches the end:
+         only what is near the viewport is built, whatever the delivery's
+         size. The padding stands in for the rows above and below. -->
+    <section
+      class={`assets ${share.layout}`}
+      aria-label="Shared assets"
+      use:roomWindow.container
+      style={`padding-top: ${String(roomSlice.padTop)}px; padding-bottom: ${String(roomSlice.padBottom)}px;`}
+    >
+      {#each assets.slice(roomSlice.start, roomSlice.end) as asset, index (asset.id)}
+        <button
+          class="asset"
+          type="button"
+          data-virtual-item
+          use:roomWindow.probe
+          style={`--i: ${index};`}
+          onclick={() => openAsset(asset)}
+        >
           <!-- The picture leads. A list row is 56px of frame, too small for a
                monogram to read as anything but a cropped letter, so it takes
                the wash and the light alone. -->
@@ -1699,7 +1771,21 @@
   .caption { display: grid; gap: 3px; min-width: 0; }
   /* Filenames wrap inside their tile: an unbroken camera-roll name used to
      run past the frame and off the phone's screen. */
-  .name { font-size: var(--text-14); font-weight: 500; overflow-wrap: anywhere; }
+  /* Two lines at most, and always the same two lines' worth of space: the
+     grid is windowed, and a window can only stand in for rows it can measure.
+     A ragged tile height would drift the padding and shift the page under the
+     viewer as they scroll. */
+  .name {
+    font-size: var(--text-14);
+    font-weight: 500;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    min-height: calc(2 * 1.35em);
+  }
   .status { color: rgba(255, 255, 255, 0.64); font-size: var(--text-13); }
 
   /* A list row is still led by its picture, at a size where the frame reads

@@ -174,6 +174,35 @@ export const commentCursorParam = (
   }
 };
 
+/* A share's listing is ordered by the curator's sort_order, which is not
+   unique on its own, so the keyset carries the asset id as the tiebreak. */
+export interface ShareAssetCursor {
+  sortOrder: number;
+  assetId: string;
+}
+
+export const encodeShareCursor = (sortOrder: number, assetId: string): string =>
+  toBase64Url(JSON.stringify({ s: sortOrder, id: assetId }));
+
+export const decodeShareCursor = (value: string): ShareAssetCursor => {
+  try {
+    const decoded = JSON.parse(fromBase64Url(value)) as unknown;
+    const record = decoded as { s?: unknown; id?: unknown };
+    if (
+      !decoded ||
+      typeof decoded !== "object" ||
+      typeof record.s !== "number" ||
+      !Number.isInteger(record.s) ||
+      typeof record.id !== "string" ||
+      !ULID_PATTERN.test(record.id)
+    )
+      throw new Error("invalid cursor");
+    return { sortOrder: record.s, assetId: record.id };
+  } catch {
+    throw errors.validation("Cursor is invalid.");
+  }
+};
+
 /** The things search can return, in the order it returns them. */
 export const SEARCH_STREAMS = [
   "asset",

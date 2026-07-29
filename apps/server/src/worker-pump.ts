@@ -729,6 +729,141 @@ const PLAYABLE_VIDEO_KINDS: Array<typeof renditions.$inferSelect.kind> = [
   "hdr_hevc",
 ];
 
+/* Backfill for the stills ladder (S0).
+
+   Two populations need it, and both look the same from here: an image version
+   with no still_review. Every JPEG uploaded before this had no poster at all,
+   because the ffmpeg poster recipe seeked and ran thumbnail=100 over a single
+   frame and emitted nothing, so those assets are blank cards everywhere. And
+   every image version made before the ladder has only the retired still_tiles
+   PNG, which is the file the review room was loading at up to 14 MB.
+
+   Re-running the transcode is the whole fix: planRenditions now returns the
+   ladder, and runTranscode reuses any output already on disk, so the work is
+   exactly the rungs that are missing. Bounded per pass and throttled in the
+   poll loop, like the sweeps above, so a library of 3000 stills drains in the
+   background instead of monopolizing the pump. */
+const STILL_LADDER_SWEEP_INTERVAL_MS = 30_000;
+const STILL_LADDER_SWEEP_LIMIT = 8;
+const STILL_LADDER_SCAN_BATCH = 200;
+
+export const sweepStillLadderJobs = async (db: AppDb): Promise<number> => {
+  let enqueued = 0;
+  let offset = 0;
+  const now = Date.now();
+  while (enqueued < STILL_LADDER_SWEEP_LIMIT) {
+    const candidates = await db
+      .select({
+        version: assetVersions,
+        asset: assets,
+        workspaceId: projects.workspaceId,
+      })
+      .from(assetVersions)
+      .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+      .innerJoin(projects, eq(assets.projectId, projects.id))
+      .where(
+        and(
+          eq(assets.kind, "image"),
+          isNull(assetVersions.deletedAt),
+          isNull(assets.deletedAt),
+          /* A version still being processed is not stale, it is unfinished;
+             its own transcode will produce the ladder. */
+          inArray(assetVersions.transcodeStatus, ["ready", "failed"]),
+        ),
+      )
+      .orderBy(asc(assetVersions.createdAt), asc(assetVersions.id))
+      .limit(STILL_LADDER_SCAN_BATCH)
+      .offset(offset)
+      .all();
+    if (!candidates.length) break;
+    offset += candidates.length;
+    for (const row of candidates) {
+      if (enqueued >= STILL_LADDER_SWEEP_LIMIT) break;
+      const existing = await db
+        .select({ kind: renditions.kind })
+        .from(renditions)
+        .where(
+          and(
+            eq(renditions.versionId, row.version.id),
+            isNull(renditions.shareId),
+            inArray(renditions.kind, ["still_review", "poster"]),
+          ),
+        )
+        .all();
+      const kinds = new Set(existing.map((rendition) => rendition.kind));
+      if (kinds.has("still_review") && kinds.has("poster")) continue;
+      const payloadJson = JSON.stringify({
+        workspace_id: row.workspaceId,
+        project_id: row.asset.projectId,
+        asset_id: row.asset.id,
+        version_id: row.version.id,
+        blob_key: row.version.originalBlobKey,
+      });
+      const idempotencyKey = `stills:v1:${row.version.id}`;
+      /* Same reset-or-skip rule the watermark sweep documents: the key is
+         UNIQUE, so a live job owns it and a terminal one is reset in place. */
+      const existingJob = (
+        await db
+          .select({ id: jobs.id, status: jobs.status })
+          .from(jobs)
+          .where(eq(jobs.idempotencyKey, idempotencyKey))
+          .limit(1)
+          .all()
+      )[0];
+      if (existingJob) {
+        if (existingJob.status !== "dead" && existingJob.status !== "failed")
+          continue;
+        await db
+          .update(jobs)
+          .set({
+            payloadJson,
+            status: "queued",
+            priority: 0,
+            maxAttempts: 3,
+            attempts: 0,
+            runAfter: now,
+            startedAt: null,
+            heartbeatAt: null,
+            leaseExpiresAt: null,
+            finishedAt: null,
+            error: null,
+            workerId: null,
+          })
+          .where(eq(jobs.id, existingJob.id))
+          .run();
+        enqueued += 1;
+        continue;
+      }
+      await db
+        .insert(jobs)
+        .values({
+          id: new UlidGenerator().ulid(),
+          kind: "transcode",
+          payloadJson,
+          idempotencyKey,
+          status: "queued",
+          /* Below ordinary work: nobody is waiting on a backfill, and an
+             upload happening right now must not queue behind 3000 of them. */
+          priority: -1,
+          capabilityJson: "{}",
+          maxAttempts: 3,
+          attempts: 0,
+          runAfter: now,
+          createdAt: now,
+          startedAt: null,
+          heartbeatAt: null,
+          leaseExpiresAt: null,
+          finishedAt: null,
+          error: null,
+          workerId: null,
+        })
+        .run();
+      enqueued += 1;
+    }
+  }
+  return enqueued;
+};
+
 export const sweepShuttleAudioJobs = async (db: AppDb): Promise<number> => {
   let enqueued = 0;
   let offset = 0;
@@ -1728,6 +1863,7 @@ export const startWorkerPump = (
   let active = false;
   let lastWatermarkSweep = 0;
   let lastShuttleAudioSweep = 0;
+  let lastStillLadderSweep = 0;
   let reclaimedOnStart = false;
   const tick = async () => {
     if (active) return;
@@ -1763,6 +1899,21 @@ export const startWorkerPump = (
         } catch (error) {
           console.warn(
             `[onelight] watermark sweep failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      if (
+        mediaEnabled &&
+        now - lastStillLadderSweep >= STILL_LADDER_SWEEP_INTERVAL_MS
+      ) {
+        lastStillLadderSweep = now;
+        try {
+          await sweepStillLadderJobs(db);
+        } catch (error) {
+          console.warn(
+            `[onelight] still ladder sweep failed: ${
               error instanceof Error ? error.message : String(error)
             }`,
           );

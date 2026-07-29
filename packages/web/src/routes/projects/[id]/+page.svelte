@@ -24,6 +24,7 @@
     UploadQuarantinedError
   } from '$lib/upload.js';
   import type { PendingFile } from '$lib/upload.js';
+  import { Virtual } from '$lib/virtual.svelte.js';
   import { pageWashFor } from '$lib/washes.js';
   import Slider from '@onelight/player/Slider.svelte';
 
@@ -78,7 +79,13 @@
   let error = $state('');
   let listError = $state('');
   let queue = $state<UploadItem[]>([]);
+  /* The queue scrolls itself rather than the page: a dropped shoot must not
+     push the browser a kilometer down, and only the visible rows are built. */
+  const queueWindow = new Virtual({ scroller: 'self', overscan: 4 });
+  const queueSlice = $derived(queueWindow.slice);
   let uploading = $state(false);
+  /* Where the driver last looked for work; see pump(). */
+  let pumpCursor = 0;
   let dropActive = $state(false);
   let nextKey = 0;
 
@@ -266,7 +273,7 @@
   };
 
   const load = async (id: string): Promise<void> => {
-    project = null; assets = []; nextCursor = null; error = ''; listError = ''; queue = [];
+    project = null; assets = []; nextCursor = null; error = ''; listError = ''; queue = []; queueWindow.total = 0;
     nodes = {}; rootIds = []; selectedFolder = null; focusedRow = 'root'; assetsLoaded = false;
     shares = []; shareError = ''; shareMenu = null; rowMenu = null;
     renaming = null; treeError = ''; newFolderName = '';
@@ -314,27 +321,71 @@
     }
   };
 
+  /* Arrivals are collected and applied together.
+
+     One request per created asset is fine when a colleague drops a file and
+     ruinous when they drop a delivery: every event cost a fetch and a scan of
+     the whole list. Ids gather for a beat; a handful are fetched one by one,
+     and anything larger is a page refresh, which is one request however many
+     landed. */
+  const ARRIVAL_WINDOW_MS = 400;
+  const ARRIVAL_FETCH_LIMIT = 5;
+  let arrivals = new Set<string>();
+  let arrivalTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const flushArrivals = async (id: string): Promise<void> => {
+    arrivalTimer = null;
+    const pending = [...arrivals];
+    arrivals = new Set();
+    if (id !== projectId || showTrash || pending.length === 0) return;
+    const known = new Set(assets.map((asset) => asset.id));
+    const fresh = pending.filter((assetId) => !known.has(assetId));
+    if (fresh.length === 0) return;
+    if (fresh.length > ARRIVAL_FETCH_LIMIT) {
+      await loadAssets(id);
+      return;
+    }
+    const landed: Asset[] = [];
+    for (const assetId of fresh) {
+      try {
+        const asset = await api<Asset>(`/api/v1/assets/${assetId}`);
+        if (id !== projectId || asset.project_id !== id) continue;
+        /* An event says an asset was created, not that it still exists. The
+           API refuses to read a trashed asset now, so this is belt and
+           braces: nothing puts a deleted row back in the list. */
+        if (asset.deleted_at) continue;
+        if (selectedFolder && asset.folder_id !== selectedFolder) continue;
+        landed.push(asset);
+      } catch {
+        /* A later refresh picks it up. */
+      }
+    }
+    if (!landed.length) return;
+    const present = new Set(assets.map((asset) => asset.id));
+    assets = [...landed.filter((asset) => !present.has(asset.id)), ...assets];
+  };
+
+  const noteArrival = (id: string, assetId: string): void => {
+    arrivals.add(assetId);
+    if (arrivalTimer) return;
+    arrivalTimer = setTimeout(() => void flushArrivals(id), ARRIVAL_WINDOW_MS);
+  };
+
   const onProjectEvent = (id: string, event: ProjectEvent): void => {
     const payload = event.payload;
+    /* A batch event names a count, not an asset: one refresh covers all of
+       them. */
+    if (
+      event.type === 'assets.created_batch' ||
+      event.type === 'asset.versions_created_batch'
+    ) {
+      if (!showTrash) void loadAssets(id);
+      return;
+    }
     const assetId = typeof payload.asset_id === 'string' ? payload.asset_id : null;
     if (!assetId) return;
     if (event.type === 'asset.created') {
-      void (async () => {
-        if (assets.some((asset) => asset.id === assetId)) return;
-        try {
-          const asset = await api<Asset>(`/api/v1/assets/${assetId}`);
-          if (id !== projectId || asset.project_id !== id) return;
-          /* An event says an asset was created, not that it still exists. The
-             API refuses to read a trashed asset now, so this is belt and
-             braces: nothing puts a deleted row back in the list. */
-          if (asset.deleted_at) return;
-          if (selectedFolder && asset.folder_id !== selectedFolder) return;
-          if (assets.some((entry) => entry.id === assetId)) return;
-          assets = [asset, ...assets];
-        } catch {
-          /* A later refresh picks it up. */
-        }
-      })();
+      noteArrival(id, assetId);
     } else if (event.type === 'version.transcode') {
       const status = typeof payload.status === 'string' ? payload.status : null;
       if (status) media.setTranscodeStatus(assetId, status);
@@ -344,6 +395,7 @@
       }
     } else if (event.type === 'asset.version_created') {
       void refreshAsset(assetId);
+
     } else if (event.type === 'version.probed') {
       const known = assets.find((asset) => asset.id === assetId);
       if (known) media.refresh(known);
@@ -355,7 +407,14 @@
     if (!id) return;
     return projectEvents(
       id,
-      ['asset.created', 'asset.version_created', 'version.transcode', 'version.probed'],
+      [
+        'asset.created',
+        'assets.created_batch',
+        'asset.version_created',
+        'asset.versions_created_batch',
+        'version.transcode',
+        'version.probed'
+      ],
       (event) => onProjectEvent(id, event)
     );
   });
@@ -1094,6 +1153,21 @@
     return list;
   });
   const displayed = $derived(view === 'grid' ? assets : sortedAssets);
+  /* One window serves both views: only one of them is mounted at a time, and
+     each measures its own cell when it appears. Pages load as the scroller
+     approaches the end rather than on a button, so a folder of any size is
+     one continuous list. */
+  const browserWindow = new Virtual({
+    scroller: 'window',
+    overscan: 2,
+    onEnd: () => {
+      if (nextCursor && !loadingMore) void loadMoreAssets();
+    }
+  });
+  $effect(() => {
+    browserWindow.total = displayed.length;
+  });
+  const browserSlice = $derived(browserWindow.slice);
 
   /* How big a card is, remembered per person. A wall of contact-sheet
      thumbnails and a wall of poster-sized ones are both right, for different
@@ -1498,10 +1572,19 @@
      it, press Upload". The URLs are revoked when the row goes, or a long
      session leaks a blob per file. */
   const previews = new Map<number, string>();
+  /* An object URL per row is a decoded picture held in memory for as long as
+     the row exists. At 3000 files that is the whole tab, so only a budget of
+     rows keeps one and the oldest are given back as the window moves on. */
+  const PREVIEW_BUDGET = 120;
   const previewFor = (key: number, file: File): string | null => {
     if (!file.type.startsWith('video/') && !file.type.startsWith('image/')) return null;
     const existing = previews.get(key);
     if (existing) return existing;
+    if (previews.size >= PREVIEW_BUDGET)
+      for (const stale of [...previews.keys()]) {
+        dropPreview(stale);
+        if (previews.size < PREVIEW_BUDGET) break;
+      }
     const url = URL.createObjectURL(file);
     previews.set(key, url);
     return url;
@@ -1529,6 +1612,9 @@
       folderId: selectedFolder
     }));
     queue = [...queue, ...additions];
+    queueWindow.total = queue.length;
+    for (const item of additions) tally.total += item.file.size;
+    tally.count = queue.length;
     /* Choosing the files is the decision; there is nothing left to confirm. */
     void pump();
   };
@@ -1601,9 +1687,19 @@
     enqueue(await filesFromDataTransfer(event.dataTransfer as DataTransfer));
   };
 
+  /* A freshly created asset joins the list in place. Newest first is the list
+     order, so it goes to the front, but only when the browser is actually
+     looking at where it landed: an upload into another folder must not appear
+     in this one. */
+  const adoptCreatedAsset = (created: Asset, folderId: string | null): void => {
+    if (showTrash) return;
+    if ((selectedFolder ?? null) !== (folderId ?? null)) return;
+    if (assets.some((asset) => asset.id === created.id)) return;
+    assets = [created, ...assets];
+  };
+
   /* Resumable upload: the session id stays on the item, so a retry reuses the
-     session, skips completed parts, and continues from the failure. Files run
-     one at a time, four parts in parallel inside each file. */
+     session, skips completed parts, and continues from the failure. */
   const uploadOne = async (item: UploadItem): Promise<void> => {
     const id = projectId;
     if (!id || item.status === 'uploading' || item.status === 'done' || item.status === 'quarantined') return;
@@ -1619,8 +1715,12 @@
           item.sessionId = session;
         },
         onProgress: (progress) => {
+          tally.bytes += progress.bytes - item.bytes;
           item.bytes = progress.bytes;
           item.rate = progress.rate;
+          if (progress.rate > 0) activeRates.set(item.key, progress.rate);
+          else activeRates.delete(item.key);
+          tally.rate = sumRates();
         }
       });
       item.sessionId = sessionId;
@@ -1632,17 +1732,29 @@
         });
         await refreshAsset(item.versionOf);
       } else {
-        await apiPost(`/api/v1/projects/${id}/assets`, {
+        /* The created row is spliced in rather than re-fetching the list.
+           Re-fetching cost a request and a full re-render per file, reset the
+           browser to page one every time, and made a large upload quadratic on
+           its own list. */
+        const created = await apiPost<Asset>(`/api/v1/projects/${id}/assets`, {
           upload_id: sessionId,
           name: item.file.name,
           ...(item.folderId ? { folder_id: item.folderId } : {})
         });
-        await loadAssets(id);
+        adoptCreatedAsset(created, item.folderId);
       }
       item.rate = 0;
+      activeRates.delete(item.key);
+      tally.bytes += item.file.size - item.bytes;
+      item.bytes = item.file.size;
+      tally.done += 1;
+      tally.rate = sumRates();
       item.status = 'done';
     } catch (caught) {
       item.rate = 0;
+      activeRates.delete(item.key);
+      tally.rate = sumRates();
+      tally.failed += 1;
       if (caught instanceof UploadQuarantinedError) {
         item.status = 'quarantined';
         item.error = caught.message;
@@ -1661,11 +1773,16 @@
     uploading = true;
     try {
       for (;;) {
-        /* Re-read the queue every pass: files dropped while this is running
-           join the same run instead of waiting for it to drain. Failed items
-           are deliberately not picked up -- an error that repeats forever is
-           not progress, so resuming stays a decision. */
-        const next = queue.find((item) => item.status === 'queued');
+        /* A cursor, not a scan. Finding the next queued row by walking the
+           list from the start cost O(n) per file, so a large drop spent more
+           time looking for work than doing it. The cursor only ever moves
+           forward; anything requeued behind it (a resume) rewinds it
+           explicitly. Failed items are deliberately not picked up: an error
+           that repeats forever is not progress, so resuming stays a
+           decision. */
+        while (pumpCursor < queue.length && queue[pumpCursor]?.status !== 'queued')
+          pumpCursor += 1;
+        const next = queue[pumpCursor];
         if (!next) break;
         await uploadOne(next);
       }
@@ -1678,6 +1795,10 @@
     if (item.status !== 'failed') return;
     item.status = 'queued';
     item.error = '';
+    tally.failed = Math.max(0, tally.failed - 1);
+    /* A resumed row sits behind the cursor, so the driver is sent back to it
+       rather than being left at the end of a drained queue. */
+    pumpCursor = 0;
     void pump();
   };
 
@@ -1688,22 +1809,45 @@
   const clearFinished = (): void => {
     for (const item of queue) if (item.status === 'done') dropPreview(item.key);
     queue = queue.filter((item) => item.status !== 'done');
+    queueWindow.total = queue.length;
+    pumpCursor = 0;
+    recountQueue();
   };
 
-  const failedCount = $derived(queue.filter((item) => item.status === 'failed').length);
-  const overall = $derived.by(() => {
+  /* Running totals, not a scan.
+
+     These used to be derived by walking the whole queue, which is fine for a
+     dozen files and quadratic for a delivery: a progress event fires several
+     times a second per file in flight, and each one walked every row. The
+     counters are maintained as rows change state instead, and the only full
+     pass left is the one after a bulk edit (clearing finished, leaving the
+     project), which happens once. */
+  let tally = $state({ count: 0, total: 0, bytes: 0, rate: 0, done: 0, failed: 0 });
+  /* Transfer rate is summed over the files actually moving, which is bounded
+     by the upload concurrency however long the queue is. */
+  const activeRates = new Map<number, number>();
+  const sumRates = (): number => {
+    let rate = 0;
+    for (const value of activeRates.values()) rate += value;
+    return rate;
+  };
+  const recountQueue = (): void => {
     let total = 0;
     let bytes = 0;
-    let rate = 0;
     let done = 0;
+    let failed = 0;
+    activeRates.clear();
     for (const item of queue) {
       total += item.file.size;
       bytes += item.status === 'done' ? item.file.size : item.bytes;
-      if (item.status === 'uploading') rate += item.rate;
       if (item.status === 'done') done += 1;
+      if (item.status === 'failed' || item.status === 'quarantined') failed += 1;
+      if (item.status === 'uploading' && item.rate > 0) activeRates.set(item.key, item.rate);
     }
-    return { total, bytes, rate, done, count: queue.length };
-  });
+    tally = { count: queue.length, total, bytes, rate: sumRates(), done, failed };
+  };
+  const failedCount = $derived(tally.failed);
+  const overall = $derived(tally);
   const versionOptions = $derived(assets.map((asset) => ({ id: asset.id, name: asset.name })));
 </script>
 
@@ -2040,10 +2184,19 @@
             </p>
           {/if}
           {#if queue.length > 0}
-            <ul class="queue" aria-label="Upload queue">
-              {#each queue as item (item.key)}
+            <!-- Windowed: a folder of 3000 stills is 3000 rows, each with a
+                 decoded preview and an object URL behind it, and rendering
+                 them all is what actually kills the tab. The list scrolls
+                 itself so the page below stays reachable. -->
+            <ul
+              class="queue"
+              aria-label="Upload queue"
+              use:queueWindow.container
+              style={`padding-top: ${String(queueSlice.padTop)}px; padding-bottom: ${String(queueSlice.padBottom)}px;`}
+            >
+              {#each queue.slice(queueSlice.start, queueSlice.end) as item (item.key)}
                 {@const preview = previewFor(item.key, item.file)}
-                <li class={`q-${item.status}`}>
+                <li class={`q-${item.status}`} data-virtual-item use:queueWindow.probe>
                   <span class="qthumb" aria-hidden="true">
                     {#if preview && item.file.type.startsWith('video/')}
                       <!-- preload=metadata is enough for a first frame, and does
@@ -2245,14 +2398,19 @@
         {:else if displayed.length === 0}
           <p class="empty">{selectedFolder ? 'No assets in this folder. Drop media above to fill it.' : 'No assets yet. Upload media to start a review.'}</p>
         {:else if view === 'grid'}
+          <!-- Windowed on the page's own scroll: a folder can hold a whole
+               delivery, and only what is near the viewport is built. The
+               padding stands in for the rows above and below, so the
+               scrollbar stays honest. -->
           <div
             class="grid"
             role="listbox"
             aria-multiselectable="true"
             aria-label="Assets"
-            style={`--card: ${String(cardSize)}px;`}
+            use:browserWindow.container
+            style={`--card: ${String(cardSize)}px; padding-top: ${String(browserSlice.padTop)}px; padding-bottom: ${String(browserSlice.padBottom)}px;`}
           >
-            {#each displayed as asset (asset.id)}
+            {#each displayed.slice(browserSlice.start, browserSlice.end) as asset (asset.id)}
               {@const entry = media.entries[asset.id]}
               {@const detail = entry?.media}
               <div
@@ -2262,6 +2420,8 @@
                 aria-selected={isSelected(asset.id)}
                 tabindex="0"
                 draggable="true"
+                data-virtual-item
+                use:browserWindow.probe
                 use:observeMedia={asset}
                 ondragstart={(event) => beginAssetDrag(event, asset.id)}
                 ondragend={() => { draggingAssets = null; dropTarget = null; }}
@@ -2326,14 +2486,19 @@
                 {@render sortHeader('updated_at', 'Updated')}
               </tr>
             </thead>
-            <tbody>
-              {#each displayed as asset (asset.id)}
+            <tbody use:browserWindow.container>
+              {#if browserSlice.padTop > 0}
+                <tr aria-hidden="true" style={`height: ${String(browserSlice.padTop)}px;`}></tr>
+              {/if}
+              {#each displayed.slice(browserSlice.start, browserSlice.end) as asset (asset.id)}
                 {@const entry = media.entries[asset.id]}
                 {@const detail = entry?.media}
                 <tr
                   class:picked={isSelected(asset.id)}
                   tabindex="0"
                   draggable="true"
+                  data-virtual-item
+                  use:browserWindow.probe
                   use:observeMedia={asset}
                   ondragstart={(event) => beginAssetDrag(event, asset.id)}
                   ondragend={() => { draggingAssets = null; dropTarget = null; }}
@@ -2389,6 +2554,9 @@
                   <td class="tc" title={whenAbsolute(asset.updated_at)}>{whenRelative(asset.updated_at)}</td>
                 </tr>
               {/each}
+              {#if browserSlice.padBottom > 0}
+                <tr aria-hidden="true" style={`height: ${String(browserSlice.padBottom)}px;`}></tr>
+              {/if}
             </tbody>
           </table>
           </div>
@@ -2729,7 +2897,10 @@
   button.quiet:hover { background: var(--ink-300); }
   button.danger { color: var(--warn); }
   .summary { margin: 12px 0 0; color: var(--ink-text-dim); font-variant-numeric: tabular-nums; }
-  .queue { list-style: none; margin: var(--pad) 0 0; padding: 0; display: grid; gap: 2px; }
+  /* Its own scroller so the window above can measure it, and so a delivery of
+     several thousand files does not push the browser off the bottom of the
+     page. */
+  .queue { list-style: none; margin: var(--pad) 0 0; padding: 0; display: grid; gap: 2px; max-height: 52vh; overflow-y: auto; overscroll-behavior: contain; }
   .queue li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--radius); background: var(--ink-100); }
   .qname { flex: 1; min-width: 160px; font-weight: 500; display: grid; gap: 2px; }
   .qpath { color: var(--ink-text-dim); font-size: var(--text-13); font-weight: 400; overflow-wrap: anywhere; }

@@ -565,6 +565,18 @@
     return key ? mediaPath(key) : null;
   };
 
+  /* The picture a still is reviewed from, best first. still_review is the
+     2048 WebP the ladder makes now; still_tiles is the retired 4096 PNG that
+     versions transcoded before it still carry. */
+  const STILL_KINDS = ['still_review', 'still_tiles'];
+  const pickStill = (items: Rendition[]): Rendition | undefined => {
+    for (const kind of STILL_KINDS) {
+      const found = items.find((candidate) => candidate.kind === kind);
+      if (found) return found;
+    }
+    return undefined;
+  };
+
   const rememberVersionNos = (items: Comment[], versionNo: number): void => {
     for (const comment of items) versionNoByComment[comment.id] = versionNo;
   };
@@ -625,7 +637,7 @@
         items.find((candidate) => candidate.kind === 'proxy_audio') ??
         items.find((candidate) => candidate.kind.startsWith('proxy_'));
       source = (rendition && urlForRendition(rendition)) || '';
-      const still = items.find((candidate) => candidate.kind === 'still_tiles');
+      const still = pickStill(items);
       stillUrl = still ? urlForRendition(still) : null;
       const poster = items.find((candidate) => candidate.kind === 'poster');
       posterUrl = poster ? urlForRendition(poster) : null;
@@ -743,7 +755,7 @@
         `/api/v1/versions/${previous.id}/renditions`
       );
       if (token !== versionToken) return;
-      const still = listing.items.find((candidate) => candidate.kind === 'still_tiles');
+      const still = pickStill(listing.items);
       stillPrevUrl = still ? urlForRendition(still) : null;
     } catch {
       /* No A/B for this version; the viewer simply does not offer it. */

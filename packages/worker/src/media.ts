@@ -1,19 +1,26 @@
 import { spawn } from "node:child_process";
 import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { cpus, setPriority } from "node:os";
+import { cpus } from "node:os";
 import path from "node:path";
 import { encodePeaks } from "@onelight/core";
 import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
 import { ALL_FORMATS, FilePathSource, Input } from "mediabunny";
+import { PROCESS_IDLE_TIMEOUT_MS, runProcess } from "./run-process.js";
+import {
+  STILL_LADDER,
+  describeStillFile,
+  isStillSource,
+  renderStillRung,
+} from "./stills.js";
+import type { StillRung } from "./stills.js";
+
+/* Re-exported so @onelight/worker keeps one entry point for its callers. */
+export { runProcess } from "./run-process.js";
+export type { ProcessResult } from "./run-process.js";
 
 export interface ProbeDocument {
   format?: Record<string, unknown>;
   streams?: Array<Record<string, unknown>>;
-}
-
-export interface ProcessResult {
-  stdout: string;
-  stderr: string;
 }
 
 export interface NormalizedMediaInfo extends MediaInfo {
@@ -271,94 +278,6 @@ export const probeArgs = (source: string): string[] => [
   "-show_streams",
   source,
 ];
-
-/* An ffmpeg/ffprobe with no output for this long is treated as hung and
-   killed. ffmpeg prints progress to stderr continuously while it works and a
-   probe finishes in well under this, so only a genuinely stuck process (filter
-   deadlock, unterminated probe) goes silent long enough to trip it. Without
-   it, a hung child pins its job 'processing' forever, the pump's 6h deadline
-   requeues it into a worker that still reports 409, and each of the retries
-   burns another 6h against the same wedged process while it pegs a core. */
-const PROCESS_IDLE_TIMEOUT_MS = 5 * 60_000;
-
-/*
- * Lowering a child's scheduling priority is the only thing that actually
- * protects the site, and it is worth being precise about why: capping encoder
- * threads does NOT bound what the process takes. Measured on the real 4K HDR
- * job, `lp=2` still averaged 3.3 of four cores, because the decode and filter
- * threads are not the encoder's to cap. Niceness needs no such bookkeeping --
- * an idle box still gives the rendition everything going spare, and the moment
- * a request arrives the request wins.
- */
-export const runProcess = (
-  command: string,
-  args: string[],
-  cwd?: string,
-  idleTimeoutMs = PROCESS_IDLE_TIMEOUT_MS,
-  niceness?: number,
-): Promise<ProcessResult> =>
-  new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    if (niceness !== undefined && child.pid !== undefined)
-      try {
-        setPriority(child.pid, niceness);
-      } catch {
-        /* Priority is an optimisation, not a requirement: a platform or a
-           sandbox that refuses it must not fail the transcode. */
-      }
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let timedOut = false;
-    let idle: ReturnType<typeof setTimeout>;
-    const arm = (): void => {
-      clearTimeout(idle);
-      idle = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGKILL");
-      }, idleTimeoutMs);
-    };
-    const settle = (): void => clearTimeout(idle);
-    arm();
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout.push(chunk);
-      arm();
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr.push(chunk);
-      arm();
-    });
-    child.once("error", (error) => {
-      settle();
-      reject(error);
-    });
-    child.once("close", (code) => {
-      settle();
-      if (timedOut) {
-        reject(
-          new Error(
-            `${command} was killed after ${String(
-              Math.round(idleTimeoutMs / 1000),
-            )}s without output (treated as hung).`,
-          ),
-        );
-        return;
-      }
-      const result = {
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: Buffer.concat(stderr).toString("utf8"),
-      };
-      if (code === 0) resolve(result);
-      else
-        reject(
-          new Error(
-            `${command} exited with ${code}: ${result.stderr.slice(-4000)}`,
-          ),
-        );
-    });
-  });
 
 export const probeFile = async (
   source: string,
@@ -2237,7 +2156,11 @@ export const primaryRenditionKinds = (assetKind: string): string[] =>
   assetKind === "audio"
     ? ["proxy_audio", "audio_peaks"]
     : assetKind === "image"
-      ? ["still_tiles", "poster"]
+      ? /* still_tiles stays in the list although nothing produces it any
+           more: a version transcoded before the stills ladder existed is a
+           picture you can still open, and must not be made unready by a
+           change to how the next one is rendered. */
+        ["still_review", "poster", "still_tiles"]
       : assetKind === "pdf"
         ? ["pdf_pages"]
         : ["proxy_1080"];
@@ -2258,11 +2181,15 @@ export const planRenditions = (
       { kind: "spectrogram", filename: "spectrogram.png" },
       { kind: "poster", filename: "poster.png" },
     ];
+  /* Stills get the ladder in stills.ts, not an ffmpeg recipe. The old plan
+     made a 4096-wide PNG (14 MB was ordinary) and served it as both the grid
+     tile and the review picture, and its poster silently produced nothing at
+     all on a JPEG source. See stills.ts for why sharp renders these. */
   if (assetKind === "image")
-    return [
-      { kind: "still_tiles", filename: "still_tiles.png" },
-      { kind: "poster", filename: "poster.png" },
-    ];
+    return STILL_LADDER.map((rung) => ({
+      kind: rung.kind,
+      filename: rung.filename,
+    }));
   if (assetKind === "pdf")
     return [{ kind: "pdf_pages", filename: "pages/page" }];
   if (assetKind !== "video") return [];
@@ -2306,6 +2233,17 @@ export const planRenditions = (
     );
   return planned;
 };
+
+/* Which ladder rung an output is, or nothing if this job is not a still. The
+   source's own extension decides: a poster means one thing for a photograph
+   and another for a movie, and only the filename can tell them apart here. */
+export const stillRungFor = (
+  sourceKey: string,
+  outputKind: string,
+): StillRung | undefined =>
+  isStillSource(sourceKey)
+    ? STILL_LADDER.find((rung) => rung.kind === outputKind)
+    : undefined;
 
 const fileReady = async (file: string): Promise<boolean> => {
   try {
@@ -2412,6 +2350,22 @@ export const runTranscode = async (
           kind: output.kind,
           key: path.join(directory, pages[0] as string),
           meta: { page_count: pages.length, pages },
+        });
+        continue;
+      }
+      /* A still is rendered, not encoded: sharp reads the orientation and the
+         colour profile that ffmpeg cannot, and for a PSD, an EXR or a DPX it
+         is handed an ffmpeg decode first. Same reuse and rename contract as
+         every other output. */
+      const rung = stillRungFor(job.sourceKey, output.kind);
+      if (rung) {
+        const meta = (await fileReady(output.path))
+          ? await describeStillFile(output.path, rung)
+          : await renderStillRung(job.sourceKey, output.path, rung, { ffmpeg });
+        renditions.push({
+          kind: output.kind,
+          key: output.path,
+          meta: { ...meta },
         });
         continue;
       }

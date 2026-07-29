@@ -452,7 +452,12 @@ export const renditions = sqliteTable(
         "sprite",
         "poster",
         "pdf_pages",
+        /* The stills ladder (migration 0028). still_tiles is the retired
+           4096-wide PNG that used to be both the tile and the review file;
+           nothing produces it now and versions that have one still read. */
         "still_tiles",
+        "still_review",
+        "still_full",
         "watermarked",
       ],
     }).notNull(),

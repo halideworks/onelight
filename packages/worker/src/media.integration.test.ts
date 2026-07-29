@@ -5,15 +5,17 @@
    Skipped where no ffmpeg is on PATH so a bare dev box does not fail the run;
    they do run in the worker image, which is where the suite executes on nyx. */
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   exactWebCodecString,
   extractStill,
+  planRenditions,
   probeFile,
   runProcess,
+  runTranscode,
 } from "./media.js";
 
 const ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg";
@@ -102,5 +104,99 @@ describe.skipIf(!hasFfmpeg)("media integration (real ffmpeg)", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  /* The stills ladder through the same entry point the pump calls, on the two
+     source families that reach it by different routes: a JPEG that sharp opens
+     directly, and a PSD that only ffmpeg can decode. Before this, a JPEG's
+     poster was silently never written at all. */
+  const stillRoundTrip = async (
+    name: string,
+    make: (file: string) => Promise<void>,
+  ): Promise<void> => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "onelight-still-"));
+    try {
+      const source = path.join(dir, name);
+      await make(source);
+      const info = await probeFile(source);
+      const planned = planRenditions("image", info);
+      expect(planned.map((entry) => entry.kind)).toEqual([
+        "poster",
+        "still_review",
+      ]);
+      const outputs = planned.map((entry) => ({
+        kind: entry.kind,
+        path: path.join(dir, "renditions", entry.filename),
+      }));
+      const result = await runTranscode(
+        {
+          id: "job",
+          sourceKey: source,
+          outputs: outputs.map((output) => ({
+            kind: output.kind,
+            key: output.path,
+          })),
+          mediaInfo: info,
+        },
+        outputs,
+      );
+      expect(result.failures).toEqual([]);
+      expect(
+        result.renditions.map((rendition) => rendition.kind).sort(),
+      ).toEqual(["poster", "still_review"]);
+      for (const output of outputs)
+        expect((await stat(output.path)).size).toBeGreaterThan(0);
+      /* The intermediate ffmpeg decode a PSD needs must not be left in the
+         rendition directory: nothing references it and the GC would keep it
+         forever. */
+      const stray = await readdir(path.join(dir, "renditions"));
+      expect(stray.filter((entry) => entry.startsWith("."))).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("renders the ladder for a JPEG source", async () => {
+    await stillRoundTrip("frame.jpg", async (file) => {
+      await runProcess(ffmpeg, [
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=1600x1000:d=1",
+        "-frames:v",
+        "1",
+        "-y",
+        file,
+      ]);
+    });
+  });
+
+  it("renders the ladder for a PSD source", async () => {
+    await stillRoundTrip("layered.psd", async (file) => {
+      const width = 320;
+      const height = 200;
+      const header = Buffer.concat([
+        Buffer.from("8BPS", "ascii"),
+        Buffer.from([0, 1]),
+        Buffer.alloc(6),
+        Buffer.from([0, 3]),
+        (() => {
+          const value = Buffer.alloc(4);
+          value.writeUInt32BE(height);
+          return value;
+        })(),
+        (() => {
+          const value = Buffer.alloc(4);
+          value.writeUInt32BE(width);
+          return value;
+        })(),
+        Buffer.from([0, 8]),
+        Buffer.from([0, 3]),
+        Buffer.alloc(12),
+        Buffer.from([0, 0]),
+      ]);
+      const plane = Buffer.alloc(width * height, 180);
+      await writeFile(file, Buffer.concat([header, plane, plane, plane]));
+    });
   });
 });

@@ -103,8 +103,10 @@ import {
   clientIp,
   commentCursorParam,
   cursorParam,
+  decodeShareCursor,
   encodeCommentCursor,
   encodeCursor,
+  encodeShareCursor,
   encodeSearchCursor,
   extractHashtags,
   getLimit,
@@ -1304,7 +1306,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
      accepting one would set a cover that silently never appears. This list
      matches what blobContentType can actually label. */
   const isImageFilename = (filename: string): boolean =>
-    ["png", "jpg", "jpeg", "webp", "gif"].includes(
+    ["png", "jpg", "jpeg", "webp", "gif", "avif"].includes(
       filename.toLowerCase().split(".").pop() ?? "",
     );
 
@@ -1324,10 +1326,28 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       )
     )
       return "audio";
+    /* What the stills pipeline can render, and nothing else: a file that
+       lands as "image" and cannot be decoded is a card with no picture, which
+       is worse than an honest "file". sharp reads the first group directly;
+       ffmpeg decodes psd, exr and dpx for it (see packages/worker/stills.ts).
+       RAW and HEIC are absent on purpose: this image carries no decoder for
+       either, so they stay files until one is added. */
     if (
-      ["jpg", "jpeg", "png", "tif", "tiff", "webp", "exr", "dpx"].includes(
-        extension ?? "",
-      )
+      [
+        "jpg",
+        "jpeg",
+        "jpe",
+        "jfif",
+        "png",
+        "tif",
+        "tiff",
+        "webp",
+        "gif",
+        "avif",
+        "psd",
+        "exr",
+        "dpx",
+      ].includes(extension ?? "")
     )
       return "image";
     if (extension === "pdf") return "pdf";
@@ -5835,7 +5855,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     blobKey: string,
   ): Promise<void> => {
     if (payload.disposition !== undefined) throw errors.unauthorized();
-    const projection = await publicShare(c, share);
+    const projection = await publicShare(c, share, { assetId });
     if (!projection.viewer) throw errors.unauthorized();
     const asset = projection.assets.find(
       (candidate: PublicShareAsset) =>
@@ -6032,6 +6052,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     audio_peaks: "image/png",
     spectrogram: "image/png",
     still_tiles: "image/png",
+    /* The stills ladder writes its own content_type into the rendition meta,
+       which wins over this table; these are the fallbacks for a row written
+       before that meta existed. */
+    still_review: "image/webp",
+    still_full: "image/webp",
     /* Peak data is a binary sidecar the player fetches and parses, not
        anything a browser renders on its own. */
     waveform_data: "application/octet-stream",
@@ -6049,6 +6074,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     jpeg: "image/jpeg",
     webp: "image/webp",
     gif: "image/gif",
+    avif: "image/avif",
     pdf: "application/pdf",
     vtt: "text/vtt",
   };
@@ -7008,28 +7034,80 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
 
   type PublicShareAsset = typeof assets.$inferSelect & { sort_order: number };
 
+  /* A share's assets, gated by the same passphrase check every share endpoint
+     makes.
+
+     Three shapes, because a share can hold a whole delivery and reading all of
+     it to answer one question does not scale:
+
+       assetId  one row, for the endpoints that already knew which asset they
+                wanted and used to scan the whole share to find it
+       versionId  the shared asset a comment belongs to, for the same reason
+       limit    a page, for the room's own listing
+       neither  everything, for the archive builder, which genuinely needs it
+
+     The room's first payload and its paging both go through `limit`, so a
+     share of any size opens at the speed of its first screen. */
+  const SHARE_ASSET_PAGE = 200;
+  /* An id no asset can have, for the endpoints that want the passphrase check
+     and nothing else. */
+  const NO_ASSET = "-";
   const publicShare = async (
     c: Context<{ Variables: Variables }>,
     share: typeof shares.$inferSelect,
+    options: {
+      assetId?: string | undefined;
+      /** The shared asset whose current version this is, for the endpoints
+          that hold a comment and must prove the share exposes it. */
+      versionId?: string | undefined;
+      limit?: number | undefined;
+      cursor?: string | undefined;
+    } = {},
   ) => {
     const viewer = await viewerFor(c, share);
     if (share.passphraseHash && !viewer) throw errors.unauthorized();
-    const links = await env.db
+    const cursor = options.cursor ? decodeShareCursor(options.cursor) : null;
+    const rows = await env.db
       .select({ asset: assets, link: shareAssets })
       .from(shareAssets)
       .innerJoin(assets, eq(shareAssets.assetId, assets.id))
-      .where(and(eq(shareAssets.shareId, share.id), isNull(assets.deletedAt)))
-      .orderBy(asc(shareAssets.sortOrder))
+      .where(
+        and(
+          eq(shareAssets.shareId, share.id),
+          isNull(assets.deletedAt),
+          options.assetId ? eq(assets.id, options.assetId) : undefined,
+          options.versionId
+            ? eq(assets.currentVersionId, options.versionId)
+            : undefined,
+          cursor
+            ? or(
+                gt(shareAssets.sortOrder, cursor.sortOrder),
+                and(
+                  eq(shareAssets.sortOrder, cursor.sortOrder),
+                  gt(shareAssets.assetId, cursor.assetId),
+                ),
+              )
+            : undefined,
+        ),
+      )
+      .orderBy(asc(shareAssets.sortOrder), asc(shareAssets.assetId))
+      .limit(options.limit ? options.limit + 1 : -1)
       .all();
+    const page = options.limit ? rows.slice(0, options.limit) : rows;
+    const last = page[page.length - 1];
     return {
       share,
       viewer,
-      assets: links.map(
+      assets: page.map(
         (link: {
           asset: typeof assets.$inferSelect;
           link: typeof shareAssets.$inferSelect;
         }) => ({ ...link.asset, sort_order: link.link.sortOrder }),
       ),
+      nextCursor:
+        options.limit && rows.length > options.limit && last
+          ? encodeShareCursor(last.link.sortOrder, last.asset.id)
+          : null,
     };
   };
 
@@ -7040,6 +7118,19 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   // share also has no reason to spend a request per tile. Poster pixels follow
   // the sidecar policy in the asset detail below: thumbnail-scale frames are
   // exposed even on a watermarked share, whose sprite already carries them.
+  /* What stands in for a poster, best first. Wherever a tile is drawn this is
+     the order it is looked for, so an asset with any rendered picture at all
+     shows one. */
+  const POSTER_FALLBACK_KINDS = [
+    "poster",
+    "still_review",
+    "still_tiles",
+  ] as const;
+  const posterRank = (kind: string): number => {
+    const index = (POSTER_FALLBACK_KINDS as readonly string[]).indexOf(kind);
+    return index === -1 ? POSTER_FALLBACK_KINDS.length : index;
+  };
+
   const posterUrlsFor = async (
     share: typeof shares.$inferSelect,
     shareAssets: PublicShareAsset[],
@@ -7073,15 +7164,26 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .where(
         and(
           inArray(renditions.versionId, versionIds),
-          inArray(renditions.kind, ["poster", "sprite"]),
+          inArray(renditions.kind, [...POSTER_FALLBACK_KINDS, "sprite"]),
           isNull(renditions.shareId),
         ),
       )
       .all()) as Array<typeof renditions.$inferSelect>;
     const postersBy = new Map<string, typeof renditions.$inferSelect>();
     const spritesBy = new Map<string, typeof renditions.$inferSelect>();
-    for (const row of sidecarRows)
-      (row.kind === "poster" ? postersBy : spritesBy).set(row.versionId, row);
+    for (const row of sidecarRows) {
+      if (row.kind === "sprite") {
+        spritesBy.set(row.versionId, row);
+        continue;
+      }
+      /* Poster first, then the stills ladder's other rungs in order. A
+         library part way through the ladder migration has image versions
+         whose poster is missing (every JPEG made before it, whose poster
+         ffmpeg silently never wrote) and whose only picture is a still. */
+      const current = postersBy.get(row.versionId);
+      if (!current || posterRank(row.kind) < posterRank(current.kind))
+        postersBy.set(row.versionId, row);
+    }
     for (const asset of shareAssets) {
       const versionId = asset.currentVersionId;
       if (!versionId) continue;
@@ -7181,10 +7283,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     share: typeof shares.$inferSelect;
     viewer: typeof shareViewers.$inferSelect | undefined;
     assets: PublicShareAsset[];
+    nextCursor?: string | null;
   }) => ({
     share: publicShareWire(projection.share),
     viewer: projection.viewer ? publicViewerWire(projection.viewer) : null,
     assets: await publicShareAssetsWire(projection.share, projection.assets),
+    next_cursor: projection.nextCursor ?? null,
   });
 
   /* The share's logo, public by the slug's secrecy like the page itself:
@@ -7298,10 +7402,17 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     });
   });
 
+  /* The room opens on its first page and asks for the rest as the viewer
+     scrolls. A share can hold an entire delivery; sending all of it in the
+     first payload, and drawing all of it, is what a room of that size cannot
+     survive. next_cursor is null when there is no more, which is what every
+     existing client sees on an ordinary share. */
   api.get("/s/:slug", async (c) =>
     c.json(
       await publicShareResponse(
-        await publicShare(c, await shareBySlug(c.req.param("slug"))),
+        await publicShare(c, await shareBySlug(c.req.param("slug")), {
+          limit: SHARE_ASSET_PAGE,
+        }),
       ),
     ),
   );
@@ -7310,10 +7421,18 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const projection = await publicShare(
       c,
       await shareBySlug(c.req.param("slug")),
+      {
+        limit: Math.min(
+          SHARE_ASSET_PAGE,
+          getLimit(c.req.query("limit")) || SHARE_ASSET_PAGE,
+        ),
+        ...(c.req.query("cursor") ? { cursor: c.req.query("cursor") } : {}),
+      },
     );
     if (!projection.viewer) throw errors.unauthorized();
     return c.json({
       items: await publicShareAssetsWire(projection.share, projection.assets),
+      next_cursor: projection.nextCursor,
     });
   });
 
@@ -7321,6 +7440,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const projection = await publicShare(
       c,
       await shareBySlug(c.req.param("slug")),
+      { assetId: c.req.param("assetId") },
     );
     if (!projection.viewer) throw errors.unauthorized();
     const asset = projection.assets.find(
@@ -7579,6 +7699,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const projection = await publicShare(
       c,
       await shareBySlug(c.req.param("slug")),
+      { assetId: c.req.param("assetId") },
     );
     if (!projection.viewer) throw errors.unauthorized();
     const asset = projection.assets.find(
@@ -7660,6 +7781,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const projection = await publicShare(
       c,
       await shareBySlug(c.req.param("slug")),
+      { assetId: c.req.param("assetId") },
     );
     if (!projection.viewer) throw errors.unauthorized();
     const asset = projection.assets.find(
@@ -7697,7 +7819,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       throw errors.forbidden("Comments are disabled for this share.");
     const ip = clientIp(c, env);
     await hitRateLimit(`share_comment:${share.id}:${ip}`, 30, 5 * 60 * 1000);
-    const projection = await publicShare(c, share);
+    const projection = await publicShare(c, share, {
+      assetId: c.req.param("assetId"),
+    });
     if (!projection.viewer || !projection.viewer.viewerKey)
       throw errors.unauthorized();
     const asset = projection.assets.find(
@@ -7791,7 +7915,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     commentId: string,
   ) => {
     const share = await shareBySlug(slug);
-    const projection = await publicShare(c, share);
+    /* The gate only: this endpoint never looks at the listing, and reading a
+       whole delivery to check a passphrase is what made a big share slow. */
+    const projection = await publicShare(c, share, { assetId: NO_ASSET });
     if (!projection.viewer) throw errors.unauthorized();
     const comment = (
       await env.db
@@ -7903,10 +8029,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.get(
     "/s/:slug/comments/:commentId/attachments/:attachmentId",
     async (c) => {
-      const projection = await publicShare(
-        c,
-        await shareBySlug(c.req.param("slug")),
-      );
+      const share = await shareBySlug(c.req.param("slug"));
+      /* The gate only; the shared asset is looked up by the comment's version
+         below, rather than by reading the whole share. */
+      const projection = await publicShare(c, share, { assetId: NO_ASSET });
       if (!projection.viewer) throw errors.unauthorized();
       const comment = (
         await env.db
@@ -7923,10 +8049,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           .all()
       )[0];
       if (!comment) throw errors.notFound();
-      const asset = projection.assets.find(
-        (candidate: typeof assets.$inferSelect & { sort_order: number }) =>
-          candidate.currentVersionId === comment.versionId,
-      );
+      const asset = (
+        await publicShare(c, share, { versionId: comment.versionId })
+      ).assets[0];
       if (!asset) throw errors.notFound();
       const attachment = (
         await env.db
@@ -7990,7 +8115,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const share = await shareBySlug(c.req.param("slug"));
     if (!share.allowComments)
       throw errors.forbidden("Comments are disabled for this share.");
-    const projection = await publicShare(c, share);
+    /* The gate only: this endpoint never looks at the listing, and reading a
+       whole delivery to check a passphrase is what made a big share slow. */
+    const projection = await publicShare(c, share, { assetId: NO_ASSET });
     if (!projection.viewer) throw errors.unauthorized();
     await hitRateLimit(
       `share_comment:${share.id}:${clientIp(c, env)}`,
@@ -8014,10 +8141,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     // The parent must be a comment this share exposes: on the current
     // version of one of the shared assets and not internal. Without this
     // check a share viewer could reply to any comment in the database.
-    const parentAsset = projection.assets.find(
-      (candidate: PublicShareAsset) =>
-        candidate.currentVersionId === parent.versionId,
-    );
+    const parentAsset = (
+      await publicShare(c, share, { versionId: parent.versionId })
+    ).assets[0];
     if (!parentAsset || parent.internal)
       throw errors.notFound("Comment was not found.");
     if (parent.parentId) throw errors.validation("Replies cannot be nested.");
@@ -8093,7 +8219,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const share = await shareBySlug(c.req.param("slug"));
     if (!share.allowApprovals)
       throw errors.forbidden("This share does not take approval decisions.");
-    const projection = await publicShare(c, share);
+    /* The gate only: this endpoint never looks at the listing, and reading a
+       whole delivery to check a passphrase is what made a big share slow. */
+    const projection = await publicShare(c, share, { assetId: NO_ASSET });
     if (!projection.viewer) throw errors.unauthorized();
     await hitRateLimit(
       `share_approval:${share.id}:${clientIp(c, env)}`,
@@ -8101,9 +8229,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       5 * 60 * 1000,
     );
     const body = await jsonBody(c, bodies.shareApprovalPatch);
-    const asset = projection.assets.find(
-      (candidate: PublicShareAsset) => candidate.id === body.asset_id,
-    );
+    const asset = (await publicShare(c, share, { assetId: body.asset_id }))
+      .assets[0];
     if (!asset) throw errors.notFound();
     const changed = await env.db
       .update(assets)
@@ -8127,6 +8254,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const projection = await publicShare(
       c,
       await shareBySlug(c.req.param("slug")),
+      { assetId: c.req.param("assetId") },
     );
     if (!projection.viewer) throw errors.unauthorized();
     const asset = projection.assets.find(
@@ -8155,10 +8283,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         expires_at: env.clock.now() + 15 * 60 * 1000,
       });
     }
-    /* Video serves the review proxy; a still has no proxy and serves its
-       full-resolution tile instead. Without this, image assets in a share
-       answered 404 forever. Audio serves its own proxy for the same reason:
-       the original may be a 24-bit WAV no browser will play. */
+    /* Video serves the review proxy; a still serves the review rung of its
+       ladder. Without this, image assets in a share answered 404 forever.
+       Audio serves its own proxy for the same reason: the original may be a
+       24-bit WAV no browser will play, exactly as a TIFF or a PSD is not
+       something a browser will draw. */
     const renditionRows = (await env.db
       .select()
       .from(renditions)
@@ -8168,6 +8297,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           inArray(renditions.kind, [
             "proxy_1080",
             "proxy_audio",
+            "still_review",
             "still_tiles",
           ]),
           isNull(renditions.shareId),
@@ -8177,15 +8307,18 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     /* Preference by asset kind, not by a fixed order: an audio asset must
        never be handed a still, and a video whose peaks landed first must not
        be handed anything but its proxy. */
-    const preferredKind =
+    const preferredKinds =
       asset.kind === "audio"
-        ? "proxy_audio"
+        ? ["proxy_audio"]
         : asset.kind === "image"
-          ? "still_tiles"
-          : "proxy_1080";
+          ? /* The 2048 review still, or the retired 4096 tile for a version
+               transcoded before the stills ladder. */
+            ["still_review", "still_tiles"]
+          : ["proxy_1080"];
     const rendition =
-      renditionRows.find((row) => row.kind === preferredKind) ??
-      renditionRows[0];
+      preferredKinds
+        .map((kind) => renditionRows.find((row) => row.kind === kind))
+        .find(Boolean) ?? renditionRows[0];
     if (!rendition) throw errors.notFound("A review rendition is not ready.");
     return c.json({
       url: await publicMediaUrl(
@@ -8205,6 +8338,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const projection = await publicShare(
       c,
       await shareBySlug(c.req.param("slug")),
+      { assetId: c.req.param("assetId") },
     );
     if (!projection.viewer) throw errors.unauthorized();
     const asset = projection.assets.find(
@@ -10336,7 +10470,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           .where(
             and(
               inArray(renditions.versionId, currentIds),
-              inArray(renditions.kind, ["poster", "sprite"]),
+              inArray(renditions.kind, [...POSTER_FALLBACK_KINDS, "sprite"]),
               /* The base renditions index is partial (WHERE share_id IS NULL);
                  without this predicate the planner cannot use it and falls to
                  a full scan on the hottest path there is. Poster and sprite
@@ -10359,7 +10493,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const mediaFor = async (asset: typeof assets.$inferSelect) => {
       const current = currentOf(asset);
       const kinds = current ? (renditionsByVersion.get(current.id) ?? []) : [];
-      const poster = kinds.find((rendition) => rendition.kind === "poster");
+      /* Same fallback order as the share room: poster, then whichever still
+         rung exists. A JPEG uploaded before the stills ladder has no poster
+         at all and would otherwise be a blank card. */
+      const poster = kinds
+        .filter((rendition) => rendition.kind !== "sprite")
+        .sort(
+          (left, right) => posterRank(left.kind) - posterRank(right.kind),
+        )[0];
       const sprite = kinds.find((rendition) => rendition.kind === "sprite");
       const spriteMeta = sprite ? parseJsonObject(sprite.metaJson) : {};
       const vttKey =

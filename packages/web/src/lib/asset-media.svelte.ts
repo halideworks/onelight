@@ -43,6 +43,10 @@ interface ObservedAsset {
 
 const CONCURRENCY = 6;
 
+/* What stands in for a poster, best first; the same order the API uses when
+   it inlines poster_url into a list payload. */
+const POSTER_KINDS = ["poster", "still_review", "still_tiles"];
+
 export interface MediaCache {
   readonly entries: Record<string, MediaEntry>;
   request: (asset: ObservedAsset) => void;
@@ -89,13 +93,23 @@ export const createMediaCache = (): MediaCache => {
       if (current) {
         try {
           const renditions = (await listRenditions(current.id)).items;
-          for (const rendition of renditions) {
-            if (rendition.kind === "poster") posterUrl = rendition.url;
+          /* Poster first, then whichever rung of the stills ladder exists: a
+             JPEG uploaded before the ladder has no poster at all, and one
+             transcoded before it has only the retired still_tiles PNG. */
+          for (const kind of POSTER_KINDS) {
+            const found = renditions.find(
+              (rendition) => rendition.kind === kind,
+            );
+            if (found) {
+              posterUrl = found.url;
+              break;
+            }
+          }
+          for (const rendition of renditions)
             if (rendition.kind === "sprite") {
               spriteUrl = rendition.url;
               spriteVttUrl = rendition.vtt_url;
             }
-          }
         } catch {
           /* No renditions yet (still transcoding): keep the text card. */
         }

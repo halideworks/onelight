@@ -1377,9 +1377,9 @@ describe("rendition planning per asset kind", () => {
       { kind: "spectrogram", filename: "spectrogram.png" },
       { kind: "poster", filename: "poster.png" },
     ]);
-    expect(planRenditions("image", mediaInfoOf()).map((e) => e.kind)).toEqual([
-      "still_tiles",
-      "poster",
+    expect(planRenditions("image", mediaInfoOf())).toEqual([
+      { kind: "poster", filename: "poster.jpg" },
+      { kind: "still_review", filename: "still_review.webp" },
     ]);
     expect(planRenditions("pdf", mediaInfoOf())).toEqual([
       { kind: "pdf_pages", filename: "pages/page" },
@@ -1393,7 +1393,11 @@ describe("rendition planning per asset kind", () => {
       "proxy_audio",
       "audio_peaks",
     ]);
-    expect(primaryRenditionKinds("image")).toEqual(["still_tiles", "poster"]);
+    expect(primaryRenditionKinds("image")).toEqual([
+      "still_review",
+      "poster",
+      "still_tiles",
+    ]);
     expect(primaryRenditionKinds("pdf")).toEqual(["pdf_pages"]);
   });
 });

@@ -31,6 +31,7 @@ export const migrationFiles = [
   "0025_reference_audio.sql",
   "0026_asset_display_transfer.sql",
   "0027_project_display_transfer.sql",
+  "0028_still_ladder.sql",
 ];
 
 const migrationPath = (file: string): string =>
