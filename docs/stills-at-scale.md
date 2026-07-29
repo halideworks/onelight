@@ -662,3 +662,11 @@ is right: it is a still that happens to be in a container. Only in the shrunk
 regime is a missing tail sample tolerated, because that is where the reported
 duration and the last frame disagree; a clip long enough for the full grid
 still samples all sixteen or none.
+
+One consequence worth writing down: a version that got no signature is still a
+candidate, but the job that failed to sign it left its key behind, and the key
+is what stops the sweep offering the same work forever. So the scheme version in
+that key has to move whenever the sampler changes, including when the change is
+"it now signs clips it used to refuse". Deployed without the bump, the four one
+frame clips stayed unsigned and the sweep was right to leave them: it had
+already asked.

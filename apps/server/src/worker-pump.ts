@@ -1112,9 +1112,14 @@ export const sweepFingerprints = async (db: AppDb): Promise<number> => {
     const slice = pending.slice(from, from + FINGERPRINT_SWEEP_BATCH);
     const first = slice[0];
     if (!first) break;
-    /* The scheme is part of the key: a library signed by the old one has to
-       be offered again, and a key that never changes would refuse it. */
-    const idempotencyKey = `fingerprint:v2:${first.id}`;
+    /* The scheme is part of the key: a library signed by the old one has to be
+       offered again, and a key that never changes would refuse it. Bump this
+       whenever the sampler in packages/worker/src/fingerprint-media.ts
+       changes, including when it changes what it does with clips it used to
+       refuse: a version that got no signature is still a candidate, but its
+       old job's key would turn the offer away forever. v3 is the short clip
+       grid. */
+    const idempotencyKey = `fingerprint:v3:${first.id}`;
     const existing = await db
       .select({ id: jobs.id })
       .from(jobs)
