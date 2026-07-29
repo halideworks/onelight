@@ -637,3 +637,16 @@ of a batch landed the boundaries shifted and the same clips were offered again
 under a new lead: the machine signed five of them twice. The sweep now reads
 what is already in flight. And a clip with no fingerprint at all turned out to
 be an asset in the trash, which the sweep skips by design.
+
+Then the tier itself, against the real library. `BILLS_CC.mov` was re-exported
+the way an NLE does it: graded picture, video re-encoded to x264, audio
+re-encoded to AAC at a different bitrate and sample rate. Its contour lands one
+bit from the original it came from, and 28 to 34 bits from every other clip in
+the library. Its capture key is null, so the tier that used to answer wrongly
+now says nothing. The audio survives the re-encode because a loudness contour
+is a shape, not a waveform.
+
+One more thing the real library shows: an asset can legitimately hold versions
+with different audio. Two uploads of the same World Cup cut share a hash to the
+bit, and the Spanish master filed under the same asset does not. The audio tier
+answers nothing there, which is correct, and the name tier already had it.
