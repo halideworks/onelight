@@ -168,6 +168,15 @@ const renditionsHaveStillLadderKinds = async (
   return Boolean(row?.sql?.includes("still_review"));
 };
 
+const assetsHaveStackKey = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("stack_key"));
+};
+
 const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -528,6 +537,14 @@ export const d1Migrations: D1Migration[] = [
       "ALTER TABLE renditions_new RENAME TO renditions",
       "CREATE UNIQUE INDEX renditions_base_uq ON renditions(version_id, kind) WHERE share_id IS NULL",
       "CREATE UNIQUE INDEX renditions_share_uq ON renditions(version_id, kind, share_id) WHERE share_id IS NOT NULL",
+    ],
+  },
+  {
+    name: "0029_asset_stack_key.sql",
+    applied: assetsHaveStackKey,
+    statements: [
+      "ALTER TABLE assets ADD COLUMN stack_key TEXT NOT NULL DEFAULT ''",
+      "CREATE INDEX assets_stack_idx ON assets(project_id, stack_key)",
     ],
   },
 ];

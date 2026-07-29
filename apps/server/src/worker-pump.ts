@@ -16,6 +16,7 @@ import {
   framesFromTimecode,
   hmacSha256Hex,
   parseTimecode,
+  stackKeyOf,
   UlidGenerator,
   zipStream,
 } from "@onelight/core";
@@ -884,6 +885,33 @@ export const sweepStillLadderJobs = async (db: AppDb): Promise<number> => {
     }
   }
   return enqueued;
+};
+
+/* The stack key backfill.
+
+   Batch versioning matches an incoming filename against assets.stack_key, and
+   rows created before that column existed have none. Normalizing a filename is
+   application work, not SQL (a bare trailing number must never be stripped, or
+   a numbered shoot stacks on top of itself), so the migration adds an empty
+   column and this fills it. Bounded per pass like every other sweep, and it
+   stops costing anything once the library is done. */
+const STACK_KEY_SWEEP_INTERVAL_MS = 30_000;
+const STACK_KEY_SWEEP_BATCH = 500;
+
+export const sweepStackKeys = async (db: AppDb): Promise<number> => {
+  const rows = await db
+    .select({ id: assets.id, name: assets.name })
+    .from(assets)
+    .where(eq(assets.stackKey, ""))
+    .limit(STACK_KEY_SWEEP_BATCH)
+    .all();
+  for (const row of rows)
+    await db
+      .update(assets)
+      .set({ stackKey: stackKeyOf(row.name) })
+      .where(eq(assets.id, row.id))
+      .run();
+  return rows.length;
 };
 
 export const sweepShuttleAudioJobs = async (db: AppDb): Promise<number> => {
@@ -1981,6 +2009,7 @@ export const startWorkerPump = (
   let lastWatermarkSweep = 0;
   let lastShuttleAudioSweep = 0;
   let lastStillLadderSweep = 0;
+  let lastStackKeySweep = 0;
   let reclaimedOnStart = false;
 
   /* Media jobs, up to `slots` at a time. Claiming is already race-safe: the
@@ -2138,6 +2167,10 @@ export const startWorkerPump = (
         ) {
           lastWatermarkSweep = now;
           await sweep("watermark", () => sweepWatermarkJobs(db));
+        }
+        if (now - lastStackKeySweep >= STACK_KEY_SWEEP_INTERVAL_MS) {
+          lastStackKeySweep = now;
+          await sweep("stack key", () => sweepStackKeys(db));
         }
         if (
           mediaEnabled &&

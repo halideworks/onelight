@@ -501,6 +501,37 @@ export const bodies = {
       .min(1)
       .max(MAX_ATTACH_BATCH),
   }),
+  /* A dry run: which of these filenames look like new versions of assets
+     already in the project. Nothing is written. */
+  versionMatchRequest: z.object({
+    folder_id: z.string().nullable().optional(),
+    files: z
+      .array(
+        z.object({
+          filename: z.string().min(1).max(500),
+          relative_path: z.string().max(2000).optional(),
+          upload_id: z.string().optional(),
+        }),
+      )
+      .min(1)
+      .max(MAX_ATTACH_BATCH),
+  }),
+  /* The commit. Every pairing is explicit: the client sends what the dry run
+     proposed, or whatever a person changed it to. */
+  versionBatchCreate: z.object({
+    carry_forward: z.boolean().optional(),
+    items: z
+      .array(
+        z.object({
+          upload_id: z.string(),
+          asset_id: z.string(),
+          name: z.string().max(500).optional(),
+          carry_forward: z.boolean().optional(),
+        }),
+      )
+      .min(1)
+      .max(MAX_ATTACH_BATCH),
+  }),
   assetPatch: z.object({
     name: z.string().min(1).max(500).optional(),
     folder_id: z.string().nullable().optional(),
@@ -2006,6 +2037,57 @@ export const routeDocs: Record<string, RouteDoc> = {
               updated_at: timestamp,
             })
             .optional(),
+        }),
+      ),
+    },
+  },
+  "POST /projects/:id/versions/match": {
+    summary:
+      "Dry run: which of these filenames look like new versions of assets already in the project. Writes nothing. A filename matching more than one asset comes back as ambiguous with its candidates rather than a guess.",
+    request: bodies.versionMatchRequest,
+    responses: {
+      "200": ok(
+        z.object({
+          items: z.array(
+            z.object({
+              filename: z.string(),
+              upload_id: z.string().optional(),
+              stack_key: z.string(),
+              version_token: z.string().nullable(),
+              asset_id: z.string().nullable(),
+              asset_name: z.string().nullable(),
+              rule: z.string(),
+              candidates: z.array(
+                z.object({ asset_id: z.string(), asset_name: z.string() }),
+              ),
+            }),
+          ),
+          matched: z.number().int(),
+          ambiguous: z.number().int(),
+          unmatched: z.number().int(),
+        }),
+      ),
+    },
+  },
+  "POST /projects/:id/versions/batch": {
+    summary:
+      "Add many versions in one request, from pairings a person has seen. Writes one project event and one notification for the whole batch instead of one per file.",
+    request: bodies.versionBatchCreate,
+    responses: {
+      "201": created(
+        z.object({
+          items: z.array(
+            z.object({
+              asset_id: z.string(),
+              upload_id: z.string(),
+              version_id: z.string(),
+              version_no: z.number().int(),
+              job_id: z.string(),
+            }),
+          ),
+          failures: z.array(
+            z.object({ upload_id: z.string(), error: z.string() }),
+          ),
         }),
       ),
     },

@@ -379,4 +379,260 @@ export const registerVersionsDomain = (ctx: SuiteContext): void => {
       expect(crossWorkspace.status).toBe(404);
     });
   });
+
+  describe("batch versioning", () => {
+    /* The complaint: dragging 1200 version 2s onto 1200 version 1s. What has
+       to be true for the answer to be trustworthy is that it never guesses. */
+    it("offers matches for a second pass and never guesses on a tie", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Stills" });
+      /* Two originals in the project, one of them duplicated under a name
+         that normalizes to the same key. */
+      for (const name of ["IMG_0431.jpg", "IMG_0432.jpg", "Poster.psd"]) {
+        const upload = await seedCompletedUpload(h, {
+          workspaceId: seed.workspaceId,
+          projectId: project.id,
+          userId: seed.admin.id,
+          filename: name,
+        });
+        const created = await req(h, `/api/v1/projects/${project.id}/assets`, {
+          cookie: seed.admin.cookie,
+          json: { upload_id: upload.id },
+        });
+        expect(created.status).toBe(201);
+      }
+      const response = await req(
+        h,
+        `/api/v1/projects/${project.id}/versions/match`,
+        {
+          cookie: seed.admin.cookie,
+          json: {
+            files: [
+              { filename: "IMG_0431_v2.jpg" },
+              { filename: "IMG_0432 copy.jpg" },
+              { filename: "Poster_final.psd" },
+              { filename: "IMG_0433.jpg" },
+            ],
+          },
+        },
+      );
+      expect(response.status).toBe(200);
+      const body = await json<{
+        items: Array<{
+          filename: string;
+          asset_id: string | null;
+          asset_name: string | null;
+          rule: string;
+          version_token: string | null;
+        }>;
+        matched: number;
+        unmatched: number;
+        ambiguous: number;
+      }>(response);
+      expect(body.matched).toBe(3);
+      expect(body.unmatched).toBe(1);
+      expect(body.ambiguous).toBe(0);
+      const byName = new Map(body.items.map((item) => [item.filename, item]));
+      expect(byName.get("IMG_0431_v2.jpg")?.asset_name).toBe("IMG_0431.jpg");
+      expect(byName.get("IMG_0431_v2.jpg")?.version_token).toBe("v2");
+      expect(byName.get("IMG_0432 copy.jpg")?.asset_name).toBe("IMG_0432.jpg");
+      expect(byName.get("Poster_final.psd")?.asset_name).toBe("Poster.psd");
+      /* A frame that is simply the next one along is NOT a version of the
+         one before it. */
+      expect(byName.get("IMG_0433.jpg")?.asset_id).toBeNull();
+      expect(byName.get("IMG_0433.jpg")?.rule).toBe("none");
+    });
+
+    it("reports a tie as ambiguous with its candidates", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Ambiguous" });
+      /* Same picture delivered twice under names that normalize alike. */
+      for (const name of ["Shot-01.jpg", "shot_01.tif"]) {
+        const upload = await seedCompletedUpload(h, {
+          workspaceId: seed.workspaceId,
+          projectId: project.id,
+          userId: seed.admin.id,
+          filename: name,
+        });
+        await req(h, `/api/v1/projects/${project.id}/assets`, {
+          cookie: seed.admin.cookie,
+          json: { upload_id: upload.id },
+        });
+      }
+      const response = await req(
+        h,
+        `/api/v1/projects/${project.id}/versions/match`,
+        {
+          cookie: seed.admin.cookie,
+          json: { files: [{ filename: "Shot-01_v2.psd" }] },
+        },
+      );
+      const body = await json<{
+        items: Array<{
+          rule: string;
+          asset_id: string | null;
+          candidates: Array<{ asset_id: string; asset_name: string }>;
+        }>;
+        ambiguous: number;
+      }>(response);
+      expect(body.ambiguous).toBe(1);
+      expect(body.items[0]?.asset_id).toBeNull();
+      expect(body.items[0]?.rule).toBe("ambiguous");
+      expect(body.items[0]?.candidates).toHaveLength(2);
+    });
+
+    it("commits a batch with one event and one notification", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Batch" });
+      await grantRole(h, seed.admin, project.id, seed.editor.id, "editor");
+      const assetIds: string[] = [];
+      for (const name of ["A001.jpg", "A002.jpg", "A003.jpg"]) {
+        const upload = await seedCompletedUpload(h, {
+          workspaceId: seed.workspaceId,
+          projectId: project.id,
+          userId: seed.admin.id,
+          filename: name,
+        });
+        const created = await req(h, `/api/v1/projects/${project.id}/assets`, {
+          cookie: seed.admin.cookie,
+          json: { upload_id: upload.id },
+        });
+        assetIds.push((await json<{ id: string }>(created)).id);
+      }
+      const uploads: string[] = [];
+      for (const name of ["A001_v2.jpg", "A002_v2.jpg", "A003_v2.jpg"])
+        uploads.push(
+          (
+            await seedCompletedUpload(h, {
+              workspaceId: seed.workspaceId,
+              projectId: project.id,
+              userId: seed.editor.id,
+              filename: name,
+            })
+          ).id,
+        );
+      const before = (
+        await h.db
+          .select()
+          .from(projectEvents)
+          .where(eq(projectEvents.projectId, project.id))
+          .all()
+      ).length;
+      const response = await req(
+        h,
+        `/api/v1/projects/${project.id}/versions/batch`,
+        {
+          cookie: seed.editor.cookie,
+          json: {
+            carry_forward: true,
+            items: uploads.map((uploadId, index) => ({
+              upload_id: uploadId,
+              asset_id: assetIds[index] as string,
+            })),
+          },
+        },
+      );
+      expect(response.status).toBe(201);
+      const body = await json<{
+        items: Array<{ asset_id: string; version_no: number; job_id: string }>;
+        failures: unknown[];
+      }>(response);
+      expect(body.items).toHaveLength(3);
+      expect(body.failures).toEqual([]);
+      for (const item of body.items) expect(item.version_no).toBe(2);
+      /* One event for the batch. */
+      const events = await h.db
+        .select()
+        .from(projectEvents)
+        .where(eq(projectEvents.projectId, project.id))
+        .all();
+      expect(events.length).toBe(before + 1);
+      expect(events[events.length - 1]?.type).toBe(
+        "asset.versions_created_batch",
+      );
+      /* One notification for the batch, not one per file. */
+      const notifications = (
+        await listNotifications(h, seed.admin.cookie)
+      ).filter((entry) => entry.kind === "versions.created_batch");
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0]?.payload.count).toBe(3);
+      /* Every new version still gets its own probe job. */
+      for (const item of body.items) {
+        const job = await req(h, `/api/v1/jobs/${item.job_id}`, {
+          cookie: seed.editor.cookie,
+        });
+        expect(job.status).toBe(200);
+      }
+    });
+
+    it("reports a failed pairing without sinking the batch", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Partial" });
+      const upload = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+        filename: "B001.jpg",
+      });
+      const created = await req(h, `/api/v1/projects/${project.id}/assets`, {
+        cookie: seed.admin.cookie,
+        json: { upload_id: upload.id },
+      });
+      const assetId = (await json<{ id: string }>(created)).id;
+      const good = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+        filename: "B001_v2.jpg",
+      });
+      const pending = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: project.id,
+        userId: seed.admin.id,
+        filename: "B001_v3.jpg",
+        status: "pending",
+      });
+      const response = await req(
+        h,
+        `/api/v1/projects/${project.id}/versions/batch`,
+        {
+          cookie: seed.admin.cookie,
+          json: {
+            items: [
+              { upload_id: good.id, asset_id: assetId },
+              { upload_id: pending.id, asset_id: assetId },
+            ],
+          },
+        },
+      );
+      expect(response.status).toBe(201);
+      const body = await json<{
+        items: Array<{ upload_id: string }>;
+        failures: Array<{ upload_id: string }>;
+      }>(response);
+      expect(body.items.map((item) => item.upload_id)).toEqual([good.id]);
+      expect(body.failures.map((failure) => failure.upload_id)).toEqual([
+        pending.id,
+      ]);
+    });
+
+    it("refuses matching and batching from a viewer", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const match = await req(
+        h,
+        `/api/v1/projects/${seed.project.id}/versions/match`,
+        {
+          cookie: seed.viewer.cookie,
+          json: { files: [{ filename: "x.jpg" }] },
+        },
+      );
+      expect(match.status).toBe(403);
+      expect(await errorCode(match)).toBe("forbidden");
+    });
+  });
 };

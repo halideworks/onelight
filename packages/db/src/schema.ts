@@ -338,6 +338,12 @@ export const assets = sqliteTable(
       onDelete: "set null",
     }),
     name: text("name").notNull(),
+    /* The identity this asset shares with a later pass of the same picture:
+       the name with its extension, its version token and its separators taken
+       off (packages/core/stack-key.ts). Kept as a column rather than computed
+       on the fly so a batch of 1200 files can be matched with one indexed
+       query instead of 1200 scans. */
+    stackKey: text("stack_key").notNull().default(""),
     kind: text("kind", {
       enum: ["video", "audio", "image", "pdf", "file"],
     }).notNull(),
@@ -370,6 +376,7 @@ export const assets = sqliteTable(
       table.deletedAt,
       table.id,
     ),
+    stackIndex: index("assets_stack_idx").on(table.projectId, table.stackKey),
   }),
 );
 

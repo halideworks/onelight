@@ -315,6 +315,19 @@
 
   /* ---- live updates (project SSE) ---- */
 
+  /* Several rows re-read at once. A batch of versions touches many assets,
+     and re-reading each one as its own request is the shape this whole pass
+     exists to remove; over a handful it is cheaper to re-read the page. */
+  const refreshAssets = async (assetIds: string[]): Promise<void> => {
+    const id = projectId;
+    if (!id || assetIds.length === 0) return;
+    if (assetIds.length > 5) {
+      await loadAssets(id);
+      return;
+    }
+    for (const assetId of assetIds) await refreshAsset(assetId);
+  };
+
   const refreshAsset = async (assetId: string): Promise<void> => {
     try {
       const asset = await api<Asset>(`/api/v1/assets/${assetId}`);
@@ -1601,6 +1614,112 @@
     }
   };
 
+  /* The offer.
+
+     Dropping a second pass of a batch used to mean setting a dropdown on every
+     row: 1200 files, 1200 decisions, and the reason people deliver retouches
+     through Dropbox instead. The server is asked, before a byte moves, which
+     of these filenames look like new versions of assets already here; the
+     answer is one line and one button.
+
+     Nothing is applied without pressing it, and a filename that matches more
+     than one asset is never guessed at: those stay unmatched and keep their
+     per-row dropdown. */
+  type MatchItem = {
+    filename: string;
+    asset_id: string | null;
+    asset_name: string | null;
+    rule: string;
+    version_token: string | null;
+    candidates: Array<{ asset_id: string; asset_name: string }>;
+  };
+  let matchOffer = $state<{
+    matched: number;
+    ambiguous: number;
+    unmatched: number;
+    total: number;
+    /* Unanswered, the offer holds back the landing of the files it matched:
+       the bytes keep moving, but a file does not become a new asset while the
+       question of whether it is a new version is still open. */
+    answered: boolean;
+  } | null>(null);
+  /* Reactive: the queue rows read it for the name they would stack onto. */
+  let matchByName = $state(new Map<string, MatchItem>());
+  let matchTimer: ReturnType<typeof setTimeout> | null = null;
+  /* An offer nobody answers must not strand the files. After this it answers
+     itself the way the app behaved before there was a question. */
+  const MATCH_OFFER_TIMEOUT_MS = 90_000;
+
+  const offerVersionMatches = async (files: PendingFile[]): Promise<void> => {
+    const id = projectId;
+    if (!id || files.length === 0) return;
+    const folder = selectedFolder;
+    try {
+      const result = await apiPost<{
+        items: MatchItem[];
+        matched: number;
+        ambiguous: number;
+        unmatched: number;
+      }>(`/api/v1/projects/${id}/versions/match`, {
+        ...(folder ? { folder_id: folder } : {}),
+        files: files.map((entry) => ({
+          filename: entry.file.name,
+          ...(entry.relativePath ? { relative_path: entry.relativePath } : {})
+        }))
+      });
+      if (id !== projectId) return;
+      if (result.matched === 0) return;
+      const next = new Map(matchByName);
+      for (const item of result.items)
+        if (item.asset_id) next.set(item.filename, item);
+      matchByName = next;
+      matchOffer = {
+        matched: result.matched,
+        ambiguous: result.ambiguous,
+        unmatched: result.unmatched,
+        total: files.length,
+        answered: false
+      };
+      if (matchTimer) clearTimeout(matchTimer);
+      matchTimer = setTimeout(() => dismissVersionMatches(), MATCH_OFFER_TIMEOUT_MS);
+    } catch {
+      /* No offer; every file is a new asset, which is what it was before. */
+    }
+  };
+
+  const applyVersionMatches = (): void => {
+    if (!matchOffer) return;
+    /* Every row still waiting, not only the queued ones: a file whose bytes
+       are already stored is exactly the case this has to catch. */
+    for (const item of queue) {
+      if (item.status === 'done' || item.status === 'quarantined') continue;
+      const match = matchByName.get(item.file.name);
+      if (match?.asset_id) item.versionOf = match.asset_id;
+    }
+    answerOffer();
+  };
+
+  const dismissVersionMatches = (): void => {
+    matchByName = new Map();
+    answerOffer();
+  };
+
+  const answerOffer = (): void => {
+    if (matchTimer) {
+      clearTimeout(matchTimer);
+      matchTimer = null;
+    }
+    if (matchOffer) matchOffer = { ...matchOffer, answered: true };
+    /* Whatever was held back now lands. */
+    void flushAttach();
+  };
+
+  /* Files the offer is still asking about. Everything else lands at once. */
+  const heldByOffer = (item: UploadItem): boolean =>
+    Boolean(matchOffer) &&
+    matchOffer?.answered === false &&
+    matchByName.has(item.file.name);
+
   const enqueue = (files: PendingFile[]): void => {
     const additions = files.map(({ file, relativePath }) => ({
       key: nextKey++,
@@ -1619,7 +1738,11 @@
     queueWindow.total = queue.length;
     for (const item of additions) tally.total += item.file.size;
     tally.count = queue.length;
-    /* Choosing the files is the decision; there is nothing left to confirm. */
+    /* Choosing the files is the decision; there is nothing left to confirm.
+       The version offer runs beside the upload rather than in front of it:
+       the pairing is read when a file lands, not when it starts, so asking
+       never costs the transfer a second. */
+    void offerVersionMatches(files);
     void pump();
   };
 
@@ -1759,40 +1882,86 @@
     if (attaching || attachPending.length === 0) return;
     const id = projectId;
     if (!id) return;
+    /* Anything the version offer is still asking about stays in the buffer:
+       a file must not become a new asset while the question of whether it is
+       a new version of an existing one is open. */
+    const held = attachPending.filter((entry) => heldByOffer(entry.item));
+    const ready = attachPending.filter((entry) => !heldByOffer(entry.item));
+    if (ready.length === 0) return;
     attaching = true;
-    const batch = attachPending;
-    attachPending = [];
+    const batch = ready;
+    attachPending = held;
+    /* Two destinations, one buffer: a file the uploader has paired with an
+       existing asset becomes a version of it, everything else becomes a new
+       asset. Each lands in one request. */
+    const asVersions = batch.filter((entry) => entry.item.versionOf);
+    const asAssets = batch.filter((entry) => !entry.item.versionOf);
     try {
-      const result = await apiPost<{
-        items: Array<Asset & { upload_id: string }>;
-        failures: Array<{ upload_id: string; error: string }>;
-      }>(`/api/v1/projects/${id}/assets/batch`, {
-        items: batch.map((entry) => ({
-          upload_id: entry.uploadId,
-          name: entry.item.file.name,
-          ...(entry.item.folderId ? { folder_id: entry.item.folderId } : {})
-        }))
-      });
-      const byUpload = new Map(batch.map((entry) => [entry.uploadId, entry.item]));
-      const landed: Array<{ asset: Asset; folderId: string | null }> = [];
-      for (const created of result.items) {
-        const item = byUpload.get(created.upload_id);
-        if (item) {
-          finishItem(item);
-          landed.push({ asset: created, folderId: item.folderId });
+      if (asVersions.length) {
+        const result = await apiPost<{
+          items: Array<{ upload_id: string; asset_id: string }>;
+          failures: Array<{ upload_id: string; error: string }>;
+        }>(`/api/v1/projects/${id}/versions/batch`, {
+          items: asVersions.map((entry) => ({
+            upload_id: entry.uploadId,
+            asset_id: entry.item.versionOf as string,
+            carry_forward: entry.item.carryForward
+          }))
+        });
+        const byUpload = new Map(
+          asVersions.map((entry) => [entry.uploadId, entry.item])
+        );
+        const touched: string[] = [];
+        for (const created of result.items) {
+          const item = byUpload.get(created.upload_id);
+          if (item) finishItem(item);
+          byUpload.delete(created.upload_id);
+          touched.push(created.asset_id);
         }
-        byUpload.delete(created.upload_id);
+        for (const failure of result.failures ?? []) {
+          const item = byUpload.get(failure.upload_id);
+          if (item) failItem(item, new Error(failure.error));
+          byUpload.delete(failure.upload_id);
+        }
+        for (const item of byUpload.values())
+          failItem(item, new Error('The version did not land.'));
+        /* The rows that changed are re-read once, not once per file. */
+        if (touched.length) void refreshAssets(touched);
       }
-      for (const failure of result.failures ?? []) {
-        const item = byUpload.get(failure.upload_id);
-        if (item) failItem(item, new Error(failure.error));
-        byUpload.delete(failure.upload_id);
+      if (asAssets.length) {
+        const result = await apiPost<{
+          items: Array<Asset & { upload_id: string }>;
+          failures: Array<{ upload_id: string; error: string }>;
+        }>(`/api/v1/projects/${id}/assets/batch`, {
+          items: asAssets.map((entry) => ({
+            upload_id: entry.uploadId,
+            name: entry.item.file.name,
+            ...(entry.item.folderId ? { folder_id: entry.item.folderId } : {})
+          }))
+        });
+        const byUpload = new Map(
+          asAssets.map((entry) => [entry.uploadId, entry.item])
+        );
+        const landed: Array<{ asset: Asset; folderId: string | null }> = [];
+        for (const created of result.items) {
+          const item = byUpload.get(created.upload_id);
+          if (item) {
+            finishItem(item);
+            landed.push({ asset: created, folderId: item.folderId });
+          }
+          byUpload.delete(created.upload_id);
+        }
+        for (const failure of result.failures ?? []) {
+          const item = byUpload.get(failure.upload_id);
+          if (item) failItem(item, new Error(failure.error));
+          byUpload.delete(failure.upload_id);
+        }
+        /* Anything the server did not mention at all: treat as failed rather
+           than leaving a row saying "landing" for ever. */
+        for (const item of byUpload.values())
+          failItem(item, new Error('The upload did not land.'));
+        adoptCreatedAssets(landed);
       }
-      /* Anything the server did not mention at all: treat as failed rather
-         than leaving a row saying "landing" for ever. */
-      for (const item of byUpload.values())
-        failItem(item, new Error('The upload did not land.'));
-      adoptCreatedAssets(landed);
     } catch (caught) {
       for (const entry of batch) failItem(entry.item, caught);
     } finally {
@@ -1829,29 +1998,6 @@
       tally.rate = sumRates();
     };
     try {
-      /* A version lands on an asset that already exists, so it cannot join
-         the batch; it keeps the single-file path. */
-      if (item.versionOf) {
-        const sessionId = await uploadFile({
-          projectId: id,
-          file: item.file,
-          relativePath: item.relativePath,
-          sessionId: item.sessionId,
-          onSession: (session) => {
-            item.sessionId = session;
-          },
-          onProgress
-        });
-        item.sessionId = sessionId;
-        await createAssetVersion(item.versionOf, {
-          upload_id: sessionId,
-          name: item.file.name,
-          carry_forward: item.carryForward
-        });
-        await refreshAsset(item.versionOf);
-        finishItem(item);
-        return;
-      }
       if (item.file.size <= MAX_DIRECT_UPLOAD_BYTES && !item.sessionId) {
         const direct = await uploadFileDirect({
           projectId: id,
@@ -2314,6 +2460,33 @@
             {/if}
           </div>
           <p class="hint kbdhint">Drop files or folders anywhere in this panel. Uploading starts as soon as they land, and folder structure is kept as each file's relative path.</p>
+          {#if matchOffer && !matchOffer.answered}
+            <!-- The whole point of the pass: one line and one button instead
+                 of dragging a version 2 onto a version 1, twelve hundred
+                 times. -->
+            <div class="matchoffer" role="status">
+              <p class="matchline">
+                <strong>{matchOffer.matched.toLocaleString()}</strong>
+                of {matchOffer.total.toLocaleString()}
+                {matchOffer.total === 1 ? 'file matches an asset' : 'files match assets'}
+                already in {selectedName}.
+              </p>
+              <div class="matchactions">
+                <button type="button" class="uploadbtn ready" onclick={applyVersionMatches}>
+                  Upload as new versions
+                </button>
+                <button type="button" class="quiet" onclick={dismissVersionMatches}>
+                  Upload as new assets
+                </button>
+              </div>
+              {#if matchOffer.ambiguous > 0 || matchOffer.unmatched > 0}
+                <p class="hint matchrest">
+                  {#if matchOffer.unmatched > 0}{matchOffer.unmatched.toLocaleString()} unmatched{/if}{#if matchOffer.unmatched > 0 && matchOffer.ambiguous > 0}, {/if}{#if matchOffer.ambiguous > 0}{matchOffer.ambiguous.toLocaleString()} matching more than one asset{/if}
+                  {matchOffer.unmatched + matchOffer.ambiguous === 1 ? 'lands' : 'land'} as new assets unless you pick a version below.
+                </p>
+              {/if}
+            </div>
+          {/if}
           {#if queue.length > 1}
             <p class="summary tc" aria-live="polite">
               {overall.done} of {overall.count} files, {formatBytes(overall.bytes)} of {formatBytes(overall.total)}{overall.rate > 0 ? `, ${formatRate(overall.rate)}` : ''}
@@ -2358,7 +2531,9 @@
                       options={versionOptions}
                       bind:value={item.versionOf}
                       label={`New version of, for ${item.file.name}`}
-                      placeholder="New version of..."
+                      placeholder={matchByName.get(item.file.name)?.asset_name
+                        ? `Matches ${matchByName.get(item.file.name)?.asset_name}`
+                        : 'New version of...'}
                       disabled={item.status === 'done' || item.status === 'quarantined'}
                     />
                     {#if item.versionOf}
@@ -3038,6 +3213,10 @@
      several thousand files does not push the browser off the bottom of the
      page. */
   .queue { list-style: none; margin: var(--pad) 0 0; padding: 0; display: grid; gap: 2px; max-height: 52vh; overflow-y: auto; overscroll-behavior: contain; }
+  .matchoffer { margin-top: var(--pad); padding: 12px 14px; border-radius: var(--radius); background: var(--ink-100); display: grid; gap: 10px; }
+  .matchline { margin: 0; font-size: var(--text-14); }
+  .matchactions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .matchrest { margin: 0; }
   .queue li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--radius); background: var(--ink-100); }
   .qname { flex: 1; min-width: 160px; font-weight: 500; display: grid; gap: 2px; }
   .qpath { color: var(--ink-text-dim); font-size: var(--text-13); font-weight: 400; overflow-wrap: anywhere; }

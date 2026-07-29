@@ -40,6 +40,8 @@ import {
   verifyTotp,
   sha256,
   sha256Hex,
+  stackKeyOf,
+  versionTokenOf,
   zipEntryName,
   zipLength,
   zipStreamFrom,
@@ -10374,6 +10376,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         projectId: upload.projectId,
         folderId: options.folderId,
         name,
+        stackKey: stackKeyOf(name),
         kind: assetKind(upload.clientFilename),
         currentVersionId: versionId,
         status: "none",
@@ -10807,7 +10810,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     await env.db
       .update(assets)
       .set({
-        ...(body.name ? { name: body.name.trim() } : {}),
+        ...(body.name
+          ? { name: body.name.trim(), stackKey: stackKeyOf(body.name.trim()) }
+          : {}),
         ...(body.folder_id === undefined ? {} : { folderId: body.folder_id }),
         ...(body.status ? { status: body.status } : {}),
         ...(body.description === undefined
@@ -10943,11 +10948,228 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   // existing asset. Mirrors the initial attach (probe job, storage
   // accounting, project event) and optionally carries unresolved comments
   // forward from the version that was current until this call.
-  api.post("/assets/:id/versions", requireAuth, async (c) => {
+  /* Batch versioning: the second half of the complaint this work exists for.
+
+     "When we make updates to a batch, I think you have to drag the version 2s
+     on top of the version 1s and it takes a lot of time." For 1200 files it is
+     not a workflow, it is a day of dragging.
+
+     Two endpoints, deliberately separate. The match is a dry run that writes
+     nothing and returns what it would do, so the uploader can say "1,187 of
+     1,200 files match assets already here" before a byte moves. The batch is
+     the commit, and it only ever does what it was told: the pairings come back
+     from the client, so a person has seen them. */
+  const matchUploadsToAssets = async (
+    projectId: string,
+    folderId: string | null,
+    files: Array<{
+      filename: string;
+      relative_path?: string | undefined;
+      upload_id?: string | undefined;
+    }>,
+  ) => {
+    const keys = new Set(files.map((file) => stackKeyOf(file.filename)));
+    /* One indexed query for the whole batch, whatever its size. */
+    const candidates = (await env.db
+      .select({
+        id: assets.id,
+        name: assets.name,
+        stackKey: assets.stackKey,
+        folderId: assets.folderId,
+        currentVersionId: assets.currentVersionId,
+      })
+      .from(assets)
+      .where(
+        and(
+          eq(assets.projectId, projectId),
+          isNull(assets.deletedAt),
+          inArray(assets.stackKey, [...keys]),
+        ),
+      )
+      .all()) as Array<{
+      id: string;
+      name: string;
+      stackKey: string;
+      folderId: string | null;
+      currentVersionId: string | null;
+    }>;
+    const byKey = new Map<string, typeof candidates>();
+    for (const candidate of candidates) {
+      const list = byKey.get(candidate.stackKey) ?? [];
+      list.push(candidate);
+      byKey.set(candidate.stackKey, list);
+    }
+    return files.map((file) => {
+      const key = stackKeyOf(file.filename);
+      const pool = byKey.get(key) ?? [];
+      const exact = pool.filter(
+        (candidate) =>
+          candidate.name.toLowerCase() === file.filename.toLowerCase(),
+      );
+      const inFolder = pool.filter(
+        (candidate) => (candidate.folderId ?? null) === folderId,
+      );
+      /* Strongest first: the same name wins over the same key, and the same
+         key in the folder you are uploading into wins over the same key
+         anywhere. A tie at the strongest available level is a conflict. */
+      const [rule, chosen] =
+        exact.length > 0
+          ? (["exact-name", exact] as const)
+          : inFolder.length > 0
+            ? (["stack-key-in-folder", inFolder] as const)
+            : ([
+                pool.some(
+                  (candidate) =>
+                    candidate.name.toLowerCase() !==
+                    file.filename.toLowerCase(),
+                )
+                  ? "different-extension"
+                  : "stack-key",
+                pool,
+              ] as const);
+      const wire = {
+        filename: file.filename,
+        ...(file.upload_id ? { upload_id: file.upload_id } : {}),
+        stack_key: key,
+        version_token: versionTokenOf(file.filename),
+      };
+      if (chosen.length === 1) {
+        const match = chosen[0] as (typeof candidates)[number];
+        return {
+          ...wire,
+          asset_id: match.id,
+          asset_name: match.name,
+          rule,
+          candidates: [],
+        };
+      }
+      if (chosen.length > 1)
+        /* Never guess. Two assets with the same identity is exactly the case
+           where stacking the wrong way costs someone a day of work. */
+        return {
+          ...wire,
+          asset_id: null,
+          asset_name: null,
+          rule: "ambiguous" as const,
+          candidates: chosen.map((candidate) => ({
+            asset_id: candidate.id,
+            asset_name: candidate.name,
+          })),
+        };
+      return {
+        ...wire,
+        asset_id: null,
+        asset_name: null,
+        rule: "none" as const,
+        candidates: [],
+      };
+    });
+  };
+
+  api.post("/projects/:id/versions/match", requireAuth, async (c) => {
     const actor = userFromContext(c);
-    const asset = await assetForActor(c.req.param("id"), actor, "editor");
-    const body = await jsonBody(c, bodies.versionCreate);
-    const upload = await findUpload(body.upload_id, actor);
+    const projectId = c.req.param("id");
+    await requireProject(projectId, actor, "editor");
+    const body = await jsonBody(c, bodies.versionMatchRequest);
+    const items = await matchUploadsToAssets(
+      projectId,
+      body.folder_id ?? null,
+      body.files,
+    );
+    return c.json({
+      items,
+      matched: items.filter((item) => item.asset_id !== null).length,
+      ambiguous: items.filter((item) => item.rule === "ambiguous").length,
+      unmatched: items.filter((item) => item.rule === "none").length,
+    });
+  });
+
+  api.post("/projects/:id/versions/batch", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const projectId = c.req.param("id");
+    const { project } = await requireProject(projectId, actor, "editor");
+    const body = await jsonBody(c, bodies.versionBatchCreate);
+    if (body.items.length > MAX_ATTACH_BATCH)
+      throw errors.validation(
+        `A batch may add at most ${String(MAX_ATTACH_BATCH)} versions.`,
+      );
+    const items: Array<Record<string, unknown>> = [];
+    const failures: Array<{ upload_id: string; error: string }> = [];
+    /* Who hears about it, gathered once for the whole batch rather than per
+       file: a delivery used to write one notification per file per recipient,
+       which is how an inbox becomes useless. */
+    const recipients = new Set<string>(await projectManagerIds(projectId));
+    for (const item of body.items) {
+      try {
+        const asset = await assetForActor(item.asset_id, actor, "editor");
+        if (asset.projectId !== projectId)
+          throw errors.conflict("Asset belongs to another project.");
+        const upload = await findUpload(item.upload_id, actor);
+        const created = await addVersionToAsset(asset, upload, {
+          actor,
+          ...(item.name === undefined ? {} : { name: item.name }),
+          carryForward: item.carry_forward ?? body.carry_forward ?? true,
+          quiet: true,
+        });
+        for (const uploader of created.priorUploaders) recipients.add(uploader);
+        items.push({
+          asset_id: asset.id,
+          upload_id: upload.id,
+          version_id: created.versionId,
+          version_no: created.versionNo,
+          job_id: created.jobId,
+        });
+      } catch (caught) {
+        failures.push({
+          upload_id: item.upload_id,
+          error: mapError(caught).message,
+        });
+      }
+    }
+    if (items.length) {
+      await appendProjectEvent(projectId, "asset.versions_created_batch", {
+        count: items.length,
+        asset_ids: items.slice(0, 20).map((item) => item.asset_id),
+      });
+      await createNotifications({
+        projectId,
+        actorUserId: actor.id,
+        recipients: [...recipients],
+        kind: "versions.created_batch",
+        payload: {
+          project_id: projectId,
+          project_name: project.name,
+          count: items.length,
+          actor_name: actor.name,
+          preview: `${actor.name} added ${String(items.length)} ${
+            items.length === 1 ? "version" : "versions"
+          } in ${project.name}`,
+        },
+      });
+    }
+    return c.json({ items, failures }, items.length ? 201 : 207);
+  });
+
+  /* One upload becoming the next version of one asset. Shared by the single
+     endpoint and the batch, so the two cannot drift on what a version is: the
+     row, the current pointer, the storage accounting, the probe job, and the
+     comments carried forward are all here. What differs is the announcing,
+     which a batch does once for the whole set. */
+  const addVersionToAsset = async (
+    asset: typeof assets.$inferSelect,
+    upload: typeof uploadSessions.$inferSelect,
+    options: {
+      actor: ActorUser;
+      name?: string | undefined;
+      carryForward: boolean;
+      quiet?: boolean;
+    },
+  ): Promise<{
+    versionId: string;
+    versionNo: number;
+    jobId: string;
+    priorUploaders: string[];
+  }> => {
     // The three attach rules are all state conflicts, not shape errors: 409.
     if (upload.status !== "completed")
       throw errors.conflict("Upload must be completed before attaching.");
@@ -10992,7 +11214,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         originalFilename: upload.clientFilename,
         size: upload.size,
         checksumCrc32c: upload.checksumCrc32c ?? "",
-        uploadedBy: actor.id,
+        uploadedBy: options.actor.id,
         mediaInfoJson: "{}",
         sourceTimecodeStart: null,
         sourceStartFrame: null,
@@ -11010,7 +11232,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .update(assets)
       .set({
         currentVersionId: versionId,
-        ...(body.name ? { name: body.name.trim() } : {}),
+        ...(options.name
+          ? {
+              name: options.name.trim(),
+              stackKey: stackKeyOf(options.name.trim()),
+            }
+          : {}),
         updatedAt: now,
       })
       .where(eq(assets.id, asset.id))
@@ -11027,7 +11254,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         id: jobId,
         kind: "probe",
         payloadJson: JSON.stringify({
-          workspace_id: actor.workspaceId,
+          workspace_id: options.actor.workspaceId,
           project_id: asset.projectId,
           asset_id: asset.id,
           version_id: versionId,
@@ -11049,13 +11276,34 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         workerId: null,
       })
       .run();
-    if (body.carry_forward && previousCurrentId)
+    if (options.carryForward && previousCurrentId)
       await copyUnresolvedComments(previousCurrentId, versionId);
-    await appendProjectEvent(asset.projectId, "asset.version_created", {
-      asset_id: asset.id,
-      version_id: versionId,
-      version_no: versionNo,
-      job_id: jobId,
+    if (!options.quiet)
+      await appendProjectEvent(asset.projectId, "asset.version_created", {
+        asset_id: asset.id,
+        version_id: versionId,
+        version_no: versionNo,
+        job_id: jobId,
+      });
+    return {
+      versionId,
+      versionNo,
+      jobId,
+      priorUploaders: priorVersions.map(
+        (row: { uploadedBy: string }) => row.uploadedBy,
+      ),
+    };
+  };
+
+  api.post("/assets/:id/versions", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const asset = await assetForActor(c.req.param("id"), actor, "editor");
+    const body = await jsonBody(c, bodies.versionCreate);
+    const upload = await findUpload(body.upload_id, actor);
+    const created = await addVersionToAsset(asset, upload, {
+      actor,
+      ...(body.name === undefined ? {} : { name: body.name }),
+      carryForward: body.carry_forward ?? false,
     });
     const updatedAsset = (
       await env.db
@@ -11069,7 +11317,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       await env.db
         .select()
         .from(assetVersions)
-        .where(eq(assetVersions.id, versionId))
+        .where(eq(assetVersions.id, created.versionId))
         .limit(1)
         .all()
     )[0];
@@ -11078,7 +11326,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       projectId: asset.projectId,
       actorUserId: actor.id,
       recipients: [
-        ...priorVersions.map((row: { uploadedBy: string }) => row.uploadedBy),
+        ...created.priorUploaders,
         ...(await projectManagerIds(asset.projectId)),
       ],
       kind: "version.created",
@@ -11086,17 +11334,17 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         project_id: asset.projectId,
         asset_id: asset.id,
         asset_name: updatedAsset.name,
-        version_id: versionId,
-        version_no: versionNo,
+        version_id: created.versionId,
+        version_no: created.versionNo,
         actor_name: actor.name,
-        preview: `Version ${versionNo} of ${updatedAsset.name}`,
+        preview: `Version ${created.versionNo} of ${updatedAsset.name}`,
       },
     });
     return c.json(
       {
         asset: assetWire(updatedAsset),
         version: versionWire(newVersion),
-        job_id: jobId,
+        job_id: created.jobId,
       },
       201,
     );

@@ -22568,6 +22568,377 @@
         }
       }
     },
+    "/api/v1/projects/{id}/versions/match": {
+      "post": {
+        "summary": "Dry run: which of these filenames look like new versions of assets already in the project. Writes nothing. A filename matching more than one asset comes back as ambiguous with its candidates rather than a guess.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "folder_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "filename": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 500
+                        },
+                        "relative_path": {
+                          "type": "string",
+                          "maxLength": 2000
+                        },
+                        "upload_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "filename"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  }
+                },
+                "required": [
+                  "files"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "filename": {
+                            "type": "string"
+                          },
+                          "upload_id": {
+                            "type": "string"
+                          },
+                          "stack_key": {
+                            "type": "string"
+                          },
+                          "version_token": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "asset_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "asset_name": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "rule": {
+                            "type": "string"
+                          },
+                          "candidates": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "asset_id": {
+                                  "type": "string"
+                                },
+                                "asset_name": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "asset_id",
+                                "asset_name"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "filename",
+                          "stack_key",
+                          "version_token",
+                          "asset_id",
+                          "asset_name",
+                          "rule",
+                          "candidates"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "matched": {
+                      "type": "integer"
+                    },
+                    "ambiguous": {
+                      "type": "integer"
+                    },
+                    "unmatched": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "matched",
+                    "ambiguous",
+                    "unmatched"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/versions/batch": {
+      "post": {
+        "summary": "Add many versions in one request, from pairings a person has seen. Writes one project event and one notification for the whole batch instead of one per file.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "carry_forward": {
+                    "type": "boolean"
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "upload_id": {
+                          "type": "string"
+                        },
+                        "asset_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string",
+                          "maxLength": 500
+                        },
+                        "carry_forward": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "upload_id",
+                        "asset_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  }
+                },
+                "required": [
+                  "items"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "asset_id": {
+                            "type": "string"
+                          },
+                          "upload_id": {
+                            "type": "string"
+                          },
+                          "version_id": {
+                            "type": "string"
+                          },
+                          "version_no": {
+                            "type": "integer"
+                          },
+                          "job_id": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "asset_id",
+                          "upload_id",
+                          "version_id",
+                          "version_no",
+                          "job_id"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "failures": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "upload_id": {
+                            "type": "string"
+                          },
+                          "error": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "upload_id",
+                          "error"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "failures"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/assets/{id}/trash": {
       "post": {
         "parameters": [
