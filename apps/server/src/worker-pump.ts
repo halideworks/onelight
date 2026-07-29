@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { cpus } from "node:os";
 import path from "node:path";
 import { and, asc, eq, inArray, isNotNull, isNull, lt } from "drizzle-orm";
 import {
@@ -229,6 +230,11 @@ const sendJob = async (
     throw new Error(`Worker rejected job with ${response.status}.`);
 };
 
+/* How long the worker may hold a status read open. Well inside the 60s job
+   lease, so a heartbeat still lands between polls. */
+const STATUS_WAIT_SECONDS = 20;
+const MIN_POLL_INTERVAL_MS = 250;
+
 const pollWorker = async (
   workerUrl: string,
   workerSecret: string,
@@ -238,11 +244,19 @@ const pollWorker = async (
 ): Promise<WorkerResponse> => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    const started = Date.now();
     // The status GET is signed over the path plus a fresh timestamp, so a
     // captured signed request cannot be replayed to re-read a job's
     // media_info and filesystem paths beyond the worker's skew window. This
     // mirrors the POST /jobs body timestamp; keep the two schemes in sync.
-    const requestPath = `/jobs/${jobId}?ts=${Date.now()}`;
+    //
+    // `wait` asks the worker to hold the connection until the job settles.
+    // The lease still needs feeding, so the hold is a fraction of it rather
+    // than the worker's full ceiling: a long encode heartbeats several times
+    // over while a still answers in one round trip.
+    const requestPath = `/jobs/${jobId}?ts=${Date.now()}&wait=${String(
+      STATUS_WAIT_SECONDS,
+    )}`;
     const response = await fetch(
       `${workerUrl.replace(/\/$/, "")}${requestPath}`,
       {
@@ -252,11 +266,12 @@ const pollWorker = async (
             requestPath,
           ),
         },
-        /* Bound the status poll too (see sendJob): a hung status GET would
-           never re-evaluate the deadline loop and would hold the pump forever.
-           A timeout rejects, the caller's catch fails the job, and the next
-           tick retries. */
-        signal: AbortSignal.timeout(15_000),
+        /* Bound the status read (see sendJob): a hung status GET would never
+           re-evaluate the deadline loop and would hold the slot forever. The
+           bound allows for the long poll's hold plus a margin; a timeout
+           rejects, the caller's catch fails the job, and the next tick
+           retries. */
+        signal: AbortSignal.timeout(STATUS_WAIT_SECONDS * 1000 + 10_000),
       },
     );
     if (!response.ok)
@@ -264,7 +279,14 @@ const pollWorker = async (
     const state = (await response.json()) as WorkerResponse;
     if (state.status === "complete" || state.status === "failed") return state;
     await onPoll?.();
-    await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+    /* A worker too old to understand `wait` answers at once, and without a
+       floor this loop would spin on it. A worker that held the connection has
+       already waited, and pays nothing here. */
+    const held = Date.now() - started;
+    if (held < MIN_POLL_INTERVAL_MS)
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, MIN_POLL_INTERVAL_MS - held),
+      );
   }
   throw new Error(`Worker job exceeded its ${timeoutMs} ms deadline.`);
 };
@@ -1014,196 +1036,24 @@ export const sweepShuttleAudioJobs = async (db: AppDb): Promise<number> => {
   return enqueued;
 };
 
-const processJob = async (
+/* Everything that happens to a finished worker result: the blobs are
+   checksummed and registered, superseded rows are cleaned up, readiness is
+   decided per asset kind, and the version is marked ready.
+
+   Its own function because two paths reach it now. A movie is probed and then
+   transcoded, two jobs and two round trips, because the plan depends on what
+   the probe found. A still is both at once: its ladder is the same whatever
+   ffprobe says, so the worker renders it in the same call that probes it, and
+   3000 of them cost 3000 jobs rather than 6000. */
+const registerWorkerRenditions = async (
   db: AppDb,
-  job: typeof jobs.$inferSelect,
-  workerUrl: string,
-  workerSecret: string,
+  payload: JobPayload,
+  version: typeof assetVersions.$inferSelect,
+  assetKind: string,
+  state: WorkerResponse,
   blobRoot: string,
-  workerId: string,
 ): Promise<void> => {
-  const payload = parsePayload(job.payloadJson);
-  const sourceKey = payload.blob_key;
-  const versionId = payload.version_id;
-  if (!sourceKey || !versionId)
-    throw new Error("Job payload is missing blob_key or version_id.");
-  const sourcePath = path.join(blobRoot, sourceKey);
-  if (job.kind === "probe") {
-    const assetKind = await assetKindFor(db, payload, versionId);
-    if (assetKind === "pdf" || assetKind === "file") {
-      // ffprobe cannot parse these kinds, so the worker probe is skipped.
-      // PDFs still get a transcode (pdftoppm page rasters); plain files
-      // have nothing to derive and are marked skipped.
-      await db
-        .update(assetVersions)
-        .set({
-          mediaInfoJson: "{}",
-          colorJson: "{}",
-          transcodeStatus: assetKind === "pdf" ? "processing" : "skipped",
-        })
-        .where(eq(assetVersions.id, versionId))
-        .run();
-      await insertVersionEvent(
-        db,
-        payload,
-        versionId,
-        "version.transcode",
-        assetKind === "pdf" ? "processing" : "skipped",
-      );
-      if (assetKind === "pdf") await enqueueTranscode(db, payload, versionId);
-      return;
-    }
-    await sendJob(workerUrl, workerSecret, {
-      job_id: job.id,
-      kind: "probe",
-      source_path: sourcePath,
-    });
-    const state = await waitForWorker(
-      db,
-      workerUrl,
-      workerSecret,
-      job.id,
-      workerId,
-    );
-    if (state.status !== "complete" || !state.result?.media_info)
-      throw new Error(state.error ?? "Probe failed.");
-    const mediaInfo = state.result.media_info;
-    const num =
-      typeof mediaInfo.frameRateNum === "number"
-        ? mediaInfo.frameRateNum
-        : undefined;
-    const den =
-      typeof mediaInfo.frameRateDen === "number"
-        ? mediaInfo.frameRateDen
-        : undefined;
-    const timecode =
-      typeof mediaInfo.sourceTimecodeStart === "string"
-        ? mediaInfo.sourceTimecodeStart
-        : undefined;
-    // Drop-frame timecode is defined only for the 29.97 (30000/1001) and
-    // 59.94 (60000/1001) NTSC rates. A ";" separator on any other (commonly
-    // mistagged 24/25/30) source is not drop-frame; honoring it corrupts
-    // frame math and breaks exports, so the flag is gated on the exact rate
-    // as well as the separator. The worker's normalizeProbe applies the same
-    // guard; this is the write-back source of truth.
-    const dropFrame =
-      (timecode?.includes(";") ?? false) &&
-      den === 1001 &&
-      (num === 30000 || num === 60000);
-    let sourceStartFrame: number | null = null;
-    if (timecode && num && den) {
-      try {
-        const rate = { num, den };
-        sourceStartFrame = framesFromTimecode(
-          parseTimecode(timecode, rate),
-          rate,
-        );
-      } catch {
-        sourceStartFrame = null;
-      }
-    }
-    await db
-      .update(assetVersions)
-      .set({
-        mediaInfoJson: JSON.stringify(mediaInfo),
-        sourceTimecodeStart: timecode ?? null,
-        sourceStartFrame,
-        dropFrame,
-        frameRateNum: num ?? null,
-        frameRateDen: den ?? null,
-        durationFrames:
-          typeof mediaInfo.durationFrames === "number"
-            ? mediaInfo.durationFrames
-            : null,
-        colorJson: JSON.stringify(
-          mediaInfo.sourceColor ?? {
-            assumed: mediaInfo.colorAssumed === true,
-          },
-        ),
-        transcodeStatus: "processing",
-      })
-      .where(eq(assetVersions.id, versionId))
-      .run();
-    await insertVersionEvent(db, payload, versionId, "version.probed");
-    await insertVersionEvent(
-      db,
-      payload,
-      versionId,
-      "version.transcode",
-      "processing",
-    );
-    await enqueueTranscode(db, payload, versionId);
-    return;
-  }
-  if (job.kind === "watermark") {
-    await processWatermarkJob(
-      db,
-      job,
-      payload,
-      versionId,
-      sourcePath,
-      workerUrl,
-      workerSecret,
-      blobRoot,
-      workerId,
-    );
-    return;
-  }
-  if (job.kind !== "transcode")
-    throw new Error(`Unsupported worker job kind: ${job.kind}.`);
-  const version = (
-    await db
-      .select()
-      .from(assetVersions)
-      .where(eq(assetVersions.id, versionId))
-      .limit(1)
-      .all()
-  )[0] as typeof assetVersions.$inferSelect | undefined;
-  if (!version) throw new Error("Version was not found.");
-  const assetKind = await assetKindFor(db, payload, versionId);
-  const mediaInfo: MediaInfo = {
-    format: {},
-    streams: [],
-    variableFrameRate: false,
-    colorAssumed: true,
-    ...(parseObject(version.mediaInfoJson) as Partial<MediaInfo>),
-  };
-  const planned = planRenditions(assetKind, mediaInfo);
-  if (!planned.length) {
-    await db
-      .update(assetVersions)
-      .set({ transcodeStatus: "skipped" })
-      .where(eq(assetVersions.id, version.id))
-      .run();
-    await insertVersionEvent(
-      db,
-      payload,
-      version.id,
-      "version.transcode",
-      "skipped",
-    );
-    return;
-  }
-  const outputs = planned.map((entry) => ({
-    kind: entry.kind,
-    path: path.join(blobRoot, "renditions", version.id, entry.filename),
-    ...(entry.height === undefined ? {} : { height: entry.height }),
-  }));
-  await sendJob(workerUrl, workerSecret, {
-    job_id: job.id,
-    kind: "transcode",
-    source_path: sourcePath,
-    media_info: mediaInfo,
-    outputs,
-  });
-  const state = await waitForWorker(
-    db,
-    workerUrl,
-    workerSecret,
-    job.id,
-    workerId,
-  );
-  if (state.status !== "complete" || !state.result?.renditions)
+  if (!state.result?.renditions)
     throw new Error(state.error ?? "Transcode failed.");
   const failures = state.result.failures ?? [];
   for (const failure of failures)
@@ -1323,6 +1173,247 @@ const processJob = async (
     version.id,
     "version.transcode",
     "ready",
+  );
+};
+
+const processJob = async (
+  db: AppDb,
+  job: typeof jobs.$inferSelect,
+  workerUrl: string,
+  workerSecret: string,
+  blobRoot: string,
+  workerId: string,
+): Promise<void> => {
+  const payload = parsePayload(job.payloadJson);
+  const sourceKey = payload.blob_key;
+  const versionId = payload.version_id;
+  if (!sourceKey || !versionId)
+    throw new Error("Job payload is missing blob_key or version_id.");
+  const sourcePath = path.join(blobRoot, sourceKey);
+  if (job.kind === "probe") {
+    const assetKind = await assetKindFor(db, payload, versionId);
+    if (assetKind === "pdf" || assetKind === "file") {
+      // ffprobe cannot parse these kinds, so the worker probe is skipped.
+      // PDFs still get a transcode (pdftoppm page rasters); plain files
+      // have nothing to derive and are marked skipped.
+      await db
+        .update(assetVersions)
+        .set({
+          mediaInfoJson: "{}",
+          colorJson: "{}",
+          transcodeStatus: assetKind === "pdf" ? "processing" : "skipped",
+        })
+        .where(eq(assetVersions.id, versionId))
+        .run();
+      await insertVersionEvent(
+        db,
+        payload,
+        versionId,
+        "version.transcode",
+        assetKind === "pdf" ? "processing" : "skipped",
+      );
+      if (assetKind === "pdf") await enqueueTranscode(db, payload, versionId);
+      return;
+    }
+    /* A still's ladder does not depend on what the probe finds, so it is sent
+       with the probe and rendered in the same call. That halves the jobs and
+       the round trips for a delivery of photographs, which is the difference
+       between an afternoon and a coffee. Everything else is probed first,
+       because the plan is derived from the probe. */
+    const stillOutputs =
+      assetKind === "image"
+        ? planRenditions("image", {
+            format: {},
+            streams: [],
+            variableFrameRate: false,
+            colorAssumed: true,
+          }).map((entry) => ({
+            kind: entry.kind,
+            path: path.join(blobRoot, "renditions", versionId, entry.filename),
+          }))
+        : [];
+    await sendJob(workerUrl, workerSecret, {
+      job_id: job.id,
+      kind: "probe",
+      source_path: sourcePath,
+      ...(stillOutputs.length ? { outputs: stillOutputs } : {}),
+    });
+    const state = await waitForWorker(
+      db,
+      workerUrl,
+      workerSecret,
+      job.id,
+      workerId,
+    );
+    if (state.status !== "complete" || !state.result?.media_info)
+      throw new Error(state.error ?? "Probe failed.");
+    const mediaInfo = state.result.media_info;
+    const num =
+      typeof mediaInfo.frameRateNum === "number"
+        ? mediaInfo.frameRateNum
+        : undefined;
+    const den =
+      typeof mediaInfo.frameRateDen === "number"
+        ? mediaInfo.frameRateDen
+        : undefined;
+    const timecode =
+      typeof mediaInfo.sourceTimecodeStart === "string"
+        ? mediaInfo.sourceTimecodeStart
+        : undefined;
+    // Drop-frame timecode is defined only for the 29.97 (30000/1001) and
+    // 59.94 (60000/1001) NTSC rates. A ";" separator on any other (commonly
+    // mistagged 24/25/30) source is not drop-frame; honoring it corrupts
+    // frame math and breaks exports, so the flag is gated on the exact rate
+    // as well as the separator. The worker's normalizeProbe applies the same
+    // guard; this is the write-back source of truth.
+    const dropFrame =
+      (timecode?.includes(";") ?? false) &&
+      den === 1001 &&
+      (num === 30000 || num === 60000);
+    let sourceStartFrame: number | null = null;
+    if (timecode && num && den) {
+      try {
+        const rate = { num, den };
+        sourceStartFrame = framesFromTimecode(
+          parseTimecode(timecode, rate),
+          rate,
+        );
+      } catch {
+        sourceStartFrame = null;
+      }
+    }
+    await db
+      .update(assetVersions)
+      .set({
+        mediaInfoJson: JSON.stringify(mediaInfo),
+        sourceTimecodeStart: timecode ?? null,
+        sourceStartFrame,
+        dropFrame,
+        frameRateNum: num ?? null,
+        frameRateDen: den ?? null,
+        durationFrames:
+          typeof mediaInfo.durationFrames === "number"
+            ? mediaInfo.durationFrames
+            : null,
+        colorJson: JSON.stringify(
+          mediaInfo.sourceColor ?? {
+            assumed: mediaInfo.colorAssumed === true,
+          },
+        ),
+        transcodeStatus: "processing",
+      })
+      .where(eq(assetVersions.id, versionId))
+      .run();
+    await insertVersionEvent(db, payload, versionId, "version.probed");
+    await insertVersionEvent(
+      db,
+      payload,
+      versionId,
+      "version.transcode",
+      "processing",
+    );
+    /* A still came back rendered: register it here and it is done. Anything
+       else needs a transcode planned from what the probe just found. */
+    if (stillOutputs.length && state.result.renditions) {
+      const version = (
+        await db
+          .select()
+          .from(assetVersions)
+          .where(eq(assetVersions.id, versionId))
+          .limit(1)
+          .all()
+      )[0] as typeof assetVersions.$inferSelect | undefined;
+      if (!version) throw new Error("Version was not found.");
+      await registerWorkerRenditions(
+        db,
+        payload,
+        version,
+        assetKind,
+        state,
+        blobRoot,
+      );
+      return;
+    }
+    await enqueueTranscode(db, payload, versionId);
+    return;
+  }
+  if (job.kind === "watermark") {
+    await processWatermarkJob(
+      db,
+      job,
+      payload,
+      versionId,
+      sourcePath,
+      workerUrl,
+      workerSecret,
+      blobRoot,
+      workerId,
+    );
+    return;
+  }
+  if (job.kind !== "transcode")
+    throw new Error(`Unsupported worker job kind: ${job.kind}.`);
+  const version = (
+    await db
+      .select()
+      .from(assetVersions)
+      .where(eq(assetVersions.id, versionId))
+      .limit(1)
+      .all()
+  )[0] as typeof assetVersions.$inferSelect | undefined;
+  if (!version) throw new Error("Version was not found.");
+  const assetKind = await assetKindFor(db, payload, versionId);
+  const mediaInfo: MediaInfo = {
+    format: {},
+    streams: [],
+    variableFrameRate: false,
+    colorAssumed: true,
+    ...(parseObject(version.mediaInfoJson) as Partial<MediaInfo>),
+  };
+  const planned = planRenditions(assetKind, mediaInfo);
+  if (!planned.length) {
+    await db
+      .update(assetVersions)
+      .set({ transcodeStatus: "skipped" })
+      .where(eq(assetVersions.id, version.id))
+      .run();
+    await insertVersionEvent(
+      db,
+      payload,
+      version.id,
+      "version.transcode",
+      "skipped",
+    );
+    return;
+  }
+  const outputs = planned.map((entry) => ({
+    kind: entry.kind,
+    path: path.join(blobRoot, "renditions", version.id, entry.filename),
+    ...(entry.height === undefined ? {} : { height: entry.height }),
+  }));
+  await sendJob(workerUrl, workerSecret, {
+    job_id: job.id,
+    kind: "transcode",
+    source_path: sourcePath,
+    media_info: mediaInfo,
+    outputs,
+  });
+  const state = await waitForWorker(
+    db,
+    workerUrl,
+    workerSecret,
+    job.id,
+    workerId,
+  );
+  if (state.status !== "complete" || !state.result?.renditions)
+    throw new Error(state.error ?? "Transcode failed.");
+  await registerWorkerRenditions(
+    db,
+    payload,
+    version,
+    assetKind,
+    state,
+    blobRoot,
   );
 };
 
@@ -1848,6 +1939,28 @@ const processExportJob = async (
     .run();
 };
 
+/* How many media jobs may run at once.
+
+   The pump used to run exactly one, awaited to completion, on a one second
+   tick, with a status poll that also ran at one second. That put a floor of
+   roughly two seconds under every version (a probe job, then a transcode
+   job), whatever the work actually cost: a still that renders in 700 ms took
+   as long as a feature. Three thousand of them could not finish in a working
+   day while three of four cores sat idle.
+
+   Concurrency is bounded rather than generous on purpose. Encodes are the
+   heaviest thing this machine does and the site shares its cores, so the
+   default leaves two of them alone; an operator with a dedicated box raises
+   it. One restores exactly the old behaviour. */
+const DEFAULT_MEDIA_CONCURRENCY = Math.max(1, cpus().length - 2);
+
+const mediaConcurrency = (): number => {
+  const parsed = Number(process.env.MEDIA_CONCURRENCY);
+  return Number.isFinite(parsed) && parsed >= 1
+    ? Math.floor(parsed)
+    : DEFAULT_MEDIA_CONCURRENCY;
+};
+
 export const startWorkerPump = (
   db: AppDb,
   options: { workerUrl?: string; workerSecret?: string; blobRoot: string },
@@ -1860,87 +1973,83 @@ export const startWorkerPump = (
       "[onelight] Media processing is disabled: WORKER_URL and WORKER_SECRET are not both set. Probe and transcode jobs will stay queued until a worker is configured; comment exports still run.",
     );
   const workerId = new UlidGenerator().ulid();
-  let active = false;
+  const slots = mediaConcurrency();
+  let housekeeping = false;
+  let exporting = false;
+  let running = 0;
+  let stopped = false;
   let lastWatermarkSweep = 0;
   let lastShuttleAudioSweep = 0;
   let lastStillLadderSweep = 0;
   let reclaimedOnStart = false;
-  const tick = async () => {
-    if (active) return;
-    active = true;
-    // The whole body runs inside try/finally: `active` is the pump's single
-    // re-entrancy guard, so a throw anywhere here (claimNextJob, failJob, a
-    // transient DB error) must never leave it stuck true, which would wedge
-    // the pump for the process lifetime. The finally clears it and the outer
-    // catch keeps the throw from escaping `void tick()` as an
-    // unhandledRejection.
+
+  /* Media jobs, up to `slots` at a time. Claiming is already race-safe: the
+     claim is a conditional UPDATE repeating every claimability predicate, so
+     two slots reaching for the same row leave exactly one winner. Each slot
+     pulls the next job itself when it finishes, so a queue of stills drains
+     continuously rather than one per tick. */
+  const pumpJobs = async (): Promise<void> => {
+    if (!mediaEnabled || stopped) return;
+    while (running < slots) {
+      let job: Awaited<ReturnType<typeof claimNextJob>>;
+      try {
+        job = await claimNextJob(db, Date.now(), workerId, ["cpu"]);
+      } catch (error) {
+        console.warn(
+          `[onelight] job claim failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        return;
+      }
+      if (!job) return;
+      running += 1;
+      const claimed = job;
+      void (async () => {
+        try {
+          await processJob(
+            db,
+            claimed,
+            options.workerUrl as string,
+            options.workerSecret as string,
+            options.blobRoot,
+            workerId,
+          );
+          await completeJob(db, claimed.id, workerId, Date.now());
+        } catch (error) {
+          try {
+            await failJob(
+              db,
+              claimed.id,
+              workerId,
+              Date.now(),
+              error instanceof Error ? error.message : "Worker job failed.",
+              1000,
+            );
+            await recordDeadMediaJob(db, claimed);
+          } catch (inner) {
+            console.warn(
+              `[onelight] could not record job failure: ${
+                inner instanceof Error ? inner.message : String(inner)
+              }`,
+            );
+          }
+        } finally {
+          running -= 1;
+          /* Straight on to the next one rather than waiting for the tick. */
+          void pumpJobs();
+        }
+      })();
+    }
+  };
+
+  /* Exports keep their own single slot. A long PDF report used to run inside
+     the same awaited tick as media, so it head-of-line blocked every encode
+     behind it for its whole duration; now it blocks only the next export. */
+  const pumpExports = async (): Promise<void> => {
+    if (exporting || stopped) return;
+    exporting = true;
     try {
-      const now = Date.now();
-      // On the first tick, reclaim every export still in 'processing': the
-      // single pump processes exports synchronously, so such a row can only
-      // be an orphan from a crashed previous process. Afterwards, reclaim
-      // only rows older than the stale threshold, catching a mid-flight crash
-      // without disturbing an export this pump is actively running.
-      if (!reclaimedOnStart) {
-        reclaimedOnStart = true;
-        await reclaimStuckExports(db, now);
-      } else {
-        await reclaimStuckExports(db, now - EXPORT_RECLAIM_STALE_MS);
-      }
-      // Reconcile missing watermarked renditions on a throttle rather than
-      // every poll; the sweep itself is bounded per pass.
-      if (
-        mediaEnabled &&
-        now - lastWatermarkSweep >= WATERMARK_SWEEP_INTERVAL_MS
-      ) {
-        lastWatermarkSweep = now;
-        try {
-          await sweepWatermarkJobs(db);
-        } catch (error) {
-          console.warn(
-            `[onelight] watermark sweep failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
-      if (
-        mediaEnabled &&
-        now - lastStillLadderSweep >= STILL_LADDER_SWEEP_INTERVAL_MS
-      ) {
-        lastStillLadderSweep = now;
-        try {
-          await sweepStillLadderJobs(db);
-        } catch (error) {
-          console.warn(
-            `[onelight] still ladder sweep failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
-      if (
-        mediaEnabled &&
-        now - lastShuttleAudioSweep >= SHUTTLE_AUDIO_SWEEP_INTERVAL_MS
-      ) {
-        lastShuttleAudioSweep = now;
-        try {
-          await sweepShuttleAudioJobs(db);
-        } catch (error) {
-          console.warn(
-            `[onelight] shuttle audio sweep failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
-      // One export per tick. A long export (a large PDF report) head-of-line
-      // blocks this single pump for its whole duration, since the tick awaits
-      // it before claiming a transcode. The real fix is a separate export
-      // pump/process; that lives outside this file's ownership, so it is
-      // documented here rather than worked around. Exports are bounded work
-      // (bytes already in the DB, at worst a bounded set of still extractions
-      // that each carry their own deadline), so the block is finite.
       const pendingExport = (
         await db
           .select()
@@ -1950,76 +2059,121 @@ export const startWorkerPump = (
           .limit(1)
           .all()
       )[0];
-      if (pendingExport) {
-        try {
-          await db
-            .update(exportJobs)
-            .set({ status: "processing" })
-            .where(
-              and(
-                eq(exportJobs.id, pendingExport.id),
-                eq(exportJobs.status, "queued"),
-              ),
-            )
-            .run();
-          await processExportJob(db, pendingExport, options.blobRoot, {
-            workerUrl: mediaEnabled ? options.workerUrl : undefined,
-            workerSecret: mediaEnabled ? options.workerSecret : undefined,
-          });
-        } catch (error) {
-          await db
-            .update(exportJobs)
-            .set({
-              status: "failed",
-              error: error instanceof Error ? error.message : "Export failed.",
-              finishedAt: Date.now(),
-            })
-            .where(eq(exportJobs.id, pendingExport.id))
-            .run();
-        }
-      }
-      const job = mediaEnabled
-        ? await claimNextJob(db, now, workerId, ["cpu"])
-        : null;
-      if (job) {
-        try {
-          await processJob(
-            db,
-            job,
-            options.workerUrl as string,
-            options.workerSecret as string,
-            options.blobRoot,
-            workerId,
-          );
-          await completeJob(db, job.id, workerId, Date.now());
-        } catch (error) {
-          await failJob(
-            db,
-            job.id,
-            workerId,
-            Date.now(),
-            error instanceof Error ? error.message : "Worker job failed.",
-            1000,
-          );
-          await recordDeadMediaJob(db, job);
-        }
+      if (!pendingExport) return;
+      try {
+        await db
+          .update(exportJobs)
+          .set({ status: "processing" })
+          .where(
+            and(
+              eq(exportJobs.id, pendingExport.id),
+              eq(exportJobs.status, "queued"),
+            ),
+          )
+          .run();
+        await processExportJob(db, pendingExport, options.blobRoot, {
+          workerUrl: mediaEnabled ? options.workerUrl : undefined,
+          workerSecret: mediaEnabled ? options.workerSecret : undefined,
+        });
+      } catch (error) {
+        await db
+          .update(exportJobs)
+          .set({
+            status: "failed",
+            error: error instanceof Error ? error.message : "Export failed.",
+            finishedAt: Date.now(),
+          })
+          .where(eq(exportJobs.id, pendingExport.id))
+          .run();
       }
     } catch (error) {
-      // A transient failure outside the inner try/catch blocks (for example a
-      // DB error in claimNextJob or the export reclaim) must not wedge the
-      // pump: log it and let finally clear `active` for the next tick.
       console.warn(
-        `[onelight] worker pump tick failed: ${
+        `[onelight] export pump failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
     } finally {
-      active = false;
+      exporting = false;
     }
+  };
+
+  const sweep = async (
+    name: string,
+    run: () => Promise<unknown>,
+  ): Promise<void> => {
+    try {
+      await run();
+    } catch (error) {
+      console.warn(
+        `[onelight] ${name} sweep failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  };
+
+  /* Reclaims and sweeps. Their own re-entrancy guard, separate from the job
+     slots, so a slow sweep never stops work being claimed. */
+  const tick = async () => {
+    if (!housekeeping) {
+      housekeeping = true;
+      try {
+        const now = Date.now();
+        // On the first tick, reclaim every export still in 'processing': the
+        // pump processes exports one at a time, so such a row can only be an
+        // orphan from a crashed previous process. Afterwards, reclaim only
+        // rows older than the stale threshold, catching a mid-flight crash
+        // without disturbing an export this pump is actively running.
+        if (!reclaimedOnStart) {
+          reclaimedOnStart = true;
+          await reclaimStuckExports(db, now);
+        } else {
+          await reclaimStuckExports(db, now - EXPORT_RECLAIM_STALE_MS);
+        }
+        // Reconcile missing renditions on a throttle rather than every poll;
+        // each sweep is bounded per pass.
+        if (
+          mediaEnabled &&
+          now - lastWatermarkSweep >= WATERMARK_SWEEP_INTERVAL_MS
+        ) {
+          lastWatermarkSweep = now;
+          await sweep("watermark", () => sweepWatermarkJobs(db));
+        }
+        if (
+          mediaEnabled &&
+          now - lastStillLadderSweep >= STILL_LADDER_SWEEP_INTERVAL_MS
+        ) {
+          lastStillLadderSweep = now;
+          await sweep("still ladder", () => sweepStillLadderJobs(db));
+        }
+        if (
+          mediaEnabled &&
+          now - lastShuttleAudioSweep >= SHUTTLE_AUDIO_SWEEP_INTERVAL_MS
+        ) {
+          lastShuttleAudioSweep = now;
+          await sweep("shuttle audio", () => sweepShuttleAudioJobs(db));
+        }
+      } catch (error) {
+        // A transient failure here must not wedge the pump: log it and let
+        // the finally clear the guard for the next tick.
+        console.warn(
+          `[onelight] worker pump housekeeping failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      } finally {
+        housekeeping = false;
+      }
+    }
+    void pumpExports();
+    void pumpJobs();
   };
   const timer = setInterval(() => {
     void tick();
   }, 1000);
   void tick();
-  return () => clearInterval(timer);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
 };

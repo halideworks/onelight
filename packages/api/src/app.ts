@@ -125,6 +125,8 @@ import type { AppEnv, SessionUser, Variables } from "./types.js";
 import { redactBearerPath } from "./request-log.js";
 import {
   DEFAULT_TRANSFER_REQUEST_BYTE_CAP,
+  MAX_ATTACH_BATCH,
+  MAX_DIRECT_UPLOAD_BYTES,
   MAX_COMMENT_ATTACHMENT_BYTES,
   MAX_COMMENT_ATTACHMENTS,
   MAX_COMMENT_ATTACHMENT_TOTAL_BYTES,
@@ -9768,6 +9770,154 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       : {}),
   });
 
+  /* A small file, whole, in one request, landed as an asset.
+
+     The multipart path is six round trips before a byte is reviewed: create
+     the session, initialize it, list its parts, put the one part, complete it,
+     attach it. That is the right shape for a camera master and the wrong one
+     for a JPEG, and at a few thousand files the round trips dominate the
+     transfer. This is the same journey with the ceremony removed, for
+     anything at or under MAX_DIRECT_UPLOAD_BYTES.
+
+     The body is the file. Everything else rides in the query string, which is
+     what lets the whole thing be one streamed request rather than a multipart
+     form the server would have to buffer to parse. */
+  api.post("/projects/:id/uploads/direct", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const projectId = c.req.param("id");
+    await requireProject(projectId, actor, "editor");
+    const store = requireBlobStore();
+    const rawName = (c.req.query("filename") ?? "").trim();
+    if (!rawName || rawName.length > 500)
+      throw errors.validation("A filename is required.");
+    const relativePath = (c.req.query("relative_path") ?? "").slice(0, 2000);
+    if (relativePath.split(/[\\/]/).includes(".."))
+      throw errors.validation("Relative path cannot contain parent segments.");
+    const filename = rawName.replace(/[\\/]/g, "_");
+    const folderId = c.req.query("folder_id") || null;
+    if (folderId) await requireDestinationFolder(projectId, folderId);
+    const declared = Number(c.req.header("content-length") ?? 0);
+    if (declared > MAX_DIRECT_UPLOAD_BYTES) throw errors.payloadTooLarge();
+    if (!c.req.raw.body) throw errors.validation("A file body is required.");
+    const uploadId = env.ids.ulid();
+    const blobKey = `${actor.workspaceId}/${projectId}/uploads/${uploadId}/${filename}`;
+    const now = env.clock.now();
+    await env.db
+      .insert(uploadSessions)
+      .values({
+        id: uploadId,
+        workspaceId: actor.workspaceId,
+        projectId,
+        createdBy: actor.id,
+        clientFilename: filename,
+        relativePath,
+        size: declared > 0 ? declared : 0,
+        checksumCrc32c: null,
+        blobKey,
+        uploadId: null,
+        partSize: null,
+        status: "uploading",
+        createdAt: now,
+        completedAt: null,
+      })
+      .run();
+    /* The stream is capped whatever Content-Length claimed, so a lying header
+       cannot write an unbounded blob. */
+    await store.putStream(
+      blobKey,
+      limitStream(c.req.raw.body, MAX_DIRECT_UPLOAD_BYTES),
+      declared > 0 ? { size: declared } : {},
+    );
+    const stored =
+      typeof store.head === "function"
+        ? await store.head(blobKey).catch(() => undefined)
+        : undefined;
+    const size = stored?.size ?? declared;
+    if (!size) {
+      await env.db
+        .update(uploadSessions)
+        .set({ status: "aborted" })
+        .where(eq(uploadSessions.id, uploadId))
+        .run();
+      await deleteBlobQuietly(blobKey);
+      throw errors.validation("The uploaded file was empty.");
+    }
+    /* A declared length that does not match what arrived is a truncated or
+       overlong body: refuse it rather than land a corrupt asset. */
+    if (declared > 0 && size !== declared) {
+      await env.db
+        .update(uploadSessions)
+        .set({ status: "quarantined" })
+        .where(eq(uploadSessions.id, uploadId))
+        .run();
+      throw errors.validation("Upload size does not match the declared size.", {
+        expected: declared,
+        actual: size,
+      });
+    }
+    const expected = c.req.query("checksum_crc32c");
+    if (expected) {
+      const actual = await crc32cStream(await store.getStream(blobKey));
+      if (!crc32cMatches(expected, actual)) {
+        await env.db
+          .update(uploadSessions)
+          .set({ status: "quarantined", checksumCrc32c: expected })
+          .where(eq(uploadSessions.id, uploadId))
+          .run();
+        throw errors.validation(
+          "Upload checksum does not match the stored object.",
+          { expected, actual: actual.hex },
+        );
+      }
+    }
+    await env.db
+      .update(uploadSessions)
+      .set({
+        status: "completed",
+        size,
+        ...(expected ? { checksumCrc32c: expected } : {}),
+        completedAt: env.clock.now(),
+      })
+      .where(eq(uploadSessions.id, uploadId))
+      .run();
+    const upload = (
+      await env.db
+        .select()
+        .from(uploadSessions)
+        .where(eq(uploadSessions.id, uploadId))
+        .limit(1)
+        .all()
+    )[0];
+    if (!upload) throw errors.internal();
+    /* attach=0 leaves the upload for a batch attach to land, which is how a
+       client that wants one project event for the whole delivery uses this. */
+    if (c.req.query("attach") === "0")
+      return c.json({ upload: uploadWire(upload) }, 201);
+    const landed = await landUploadAsAsset(upload, {
+      ...(c.req.query("name") ? { name: c.req.query("name") } : {}),
+      folderId,
+      uploadedBy: actor.id,
+      quiet: c.req.query("quiet") === "1",
+    });
+    return c.json(
+      {
+        upload: uploadWire(upload),
+        asset: {
+          id: landed.assetId,
+          name: landed.name,
+          kind: assetKind(filename),
+          status: "none",
+          current_version_id: landed.versionId,
+          version_id: landed.versionId,
+          job_id: landed.jobId,
+          created_at: landed.createdAt,
+          updated_at: landed.createdAt,
+        },
+      },
+      201,
+    );
+  });
+
   api.post("/uploads/:id/multipart", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const upload = await findUpload(c.req.param("id"), actor);
@@ -10201,6 +10351,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       name?: string | undefined;
       folderId: string | null;
       uploadedBy: string;
+      /** Suppresses the per-asset project event; the caller announces the
+          batch itself. */
+      quiet?: boolean;
     },
   ): Promise<{
     assetId: string;
@@ -10288,11 +10441,15 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         workerId: null,
       })
       .run();
-    await appendProjectEvent(upload.projectId, "asset.created", {
-      asset_id: assetId,
-      version_id: versionId,
-      job_id: jobId,
-    });
+    /* A batch announces itself once, at the end, instead of 3000 times: a
+       room full of open browsers would otherwise take one event, one fetch
+       and one re-render per file. */
+    if (!options.quiet)
+      await appendProjectEvent(upload.projectId, "asset.created", {
+        asset_id: assetId,
+        version_id: versionId,
+        job_id: jobId,
+      });
     return { assetId, versionId, jobId, name, createdAt: now };
   };
 
@@ -10333,6 +10490,83 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       },
       201,
     );
+  });
+
+  /* Many completed uploads become many assets in one request.
+
+     One request per file is fine for a handful and ruinous for a delivery:
+     3000 attaches meant 3000 round trips, 3000 project events and 3000
+     notifications. This lands them together, announces the batch once, and
+     reports per-upload failures rather than refusing the whole set because
+     one upload was already attached.
+
+     The bound is per request, not per delivery: a client with thousands of
+     files sends several of these. */
+  api.post("/projects/:id/assets/batch", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const projectId = c.req.param("id");
+    await requireProject(projectId, actor, "editor");
+    const body = await jsonBody(c, bodies.assetBatchCreate);
+    if (body.items.length > MAX_ATTACH_BATCH)
+      throw errors.validation(
+        `A batch may attach at most ${String(MAX_ATTACH_BATCH)} uploads.`,
+      );
+    /* Every destination folder is checked once, however many files land in
+       it. */
+    const folderIds = new Set(
+      body.items
+        .map((item) => item.folder_id ?? body.folder_id ?? null)
+        .filter((id): id is string => typeof id === "string"),
+    );
+    for (const folderId of folderIds)
+      await requireDestinationFolder(projectId, folderId);
+    const items: Array<Record<string, unknown>> = [];
+    const failures: Array<{ upload_id: string; error: string }> = [];
+    for (const item of body.items) {
+      try {
+        const upload = await findUpload(item.upload_id, actor);
+        if (upload.projectId !== projectId || upload.status !== "completed")
+          throw errors.validation("Upload must be completed for this project.");
+        const existingVersion = await env.db
+          .select({ id: assetVersions.id })
+          .from(assetVersions)
+          .where(eq(assetVersions.uploadSessionId, upload.id))
+          .limit(1)
+          .all();
+        if (existingVersion.length)
+          throw errors.conflict("This upload is already attached to an asset.");
+        const landed = await landUploadAsAsset(upload, {
+          name: item.name,
+          folderId: item.folder_id ?? body.folder_id ?? null,
+          uploadedBy: actor.id,
+          quiet: true,
+        });
+        items.push({
+          id: landed.assetId,
+          upload_id: upload.id,
+          name: landed.name,
+          kind: assetKind(upload.clientFilename),
+          status: "none",
+          current_version_id: landed.versionId,
+          version_id: landed.versionId,
+          job_id: landed.jobId,
+          created_at: landed.createdAt,
+          updated_at: landed.createdAt,
+        });
+      } catch (caught) {
+        /* One bad upload does not sink the batch; the client is told which. */
+        failures.push({
+          upload_id: item.upload_id,
+          error: mapError(caught).message,
+        });
+      }
+    }
+    if (items.length)
+      await appendProjectEvent(projectId, "assets.created_batch", {
+        count: items.length,
+        asset_ids: items.slice(0, 20).map((item) => item.id),
+      });
+    return c.json({ items, failures }, items.length ? 201 : 207);
   });
 
   /* This project's trash. GET /trash is the workspace-wide, admin-only

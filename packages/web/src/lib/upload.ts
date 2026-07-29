@@ -177,9 +177,31 @@ const putPartWithRetry = async (
 
 /* Sessions persist across page reloads: the ledger remembers the session id
    for a file's identity, so reopening the page and dropping the same file
-   resumes from the last completed part instead of starting over. */
+   resumes from the last completed part instead of starting over.
+
+   It is bounded. A key per file filled localStorage on a large delivery and
+   then threw on every write, and a resume ledger is worth having for the
+   files big enough to want one. Oldest entries are evicted first, and only
+   files above the direct-upload size are recorded at all: a small file that
+   fails is re-sent in one request, so remembering it buys nothing. */
+const LEDGER_INDEX = "onelight.upload.index";
+const LEDGER_LIMIT = 400;
+
 const ledgerKey = (scope: string, file: File): string =>
   `onelight.upload.${scope}.${file.name}.${file.size}.${file.lastModified}`;
+
+const ledgerIndex = (): string[] => {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(LEDGER_INDEX) ?? "[]",
+    ) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === "string")
+      : [];
+  } catch {
+    return [];
+  }
+};
 
 const ledgerRead = (key: string): string | null => {
   try {
@@ -191,7 +213,14 @@ const ledgerRead = (key: string): string | null => {
 
 const ledgerWrite = (key: string, sessionId: string): void => {
   try {
+    const index = ledgerIndex().filter((entry) => entry !== key);
+    index.push(key);
+    while (index.length > LEDGER_LIMIT) {
+      const oldest = index.shift();
+      if (oldest) localStorage.removeItem(oldest);
+    }
     localStorage.setItem(key, sessionId);
+    localStorage.setItem(LEDGER_INDEX, JSON.stringify(index));
   } catch {
     /* Private windows without storage still upload, without resume. */
   }
@@ -200,6 +229,8 @@ const ledgerWrite = (key: string, sessionId: string): void => {
 const ledgerClear = (key: string): void => {
   try {
     localStorage.removeItem(key);
+    const index = ledgerIndex().filter((entry) => entry !== key);
+    localStorage.setItem(LEDGER_INDEX, JSON.stringify(index));
   } catch {
     /* Nothing to clear. */
   }
@@ -239,6 +270,105 @@ const endpointsFor = (target: UploadTarget) => {
       }),
     session: (sessionId: string) => `/api/v1/uploads/${sessionId}`,
   };
+};
+
+/* The direct path: a small file goes up whole, in one request that also
+   lands the asset, instead of the six-round-trip multipart dance. This is the
+   difference between a delivery of stills taking minutes and taking an hour,
+   and none of it is about bandwidth.
+
+   The ceiling matches the server's MAX_DIRECT_UPLOAD_BYTES. A file over it
+   falls through to the resumable path, which is what it wants anyway. */
+export const MAX_DIRECT_UPLOAD_BYTES = 64 * 1024 * 1024;
+
+export interface DirectResult {
+  uploadId: string;
+  asset: { id: string; name: string } | null;
+}
+
+export const uploadFileDirect = async (options: {
+  projectId: string;
+  file: File;
+  relativePath: string;
+  folderId?: string | null;
+  /** Leaves the upload unattached, for a caller landing a whole batch at
+      once. */
+  attach?: boolean;
+  /** Suppresses the per-asset project event, for the same reason. */
+  quiet?: boolean;
+  onProgress?: (progress: UploadProgress) => void;
+}): Promise<DirectResult> => {
+  const query = new URLSearchParams({
+    filename: options.file.name,
+    ...(options.relativePath ? { relative_path: options.relativePath } : {}),
+    ...(options.folderId ? { folder_id: options.folderId } : {}),
+    ...(options.attach === false ? { attach: "0" } : {}),
+    ...(options.quiet ? { quiet: "1" } : {}),
+  });
+  const path = `/api/v1/projects/${options.projectId}/uploads/direct?${query.toString()}`;
+  const total = options.file.size;
+  const samples: Array<{ at: number; bytes: number }> = [];
+  const body = await new Promise<{ upload: { id: string }; asset?: unknown }>(
+    (resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", path);
+      xhr.setRequestHeader("content-type", "application/octet-stream");
+      xhr.upload.onprogress = (event) => {
+        const now = Date.now();
+        samples.push({ at: now, bytes: event.loaded });
+        while (
+          samples.length > 2 &&
+          (samples[0]?.at ?? 0) < now - RATE_WINDOW_MS
+        )
+          samples.shift();
+        const first = samples[0];
+        const last = samples[samples.length - 1];
+        const span = first && last ? last.at - first.at : 0;
+        const rate =
+          first && last && span > 0
+            ? ((last.bytes - first.bytes) / span) * 1000
+            : 0;
+        options.onProgress?.({
+          bytes: event.loaded,
+          total,
+          rate: Math.max(0, rate),
+        });
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(
+              JSON.parse(xhr.responseText) as {
+                upload: { id: string };
+                asset?: unknown;
+              },
+            );
+          } catch {
+            reject(new Error("The upload did not answer with a result."));
+          }
+        } else {
+          reject(new Error(errorTextOf(xhr) ?? "The upload failed."));
+        }
+      };
+      xhr.onerror = () => reject(new Error("The upload failed."));
+      xhr.send(options.file);
+    },
+  );
+  options.onProgress?.({ bytes: total, total, rate: 0 });
+  const asset = body.asset as { id: string; name: string } | undefined;
+  return { uploadId: body.upload.id, asset: asset ?? null };
+};
+
+/* The API's error envelope, for the XHR paths that cannot use apiPost. */
+const errorTextOf = (xhr: XMLHttpRequest): string | null => {
+  try {
+    const parsed = JSON.parse(xhr.responseText) as {
+      error?: { message?: string };
+    };
+    return parsed.error?.message ?? null;
+  } catch {
+    return null;
+  }
 };
 
 export const uploadFile = async (options: {

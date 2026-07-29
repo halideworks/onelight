@@ -1008,6 +1008,9 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       "post /api/v1/admin/system/test-email",
       "post /api/v1/t/{slug}/files/{assetId}/download",
       "post /api/v1/t/{slug}/uploads/{id}/multipart",
+      /* The body is the file itself, streamed; everything about it rides in
+         the query string so the request never has to be buffered to parse. */
+      "post /api/v1/projects/{id}/uploads/direct",
     ]);
 
     it("documents every registered /api/v1 route with schemas", async () => {

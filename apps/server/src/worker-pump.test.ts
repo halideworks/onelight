@@ -14,7 +14,11 @@ import {
   users,
   workspaces,
 } from "@onelight/db";
-import { sweepShuttleAudioJobs, sweepWatermarkJobs } from "./worker-pump.js";
+import {
+  sweepShuttleAudioJobs,
+  sweepStillLadderJobs,
+  sweepWatermarkJobs,
+} from "./worker-pump.js";
 
 describe("shuttle audio reconciliation", () => {
   it("queues one low-priority backfill for a ready version with audio", async () => {
@@ -507,6 +511,139 @@ describe("watermark reconciliation", () => {
         .run();
       await sweepWatermarkJobs(db);
       expect(await db.select().from(jobs).all()).toHaveLength(1);
+    } finally {
+      sqlite.close();
+    }
+  });
+});
+
+describe("still ladder backfill", () => {
+  const seedStill = async (
+    db: ReturnType<typeof createNodeDb>["db"],
+    options: { kinds: string[] },
+  ): Promise<void> => {
+    await db
+      .insert(workspaces)
+      .values({ id: "ws-1", name: "Studio", createdAt: 1 })
+      .run();
+    await db
+      .insert(users)
+      .values({
+        id: "user-1",
+        workspaceId: "ws-1",
+        email: "owner@example.com",
+        name: "Owner",
+        role: "admin",
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    await db
+      .insert(projects)
+      .values({
+        id: "project-1",
+        workspaceId: "ws-1",
+        name: "Shoot",
+        palette: "kuro",
+        createdBy: "user-1",
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    await db
+      .insert(uploadSessions)
+      .values({
+        id: "upload-1",
+        workspaceId: "ws-1",
+        projectId: "project-1",
+        createdBy: "user-1",
+        clientFilename: "frame.jpg",
+        relativePath: "",
+        size: 10,
+        checksumCrc32c: "abc",
+        blobKey: "ws-1/project-1/uploads/upload-1/frame.jpg",
+        status: "completed",
+        createdAt: 1,
+        completedAt: 1,
+      })
+      .run();
+    await db
+      .insert(assets)
+      .values({
+        id: "asset-1",
+        projectId: "project-1",
+        name: "frame.jpg",
+        kind: "image",
+        currentVersionId: "version-1",
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    await db
+      .insert(assetVersions)
+      .values({
+        id: "version-1",
+        assetId: "asset-1",
+        uploadSessionId: "upload-1",
+        versionNo: 1,
+        originalBlobKey: "ws-1/project-1/uploads/upload-1/frame.jpg",
+        originalFilename: "frame.jpg",
+        size: 10,
+        checksumCrc32c: "abc",
+        uploadedBy: "user-1",
+        transcodeStatus: "ready",
+        createdAt: 1,
+      })
+      .run();
+    for (const [index, kind] of options.kinds.entries())
+      await db
+        .insert(renditions)
+        .values({
+          id: `rendition-${String(index)}`,
+          versionId: "version-1",
+          kind: kind as "poster",
+          blobKey: `renditions/version-1/${kind}`,
+          metaJson: "{}",
+          size: 10,
+          checksumSha256: "sha",
+          createdAt: 1,
+        })
+        .run();
+  };
+
+  it("queues a rebuild for a JPEG whose poster ffmpeg never wrote", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      /* still_tiles alone is exactly what a JPEG uploaded before the ladder
+         has: the old poster recipe emitted nothing for it. */
+      await seedStill(db, { kinds: ["still_tiles"] });
+      expect(await sweepStillLadderJobs(db)).toBe(1);
+      const queued = await db.select().from(jobs).all();
+      expect(queued).toHaveLength(1);
+      expect(queued[0]).toMatchObject({
+        kind: "transcode",
+        idempotencyKey: "stills:v1:version-1",
+        status: "queued",
+      });
+      /* Below ordinary work: a backfill must never delay an upload happening
+         now. */
+      expect(queued[0]?.priority).toBeLessThan(0);
+      /* Idempotent: a second pass adds nothing. */
+      expect(await sweepStillLadderJobs(db)).toBe(0);
+      expect(await db.select().from(jobs).all()).toHaveLength(1);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("leaves a version that already has the ladder alone", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seedStill(db, { kinds: ["poster", "still_review"] });
+      expect(await sweepStillLadderJobs(db)).toBe(0);
+      expect(await db.select().from(jobs).all()).toHaveLength(0);
     } finally {
       sqlite.close();
     }

@@ -62,6 +62,10 @@ const ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg";
 let hardwareAcceleration: HardwareAcceleration = SOFTWARE_ACCELERATION;
 const SIGNATURE_SKEW_MS = 5 * 60_000;
 const PRUNE_AFTER_MS = 60 * 60_000;
+/* A status read may hold the connection this long waiting for its job, and
+   checks this often while it does. */
+const MAX_STATUS_WAIT_MS = 25_000;
+const STATUS_WAIT_STEP_MS = 50;
 
 const validSignature = (
   body: string,
@@ -129,6 +133,33 @@ const callback = async (body: WorkerRequest, event: unknown): Promise<void> => {
   });
 };
 
+const runOutputs = async (
+  body: WorkerRequest,
+  mediaInfo: MediaInfo,
+  source: string,
+) => {
+  await mkdir(workRoot, { recursive: true });
+  const outputs = body.outputs ?? [];
+  const transcodeJob: TranscodeJob = {
+    id: body.job_id,
+    sourceKey: source,
+    outputs: outputs.map((output) => ({
+      kind: output.kind,
+      key: output.path,
+      ...(output.height === undefined ? {} : { width: output.height }),
+    })),
+    mediaInfo,
+  };
+  return runTranscode(
+    transcodeJob,
+    outputs,
+    ffmpeg,
+    process.env.PDFTOPPM_PATH ?? "pdftoppm",
+    hardwareAcceleration,
+    process.env.FFPROBE_PATH ?? "ffprobe",
+  );
+};
+
 const runJob = async (body: WorkerRequest): Promise<void> => {
   jobs.set(body.job_id, { status: "processing" });
   try {
@@ -189,10 +220,20 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
     }
     const mediaInfo = body.media_info ?? (await probeFile(source));
     if (body.kind === "probe") {
+      /* A probe that arrives carrying outputs is a still: its ladder does not
+         depend on anything the probe finds, so it is rendered in this same
+         call rather than costing a second job and a second round trip. */
+      const rendered =
+        body.outputs && body.outputs.length > 0
+          ? await runOutputs(body, mediaInfo, source)
+          : null;
       const result = {
         job_id: body.job_id,
         status: "complete",
         media_info: mediaInfo,
+        ...(rendered
+          ? { renditions: rendered.renditions, failures: rendered.failures }
+          : {}),
       };
       jobs.set(body.job_id, {
         status: "complete",
@@ -202,26 +243,7 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
       await callback(body, result);
       return;
     }
-    await mkdir(workRoot, { recursive: true });
-    const outputs = body.outputs ?? [];
-    const transcodeJob: TranscodeJob = {
-      id: body.job_id,
-      sourceKey: source,
-      outputs: outputs.map((output) => ({
-        kind: output.kind,
-        key: output.path,
-        ...(output.height === undefined ? {} : { width: output.height }),
-      })),
-      mediaInfo,
-    };
-    const result = await runTranscode(
-      transcodeJob,
-      outputs,
-      ffmpeg,
-      process.env.PDFTOPPM_PATH ?? "pdftoppm",
-      hardwareAcceleration,
-      process.env.FFPROBE_PATH ?? "ffprobe",
-    );
+    const result = await runOutputs(body, mediaInfo, source);
     const complete = {
       job_id: body.job_id,
       status: "complete",
@@ -279,10 +301,43 @@ const handler = async (
       return;
     }
     const id = url.pathname.slice("/jobs/".length);
-    const state = jobs.get(id);
+    let state = jobs.get(id);
     if (!state) {
       json(response, 404, { error: "job not found" });
       return;
+    }
+    /* Long poll. Without it the caller learns a job is finished on its next
+       scheduled poll, which put a second under every job however fast the
+       work was; a still renders in well under that. `wait` is capped so the
+       connection never outlives a proxy's idle timeout, and the loop ends the
+       moment the job settles. */
+    const wait = Math.min(
+      MAX_STATUS_WAIT_MS,
+      Math.max(0, Number(url.searchParams.get("wait") ?? 0) * 1000),
+    );
+    if (wait > 0) {
+      const deadline = Date.now() + wait;
+      let closed = false;
+      request.once("close", () => {
+        closed = true;
+      });
+      while (
+        !closed &&
+        Date.now() < deadline &&
+        state !== undefined &&
+        state.status !== "complete" &&
+        state.status !== "failed"
+      ) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, STATUS_WAIT_STEP_MS),
+        );
+        state = jobs.get(id);
+      }
+      if (closed) return;
+      if (!state) {
+        json(response, 404, { error: "job not found" });
+        return;
+      }
     }
     json(response, 200, { job_id: id, ...state });
     return;

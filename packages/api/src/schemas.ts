@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  MAX_ATTACH_BATCH,
   MAX_MULTIPART_PARTS,
   MAX_TRANSFER_REQUEST_BYTE_CAP,
   MAX_UPLOAD_BYTES,
@@ -483,6 +484,22 @@ export const bodies = {
     name: z.string().max(500).optional(),
     folder_id: z.string().nullable().optional(),
     upload_id: z.string(),
+  }),
+  /* Many uploads landing as many assets in one request. `items` carries the
+     per-file overrides; `folder_id` is the default destination for any item
+     that does not name its own. */
+  assetBatchCreate: z.object({
+    folder_id: z.string().nullable().optional(),
+    items: z
+      .array(
+        z.object({
+          upload_id: z.string(),
+          name: z.string().max(500).optional(),
+          folder_id: z.string().nullable().optional(),
+        }),
+      )
+      .min(1)
+      .max(MAX_ATTACH_BATCH),
   }),
   assetPatch: z.object({
     name: z.string().min(1).max(500).optional(),
@@ -1937,6 +1954,58 @@ export const routeDocs: Record<string, RouteDoc> = {
           job_id: z.string(),
           created_at: timestamp,
           updated_at: timestamp,
+        }),
+      ),
+    },
+  },
+  "POST /projects/:id/assets/batch": {
+    summary:
+      "Land many completed uploads as assets in one request. Announces one project event for the batch instead of one per file, and reports per-upload failures rather than refusing the set.",
+    request: bodies.assetBatchCreate,
+    responses: {
+      "201": created(
+        z.object({
+          items: z.array(
+            z.object({
+              id: z.string(),
+              upload_id: z.string(),
+              name: z.string(),
+              kind: z.string(),
+              status: approvalStatus,
+              current_version_id: z.string(),
+              version_id: z.string(),
+              job_id: z.string(),
+              created_at: timestamp,
+              updated_at: timestamp,
+            }),
+          ),
+          failures: z.array(
+            z.object({ upload_id: z.string(), error: z.string() }),
+          ),
+        }),
+      ),
+    },
+  },
+  "POST /projects/:id/uploads/direct": {
+    summary:
+      "Upload one small file whole, in a single streamed request, and land it as an asset. The body is the file; filename, relative_path, folder_id, checksum_crc32c, name, attach and quiet ride in the query string. Files over the direct-upload ceiling use the multipart path.",
+    responses: {
+      "201": created(
+        z.object({
+          upload: upload,
+          asset: z
+            .object({
+              id: z.string(),
+              name: z.string(),
+              kind: z.string(),
+              status: approvalStatus,
+              current_version_id: z.string(),
+              version_id: z.string(),
+              job_id: z.string(),
+              created_at: timestamp,
+              updated_at: timestamp,
+            })
+            .optional(),
         }),
       ),
     },

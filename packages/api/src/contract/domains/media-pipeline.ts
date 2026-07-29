@@ -648,6 +648,217 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
       );
     });
 
+    ctx.itBlob(
+      "takes a small file whole in one request and lands it as an asset",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const content = "a small still, whole";
+        const name = `${unique("direct")}.jpg`;
+        const response = await req(
+          h,
+          `/api/v1/projects/${seed.project.id}/uploads/direct?filename=${encodeURIComponent(
+            name,
+          )}&checksum_crc32c=${encodeURIComponent(
+            crc32cBase64(encoder.encode(content)),
+          )}`,
+          {
+            method: "POST",
+            cookie: seed.editor.cookie,
+            body: content,
+            headers: { "content-type": "application/octet-stream" },
+          },
+        );
+        expect(response.status).toBe(201);
+        const body = await json<{
+          upload: { id: string; status: string; size: number };
+          asset: { id: string; kind: string; job_id: string };
+        }>(response);
+        expect(body.upload.status).toBe("completed");
+        expect(body.upload.size).toBe(content.length);
+        expect(body.asset.kind).toBe("image");
+        expect(assertSnakeCaseKeys(body)).toEqual([]);
+        /* The asset is real and its probe is queued: one request did what six
+           used to. */
+        const job = await req(h, `/api/v1/jobs/${body.asset.job_id}`, {
+          cookie: seed.editor.cookie,
+        });
+        expect(job.status).toBe(200);
+        expect((await json(job)).kind).toBe("probe");
+      },
+    );
+
+    ctx.itBlob("quarantines a direct upload whose checksum lies", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const response = await req(
+        h,
+        `/api/v1/projects/${seed.project.id}/uploads/direct?filename=${encodeURIComponent(
+          `${unique("bad")}.jpg`,
+        )}&checksum_crc32c=${encodeURIComponent(
+          crc32cBase64(encoder.encode("something else")),
+        )}`,
+        {
+          method: "POST",
+          cookie: seed.editor.cookie,
+          body: "the actual bytes",
+          headers: { "content-type": "application/octet-stream" },
+        },
+      );
+      expect(response.status).toBe(400);
+      expect(await errorCode(response)).toBe("validation_failed");
+    });
+
+    ctx.itBlob("refuses a direct upload from a viewer", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const response = await req(
+        h,
+        `/api/v1/projects/${seed.project.id}/uploads/direct?filename=nope.jpg`,
+        {
+          method: "POST",
+          cookie: seed.viewer.cookie,
+          body: "x",
+          headers: { "content-type": "application/octet-stream" },
+        },
+      );
+      expect(response.status).toBe(403);
+    });
+
+    it("lands a batch of uploads with one project event", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const uploads = [];
+      for (let index = 0; index < 3; index += 1)
+        uploads.push(
+          await seedCompletedUpload(h, {
+            workspaceId: seed.workspaceId,
+            projectId: seed.project.id,
+            userId: seed.editor.id,
+            filename: `${unique("batch")}.jpg`,
+          }),
+        );
+      const before = (
+        await h.db
+          .select()
+          .from(projectEvents)
+          .where(eq(projectEvents.projectId, seed.project.id))
+          .all()
+      ).length;
+      const created = await req(
+        h,
+        `/api/v1/projects/${seed.project.id}/assets/batch`,
+        {
+          cookie: seed.editor.cookie,
+          json: {
+            items: uploads.map((upload) => ({ upload_id: upload.id })),
+          },
+        },
+      );
+      expect(created.status).toBe(201);
+      const body = await json<{
+        items: Array<{ id: string; upload_id: string; job_id: string }>;
+        failures: Array<{ upload_id: string; error: string }>;
+      }>(created);
+      expect(body.items).toHaveLength(3);
+      expect(body.failures).toEqual([]);
+      expect(assertSnakeCaseKeys(body)).toEqual([]);
+      /* One event for the batch, not one per file: this is the difference
+         between a colleague's browser doing one refresh and doing 3000. */
+      const events = await h.db
+        .select()
+        .from(projectEvents)
+        .where(eq(projectEvents.projectId, seed.project.id))
+        .all();
+      expect(events.length).toBe(before + 1);
+      const last = events[events.length - 1];
+      expect(last?.type).toBe("assets.created_batch");
+      expect(
+        (JSON.parse(last?.payloadJson ?? "{}") as { count: number }).count,
+      ).toBe(3);
+      /* Every asset still gets its own probe job. */
+      for (const item of body.items) {
+        const job = await req(h, `/api/v1/jobs/${item.job_id}`, {
+          cookie: seed.editor.cookie,
+        });
+        expect(job.status).toBe(200);
+        expect((await json(job)).kind).toBe("probe");
+      }
+    });
+
+    it("reports per-upload failures instead of refusing the batch", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const good = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: seed.project.id,
+        userId: seed.editor.id,
+      });
+      const taken = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: seed.project.id,
+        userId: seed.editor.id,
+      });
+      /* Attach one of them first, so the batch meets an upload that is
+         already an asset. */
+      const first = await req(h, `/api/v1/projects/${seed.project.id}/assets`, {
+        cookie: seed.editor.cookie,
+        json: { upload_id: taken.id },
+      });
+      expect(first.status).toBe(201);
+      const response = await req(
+        h,
+        `/api/v1/projects/${seed.project.id}/assets/batch`,
+        {
+          cookie: seed.editor.cookie,
+          json: {
+            items: [{ upload_id: good.id }, { upload_id: taken.id }],
+          },
+        },
+      );
+      expect(response.status).toBe(201);
+      const body = await json<{
+        items: Array<{ upload_id: string }>;
+        failures: Array<{ upload_id: string }>;
+      }>(response);
+      expect(body.items.map((item) => item.upload_id)).toEqual([good.id]);
+      expect(body.failures.map((failure) => failure.upload_id)).toEqual([
+        taken.id,
+      ]);
+    });
+
+    it("refuses a batch from a viewer and one that is too large", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const upload = await seedCompletedUpload(h, {
+        workspaceId: seed.workspaceId,
+        projectId: seed.project.id,
+        userId: seed.editor.id,
+      });
+      const denied = await req(
+        h,
+        `/api/v1/projects/${seed.project.id}/assets/batch`,
+        {
+          cookie: seed.viewer.cookie,
+          json: { items: [{ upload_id: upload.id }] },
+        },
+      );
+      expect(denied.status).toBe(403);
+      const tooMany = await req(
+        h,
+        `/api/v1/projects/${seed.project.id}/assets/batch`,
+        {
+          cookie: seed.editor.cookie,
+          json: {
+            items: Array.from({ length: 501 }, () => ({
+              upload_id: upload.id,
+            })),
+          },
+        },
+      );
+      expect(tooMany.status).toBe(400);
+    });
+
     it("rejects attaching incomplete uploads or foreign-project uploads", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

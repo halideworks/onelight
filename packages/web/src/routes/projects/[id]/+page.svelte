@@ -21,9 +21,11 @@
     formatBytes,
     formatRate,
     uploadFile,
+    uploadFileDirect,
+    MAX_DIRECT_UPLOAD_BYTES,
     UploadQuarantinedError
   } from '$lib/upload.js';
-  import type { PendingFile } from '$lib/upload.js';
+  import type { PendingFile, UploadProgress } from '$lib/upload.js';
   import { Virtual } from '$lib/virtual.svelte.js';
   import { pageWashFor } from '$lib/washes.js';
   import Slider from '@onelight/player/Slider.svelte';
@@ -51,7 +53,9 @@
     sessionId: string | null;
     bytes: number;
     rate: number;
-    status: 'queued' | 'uploading' | 'failed' | 'quarantined' | 'done';
+    /* 'landing' is uploaded but not yet an asset: the bytes are stored and
+       the row is waiting for its attach batch. */
+    status: 'queued' | 'uploading' | 'landing' | 'failed' | 'quarantined' | 'done';
     error: string;
     /* Upload-time version stacking: when set, the finished upload becomes a
        new version of this asset instead of a new asset. */
@@ -1691,21 +1695,175 @@
      order, so it goes to the front, but only when the browser is actually
      looking at where it landed: an upload into another folder must not appear
      in this one. */
-  const adoptCreatedAsset = (created: Asset, folderId: string | null): void => {
-    if (showTrash) return;
-    if ((selectedFolder ?? null) !== (folderId ?? null)) return;
-    if (assets.some((asset) => asset.id === created.id)) return;
-    assets = [created, ...assets];
+  const adoptCreatedAssets = (
+    landed: Array<{ asset: Asset; folderId: string | null }>
+  ): void => {
+    if (showTrash || landed.length === 0) return;
+    const known = new Set(assets.map((asset) => asset.id));
+    const fresh = landed
+      .filter(
+        (entry) =>
+          (selectedFolder ?? null) === (entry.folderId ?? null) &&
+          !known.has(entry.asset.id)
+      )
+      .map((entry) => entry.asset);
+    if (!fresh.length) return;
+    /* Newest first is the list's order, and a batch arrives newest last. */
+    assets = [...fresh.reverse(), ...assets];
   };
 
-  /* Resumable upload: the session id stays on the item, so a retry reuses the
-     session, skips completed parts, and continues from the failure. */
+  /* Landing is batched.
+
+     Uploading a file and turning it into an asset are separate requests, and
+     the second one is cheap enough that doing it per file is pure overhead:
+     3000 attaches meant 3000 round trips and 3000 project events, so every
+     other browser in the project re-fetched the list 3000 times. Finished
+     uploads collect here and land together, one request and one event per
+     batch. The buffer flushes when it is full or when uploading goes quiet,
+     so a single dropped file still lands immediately. */
+  const ATTACH_BATCH = 100;
+  const ATTACH_QUIET_MS = 800;
+  let attachPending: Array<{ item: UploadItem; uploadId: string }> = [];
+  let attachTimer: ReturnType<typeof setTimeout> | null = null;
+  let attaching = false;
+
+  const finishItem = (item: UploadItem): void => {
+    item.rate = 0;
+    activeRates.delete(item.key);
+    tally.bytes += item.file.size - item.bytes;
+    item.bytes = item.file.size;
+    tally.done += 1;
+    tally.rate = sumRates();
+    item.status = 'done';
+  };
+
+  const failItem = (item: UploadItem, caught: unknown): void => {
+    item.rate = 0;
+    activeRates.delete(item.key);
+    tally.rate = sumRates();
+    tally.failed += 1;
+    if (caught instanceof UploadQuarantinedError) {
+      item.status = 'quarantined';
+      item.error = caught.message;
+      return;
+    }
+    item.status = 'failed';
+    item.error = messageFrom(caught, 'Upload failed.');
+  };
+
+  const flushAttach = async (): Promise<void> => {
+    if (attachTimer) {
+      clearTimeout(attachTimer);
+      attachTimer = null;
+    }
+    if (attaching || attachPending.length === 0) return;
+    const id = projectId;
+    if (!id) return;
+    attaching = true;
+    const batch = attachPending;
+    attachPending = [];
+    try {
+      const result = await apiPost<{
+        items: Array<Asset & { upload_id: string }>;
+        failures: Array<{ upload_id: string; error: string }>;
+      }>(`/api/v1/projects/${id}/assets/batch`, {
+        items: batch.map((entry) => ({
+          upload_id: entry.uploadId,
+          name: entry.item.file.name,
+          ...(entry.item.folderId ? { folder_id: entry.item.folderId } : {})
+        }))
+      });
+      const byUpload = new Map(batch.map((entry) => [entry.uploadId, entry.item]));
+      const landed: Array<{ asset: Asset; folderId: string | null }> = [];
+      for (const created of result.items) {
+        const item = byUpload.get(created.upload_id);
+        if (item) {
+          finishItem(item);
+          landed.push({ asset: created, folderId: item.folderId });
+        }
+        byUpload.delete(created.upload_id);
+      }
+      for (const failure of result.failures ?? []) {
+        const item = byUpload.get(failure.upload_id);
+        if (item) failItem(item, new Error(failure.error));
+        byUpload.delete(failure.upload_id);
+      }
+      /* Anything the server did not mention at all: treat as failed rather
+         than leaving a row saying "landing" for ever. */
+      for (const item of byUpload.values())
+        failItem(item, new Error('The upload did not land.'));
+      adoptCreatedAssets(landed);
+    } catch (caught) {
+      for (const entry of batch) failItem(entry.item, caught);
+    } finally {
+      attaching = false;
+      if (attachPending.length >= ATTACH_BATCH) void flushAttach();
+    }
+  };
+
+  const queueAttach = (item: UploadItem, uploadId: string): void => {
+    item.status = 'landing';
+    attachPending.push({ item, uploadId });
+    if (attachPending.length >= ATTACH_BATCH) {
+      void flushAttach();
+      return;
+    }
+    if (attachTimer) clearTimeout(attachTimer);
+    attachTimer = setTimeout(() => void flushAttach(), ATTACH_QUIET_MS);
+  };
+
+  /* One file. Small files go up whole in a single request; anything larger
+     takes the resumable multipart path, where the session id stays on the item
+     so a retry skips the parts already stored. Either way the finished upload
+     joins the attach batch rather than becoming an asset on the spot. */
   const uploadOne = async (item: UploadItem): Promise<void> => {
     const id = projectId;
-    if (!id || item.status === 'uploading' || item.status === 'done' || item.status === 'quarantined') return;
-    item.status = 'uploading';
+    if (!id) return;
     item.error = '';
+    const onProgress = (progress: UploadProgress): void => {
+      tally.bytes += progress.bytes - item.bytes;
+      item.bytes = progress.bytes;
+      item.rate = progress.rate;
+      if (progress.rate > 0) activeRates.set(item.key, progress.rate);
+      else activeRates.delete(item.key);
+      tally.rate = sumRates();
+    };
     try {
+      /* A version lands on an asset that already exists, so it cannot join
+         the batch; it keeps the single-file path. */
+      if (item.versionOf) {
+        const sessionId = await uploadFile({
+          projectId: id,
+          file: item.file,
+          relativePath: item.relativePath,
+          sessionId: item.sessionId,
+          onSession: (session) => {
+            item.sessionId = session;
+          },
+          onProgress
+        });
+        item.sessionId = sessionId;
+        await createAssetVersion(item.versionOf, {
+          upload_id: sessionId,
+          name: item.file.name,
+          carry_forward: item.carryForward
+        });
+        await refreshAsset(item.versionOf);
+        finishItem(item);
+        return;
+      }
+      if (item.file.size <= MAX_DIRECT_UPLOAD_BYTES && !item.sessionId) {
+        const direct = await uploadFileDirect({
+          projectId: id,
+          file: item.file,
+          relativePath: item.relativePath,
+          folderId: item.folderId,
+          attach: false,
+          onProgress
+        });
+        queueAttach(item, direct.uploadId);
+        return;
+      }
       const sessionId = await uploadFile({
         projectId: id,
         file: item.file,
@@ -1714,78 +1872,56 @@
         onSession: (session) => {
           item.sessionId = session;
         },
-        onProgress: (progress) => {
-          tally.bytes += progress.bytes - item.bytes;
-          item.bytes = progress.bytes;
-          item.rate = progress.rate;
-          if (progress.rate > 0) activeRates.set(item.key, progress.rate);
-          else activeRates.delete(item.key);
-          tally.rate = sumRates();
-        }
+        onProgress
       });
       item.sessionId = sessionId;
-      if (item.versionOf) {
-        await createAssetVersion(item.versionOf, {
-          upload_id: sessionId,
-          name: item.file.name,
-          carry_forward: item.carryForward
-        });
-        await refreshAsset(item.versionOf);
-      } else {
-        /* The created row is spliced in rather than re-fetching the list.
-           Re-fetching cost a request and a full re-render per file, reset the
-           browser to page one every time, and made a large upload quadratic on
-           its own list. */
-        const created = await apiPost<Asset>(`/api/v1/projects/${id}/assets`, {
-          upload_id: sessionId,
-          name: item.file.name,
-          ...(item.folderId ? { folder_id: item.folderId } : {})
-        });
-        adoptCreatedAsset(created, item.folderId);
-      }
-      item.rate = 0;
-      activeRates.delete(item.key);
-      tally.bytes += item.file.size - item.bytes;
-      item.bytes = item.file.size;
-      tally.done += 1;
-      tally.rate = sumRates();
-      item.status = 'done';
+      queueAttach(item, sessionId);
     } catch (caught) {
-      item.rate = 0;
-      activeRates.delete(item.key);
-      tally.rate = sumRates();
-      tally.failed += 1;
-      if (caught instanceof UploadQuarantinedError) {
-        item.status = 'quarantined';
-        item.error = caught.message;
-        return;
-      }
-      item.status = 'failed';
-      item.error = messageFrom(caught, 'Upload failed.');
+      failItem(item, caught);
     }
   };
 
-  /* The single serial driver. Dropping files, resuming one and resuming all
-     do not upload anything themselves: they mark work queued and wake the
-     pump, so no file can be run twice by two callers at once. */
+  /* Several files at once, from one shared cursor.
+
+     One at a time left the connection idle between files, which at a few
+     thousand files is most of the wall clock: every file paid a round trip
+     for its session before a byte moved. The bound is deliberate rather than
+     generous, because the browser, the network and the server all have to
+     survive it. A row is claimed synchronously, before any await, so two
+     workers can never take the same file. */
+  const UPLOAD_CONCURRENCY = 4;
+
   const pump = async (): Promise<void> => {
     if (uploading) return;
     uploading = true;
     try {
-      for (;;) {
-        /* A cursor, not a scan. Finding the next queued row by walking the
-           list from the start cost O(n) per file, so a large drop spent more
-           time looking for work than doing it. The cursor only ever moves
-           forward; anything requeued behind it (a resume) rewinds it
-           explicitly. Failed items are deliberately not picked up: an error
-           that repeats forever is not progress, so resuming stays a
-           decision. */
-        while (pumpCursor < queue.length && queue[pumpCursor]?.status !== 'queued')
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          /* A cursor, not a scan. Walking the list from the start to find the
+             next queued row cost O(n) per file, so a large drop spent more
+             time looking for work than doing it. The cursor only moves
+             forward; anything requeued behind it (a resume) rewinds it
+             explicitly. Failed items are deliberately not picked up: an error
+             that repeats forever is not progress, so resuming stays a
+             decision. */
+          while (
+            pumpCursor < queue.length &&
+            queue[pumpCursor]?.status !== 'queued'
+          )
+            pumpCursor += 1;
+          const next = queue[pumpCursor];
+          if (!next) return;
           pumpCursor += 1;
-        const next = queue[pumpCursor];
-        if (!next) break;
-        await uploadOne(next);
-      }
+          next.status = 'uploading';
+          await uploadOne(next);
+        }
+      };
+      await Promise.all(
+        Array.from({ length: UPLOAD_CONCURRENCY }, () => worker())
+      );
+      /* The tail of the batch lands as soon as the queue drains, rather than
+         waiting out the quiet timer. */
+      await flushAttach();
     } finally {
       uploading = false;
     }
@@ -2173,7 +2309,7 @@
                 Resume {failedCount} {failedCount === 1 ? 'file' : 'files'}
               </button>
             {/if}
-            {#if queue.some((item) => item.status === 'done')}
+            {#if tally.done > 0}
               <button type="button" class="quiet" onclick={clearFinished}>Clear finished</button>
             {/if}
           </div>
@@ -2241,6 +2377,7 @@
                   ><span style={`width: ${item.file.size > 0 ? (item.bytes / item.file.size) * 100 : 0}%;`}></span></span>
                   <span class="state tc">
                     {#if item.status === 'queued'}Waiting
+                    {:else if item.status === 'landing'}Landing
                     {:else if item.status === 'uploading'}{formatBytes(item.bytes)} of {formatBytes(item.file.size)}{item.rate > 0 ? `, ${formatRate(item.rate)}` : ''}
                     {:else if item.status === 'done'}Done
                     {:else if item.status === 'quarantined'}Quarantined

@@ -11411,6 +11411,105 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{id}/uploads/direct": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload one small file whole, in a single streamed request, and land it as an asset. The body is the file; filename, relative_path, folder_id, checksum_crc32c, name, attach and quiet ride in the query string. Files over the direct-upload ceiling use the multipart path. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            upload: {
+                                id: string;
+                                project_id: string;
+                                client_filename: string;
+                                relative_path: string;
+                                size: number;
+                                checksum_crc32c: string | null;
+                                /** @enum {string} */
+                                status: "pending" | "uploading" | "completed" | "quarantined" | "aborted";
+                                created_at: number;
+                                completed_at: number | null;
+                            };
+                            asset?: {
+                                id: string;
+                                name: string;
+                                kind: string;
+                                /** @enum {string} */
+                                status: "none" | "in_review" | "approved" | "changes_requested";
+                                current_version_id: string;
+                                version_id: string;
+                                job_id: string;
+                                created_at: number;
+                                updated_at: number;
+                            };
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/uploads/{id}/multipart": {
         parameters: {
             query?: never;
@@ -12205,6 +12304,109 @@ export interface paths {
                             job_id: string;
                             created_at: number;
                             updated_at: number;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/assets/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Land many completed uploads as assets in one request. Announces one project event for the batch instead of one per file, and reports per-upload failures rather than refusing the set. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        folder_id?: string | null;
+                        items: {
+                            upload_id: string;
+                            name?: string;
+                            folder_id?: string | null;
+                        }[];
+                    };
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                id: string;
+                                upload_id: string;
+                                name: string;
+                                kind: string;
+                                /** @enum {string} */
+                                status: "none" | "in_review" | "approved" | "changes_requested";
+                                current_version_id: string;
+                                version_id: string;
+                                job_id: string;
+                                created_at: number;
+                                updated_at: number;
+                            }[];
+                            failures: {
+                                upload_id: string;
+                                error: string;
+                            }[];
                         };
                     };
                 };
