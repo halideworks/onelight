@@ -24804,7 +24804,7 @@
                     "items": {
                       "type": "string"
                     },
-                    "maxItems": 100000
+                    "maxItems": 20000
                   },
                   "part_bytes": {
                     "type": "integer",

@@ -54,9 +54,12 @@ export const windowSlice = (input: WindowInput): WindowSlice => {
     return { start: 0, end: total, padTop: 0, padBottom: 0, rows };
   const overscan = Math.max(0, input.overscan ?? DEFAULT_OVERSCAN);
   const scrollTop = Math.max(0, input.scrollTop);
-  const firstRow = Math.max(
-    0,
-    Math.floor(scrollTop / input.rowHeight) - overscan,
+  /* Clamped to the list's own height: a scroller left part way down a list
+     that then empties (a filter, a folder change) would otherwise pad out
+     space for rows that are no longer there. */
+  const firstRow = Math.min(
+    rows,
+    Math.max(0, Math.floor(scrollTop / input.rowHeight) - overscan),
   );
   const visibleRows = Math.ceil(input.viewport / input.rowHeight);
   const lastRow = Math.min(

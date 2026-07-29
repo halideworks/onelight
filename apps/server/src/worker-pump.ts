@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { cpus } from "node:os";
 import path from "node:path";
-import { and, asc, eq, inArray, isNotNull, isNull, lt } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lt } from "drizzle-orm";
 import {
   exportAvidText,
   exportAvidXml,
@@ -780,22 +780,46 @@ const STILL_LADDER_SCAN_BATCH = 200;
    decoder for it landed as a plain file, honestly, because a card with no
    picture is worse than an honest file. Now that one exists, those rows are
    re-kinded and the ladder sweep below picks them up on its next pass. */
+/* A keyset walk, not an offset one, and not a single batch.
+
+   Reading the first N rows of kind='file' every pass would never see past
+   them: a row that is not a still stays a file, so the same N would be read
+   forever and a RAW sitting behind two hundred zip files would never be
+   adopted. An offset has the opposite fault, because re-kinding a row removes
+   it from the filter and shifts everything after it. The id cursor is immune
+   to both. Bounded per pass so a large library drains across sweeps. */
+const RE_KIND_SCAN_LIMIT = 2000;
+
 export const sweepReKindStills = async (db: AppDb): Promise<number> => {
-  const candidates = await db
-    .select({ id: assets.id, name: assets.name })
-    .from(assets)
-    .where(and(eq(assets.kind, "file"), isNull(assets.deletedAt)))
-    .limit(STILL_LADDER_SCAN_BATCH)
-    .all();
   let changed = 0;
-  for (const row of candidates) {
-    if (!isStillSource(row.name)) continue;
-    await db
-      .update(assets)
-      .set({ kind: "image" })
-      .where(eq(assets.id, row.id))
-      .run();
-    changed += 1;
+  let scanned = 0;
+  let cursor = "";
+  while (scanned < RE_KIND_SCAN_LIMIT) {
+    const candidates = await db
+      .select({ id: assets.id, name: assets.name })
+      .from(assets)
+      .where(
+        and(
+          eq(assets.kind, "file"),
+          isNull(assets.deletedAt),
+          cursor ? gt(assets.id, cursor) : undefined,
+        ),
+      )
+      .orderBy(asc(assets.id))
+      .limit(STILL_LADDER_SCAN_BATCH)
+      .all();
+    if (!candidates.length) break;
+    scanned += candidates.length;
+    cursor = candidates[candidates.length - 1]?.id ?? cursor;
+    for (const row of candidates) {
+      if (!isStillSource(row.name)) continue;
+      await db
+        .update(assets)
+        .set({ kind: "image" })
+        .where(eq(assets.id, row.id))
+        .run();
+      changed += 1;
+    }
   }
   return changed;
 };
@@ -926,7 +950,7 @@ export const sweepStillLadderJobs = async (db: AppDb): Promise<number> => {
    column and this fills it. Bounded per pass like every other sweep, and it
    stops costing anything once the library is done. */
 const STACK_KEY_SWEEP_INTERVAL_MS = 30_000;
-const STACK_KEY_SWEEP_BATCH = 500;
+const STACK_KEY_SWEEP_BATCH = 2000;
 
 export const sweepStackKeys = async (db: AppDb): Promise<number> => {
   const rows = await db
@@ -2083,10 +2107,19 @@ export const startWorkerPump = (
   const pumpJobs = async (): Promise<void> => {
     if (!mediaEnabled || stopped) return;
     while (running < slots) {
+      /* The slot is taken BEFORE the claim, not after it. Two of these run
+         at once whenever a job finishes while the tick is also looking for
+         work, and counting after the await let both of them pass the
+         `running < slots` gate on the same free slot: the cap could be
+         overshot by one per concurrent caller, which on a four core box
+         shared with the site is exactly the thing the cap exists to stop.
+         Reserving first is atomic, because nothing yields in between. */
+      running += 1;
       let job: Awaited<ReturnType<typeof claimNextJob>>;
       try {
         job = await claimNextJob(db, Date.now(), workerId, ["cpu"]);
       } catch (error) {
+        running -= 1;
         console.warn(
           `[onelight] job claim failed: ${
             error instanceof Error ? error.message : String(error)
@@ -2094,8 +2127,10 @@ export const startWorkerPump = (
         );
         return;
       }
-      if (!job) return;
-      running += 1;
+      if (!job) {
+        running -= 1;
+        return;
+      }
       const claimed = job;
       void (async () => {
         try {
@@ -2233,7 +2268,21 @@ export const startWorkerPump = (
         }
         if (now - lastStackKeySweep >= STACK_KEY_SWEEP_INTERVAL_MS) {
           lastStackKeySweep = now;
-          await sweep("stack key", () => sweepStackKeys(db));
+          /* A full batch means there is more, and there is a reason to hurry:
+             batch versioning matches against this column, so an upload
+             arriving before the backfill reaches its asset silently matches
+             nothing and lands as a new asset instead. Draining at a batch per
+             tick clears a large library in under a minute rather than over an
+             hour; a short batch means it is done and the throttle resumes. */
+          const filled = await sweepStackKeys(db).catch((error: unknown) => {
+            console.warn(
+              `[onelight] stack key sweep failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            return 0;
+          });
+          if (filled >= STACK_KEY_SWEEP_BATCH) lastStackKeySweep = 0;
         }
         if (
           mediaEnabled &&

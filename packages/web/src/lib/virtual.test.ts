@@ -57,6 +57,11 @@ describe("windowSlice", () => {
       end: 0,
       rows: 0,
     });
+    /* A list that empties under a scroller left part way down pads nothing:
+       the space belongs to rows that no longer exist. */
+    expect(windowSlice({ ...base, total: 0, scrollTop: 40_000 })).toMatchObject(
+      { start: 0, end: 0, padTop: 0, padBottom: 0 },
+    );
     const list = windowSlice({ ...base, columns: 1, rowHeight: 56 });
     expect(list.start).toBe(0);
     expect(list.end).toBeLessThan(30);

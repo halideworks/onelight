@@ -1295,6 +1295,18 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     );
   };
 
+  /* The name a file is stored under. Separators are flattened so a client
+     cannot describe a directory, and a name that is only dots is refused
+     outright: "uploads/<ulid>/.." names the directory above rather than a
+     file in it, and a store that took it would be writing somewhere nobody
+     asked for. */
+  const storedFilename = (raw: string): string => {
+    const flattened = raw.replace(/[\\/]/g, "_").trim();
+    if (!flattened || /^\.+$/.test(flattened))
+      throw errors.validation("Filename is not usable.");
+    return flattened;
+  };
+
   const uploadWire = (upload: typeof uploadSessions.$inferSelect) => ({
     id: upload.id,
     project_id: upload.projectId,
@@ -9428,7 +9440,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const body = await jsonBody(c, bodies.transferUploadCreate);
     if ((body.relative_path ?? "").split(/[\\/]/).includes(".."))
       throw errors.validation("Relative path cannot contain parent segments.");
-    const filename = body.filename.replace(/[\\/]/g, "_");
+    const filename = storedFilename(body.filename);
     if (transfer.byteCap !== null) {
       const used = await receivedBytesFor(transfer.id);
       if (used + body.size > transfer.byteCap) throw errors.payloadTooLarge();
@@ -9610,7 +9622,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     await requireProject(body.project_id, actor, "editor");
     if ((body.relative_path ?? "").split(/[\\/]/).includes(".."))
       throw errors.validation("Relative path cannot contain parent segments.");
-    const filename = body.filename.replace(/[\\/]/g, "_");
+    const filename = storedFilename(body.filename);
     // Idempotency-Key (phase-1 section 3, scoped interpretation, supersession
     // dated 2026-07-11): a keyed create that matches a still-open session by
     // the same user for the same project, filename, and size replays that
@@ -9784,7 +9796,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const relativePath = (c.req.query("relative_path") ?? "").slice(0, 2000);
     if (relativePath.split(/[\\/]/).includes(".."))
       throw errors.validation("Relative path cannot contain parent segments.");
-    const filename = rawName.replace(/[\\/]/g, "_");
+    const filename = storedFilename(rawName);
     const folderId = c.req.query("folder_id") || null;
     if (folderId) await requireDestinationFolder(projectId, folderId);
     const declared = Number(c.req.header("content-length") ?? 0);
@@ -11500,8 +11512,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const asset = await assetForActor(version.assetId, actor);
     if (asset.kind !== "image")
       throw errors.validation("This version is not a still.");
-    const store = requireBlobStore();
-    void store;
+    requireBlobStore();
     /* The original serves as its own full-size picture wherever a browser can
        decode it. */
     if (!needsStillFull(version.originalFilename))
@@ -11534,7 +11545,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         url: await privateMediaUrl({ versionId: version.id }, existing.blobKey),
       });
     /* Not made yet: ask for it and tell the client to come back. The
-       idempotency key means a hundred viewers zooming at once queue one job. */
+       idempotency key means a hundred viewers zooming at once queue one job,
+       and the rate limit means one viewer walking a library cannot fill the
+       queue with work nobody asked to look at. */
+    await hitRateLimit(`still_full:${actor.id}`, 60, 5 * 60 * 1000);
     const now = env.clock.now();
     const idempotencyKey = `still_full:${version.id}`;
     const queued = (
@@ -11552,7 +11566,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           id: env.ids.ulid(),
           kind: "transcode",
           payloadJson: JSON.stringify({
-            workspace_id: asset.projectId ? actor.workspaceId : null,
+            workspace_id: actor.workspaceId,
             project_id: asset.projectId,
             asset_id: asset.id,
             version_id: version.id,

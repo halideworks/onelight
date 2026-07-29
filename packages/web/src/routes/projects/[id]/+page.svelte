@@ -2142,12 +2142,20 @@
           await uploadOne(next);
         }
       };
-      await Promise.all(
-        Array.from({ length: UPLOAD_CONCURRENCY }, () => worker())
-      );
-      /* The tail of the batch lands as soon as the queue drains, rather than
-         waiting out the quiet timer. */
-      await flushAttach();
+      /* Looped, because landing the tail takes a moment and a file dropped
+         during it would otherwise be stranded: pump() returns early while
+         `uploading` is set, and the workers have already gone home. Anything
+         queued while the batch was landing starts a fresh round. */
+      for (;;) {
+        await Promise.all(
+          Array.from({ length: UPLOAD_CONCURRENCY }, () => worker())
+        );
+        /* The tail of the batch lands as soon as the queue drains, rather
+           than waiting out the quiet timer. */
+        await flushAttach();
+        if (!queue.some((item) => item.status === 'queued')) break;
+        pumpCursor = 0;
+      }
     } finally {
       uploading = false;
     }

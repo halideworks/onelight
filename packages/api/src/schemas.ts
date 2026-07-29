@@ -537,7 +537,9 @@ export const bodies = {
      cut on file boundaries. */
   downloadManifestCreate: z.object({
     folder_id: z.string().nullable().optional(),
-    asset_ids: z.array(z.string()).max(100000).optional(),
+    /* A selection, not a database dump: past this a caller wants the folder
+       or the project, which are named rather than enumerated. */
+    asset_ids: z.array(z.string()).max(20000).optional(),
     part_bytes: z
       .number()
       .int()

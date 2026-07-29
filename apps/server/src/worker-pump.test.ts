@@ -684,6 +684,22 @@ describe("re-kinding files that have become stills", () => {
           updatedAt: 1,
         })
         .run();
+      /* Two hundred and fifty plain files go in FIRST, so they are what a
+         sweep reading one unordered batch would see: without the keyset walk
+         the RAW behind them is never reached, and this test fails. */
+      await db
+        .insert(assets)
+        .values(
+          Array.from({ length: 250 }, (_, index) => ({
+            id: `asset-filler-${String(index).padStart(4, "0")}`,
+            projectId: "project-1",
+            name: `notes-${String(index)}.txt`,
+            kind: "file" as const,
+            createdAt: 1,
+            updatedAt: 1,
+          })),
+        )
+        .run();
       await db
         .insert(assets)
         .values([

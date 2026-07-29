@@ -709,6 +709,34 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
       expect(await errorCode(response)).toBe("validation_failed");
     });
 
+    it("refuses a filename that names a directory rather than a file", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      /* "uploads/<ulid>/.." is the directory above, not a file in it. */
+      for (const filename of ["..", ".", "  ..  ", "...."]) {
+        const response = await req(h, "/api/v1/uploads", {
+          cookie: seed.editor.cookie,
+          json: {
+            project_id: seed.project.id,
+            filename,
+            size: 10,
+          },
+        });
+        expect(response.status, filename).toBe(400);
+      }
+      /* A name with separators in it is flattened rather than refused:
+         "/../" becomes "_.._", which is a file, not a directory. */
+      const flattened = await req(h, "/api/v1/uploads", {
+        cookie: seed.editor.cookie,
+        json: { project_id: seed.project.id, filename: "/../", size: 10 },
+      });
+      expect(flattened.status).toBe(201);
+      expect(
+        (await json<{ upload: { client_filename: string } }>(flattened)).upload
+          .client_filename,
+      ).toBe("_.._");
+    });
+
     ctx.itBlob("refuses a direct upload from a viewer", async () => {
       const h = ctx.h();
       const seed = ctx.seed();
