@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
+import { hmacSha256Hex } from "@onelight/core";
 import {
   assetVersions,
   commentAttachments,
@@ -1498,11 +1499,28 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
           cookie: user.cookie,
         }),
       );
-      expect(defaults).toEqual({ mode: "instant", muted_projects: [] });
+      expect(defaults).toEqual({
+        mode: "instant",
+        kind_modes: {},
+        digest_hour: 8,
+        utc_offset_minutes: 0,
+        muted_projects: [],
+      });
+      /* Per kind, because a mention and a version arriving are not the same
+         news, and an hour in the reader's own day rather than the server's. */
       const updated = await req(h, "/api/v1/notifications/preferences", {
         method: "PATCH",
         cookie: user.cookie,
-        json: { mode: "daily", muted_projects: [seed.project.id] },
+        json: {
+          mode: "daily",
+          kind_modes: {
+            "comment.mention": "instant",
+            "version.created": "off",
+          },
+          digest_hour: 7,
+          utc_offset_minutes: -300,
+          muted_projects: [seed.project.id],
+        },
       });
       expect(updated.status).toBe(200);
       const readBack = await json(
@@ -1512,6 +1530,9 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       );
       expect(readBack).toEqual({
         mode: "daily",
+        kind_modes: { "comment.mention": "instant", "version.created": "off" },
+        digest_hour: 7,
+        utc_offset_minutes: -300,
         muted_projects: [seed.project.id],
       });
       const invalid = await req(h, "/api/v1/notifications/preferences", {
@@ -1520,6 +1541,57 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
         json: { mode: "weekly" },
       });
       expect(invalid.status).toBe(400);
+      /* A kind nobody routes, or an hour that is not one, is a mistake rather
+         than something to store and puzzle over later. */
+      for (const bad of [
+        { mode: "daily", kind_modes: { "comment.invented": "instant" } },
+        { mode: "daily", digest_hour: 24 },
+        { mode: "daily", utc_offset_minutes: 5000 },
+      ])
+        expect(
+          (
+            await req(h, "/api/v1/notifications/preferences", {
+              method: "PATCH",
+              cookie: user.cookie,
+              json: bad,
+            })
+          ).status,
+        ).toBe(400);
+    });
+
+    it("turns email off from a signed link, with no session at all", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const user = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      /* This is what a mail client POSTs when somebody clicks the unsubscribe
+         control Gmail draws from the List-Unsubscribe header: no cookies, no
+         session, just the token that was in the header. */
+      const token = `${user.id}.${(
+        await hmacSha256Hex(h.config.SECRET_KEY, `unsubscribe:${user.id}`)
+      ).slice(0, 32)}`;
+      const done = await req(
+        h,
+        `/api/v1/notifications/unsubscribe?t=${encodeURIComponent(token)}`,
+        { method: "POST" },
+      );
+      expect(done.status).toBe(204);
+      const after = await json<{ mode: string }>(
+        await req(h, "/api/v1/notifications/preferences", {
+          cookie: user.cookie,
+        }),
+      );
+      expect(after.mode).toBe("off");
+
+      /* A token nobody signed authorises nothing. */
+      const forged = await req(
+        h,
+        `/api/v1/notifications/unsubscribe?t=${encodeURIComponent(`${user.id}.deadbeef`)}`,
+        { method: "POST" },
+      );
+      expect(forged.status).toBe(403);
     });
   });
 

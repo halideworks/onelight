@@ -7,6 +7,7 @@ import {
   commentAttachments,
   comments,
   exportJobs,
+  notifications,
   projectCoverUploads,
   projects,
   renditions,
@@ -471,6 +472,102 @@ export const registerProjectsDomain = (ctx: SuiteContext): void => {
       expect(
         again.items.find((item) => item.id === project.id)?.last_opened_at,
       ).toBe(h.clock.now());
+    });
+
+    it("counts unread notifications per project, however old they are", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Badged" });
+      const other = await createProject(h, seed.admin, { name: "Quiet" });
+      /* Twelve rows on one project and one on another. The browser used to
+         count these out of the newest page of the notification list, so a
+         project whose unread rows had fallen past that page showed nothing. */
+      for (let index = 0; index < 12; index += 1)
+        await h.db
+          .insert(notifications)
+          .values({
+            id: h.ids.ulid(),
+            userId: seed.admin.id,
+            kind: "comment.created",
+            projectId: project.id,
+            payloadJson: JSON.stringify({ project_id: project.id }),
+            readAt: null,
+            createdAt: h.clock.now() - index * 1000,
+          })
+          .run();
+      await h.db
+        .insert(notifications)
+        .values({
+          id: h.ids.ulid(),
+          userId: seed.admin.id,
+          kind: "version.created",
+          projectId: other.id,
+          payloadJson: JSON.stringify({ project_id: other.id }),
+          readAt: null,
+          createdAt: h.clock.now(),
+        })
+        .run();
+
+      const badges = await json<{
+        total: number;
+        projects: Array<{ project_id: string; unread: number }>;
+      }>(
+        await req(h, "/api/v1/notifications/badges", {
+          cookie: seed.admin.cookie,
+        }),
+      );
+      expect(badges.total).toBe(13);
+      const byProject = new Map(
+        badges.projects.map((row) => [row.project_id, row.unread]),
+      );
+      expect(byProject.get(project.id)).toBe(12);
+      expect(byProject.get(other.id)).toBe(1);
+
+      /* Clearing the badge clears the project, not the handful of ids a client
+         happened to be holding: that mismatch is why a cleared badge used to
+         come back on the next poll. */
+      const cleared = await req(h, "/api/v1/notifications/read", {
+        cookie: seed.admin.cookie,
+        json: { project_id: project.id },
+      });
+      expect(cleared.status).toBe(204);
+      const after = await json<{
+        total: number;
+        projects: Array<{ project_id: string; unread: number }>;
+      }>(
+        await req(h, "/api/v1/notifications/badges", {
+          cookie: seed.admin.cookie,
+        }),
+      );
+      expect(after.total).toBe(1);
+      expect(after.projects.some((row) => row.project_id === project.id)).toBe(
+        false,
+      );
+
+      /* And it is one person's count: nobody else's badge moved. */
+      const theirs = await json<{ total: number }>(
+        await req(h, "/api/v1/notifications/badges", {
+          cookie: seed.editor.cookie,
+        }),
+      );
+      expect(theirs.total).toBe(0);
+    });
+
+    it("refuses a read that names neither rows nor a project", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const empty = await req(h, "/api/v1/notifications/read", {
+        cookie: seed.admin.cookie,
+        json: {},
+      });
+      expect(empty.status).toBe(400);
+      /* Both at once is also a mistake rather than a convenience: which one
+         wins would be a coin toss. */
+      const both = await req(h, "/api/v1/notifications/read", {
+        cookie: seed.admin.cookie,
+        json: { ids: ["x"], project_id: "y" },
+      });
+      expect(both.status).toBe(400);
     });
 
     it("refuses to record an open for a project you cannot see", async () => {

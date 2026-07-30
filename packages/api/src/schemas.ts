@@ -315,10 +315,42 @@ export const bodies = {
   reactionCreate: z.object({ code: z.string().regex(/^[a-z0-9_]{1,32}$/) }),
   carryForward: z.object({ from_version_id: z.string() }),
   approvalPatch: z.object({ status: approvalStatus }),
-  notificationsRead: z.object({ ids: z.array(z.string()).min(1).max(500) }),
+  /* Rows by id, or every unread row in one project. The project form is what
+     a badge needs: a count the server made can only be cleared by the server,
+     or the two disagree the moment anything reloads. */
+  notificationsRead: z
+    .object({
+      ids: z.array(z.string()).min(1).max(500).optional(),
+      project_id: z.string().optional(),
+    })
+    .refine(
+      (body) => Boolean(body.ids?.length) !== Boolean(body.project_id),
+      "Send either ids or project_id.",
+    ),
   notificationPreferencesPatch: z.object({
-    mode: z.enum(["instant", "hourly", "daily"]),
+    mode: z.enum(["off", "instant", "hourly", "daily"]),
+    kind_modes: z
+      .record(
+        z.enum([
+          "comment.mention",
+          "comment.reply",
+          "comment.created",
+          "approval.updated",
+          "transcode.failed",
+          "version.created",
+        ]),
+        z.enum(["off", "instant", "hourly", "daily"]),
+      )
+      .default({}),
+    digest_hour: z.number().int().min(0).max(23).default(8),
+    utc_offset_minutes: z.number().int().min(-840).max(840).default(0),
     muted_projects: z.array(z.string()).max(1000).default([]),
+  }),
+  /* Who to send a share to, and a line from the sender. Capped because a share
+     is a link for the people it is for, not a mailing list. */
+  shareEmail: z.object({
+    recipients: z.array(z.string().email()).min(1).max(20),
+    message: z.string().max(1000).optional(),
   }),
   shareCreate: z.object({
     project_id: z.string(),
@@ -725,8 +757,29 @@ const notification = z.object({
   created_at: timestamp,
 });
 
+const notificationMode = z.enum(["off", "instant", "hourly", "daily"]);
+
+/* The kinds worth routing separately. A mention is addressed to you; a version
+   arriving is the quietest thing in the list; a file that failed is blocking
+   somebody. Treating them as one dial is why people turn the dial to zero. */
+const notificationKind = z.enum([
+  "comment.mention",
+  "comment.reply",
+  "comment.created",
+  "approval.updated",
+  "transcode.failed",
+  "version.created",
+]);
+
 const notificationPreferences = z.object({
-  mode: z.enum(["instant", "hourly", "daily"]),
+  /** The default for any kind without a rule of its own. */
+  mode: notificationMode,
+  /** Per-kind overrides. Absent means "use mode". */
+  kind_modes: z.record(notificationKind, notificationMode),
+  /** Which hour of the reader's own day a daily summary should arrive. */
+  digest_hour: z.number().int().min(0).max(23),
+  /** Minutes east of UTC, so that hour is their morning and not the server's. */
+  utc_offset_minutes: z.number().int().min(-840).max(840),
   muted_projects: z.array(z.string()),
 });
 
@@ -808,6 +861,8 @@ const share = z.object({
   title: z.string(),
   layout: shareLayout,
   expires_at: timestamp.nullable(),
+  /* Whether the room asks for a password. Never the password itself. */
+  has_passphrase: z.boolean(),
   allow_download: allowDownload,
   allow_comments: z.boolean(),
   allow_approvals: z.boolean(),
@@ -1583,12 +1638,34 @@ export const routeDocs: Record<string, RouteDoc> = {
     query: paging,
     responses: { "200": ok(page(notification)) },
   },
+  "GET /notifications/badges": {
+    summary:
+      "Unread notification counts for the caller, grouped by project. What the badges on the projects list are drawn from: a count the server made, so it does not depend on how much of the notification list the browser has fetched.",
+    responses: {
+      "200": ok(
+        z.object({
+          total: z.number().int(),
+          projects: z.array(
+            z.object({ project_id: z.string(), unread: z.number().int() }),
+          ),
+        }),
+      ),
+    },
+  },
   "POST /notifications/read": {
     request: bodies.notificationsRead,
     responses: { "204": noContent },
   },
   "GET /notifications/preferences": {
+    summary:
+      'What Onelight emails this person, and when. mode is the default; kind_modes overrides it per kind of news; digest_hour and utc_offset_minutes decide when a daily summary lands in their own day rather than the server\'s. mode "off" is what a one-click unsubscribe sets: notifications still arrive in the app.',
     responses: { "200": ok(notificationPreferences) },
+  },
+  "POST /notifications/unsubscribe": {
+    summary:
+      "One-click unsubscribe, as List-Unsubscribe-Post asks for: no session, a signed token instead, and it sets email to off. Gmail and Outlook show their own unsubscribe control when a message carries these headers, and a person who cannot find one reports the message as spam instead, which is what actually damages delivery.",
+    query: { t: { description: "The signed token from the email header." } },
+    responses: { "204": noContent },
   },
   "PATCH /notifications/preferences": {
     request: bodies.notificationPreferencesPatch,
@@ -1656,6 +1733,14 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: { "200": binary("image/png") },
   },
   "GET /s/:slug/unfurl.png": { responses: { "200": binary("image/png") } },
+  "POST /shares/:id/email": {
+    summary:
+      "Send this share to the people it is for, in Onelight's own mail rather than by being copied into somebody's mail client. Never includes the passphrase, if the share has one: a link and its password in the same message is the password not existing. Says what is in it, what the recipient can do, and when the link stops working.",
+    request: bodies.shareEmail,
+    responses: {
+      "200": ok(z.object({ sent: z.number().int() })),
+    },
+  },
   "POST /shares/:id/assets": {
     summary:
       "Add assets to an existing share. Assets already in it are skipped.",

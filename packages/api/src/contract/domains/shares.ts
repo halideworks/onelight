@@ -93,6 +93,75 @@ const accessShare = async (
 
 export const registerSharesDomain = (ctx: SuiteContext): void => {
   describe("shares", () => {
+    it("sends a share by email, and never the password with it", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      if (!h.mailer) return;
+      const fixture = await makeShare(h, seed, {
+        title: "Spring Cutdowns",
+        passphrase: "open-sesame",
+        allow_comments: true,
+        allow_approvals: true,
+      });
+      const before = h.mailer.messages.length;
+      const sent = await req(h, `/api/v1/shares/${fixture.shareId}/email`, {
+        cookie: seed.admin.cookie,
+        json: {
+          recipients: ["dana@client.example", "sam@agency.example"],
+          message: "First cut for your notes. Sound is temp.",
+        },
+      });
+      expect(sent.status).toBe(200);
+      expect(await json<{ sent: number }>(sent)).toEqual({ sent: 2 });
+      const delivered = h.mailer.messages.slice(before);
+      expect(delivered.map((message) => message.to)).toEqual([
+        "dana@client.example",
+        "sam@agency.example",
+      ]);
+      for (const message of delivered) {
+        /* The link, and what they can do with it. */
+        expect(message.text).toContain(`/s/${fixture.slug}`);
+        expect(message.text).toContain("First cut for your notes");
+        expect(message.text).toContain("leave notes on the frame");
+        /* The password is named as something to expect, and is never the
+           password: a link and its password in one message is the password not
+           existing. */
+        expect(message.text).not.toContain("open-sesame");
+        expect(message.html ?? "").not.toContain("open-sesame");
+        expect(message.text).toContain("password for it separately");
+        /* And it threads on the share, so a resend joins the conversation. */
+        expect(message.headers?.["References"]).toContain(
+          `<share-${fixture.shareId}@`,
+        );
+      }
+    });
+
+    it("refuses to send a share from anyone but a manager, or after revoking", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      if (!h.mailer) return;
+      const fixture = await makeShare(h, seed);
+      const asEditor = await req(h, `/api/v1/shares/${fixture.shareId}/email`, {
+        cookie: seed.editor.cookie,
+        json: { recipients: ["someone@example.com"] },
+      });
+      expect([403, 404]).toContain(asEditor.status);
+      await req(h, `/api/v1/shares/${fixture.shareId}`, {
+        method: "DELETE",
+        cookie: seed.admin.cookie,
+      });
+      const afterRevoke = await req(
+        h,
+        `/api/v1/shares/${fixture.shareId}/email`,
+        {
+          cookie: seed.admin.cookie,
+          json: { recipients: ["someone@example.com"] },
+        },
+      );
+      /* A revoked link that still arrives by email is worse than no email. */
+      expect([400, 404]).toContain(afterRevoke.status);
+    });
+
     it("creates shares manager-only with project-scoped assets", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

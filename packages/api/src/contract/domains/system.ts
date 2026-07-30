@@ -1005,6 +1005,9 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       "post /api/v1/assets/{id}/trash",
       /* "I opened this" has nothing to say beyond who and which. */
       "post /api/v1/projects/{id}/opened",
+      /* One-click unsubscribe: the authority is the signed token in the query,
+         and mail clients POST it with an empty body. */
+      "post /api/v1/notifications/unsubscribe",
       "post /api/v1/assets/{id}/restore",
       "post /api/v1/users/me/totp",
       "post /api/v1/admin/system/test-email",

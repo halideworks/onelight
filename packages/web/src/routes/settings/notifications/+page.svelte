@@ -2,8 +2,32 @@
   import { onMount } from 'svelte';
   import { api, apiPatch, messageFrom } from '$lib/api.js';
 
-  type Preferences = { mode: 'instant' | 'hourly' | 'daily'; muted_projects: string[] };
+  type Mode = 'off' | 'instant' | 'hourly' | 'daily';
+  type Preferences = {
+    mode: Mode;
+    kind_modes: Record<string, Mode>;
+    digest_hour: number;
+    utc_offset_minutes: number;
+    muted_projects: string[];
+  };
   type Project = { id: string; name: string };
+
+  /* The kinds worth routing on their own, in the order they matter. A mention
+     is addressed to you; a version arriving is the quietest thing here. */
+  const KINDS: Array<{ kind: string; label: string; hint: string }> = [
+    { kind: 'comment.mention', label: 'Mentions', hint: 'Somebody typed your name' },
+    { kind: 'comment.reply', label: 'Replies', hint: 'An answer in a thread you are in' },
+    { kind: 'comment.created', label: 'Comments', hint: 'Notes on work you uploaded or manage' },
+    { kind: 'approval.updated', label: 'Approvals', hint: 'Approved, or sent back for changes' },
+    { kind: 'transcode.failed', label: 'Failed uploads', hint: 'A file Onelight could not read' },
+    { kind: 'version.created', label: 'New versions', hint: 'Somebody uploaded a new cut' }
+  ];
+  const MODES: Array<{ value: Mode; label: string }> = [
+    { value: 'instant', label: 'As it happens' },
+    { value: 'hourly', label: 'Hourly' },
+    { value: 'daily', label: 'Daily' },
+    { value: 'off', label: 'No email' }
+  ];
 
   let prefs = $state<Preferences | null>(null);
   let projects = $state<Project[]>([]);
@@ -20,11 +44,44 @@
         ]);
         prefs = loadedPrefs;
         projects = loadedProjects.items;
+        /* Offer this browser's own offset if the account has never said one:
+           the default of UTC would put a "morning" summary in the middle of
+           somebody's night. */
+        if (prefs.utc_offset_minutes === 0)
+          prefs = { ...prefs, utc_offset_minutes: localOffsetMinutes() };
       } catch (caught) {
         prefsError = messageFrom(caught, 'Preferences could not be loaded.');
       }
     })();
   });
+
+  /* What this kind does today: its own rule, or "same as the default". */
+  const kindMode = (kind: string): Mode | '' => prefs?.kind_modes[kind] ?? '';
+  const setKindMode = (kind: string, value: string): void => {
+    if (!prefs) return;
+    const next = { ...prefs.kind_modes };
+    /* Empty means "no rule of its own", which is a deletion rather than a
+       value: a stored copy of the default would silently stop following it. */
+    if (value === '') delete next[kind];
+    else next[kind] = value as Mode;
+    prefs = { ...prefs, kind_modes: next };
+    prefsSaved = false;
+  };
+
+  /* The browser knows the reader's offset; the server cannot guess it. Stored
+     in minutes east of UTC so "eight in the morning" is their morning. */
+  const localOffsetMinutes = (): number => -new Date().getTimezoneOffset();
+  const offsetLabel = $derived.by(() => {
+    const minutes = prefs?.utc_offset_minutes ?? 0;
+    const sign = minutes < 0 ? '-' : '+';
+    const abs = Math.abs(minutes);
+    return `UTC${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+  });
+  const hourLabel = (hour: number): string => {
+    const suffix = hour < 12 ? 'am' : 'pm';
+    const twelve = hour % 12 === 0 ? 12 : hour % 12;
+    return `${String(twelve)}${suffix}`;
+  };
 
   const toggleMuted = (projectId: string): void => {
     if (!prefs) return;
@@ -64,10 +121,52 @@
     {#if prefs}
       <form onsubmit={savePrefs}>
         <fieldset>
-          <legend>Email delivery</legend>
-          <label><input type="radio" name="mode" value="instant" bind:group={prefs.mode} onchange={() => (prefsSaved = false)} /> Instant</label>
-          <label><input type="radio" name="mode" value="hourly" bind:group={prefs.mode} onchange={() => (prefsSaved = false)} /> Hourly digest</label>
-          <label><input type="radio" name="mode" value="daily" bind:group={prefs.mode} onchange={() => (prefsSaved = false)} /> Daily digest</label>
+          <legend>Email, by default</legend>
+          {#each MODES as option (option.value)}
+            <label>
+              <input type="radio" name="mode" value={option.value} bind:group={prefs.mode} onchange={() => (prefsSaved = false)} />
+              {option.label}
+            </label>
+          {/each}
+          <p class="note">Everything still arrives in the app behind the bell. This is only about email.</p>
+        </fieldset>
+
+        <!-- Per kind, because a mention and a new version arriving are not the
+             same news, and one dial for both is why people turn it off. -->
+        <fieldset class="kinds">
+          <legend>Except for these</legend>
+          {#each KINDS as entry (entry.kind)}
+            <label class="kindrow">
+              <span class="kindname">
+                {entry.label}
+                <small>{entry.hint}</small>
+              </span>
+              <select
+                value={kindMode(entry.kind)}
+                onchange={(event) => setKindMode(entry.kind, event.currentTarget.value)}
+              >
+                <option value="">Same as default</option>
+                {#each MODES as option (option.value)}
+                  <option value={option.value}>{option.label}</option>
+                {/each}
+              </select>
+            </label>
+          {/each}
+        </fieldset>
+
+        <fieldset>
+          <legend>When the daily summary arrives</legend>
+          <label class="kindrow">
+            <span class="kindname">
+              Send it at
+              <small>In your own day: {offsetLabel}</small>
+            </span>
+            <select bind:value={prefs.digest_hour} onchange={() => (prefsSaved = false)}>
+              {#each { length: 24 } as _, hour (hour)}
+                <option value={hour}>{hourLabel(hour)}</option>
+              {/each}
+            </select>
+          </label>
         </fieldset>
         <fieldset>
           <legend>Muted projects</legend>
@@ -109,6 +208,20 @@
   button:disabled { opacity: 0.5; cursor: default; }
   .saved { color: var(--ok); font-size: var(--text-13); }
   .empty { color: var(--ink-text-dim); }
+  .note { margin: 2px 0 0; color: var(--ink-text-dim); font-size: var(--text-12); }
+  .kinds { gap: 6px; }
+  .kindrow { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .kindname { display: grid; gap: 1px; }
+  .kindname small { color: var(--ink-text-dim); font-size: var(--text-12); }
+  select {
+    border: 1px solid var(--ink-300);
+    border-radius: var(--radius);
+    background: var(--ink-200);
+    color: var(--ink-text);
+    padding: 6px 8px;
+    font-size: var(--text-13);
+    min-width: 148px;
+  }
   .error { color: var(--warn); }
   button:focus-visible, input:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
 </style>

@@ -424,6 +424,7 @@ const start = async (): Promise<void> => {
     db,
     maintenanceConfigFromEnv(process.env, {
       publicUrl: config.PUBLIC_URL,
+      secretKey: config.SECRET_KEY,
       blobStore,
     }),
     async () => {

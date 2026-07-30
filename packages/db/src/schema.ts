@@ -444,6 +444,9 @@ export const assetVersions = sqliteTable(
     createdAt: integer("created_at").notNull(),
     /** Set once a transcode.failed notification has been materialized. */
     failureNotifiedAt: integer("failure_notified_at"),
+    /** Why it failed, in one short line fit to show somebody (0036). The
+        worker's own error text is long, path-bearing and written for a log. */
+    transcodeError: text("transcode_error"),
   },
   (table) => ({
     assetVersionUnique: unique().on(table.assetId, table.versionNo),
@@ -709,6 +712,9 @@ export const notifications = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     kind: text("kind").notNull(),
+    /** Which project it is about, so a badge can be counted by the server
+        rather than guessed at from whatever page the browser had (0036). */
+    projectId: text("project_id"),
     payloadJson: text("payload_json").notNull(),
     readAt: integer("read_at"),
     createdAt: integer("created_at").notNull(),
@@ -724,6 +730,12 @@ export const notifications = sqliteTable(
     // The (user_id, read_at, id) index cannot serve the id-DESC keyset used by
     // GET /notifications; this one does.
     userIdIndex: index("notifications_user_id_idx").on(table.userId, table.id),
+    // Unread counts per project, for the badges on the projects list.
+    projectUnreadIndex: index("notifications_project_unread_idx").on(
+      table.userId,
+      table.readAt,
+      table.projectId,
+    ),
   }),
 );
 
@@ -767,9 +779,22 @@ export const notificationPreferences = sqliteTable("notification_preferences", {
   userId: text("user_id")
     .primaryKey()
     .references(() => users.id, { onDelete: "cascade" }),
-  mode: text("mode", { enum: ["instant", "hourly", "daily"] })
+  /** The default for anything without a kind of its own. "off" is what a
+      one-click unsubscribe sets: the rows still arrive in the app. */
+  mode: text("mode", { enum: ["off", "instant", "hourly", "daily"] })
     .notNull()
     .default("instant"),
+  /** Per-kind overrides, {"comment.mention":"instant"} (0037). A mention and a
+      new version arriving are not the same news. */
+  kindModesJson: text("kind_modes_json").notNull().default("{}"),
+  /** Which hour the daily summary should arrive at, in the reader's own day. */
+  digestHour: integer("digest_hour").notNull().default(8),
+  /** Minutes east of UTC, so that hour means their morning (0037). */
+  utcOffsetMinutes: integer("utc_offset_minutes").notNull().default(0),
+  /** When the last daily summary was sent: the hour gate is a clock, not an
+      age, so without this the sweep would send one on every pass through that
+      hour (0037). */
+  lastDailyDigestAt: integer("last_daily_digest_at"),
   mutedProjectsJson: text("muted_projects_json").notNull().default("[]"),
   updatedAt: integer("updated_at").notNull(),
 });

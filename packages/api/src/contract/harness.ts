@@ -57,9 +57,24 @@ export const travel = async <T>(
  * seeds token rows directly instead.
  */
 export class StubMailer implements Mailer {
-  readonly messages: Array<{ to: string; subject: string; text: string }> = [];
+  /* Everything a real transport is handed, including the HTML alternative and
+     the headers: tests about how mail behaves in a client have to be able to
+     see the headers that decide it. */
+  readonly messages: Array<{
+    to: string;
+    subject: string;
+    text: string;
+    html?: string;
+    headers?: Record<string, string>;
+  }> = [];
 
-  send(message: { to: string; subject: string; text: string }): Promise<void> {
+  send(message: {
+    to: string;
+    subject: string;
+    text: string;
+    html?: string;
+    headers?: Record<string, string>;
+  }): Promise<void> {
     this.messages.push(message);
     return Promise.resolve();
   }

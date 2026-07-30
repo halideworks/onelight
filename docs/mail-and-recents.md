@@ -138,3 +138,68 @@ Then the wiring no unit test can see, driven through a real browser: clicking a
 project that had never been opened fires exactly one `POST .../opened`, and
 going back to the list puts that project at the head of the shelf. Both are
 asserted in the check rather than eyeballed.
+
+## The follow-up pass
+
+Six things, in the order they were worth doing.
+
+**The bell showed no comment text.** There were two implementations of
+"describe this notification", and the web one had drifted twice over: it said
+"Approval updated on X" where the mail said "Dana approved X", and its detail
+line read `body_text`, `body` or `excerpt` when the server has always written
+`preview`. So the words were in the payload and nothing rendered them. The web
+copy is gone; both read the core vocabulary now, and the unread dot takes its
+colour from the same tone the mail uses, so a mention and a failed upload are
+findable in a list of twenty without reading it.
+
+**Badges counted only what the browser had loaded.** A project whose unread rows
+had fallen past the newest page showed no badge at all. `notifications.project_id`
+is a column now (0036, backfilled from the payload) with an index on
+`(user_id, read_at, project_id)`, and `GET /notifications/badges` returns counted
+totals. Clearing one is `POST /notifications/read {project_id}`: clearing the ids
+a client happened to hold left the rest unread, so the number came straight back
+on the next poll.
+
+**A failed upload says why.** The reason lived only in the job row, so the mail
+could offer sympathy and nothing else. The pump now stores a short line on the
+version (`transcode_error`, 0036) through `failureReason`, which recognises the
+common ffmpeg failures and gives each one a sentence with a next step in it. An
+unrecognised failure keeps the worker's own words with the container paths taken
+out and clipped to 180 characters: a path is meaningless to the reader and
+nobody's business.
+
+**Mail behaves like mail now.** `Message-ID` and `References` keyed on the asset,
+so nine notes about one cut arrive as one conversation; `List-Unsubscribe` with
+`List-Unsubscribe-Post` so Gmail and Outlook draw their own one-click control,
+which is what stops people reporting the message as spam instead; and
+`Auto-Submitted` so no out-of-office answers a robot. The unsubscribe URL takes
+an unauthenticated POST, so its authority is a signed token rather than a
+session, and the only thing it can do is set email to off. Signed in core,
+because the API verifies and the sweep signs and two implementations of one
+scheme is how they drift. The footer says replies are not read, because there is
+no inbound mail and pretending otherwise wastes somebody's note.
+
+**Notification preferences are three questions instead of one** (0037). A
+default, per-kind overrides, and what hour the daily summary should arrive in the
+reader's own day. The browser offers its own UTC offset the first time, because a
+default of UTC puts a "morning" summary in the middle of somebody's night. The
+daily gate is a clock rather than an age, so it also records when it last sent:
+without that the sweep would send a fresh summary on every pass through that
+hour. Two days of silence beats a summary at the wrong time, so an overdue
+digest still goes out if the server was asleep at the hour.
+
+**A share can be sent from Onelight.** Until now a link left by being pasted
+into somebody else's mail client, which made the client's first impression
+whatever that person typed at half past eleven at night. `POST /shares/:id/email`
+renders it with everything else: what is in it, what they can do, when the link
+stops working. The passphrase is never in the message and the form says so,
+because a link and its password together is the password not existing. Manager
+only, rate limited, and refused on a revoked share.
+
+`notification_preferences` had to be rebuilt rather than altered, because "off"
+joins a CHECK constraint on mode and SQLite cannot alter a constraint. The
+symptom was a 500 from the unsubscribe endpoint and the test caught it before a
+person could.
+
+Driven through a real browser afterwards: the settings page keeps what it is
+told across a reload, on all seven controls.

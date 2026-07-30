@@ -16,6 +16,8 @@ import {
   UlidGenerator,
   countPhrase,
   describeNotification,
+  mailHeaders,
+  unsubscribeToken,
   frameLabel,
   renderEmail,
 } from "@onelight/core";
@@ -72,6 +74,9 @@ export const DEFAULT_GC_INTERVAL_MS = DAY_MS;
 
 export interface MaintenanceConfig {
   publicUrl: string;
+  /* Signs the one-click unsubscribe links in outgoing mail. The same secret the
+     API signs them with, because the API is what has to verify them. */
+  secretKey?: string;
   blobStore: BlobStore;
   uploadReapAfterMs: number;
   trashPurgeAfterMs: number;
@@ -90,7 +95,7 @@ const positiveInt = (value: string | undefined, fallback: number): number => {
 
 export const maintenanceConfigFromEnv = (
   env: Record<string, string | undefined>,
-  base: { publicUrl: string; blobStore: BlobStore },
+  base: { publicUrl: string; secretKey?: string; blobStore: BlobStore },
 ): MaintenanceConfig => {
   const gcDelete = (env.ONELIGHT_GC_DELETE ?? "").trim().toLowerCase();
   const backupDir = (env.BACKUP_DIR ?? "").trim();
@@ -138,7 +143,43 @@ const chunkArray = <T>(items: T[], size: number): T[][] => {
 // Email notification sweep (pure planning, injected mailer and clock).
 // ---------------------------------------------------------------------------
 
-export type NotificationMode = "instant" | "hourly" | "daily";
+export type NotificationMode = "off" | "instant" | "hourly" | "daily";
+
+/* What this reader wants for this KIND of news: their rule for it if they set
+   one, otherwise their default. A mention arriving instantly and a new version
+   waiting for the morning is the shape people actually want, and one dial
+   cannot express it. */
+export const modeForRow = (row: SweepNotificationRow): NotificationMode => {
+  try {
+    const overrides = JSON.parse(row.kindModesJson ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    const chosen = overrides[row.kind];
+    if (
+      chosen === "off" ||
+      chosen === "instant" ||
+      chosen === "hourly" ||
+      chosen === "daily"
+    )
+      return chosen;
+  } catch {
+    /* Unreadable preferences fall back to the default rather than failing. */
+  }
+  return row.mode;
+};
+
+/* Whether it is the hour they asked for, in their own day. Without this a
+   "daily" summary arrives whenever the oldest unread row happened to land,
+   which is not a habit anybody can build around. */
+export const atDigestHour = (
+  now: number,
+  digestHour: number,
+  utcOffsetMinutes: number,
+): boolean => {
+  const local = new Date(now + utcOffsetMinutes * 60_000);
+  return local.getUTCHours() === digestHour;
+};
 
 export interface SweepNotificationRow {
   id: string;
@@ -148,8 +189,18 @@ export interface SweepNotificationRow {
   createdAt: number;
   email: string;
   mode: NotificationMode;
+  /** Per-kind overrides, as stored: {"comment.mention":"instant"}. */
+  kindModesJson?: string;
+  /** Which hour of the reader's own day a daily summary should arrive. */
+  digestHour?: number;
+  /** Minutes east of UTC, so that hour is theirs and not the server's. */
+  utcOffsetMinutes?: number;
+  /** When their last daily summary went out. */
+  lastDailyDigestAt?: number | null;
   /** Whose workspace this is, shown small at the top of the message. */
   workspaceName?: string;
+  /** Signed, so a one-click unsubscribe works with no session. */
+  unsubscribeToken?: string;
 }
 
 export interface PlannedEmail {
@@ -158,6 +209,8 @@ export interface PlannedEmail {
   text: string;
   /** The HTML alternative; the text above is sent with it, never replaced. */
   html: string;
+  /** Threading, unsubscribe and auto-reply suppression. */
+  headers: Record<string, string>;
   notificationIds: string[];
 }
 
@@ -165,6 +218,10 @@ export interface EmailSweepPlan {
   emails: PlannedEmail[];
   /** Rows to sentinel-mark because the user has no email address. */
   skippedIds: string[];
+  /* Who was sent a daily summary, so the caller can stamp them. The hour gate
+     is a clock rather than an age: without a stamp the sweep would send a fresh
+     summary on every pass through that hour. */
+  dailyUserIds: string[];
 }
 
 /* A subject line that means something on its own.
@@ -255,16 +312,30 @@ const itemFor = (
    any more, and a digest that scrolls is one people learn to archive unread. */
 const DIGEST_ITEM_LIMIT = 12;
 
-const footerFor = (
-  publicUrl: string,
-  mode: NotificationMode,
-  reason: string,
-): string[] => [
+const footerFor = (publicUrl: string, reason: string): string[] => [
   reason,
-  `Change what Onelight emails you: ${trimmedUrl(publicUrl)}/settings${
-    mode === "instant" ? "" : ""
-  }`,
+  /* Where to answer, said out loud. There is no inbound mail here, so a reply
+     goes nowhere: better to say so than to let somebody type a note into the
+     void and wonder why nobody saw it. */
+  "Replies to this message are not read. Answer in Onelight so the note lands on the frame.",
+  `Choose what Onelight emails you, and when: ${trimmedUrl(publicUrl)}/settings/notifications`,
 ];
+
+/* The unsubscribe URL a mail client will POST to on one click. */
+const unsubscribeUrlFor = (
+  publicUrl: string,
+  token: string | undefined,
+): string | undefined =>
+  token
+    ? `${trimmedUrl(publicUrl)}/api/v1/notifications/unsubscribe?t=${encodeURIComponent(token)}`
+    : undefined;
+
+/* What thread this belongs to. Keyed on the asset, so every note about one cut
+   arrives as one conversation rather than as nine unrelated messages. */
+const threadKeyFor = (payload: Record<string, unknown>): string | undefined =>
+  typeof payload.asset_id === "string" && payload.asset_id
+    ? `asset-${payload.asset_id}`
+    : undefined;
 
 const instantEmail = (
   publicUrl: string,
@@ -300,7 +371,6 @@ const instantEmail = (
     action: { label: "Open it in Onelight", href: link },
     footer: footerFor(
       publicUrl,
-      "instant",
       row.kind === "comment.mention"
         ? "You were sent this because you were mentioned."
         : "You were sent this because you are on this project.",
@@ -311,6 +381,12 @@ const instantEmail = (
     subject: document.subject,
     text: document.text,
     html: document.html,
+    headers: mailHeaders({
+      publicUrl,
+      messageKey: `note-${row.id}`,
+      threadKey: threadKeyFor(payload),
+      unsubscribeUrl: unsubscribeUrlFor(publicUrl, row.unsubscribeToken),
+    }),
     notificationIds: [row.id],
   };
 };
@@ -393,8 +469,7 @@ const digestEmail = (
     action: { label: "Open Onelight", href: trimmedUrl(publicUrl) },
     footer: footerFor(
       publicUrl,
-      first.mode,
-      first.mode === "daily"
+      modeForRow(first) === "daily"
         ? "Your daily summary of the projects you are on."
         : "Your hourly summary of the projects you are on.",
     ),
@@ -404,6 +479,13 @@ const digestEmail = (
     subject: document.subject,
     text: document.text,
     html: document.html,
+    /* A digest is its own message, not a reply to one of the notes in it: it
+       gets an id and no thread, so it never buries a conversation. */
+    headers: mailHeaders({
+      publicUrl,
+      messageKey: `digest-${first.userId}-${String(rows.length)}-${String(first.createdAt)}`,
+      unsubscribeUrl: unsubscribeUrlFor(publicUrl, first.unsubscribeToken),
+    }),
     notificationIds: rows.map((row) => row.id),
   };
 };
@@ -423,6 +505,7 @@ export const planEmailSweep = (
 ): EmailSweepPlan => {
   const emails: PlannedEmail[] = [];
   const skippedIds: string[] = [];
+  const dailyUserIds: string[] = [];
   const byUser = new Map<string, SweepNotificationRow[]>();
   for (const row of rows) {
     if (!row.email.trim()) {
@@ -435,22 +518,56 @@ export const planEmailSweep = (
   }
   for (const userRows of byUser.values()) {
     const first = userRows[0] as SweepNotificationRow;
-    const mode = first.mode;
     /* Whose workspace, from the rows themselves where the query provided it,
        so a message says which studio it came from without the caller having
        to know. */
     const name = first.workspaceName ?? workspace;
-    if (mode === "instant") {
-      for (const row of userRows)
-        emails.push(instantEmail(publicUrl, row, name));
-      continue;
+    /* Routed per row, because one person can want a mention now and a version
+       in the morning. The buckets are then sent on their own terms. */
+    const instant: SweepNotificationRow[] = [];
+    const hourly: SweepNotificationRow[] = [];
+    const daily: SweepNotificationRow[] = [];
+    for (const row of userRows) {
+      const mode = modeForRow(row);
+      /* Off means no email, ever, for this kind. The row is marked so it is
+         not examined again; it is still in the app, where it was always the
+         primary copy. */
+      if (mode === "off") skippedIds.push(row.id);
+      else if (mode === "instant") instant.push(row);
+      else if (mode === "hourly") hourly.push(row);
+      else daily.push(row);
     }
-    const windowMs = mode === "hourly" ? HOURLY_WINDOW_MS : DAILY_WINDOW_MS;
-    const oldest = Math.min(...userRows.map((row) => row.createdAt));
-    if (now - oldest < windowMs) continue;
-    emails.push(digestEmail(publicUrl, userRows, name));
+    for (const row of instant) emails.push(instantEmail(publicUrl, row, name));
+    for (const [bucket, windowMs] of [
+      [hourly, HOURLY_WINDOW_MS],
+      [daily, DAILY_WINDOW_MS],
+    ] as const) {
+      if (!bucket.length) continue;
+      const oldest = Math.min(...bucket.map((row) => row.createdAt));
+      /* Hourly paces itself off the oldest unmailed row. Daily does not: it is
+         a habit at a time of day, so its gate is the clock below. */
+      if (windowMs === HOURLY_WINDOW_MS && now - oldest < windowMs) continue;
+      /* A daily summary waits for the hour they asked for, unless it has been
+         waiting so long that holding it again would be losing it. */
+      if (windowMs === DAILY_WINDOW_MS) {
+        const hour = first.digestHour ?? 8;
+        const offset = first.utcOffsetMinutes ?? 0;
+        /* Once a day, at the hour they asked for. Overdue is the escape for a
+           server that was asleep at that hour: two days of silence is worse
+           than a summary at the wrong time. */
+        const overdue = now - oldest >= DAILY_WINDOW_MS * 2;
+        const sentToday =
+          first.lastDailyDigestAt != null &&
+          now - first.lastDailyDigestAt <
+            DAILY_WINDOW_MS - HOURLY_WINDOW_MS * 2;
+        if (sentToday) continue;
+        if (!overdue && !atDigestHour(now, hour, offset)) continue;
+        dailyUserIds.push(first.userId);
+      }
+      emails.push(digestEmail(publicUrl, bucket, name));
+    }
   }
-  return { emails, skippedIds };
+  return { emails, skippedIds, dailyUserIds };
 };
 
 const fetchUnmailedNotifications = async (
@@ -465,7 +582,11 @@ const fetchUnmailedNotifications = async (
       createdAt: notifications.createdAt,
       email: users.email,
       workspaceName: workspaces.name,
+      lastDailyDigestAt: notificationPreferences.lastDailyDigestAt,
       mode: sql<NotificationMode>`coalesce(${notificationPreferences.mode}, 'instant')`,
+      kindModesJson: sql<string>`coalesce(${notificationPreferences.kindModesJson}, '{}')`,
+      digestHour: sql<number>`coalesce(${notificationPreferences.digestHour}, 8)`,
+      utcOffsetMinutes: sql<number>`coalesce(${notificationPreferences.utcOffsetMinutes}, 0)`,
     })
     .from(notifications)
     .innerJoin(users, eq(users.id, notifications.userId))
@@ -512,13 +633,37 @@ const sweepNotificationEmails = async (
     );
     return;
   }
-  const plan = planEmailSweep(rows, now, config.publicUrl);
+  /* One token per recipient, signed the same way the API verifies it. Without
+     a secret there is simply no unsubscribe header, rather than a broken one. */
+  const tokens = new Map<string, string>();
+  if (config.secretKey)
+    for (const userId of new Set(rows.map((row) => row.userId)))
+      tokens.set(userId, await unsubscribeToken(config.secretKey, userId));
+  const plan = planEmailSweep(
+    rows.map((row) => {
+      const token = tokens.get(row.userId);
+      return token ? { ...row, unsubscribeToken: token } : row;
+    }),
+    now,
+    config.publicUrl,
+  );
   if (plan.skippedIds.length) {
     await markEmailed(db, plan.skippedIds, EMAIL_SENTINEL_AT);
     warn(
       `email sweep: marked ${plan.skippedIds.length} notifications for recipients without an email address.`,
     );
   }
+  /* Stamp the daily summaries before sending them: sending twice is worse than
+     missing one, and a crash between the two should not mean a second copy. */
+  for (const userId of plan.dailyUserIds)
+    await db
+      .insert(notificationPreferences)
+      .values({ userId, lastDailyDigestAt: now, updatedAt: now })
+      .onConflictDoUpdate({
+        target: notificationPreferences.userId,
+        set: { lastDailyDigestAt: now },
+      })
+      .run();
   for (const email of plan.emails) {
     try {
       await mailer.send({
@@ -526,6 +671,7 @@ const sweepNotificationEmails = async (
         subject: email.subject,
         text: email.text,
         html: email.html,
+        headers: email.headers,
       });
       await markEmailed(db, email.notificationIds, now);
     } catch (error) {

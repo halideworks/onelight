@@ -115,7 +115,10 @@ export const describeNotification = (
       return {
         headline: `${asset} could not be processed`,
         tone: "attention",
+        /* Why, when the worker managed to say why. Generic sympathy is what
+           makes somebody mail support instead of fixing the export. */
         quote:
+          text(payload.reason) ??
           "Onelight could not read this file. Re-upload it, or send a different export.",
       };
     case "version.created": {
@@ -135,6 +138,71 @@ export const describeNotification = (
         tone: "quiet",
       };
   }
+};
+
+/* ---- why a file would not open ----
+
+   The worker's error text is written for a log: long, multi-line, and full of
+   absolute paths inside the container, which are both meaningless to a reader
+   and nobody's business outside. But "could not be processed" with no reason at
+   all is the message that makes somebody mail support rather than re-export.
+
+   So the common failures are recognised and given a sentence with a next step
+   in it, and anything unrecognised is reduced to one short line with the paths
+   taken out. */
+const FAILURE_PATTERNS: Array<{ test: RegExp; reason: string }> = [
+  {
+    test: /does not contain any stream|invalid data found|moov atom not found/i,
+    reason:
+      "The file has no readable media in it, which usually means the transfer was cut short. Upload it again.",
+  },
+  {
+    test: /no space left/i,
+    reason:
+      "The server ran out of disk while processing it. Nothing is wrong with the file; ask whoever runs this Onelight to make room, then upload it again.",
+  },
+  {
+    test: /decoder \(codec|unknown codec|unsupported codec|no decoder for/i,
+    reason:
+      "Onelight cannot decode this codec. Export a ProRes, DNx or H.264 master and send that instead.",
+  },
+  {
+    test: /permission denied/i,
+    reason:
+      "The server could not read the uploaded file. Upload it again; if it happens twice, this is a fault worth reporting.",
+  },
+  {
+    test: /timed out|killed|signal 9/i,
+    reason:
+      "Processing ran too long and was stopped. A shorter export, or one at a lower resolution, will get through.",
+  },
+  {
+    test: /pixel format|unsupported pixel/i,
+    reason:
+      "The picture is in a pixel format Onelight cannot read. Re-export it as 8 or 10 bit 4:2:2 or 4:4:4.",
+  },
+];
+
+/** One short line, safe to show and worth reading. */
+export const failureReason = (
+  error: string | null | undefined,
+): string | null => {
+  if (!error) return null;
+  const flat = error.replace(/\s+/g, " ").trim();
+  if (!flat) return null;
+  for (const pattern of FAILURE_PATTERNS)
+    if (pattern.test.test(flat)) return pattern.reason;
+  /* Unrecognised: keep the worker's own words, but only the tail of any path
+     and only as much as somebody will read. */
+  const withoutPaths = flat.replace(/(?:\/[\w.@ +-]+){2,}/g, (match) => {
+    const parts = match.split("/").filter(Boolean);
+    return parts[parts.length - 1] ?? "";
+  });
+  const clipped =
+    withoutPaths.length > 180
+      ? `${withoutPaths.slice(0, 179).trimEnd()}\u2026`
+      : withoutPaths;
+  return clipped || null;
 };
 
 /** The short noun for counting: "3 comments, 1 approval". */

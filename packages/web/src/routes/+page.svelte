@@ -214,6 +214,11 @@
     if (!auth.ready || !auth.signedIn || projectsLoaded) return;
     projectsLoaded = true;
     void reload();
+    /* The badges are counted by the server, and this page is the one that
+       draws them: ask for the counts rather than inferring them from whatever
+       page of notifications the bell happens to have. Six numbers, one query,
+       no notification bodies. */
+    void notifications.refreshBadges();
   });
 
   /* ---- selection: click opens, hold selects. The asset grid taught these

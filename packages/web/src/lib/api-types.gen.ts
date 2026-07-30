@@ -5813,7 +5813,8 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        ids: string[];
+                        ids?: string[];
+                        project_id?: string;
                     };
                 };
             };
@@ -5869,6 +5870,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/notifications/badges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Unread notification counts for the caller, grouped by project. What the badges on the projects list are drawn from: a count the server made, so it does not depend on how much of the notification list the browser has fetched. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            total: number;
+                            projects: {
+                                project_id: string;
+                                unread: number;
+                            }[];
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notifications/preferences": {
         parameters: {
             query?: never;
@@ -5876,6 +5955,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** What Onelight emails this person, and when. mode is the default; kind_modes overrides it per kind of news; digest_hour and utc_offset_minutes decide when a daily summary lands in their own day rather than the server's. mode "off" is what a one-click unsubscribe sets: notifications still arrive in the app. */
         get: {
             parameters: {
                 query?: never;
@@ -5893,7 +5973,12 @@ export interface paths {
                     content: {
                         "application/json": {
                             /** @enum {string} */
-                            mode: "instant" | "hourly" | "daily";
+                            mode: "off" | "instant" | "hourly" | "daily";
+                            kind_modes: {
+                                [key: string]: "off" | "instant" | "hourly" | "daily";
+                            };
+                            digest_hour: number;
+                            utc_offset_minutes: number;
                             muted_projects: string[];
                         };
                     };
@@ -5952,7 +6037,15 @@ export interface paths {
                 content: {
                     "application/json": {
                         /** @enum {string} */
-                        mode: "instant" | "hourly" | "daily";
+                        mode: "off" | "instant" | "hourly" | "daily";
+                        /** @default {} */
+                        kind_modes?: {
+                            [key: string]: "off" | "instant" | "hourly" | "daily";
+                        };
+                        /** @default 8 */
+                        digest_hour?: number;
+                        /** @default 0 */
+                        utc_offset_minutes?: number;
                         /** @default [] */
                         muted_projects?: string[];
                     };
@@ -5967,7 +6060,12 @@ export interface paths {
                     content: {
                         "application/json": {
                             /** @enum {string} */
-                            mode: "instant" | "hourly" | "daily";
+                            mode: "off" | "instant" | "hourly" | "daily";
+                            kind_modes: {
+                                [key: string]: "off" | "instant" | "hourly" | "daily";
+                            };
+                            digest_hour: number;
+                            utc_offset_minutes: number;
                             muted_projects: string[];
                         };
                     };
@@ -6010,6 +6108,79 @@ export interface paths {
                 };
             };
         };
+        trace?: never;
+    };
+    "/api/v1/notifications/unsubscribe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** One-click unsubscribe, as List-Unsubscribe-Post asks for: no session, a signed token instead, and it sets email to off. Gmail and Outlook show their own unsubscribe control when a message carries these headers, and a person who cannot find one reports the message as spam instead, which is what actually damages delivery. */
+        post: {
+            parameters: {
+                query?: {
+                    /** @description The signed token from the email header. */
+                    t?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description No content */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/sessions": {
@@ -6327,6 +6498,7 @@ export interface paths {
                                 /** @enum {string} */
                                 layout: "grid" | "list" | "reel";
                                 expires_at: number | null;
+                                has_passphrase: boolean;
                                 /** @enum {string} */
                                 allow_download: "none" | "proxy" | "original";
                                 allow_comments: boolean;
@@ -6457,6 +6629,7 @@ export interface paths {
                                 /** @enum {string} */
                                 layout: "grid" | "list" | "reel";
                                 expires_at: number | null;
+                                has_passphrase: boolean;
                                 /** @enum {string} */
                                 allow_download: "none" | "proxy" | "original";
                                 allow_comments: boolean;
@@ -6557,6 +6730,7 @@ export interface paths {
                             /** @enum {string} */
                             layout: "grid" | "list" | "reel";
                             expires_at: number | null;
+                            has_passphrase: boolean;
                             /** @enum {string} */
                             allow_download: "none" | "proxy" | "original";
                             allow_comments: boolean;
@@ -6737,6 +6911,7 @@ export interface paths {
                             /** @enum {string} */
                             layout: "grid" | "list" | "reel";
                             expires_at: number | null;
+                            has_passphrase: boolean;
                             /** @enum {string} */
                             allow_download: "none" | "proxy" | "original";
                             allow_comments: boolean;
@@ -6878,6 +7053,89 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/shares/{id}/email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send this share to the people it is for, in Onelight's own mail rather than by being copied into somebody's mail client. Never includes the passphrase, if the share has one: a link and its password in the same message is the password not existing. Says what is in it, what the recipient can do, and when the link stops working. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        recipients: string[];
+                        message?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            sent: number;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/shares/{id}/assets": {
         parameters: {
             query?: never;
@@ -6924,6 +7182,7 @@ export interface paths {
                                 /** @enum {string} */
                                 layout: "grid" | "list" | "reel";
                                 expires_at: number | null;
+                                has_passphrase: boolean;
                                 /** @enum {string} */
                                 allow_download: "none" | "proxy" | "original";
                                 allow_comments: boolean;

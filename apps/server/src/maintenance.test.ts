@@ -171,14 +171,96 @@ describe("planEmailSweep", () => {
     expect(due.emails[0]?.subject).toBe("2 comments on Nike Spring");
   });
 
-  it("holds daily digests for 24 hours", () => {
-    const rows = [row({ id: "n1", mode: "daily", createdAt: 5_000 })];
+  it("sends a daily summary at the hour asked for, once", () => {
+    /* Eight in the morning UTC, and eight in the morning for somebody nine and
+       a half hours east of it. A daily summary is a habit at a time of day, so
+       the gate is the clock, not the age of the oldest note. */
+    const eightUtc = Date.UTC(2026, 6, 30, 8, 5);
+    const rows = [row({ id: "n1", mode: "daily", createdAt: eightUtc - HOUR })];
     expect(
-      planEmailSweep(rows, 5_000 + DAY - 1, "https://x.test").emails,
+      planEmailSweep(rows, Date.UTC(2026, 6, 30, 3, 5), "https://x.test")
+        .emails,
     ).toEqual([]);
-    const due = planEmailSweep(rows, 5_000 + DAY, "https://x.test");
+    const due = planEmailSweep(rows, eightUtc, "https://x.test");
     expect(due.emails).toHaveLength(1);
     expect(due.emails[0]?.notificationIds).toEqual(["n1"]);
+    expect(due.dailyUserIds).toEqual(["user-1"]);
+
+    /* Told that one has gone out, it does not send another during the same
+       hour: the sweep runs every few minutes and this gate is a clock. */
+    const stamped = planEmailSweep(
+      rows.map((entry) => ({ ...entry, lastDailyDigestAt: eightUtc - 60_000 })),
+      eightUtc,
+      "https://x.test",
+    );
+    expect(stamped.emails).toEqual([]);
+
+    /* And an offset moves the hour to the reader's own day: 22:35 UTC is 08:05
+       in Adelaide. */
+    const adelaide = planEmailSweep(
+      rows.map((entry) => ({ ...entry, utcOffsetMinutes: 570 })),
+      Date.UTC(2026, 6, 29, 22, 35),
+      "https://x.test",
+    );
+    expect(adelaide.emails).toHaveLength(1);
+  });
+
+  it("routes each kind the way the reader asked", () => {
+    /* Midnight UTC, an hour after the notes landed: not the digest hour, and
+       not old enough for the overdue escape either. */
+    const now = Date.UTC(2026, 6, 30, 0, 0);
+    const preferences = {
+      mode: "daily" as const,
+      createdAt: now - HOUR,
+      kindModesJson: JSON.stringify({
+        "comment.mention": "instant",
+        "version.created": "off",
+      }),
+    };
+    const plan = planEmailSweep(
+      [
+        row({ id: "m1", kind: "comment.mention", ...preferences }),
+        row({ id: "v1", kind: "version.created", ...preferences }),
+        row({ id: "c1", kind: "comment.created", ...preferences }),
+      ],
+      now,
+      "https://x.test",
+    );
+    /* The mention goes now. */
+    expect(plan.emails).toHaveLength(1);
+    expect(plan.emails[0]?.notificationIds).toEqual(["m1"]);
+    /* The version arriving is off, so it is marked handled and never mailed --
+       it is still in the app, where it was always the primary copy. */
+    expect(plan.skippedIds).toEqual(["v1"]);
+    /* And the comment waits for the daily hour, which this is not. */
+    expect(
+      plan.emails.some((email) => email.notificationIds.includes("c1")),
+    ).toBe(false);
+  });
+
+  it("carries the headers that decide how mail behaves", () => {
+    const plan = planEmailSweep(
+      [row({ id: "n1", unsubscribeToken: "user-1.abcdef" })],
+      10 * HOUR,
+      "https://x.test",
+    );
+    const headers = plan.emails[0]?.headers ?? {};
+    /* Threaded on the asset, so nine notes about one cut arrive as one
+       conversation rather than nine unrelated messages. */
+    expect(headers["References"]).toBe("<asset-asset@x.test>");
+    expect(headers["In-Reply-To"]).toBe("<asset-asset@x.test>");
+    expect(headers["Message-ID"]).toBe("<note-n1@x.test>");
+    /* One click, which is what stops people reporting it as spam instead. */
+    expect(headers["List-Unsubscribe"]).toBe(
+      "<https://x.test/api/v1/notifications/unsubscribe?t=user-1.abcdef>",
+    );
+    expect(headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+    /* And no out-of-office should answer a robot. */
+    expect(headers["Auto-Submitted"]).toBe("auto-generated");
+    /* The footer says where to answer, because replies here go nowhere. */
+    expect(plan.emails[0]?.text).toContain(
+      "Replies to this message are not read",
+    );
   });
 
   it("groups digests per user and mixes modes independently", () => {

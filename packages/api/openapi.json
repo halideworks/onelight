@@ -9131,11 +9131,11 @@
                     },
                     "minItems": 1,
                     "maxItems": 500
+                  },
+                  "project_id": {
+                    "type": "string"
                   }
                 },
-                "required": [
-                  "ids"
-                ],
                 "additionalProperties": false
               }
             }
@@ -9188,8 +9188,95 @@
         }
       }
     },
+    "/api/v1/notifications/badges": {
+      "get": {
+        "summary": "Unread notification counts for the caller, grouped by project. What the badges on the projects list are drawn from: a count the server made, so it does not depend on how much of the notification list the browser has fetched.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "total": {
+                      "type": "integer"
+                    },
+                    "projects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "project_id": {
+                            "type": "string"
+                          },
+                          "unread": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "project_id",
+                          "unread"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "total",
+                    "projects"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/notifications/preferences": {
       "get": {
+        "summary": "What Onelight emails this person, and when. mode is the default; kind_modes overrides it per kind of news; digest_hour and utc_offset_minutes decide when a daily summary lands in their own day rather than the server's. mode \"off\" is what a one-click unsubscribe sets: notifications still arrive in the app.",
         "responses": {
           "200": {
             "description": "Success",
@@ -9201,10 +9288,43 @@
                     "mode": {
                       "type": "string",
                       "enum": [
+                        "off",
                         "instant",
                         "hourly",
                         "daily"
                       ]
+                    },
+                    "kind_modes": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string",
+                        "enum": [
+                          "off",
+                          "instant",
+                          "hourly",
+                          "daily"
+                        ]
+                      },
+                      "propertyNames": {
+                        "enum": [
+                          "comment.mention",
+                          "comment.reply",
+                          "comment.created",
+                          "approval.updated",
+                          "transcode.failed",
+                          "version.created"
+                        ]
+                      }
+                    },
+                    "digest_hour": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 23
+                    },
+                    "utc_offset_minutes": {
+                      "type": "integer",
+                      "minimum": -840,
+                      "maximum": 840
                     },
                     "muted_projects": {
                       "type": "array",
@@ -9215,6 +9335,9 @@
                   },
                   "required": [
                     "mode",
+                    "kind_modes",
+                    "digest_hour",
+                    "utc_offset_minutes",
                     "muted_projects"
                   ],
                   "additionalProperties": false
@@ -9275,10 +9398,46 @@
                   "mode": {
                     "type": "string",
                     "enum": [
+                      "off",
                       "instant",
                       "hourly",
                       "daily"
                     ]
+                  },
+                  "kind_modes": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "instant",
+                        "hourly",
+                        "daily"
+                      ]
+                    },
+                    "propertyNames": {
+                      "enum": [
+                        "comment.mention",
+                        "comment.reply",
+                        "comment.created",
+                        "approval.updated",
+                        "transcode.failed",
+                        "version.created"
+                      ]
+                    },
+                    "default": {}
+                  },
+                  "digest_hour": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 23,
+                    "default": 8
+                  },
+                  "utc_offset_minutes": {
+                    "type": "integer",
+                    "minimum": -840,
+                    "maximum": 840,
+                    "default": 0
                   },
                   "muted_projects": {
                     "type": "array",
@@ -9308,10 +9467,43 @@
                     "mode": {
                       "type": "string",
                       "enum": [
+                        "off",
                         "instant",
                         "hourly",
                         "daily"
                       ]
+                    },
+                    "kind_modes": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string",
+                        "enum": [
+                          "off",
+                          "instant",
+                          "hourly",
+                          "daily"
+                        ]
+                      },
+                      "propertyNames": {
+                        "enum": [
+                          "comment.mention",
+                          "comment.reply",
+                          "comment.created",
+                          "approval.updated",
+                          "transcode.failed",
+                          "version.created"
+                        ]
+                      }
+                    },
+                    "digest_hour": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 23
+                    },
+                    "utc_offset_minutes": {
+                      "type": "integer",
+                      "minimum": -840,
+                      "maximum": 840
                     },
                     "muted_projects": {
                       "type": "array",
@@ -9322,12 +9514,76 @@
                   },
                   "required": [
                     "mode",
+                    "kind_modes",
+                    "digest_hour",
+                    "utc_offset_minutes",
                     "muted_projects"
                   ],
                   "additionalProperties": false
                 }
               }
             }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/unsubscribe": {
+      "post": {
+        "summary": "One-click unsubscribe, as List-Unsubscribe-Post asks for: no session, a signed token instead, and it sets email to off. Gmail and Outlook show their own unsubscribe control when a message carries these headers, and a person who cannot find one reports the message as spam instead, which is what actually damages delivery.",
+        "parameters": [
+          {
+            "name": "t",
+            "in": "query",
+            "required": false,
+            "description": "The signed token from the email header.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No content"
           },
           "400": {
             "description": "Validation failure",
@@ -10057,6 +10313,9 @@
                             }
                           ]
                         },
+                        "has_passphrase": {
+                          "type": "boolean"
+                        },
                         "allow_download": {
                           "type": "string",
                           "enum": [
@@ -10129,6 +10388,7 @@
                         "title",
                         "layout",
                         "expires_at",
+                        "has_passphrase",
                         "allow_download",
                         "allow_comments",
                         "allow_approvals",
@@ -10268,6 +10528,9 @@
                               }
                             ]
                           },
+                          "has_passphrase": {
+                            "type": "boolean"
+                          },
                           "allow_download": {
                             "type": "string",
                             "enum": [
@@ -10340,6 +10603,7 @@
                           "title",
                           "layout",
                           "expires_at",
+                          "has_passphrase",
                           "allow_download",
                           "allow_comments",
                           "allow_approvals",
@@ -10472,6 +10736,9 @@
                         }
                       ]
                     },
+                    "has_passphrase": {
+                      "type": "boolean"
+                    },
                     "allow_download": {
                       "type": "string",
                       "enum": [
@@ -10567,6 +10834,7 @@
                     "title",
                     "layout",
                     "expires_at",
+                    "has_passphrase",
                     "allow_download",
                     "allow_comments",
                     "allow_approvals",
@@ -10833,6 +11101,9 @@
                         }
                       ]
                     },
+                    "has_passphrase": {
+                      "type": "boolean"
+                    },
                     "allow_download": {
                       "type": "string",
                       "enum": [
@@ -10905,6 +11176,7 @@
                     "title",
                     "layout",
                     "expires_at",
+                    "has_passphrase",
                     "allow_download",
                     "allow_comments",
                     "allow_approvals",
@@ -11138,6 +11410,111 @@
         }
       }
     },
+    "/api/v1/shares/{id}/email": {
+      "post": {
+        "summary": "Send this share to the people it is for, in Onelight's own mail rather than by being copied into somebody's mail client. Never includes the passphrase, if the share has one: a link and its password in the same message is the password not existing. Says what is in it, what the recipient can do, and when the link stops working.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "recipients": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "email"
+                    },
+                    "minItems": 1,
+                    "maxItems": 20
+                  },
+                  "message": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                },
+                "required": [
+                  "recipients"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sent": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "sent"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/shares/{id}/assets": {
       "post": {
         "summary": "Add assets to an existing share. Assets already in it are skipped.",
@@ -11232,6 +11609,9 @@
                             }
                           ]
                         },
+                        "has_passphrase": {
+                          "type": "boolean"
+                        },
                         "allow_download": {
                           "type": "string",
                           "enum": [
@@ -11304,6 +11684,7 @@
                         "title",
                         "layout",
                         "expires_at",
+                        "has_passphrase",
                         "allow_download",
                         "allow_comments",
                         "allow_approvals",

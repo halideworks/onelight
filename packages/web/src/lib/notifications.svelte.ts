@@ -1,3 +1,4 @@
+import { describeNotification as describe } from "@onelight/core";
 import { api, apiPost } from "./api.js";
 
 /* Notification state shared by the layout bell and the /notifications page.
@@ -17,11 +18,27 @@ type NotificationPage = {
   next_cursor: string | null;
 };
 
+type Badges = {
+  total: number;
+  projects: Array<{ project_id: string; unread: number }>;
+};
+
 const state = $state<{
   items: AppNotification[];
   nextCursor: string | null;
   loaded: boolean;
-}>({ items: [], nextCursor: null, loaded: false });
+  /* Counted by the server, per project. Kept apart from `items` on purpose:
+     the list is a page and the badge is a total, and conflating them is what
+     made a project with old unread rows show no badge at all. */
+  badges: Record<string, number>;
+  badgeTotal: number;
+}>({
+  items: [],
+  nextCursor: null,
+  loaded: false,
+  badges: {},
+  badgeTotal: 0,
+});
 
 export const notifications = {
   get items(): AppNotification[] {
@@ -33,34 +50,50 @@ export const notifications = {
   get loaded(): boolean {
     return state.loaded;
   },
-  /* Unread within the newest page; the badge is a cheap signal, not a ledger. */
+  /* The bell's own number. Unread rows in the newest page is the right count
+     for a list you are about to read; the total from the server is the right
+     count for a badge, so the bell prefers it and falls back to the page. */
   get unread(): number {
-    return state.items.filter((item) => item.read_at === null).length;
+    const counted = state.badgeTotal;
+    const inPage = state.items.filter((item) => item.read_at === null).length;
+    return Math.max(counted, inPage);
   },
-  /* The same cheap signal, split by project, for the badges on the projects
-     list. Every notification payload carries project_id (createNotifications
-     puts it there); anything without one is workspace-level and belongs to no
-     card. Bounded by the same newest page as the bell: a badge that says 50
-     when there are 200 is still the right shape of answer. */
+  /* Per project, counted by the server: not "unread in whatever the browser
+     fetched", which showed nothing at all for a project whose unread rows had
+     fallen past the first page. */
   get unreadByProject(): Record<string, number> {
-    const counts: Record<string, number> = {};
-    for (const item of state.items) {
-      if (item.read_at !== null) continue;
-      const project = item.payload.project_id;
-      if (typeof project !== "string" || project.length === 0) continue;
-      counts[project] = (counts[project] ?? 0) + 1;
-    }
-    return counts;
+    return state.badges;
   },
+  /* Clearing a badge clears the project, server side. Clearing the ids the
+     browser happened to hold left the rest unread, so the count came straight
+     back on the next poll. */
   async markProjectRead(projectId: string): Promise<void> {
-    await this.markRead(
-      state.items
-        .filter(
-          (item) =>
-            item.read_at === null && item.payload.project_id === projectId,
-        )
-        .map((item) => item.id),
+    if (!state.badges[projectId]) return;
+    await apiPost("/api/v1/notifications/read", { project_id: projectId });
+    const now = Date.now();
+    state.items = state.items.map((item) =>
+      item.read_at === null && item.payload.project_id === projectId
+        ? { ...item, read_at: now }
+        : item,
     );
+    const { [projectId]: cleared, ...rest } = state.badges;
+    state.badgeTotal = Math.max(0, state.badgeTotal - (cleared ?? 0));
+    state.badges = rest;
+  },
+  /* The badges alone, which is all the projects list needs: it does not want
+     fifty notification bodies to draw six numbers. */
+  async refreshBadges(): Promise<void> {
+    try {
+      const badges = await api<Badges>("/api/v1/notifications/badges", {
+        redirectOn401: false,
+      });
+      state.badges = Object.fromEntries(
+        badges.projects.map((row) => [row.project_id, row.unread]),
+      );
+      state.badgeTotal = badges.total;
+    } catch {
+      /* Keep the last known counts; the next poll retries. */
+    }
   },
   async refresh(): Promise<void> {
     try {
@@ -76,6 +109,7 @@ export const notifications = {
     } catch {
       /* Keep the last known state; the next poll retries. */
     }
+    await this.refreshBadges();
   },
   async loadMore(): Promise<void> {
     if (!state.nextCursor) return;
@@ -90,55 +124,63 @@ export const notifications = {
     await apiPost("/api/v1/notifications/read", { ids });
     const marked = new Set(ids);
     const now = Date.now();
+    /* Take the badges down by what was actually unread, so the numbers on the
+       projects list agree with the list you just read without a round trip. */
+    const byProject: Record<string, number> = {};
+    for (const item of state.items) {
+      if (!marked.has(item.id) || item.read_at !== null) continue;
+      const project = item.payload.project_id;
+      if (typeof project === "string" && project)
+        byProject[project] = (byProject[project] ?? 0) + 1;
+    }
     state.items = state.items.map((item) =>
       marked.has(item.id) && item.read_at === null
         ? { ...item, read_at: now }
         : item,
     );
+    const next = { ...state.badges };
+    let removed = 0;
+    for (const [project, count] of Object.entries(byProject)) {
+      const left = (next[project] ?? 0) - count;
+      removed += Math.min(count, next[project] ?? 0);
+      if (left > 0) next[project] = left;
+      else delete next[project];
+    }
+    state.badges = next;
+    state.badgeTotal = Math.max(0, state.badgeTotal - removed);
   },
   clear(): void {
+    state.badges = {};
+    state.badgeTotal = 0;
     state.items = [];
     state.nextCursor = null;
     state.loaded = false;
   },
 };
 
-const text = (value: unknown): string | null =>
-  typeof value === "string" && value.length > 0 ? value : null;
+/* One line per notification, in the SAME words the email uses.
 
-/* One-line rendering per kind family. Kinds are matched loosely on purpose:
-   the API forwards whatever the server writes, so unknown kinds still read
-   as plain sentences instead of raw identifiers. */
+   There used to be a second implementation here, and it had drifted twice
+   over: it said "Approval updated on X" where the mail said "Dana approved X",
+   and its detail line read body_text, body or excerpt when the server has
+   always written `preview`. So the panel showed no comment text at all -- the
+   words were in the payload and nothing rendered them. One vocabulary in core
+   now, used by both. */
 export const describeNotification = (
   item: AppNotification,
-): { title: string; detail: string } => {
-  const payload = item.payload;
-  const actor =
-    text(payload.actor_name) ?? text(payload.user_name) ?? "Someone";
-  const asset = text(payload.asset_name);
-  const project = text(payload.project_name);
-  const where = asset ? ` on ${asset}` : project ? ` in ${project}` : "";
-  const detail =
-    text(payload.body_text) ??
-    text(payload.body) ??
-    text(payload.excerpt) ??
-    "";
-  const kind = item.kind.toLowerCase();
-  let title: string;
-  if (kind.includes("mention")) title = `${actor} mentioned you${where}`;
-  else if (kind.includes("reply")) title = `${actor} replied${where}`;
-  else if (kind.includes("comment")) title = `${actor} commented${where}`;
-  else if (kind.includes("approval") || kind.includes("status"))
-    title = `Approval updated${where}`;
-  else if (
-    kind.includes("transcode") &&
-    (kind.includes("fail") || kind.includes("error"))
-  )
-    title = `Transcode failed${where}`;
-  else if (kind.includes("transcode")) title = `Transcode update${where}`;
-  else title = `${item.kind.replace(/[._-]+/g, " ")}${where}`;
-  return { title, detail };
+): { title: string; detail: string; tone: NotificationTone } => {
+  const described = describe({ kind: item.kind, payload: item.payload });
+  return {
+    title: described.headline,
+    detail: described.quote ?? "",
+    tone: described.tone ?? "quiet",
+  };
 };
+
+export type NotificationTone = "note" | "good" | "attention" | "quiet";
+
+const text = (value: unknown): string | null =>
+  typeof value === "string" && value.length > 0 ? value : null;
 
 const frame = (value: unknown): number | null =>
   typeof value === "number" && Number.isInteger(value) && value >= 0

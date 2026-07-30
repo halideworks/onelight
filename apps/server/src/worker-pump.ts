@@ -31,6 +31,7 @@ import {
   parseTimecode,
   stackKeyOf,
   UlidGenerator,
+  failureReason,
   zipStream,
 } from "@onelight/core";
 import type { MediaInfo } from "@onelight/core";
@@ -1864,7 +1865,9 @@ const recordDeadMediaJob = async (
     if (job.kind !== "probe" && job.kind !== "transcode") return;
     const state = (
       await db
-        .select({ status: jobs.status })
+        /* The error comes with the status: it is the only record of why this
+           file would not open, and the notification needs to say so. */
+        .select({ status: jobs.status, error: jobs.error })
         .from(jobs)
         .where(eq(jobs.id, job.id))
         .limit(1)
@@ -1877,7 +1880,13 @@ const recordDeadMediaJob = async (
     if (!versionId) return;
     await db
       .update(assetVersions)
-      .set({ transcodeStatus: "failed" })
+      .set({
+        transcodeStatus: "failed",
+        /* Keep why, in one line fit to show somebody. The worker's own text is
+           a log line: long, multi-line and full of container paths. Without
+           this the notification could only offer sympathy. */
+        transcodeError: failureReason(state.error),
+      })
       .where(eq(assetVersions.id, versionId))
       .run();
     await insertVersionEvent(

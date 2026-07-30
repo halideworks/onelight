@@ -226,6 +226,28 @@ const projectVisitsExist = async (binding: D1Database): Promise<boolean> => {
   return Boolean(row?.name);
 };
 
+const notificationsHaveProject = async (
+  binding: D1Database,
+): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("project_id"));
+};
+
+const preferencesHaveRouting = async (
+  binding: D1Database,
+): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notification_preferences'",
+    )
+    .first<{ sql: string }>();
+  return Boolean(row?.sql?.includes("kind_modes_json"));
+};
+
 const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -646,6 +668,26 @@ export const d1Migrations: D1Migration[] = [
     statements: [
       "CREATE TABLE project_visits (\n  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,\n  opened_at INTEGER NOT NULL,\n  PRIMARY KEY (user_id, project_id)\n) WITHOUT ROWID",
       "CREATE INDEX project_visits_recent_idx ON project_visits(user_id, opened_at)",
+    ],
+  },
+  {
+    name: "0036_notification_project.sql",
+    applied: notificationsHaveProject,
+    statements: [
+      "ALTER TABLE asset_versions ADD COLUMN transcode_error TEXT",
+      "ALTER TABLE notifications ADD COLUMN project_id TEXT",
+      "UPDATE notifications SET project_id = json_extract(payload_json, '$.project_id') WHERE project_id IS NULL AND json_valid(payload_json)",
+      "CREATE INDEX notifications_project_unread_idx ON notifications(user_id, read_at, project_id)",
+    ],
+  },
+  {
+    name: "0037_notification_routing.sql",
+    applied: preferencesHaveRouting,
+    statements: [
+      "CREATE TABLE notification_preferences_new (\n  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,\n  mode TEXT NOT NULL DEFAULT 'instant' CHECK (mode IN ('off','instant','hourly','daily')),\n  kind_modes_json TEXT NOT NULL DEFAULT '{}',\n  digest_hour INTEGER NOT NULL DEFAULT 8,\n  utc_offset_minutes INTEGER NOT NULL DEFAULT 0,\n  last_daily_digest_at INTEGER,\n  muted_projects_json TEXT NOT NULL DEFAULT '[]',\n  updated_at INTEGER NOT NULL\n)",
+      "INSERT INTO notification_preferences_new (user_id, mode, muted_projects_json, updated_at) SELECT user_id, mode, muted_projects_json, updated_at FROM notification_preferences",
+      "DROP TABLE notification_preferences",
+      "ALTER TABLE notification_preferences_new RENAME TO notification_preferences",
     ],
   },
 ];

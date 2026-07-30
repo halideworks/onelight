@@ -117,6 +117,12 @@ export interface Mailer {
     subject: string;
     text: string;
     html?: string;
+    /* Extra headers, verbatim. Threading (Message-ID, In-Reply-To,
+       References) and List-Unsubscribe live here: they are the difference
+       between five notes about one asset arriving as a conversation or as five
+       unrelated messages, and between a digest being unsubscribable in one
+       click or only from inside the app. */
+    headers?: Record<string, string>;
   }): Promise<void>;
 }
 

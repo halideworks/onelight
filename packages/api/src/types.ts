@@ -50,6 +50,8 @@ export interface AppEnv {
       text: string;
       /** The HTML alternative; text rides with it, never instead of it. */
       html?: string;
+      /** Threading and unsubscribe headers, passed through verbatim. */
+      headers?: Record<string, string>;
     }) => Promise<void>;
     reload: () => void;
   };

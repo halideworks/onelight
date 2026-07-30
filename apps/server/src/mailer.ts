@@ -14,6 +14,8 @@ export interface MailMessage {
   text: string;
   /** The HTML alternative. Sent alongside the text, never instead of it. */
   html?: string;
+  /** Threading and unsubscribe headers, passed through verbatim. */
+  headers?: Record<string, string>;
 }
 
 /** Build a nodemailer-backed Mailer for a parsed config. */
@@ -35,6 +37,7 @@ export const createMailerForConfig = (config: SmtpConfig): Mailer => {
         subject: message.subject,
         text: message.text,
         ...(message.html ? { html: message.html } : {}),
+        ...(message.headers ? { headers: message.headers } : {}),
       });
     },
   };

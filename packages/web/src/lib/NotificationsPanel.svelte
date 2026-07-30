@@ -126,7 +126,10 @@
         {@const described = describeNotification(item)}
         {@const link = notificationLink(item)}
         <article class:unread={item.read_at === null}>
-          <span class="dot" aria-hidden="true"></span>
+          <!-- The unread dot takes the colour of what kind of thing this is,
+               so a mention and a failed upload are findable in a list of
+               twenty without reading it. Same vocabulary as the mail. -->
+          <span class="dot" data-tone={described.tone} aria-hidden="true"></span>
           {#if item.read_at === null}<span class="sr-only">Unread. </span>{/if}
           <div class="body">
             {#if link}
@@ -189,6 +192,9 @@
   article { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px; margin: 0 -12px; border-radius: var(--radius); background: var(--ink-100); font-size: var(--text-13); }
   .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; align-self: center; background: transparent; }
   article.unread .dot { background: var(--accent); }
+  article.unread .dot[data-tone='note'] { background: var(--note); }
+  article.unread .dot[data-tone='good'] { background: var(--ok); }
+  article.unread .dot[data-tone='attention'] { background: var(--warn); }
   article.unread { background: var(--ink-200); }
   .body { flex: 1; min-width: 0; display: grid; gap: 3px; }
   .body a, .title { color: var(--ink-text); font-weight: 500; text-decoration: none; }

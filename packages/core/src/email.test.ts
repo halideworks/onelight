@@ -9,6 +9,7 @@ import {
 import {
   countPhrase,
   describeNotification,
+  failureReason,
   frameLabel,
 } from "./notification-copy.js";
 import type { EmailDocument } from "./email.js";
@@ -179,6 +180,34 @@ describe("how a notification reads", () => {
         payload: { asset_name: "SPOT_30_v3.mov", status: "changes_requested" },
       }).headline,
     ).toBe("SPOT_30_v3.mov needs changes");
+  });
+
+  it("says why a file failed, and what to do, when the worker said why", () => {
+    /* The worker's text is a log line; what reaches a person is a sentence with
+       a next step in it. */
+    expect(failureReason("Invalid data found when processing input")).toContain(
+      "Upload it again",
+    );
+    expect(
+      describeNotification({
+        kind: "transcode.failed",
+        payload: {
+          asset_name: "SPOT_30.mov",
+          reason: failureReason("moov atom not found"),
+        },
+      }).quote,
+    ).toContain("transfer was cut short");
+    /* An unrecognised failure keeps the worker's words but not its paths: a
+       container path is meaningless to the reader and nobody's business. */
+    const raw = failureReason(
+      "ffmpeg: /data/blobs/01KX/01KY/uploads/01KZ/master.mxf: something odd",
+    );
+    expect(raw).not.toContain("/data/blobs");
+    expect(raw).toContain("master.mxf");
+    /* And it stays short enough to read. */
+    expect(failureReason("x".repeat(500))?.length).toBeLessThanOrEqual(180);
+    expect(failureReason("")).toBeNull();
+    expect(failureReason(null)).toBeNull();
   });
 
   it("tells somebody what to do about a file that failed", () => {

@@ -76,6 +76,10 @@
     slug: string;
     folder_id: string | null;
     allow_download: string;
+    /* Whether the room asks for a password, so the send-by-email form can say
+       that the password is deliberately not in the message. Never the
+       password. */
+    has_passphrase?: boolean;
     revoked_at: number | null;
   };
 
@@ -722,6 +726,58 @@
     shareError = (await copyText(shareLinkOf(share)))
       ? `Link to ${share.title} copied.`
       : 'The link could not be copied.';
+  };
+
+  /* ---- sending a share ----
+
+     A link used to leave Onelight by being pasted into somebody else's mail
+     client, which made the client's first impression of the work whatever that
+     person typed at half past eleven at night. */
+  let emailShareFor = $state<string | null>(null);
+  let emailRecipients = $state('');
+  let emailMessage = $state('');
+  let emailBusy = $state(false);
+  let emailError = $state('');
+  const emailShare = shares.find((entry) => entry.id === emailShareFor);
+
+  const openEmailShare = (shareId: string): void => {
+    emailShareFor = shareId;
+    emailRecipients = '';
+    emailMessage = '';
+    emailError = '';
+  };
+
+  const sendShareEmail = async (event: SubmitEvent): Promise<void> => {
+    event.preventDefault();
+    const shareId = emailShareFor;
+    if (!shareId || emailBusy) return;
+    /* Commas, semicolons or newlines: people paste address lists in all three
+       shapes and none of them is worth an error message. */
+    const recipients = emailRecipients
+      .split(/[,;\s]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    if (recipients.length === 0) {
+      emailError = 'Add at least one address.';
+      return;
+    }
+    emailBusy = true;
+    emailError = '';
+    try {
+      const result = await apiPost<{ sent: number }>(
+        `/api/v1/shares/${shareId}/email`,
+        {
+          recipients,
+          ...(emailMessage.trim() ? { message: emailMessage.trim() } : {})
+        }
+      );
+      shareError = `Sent to ${String(result.sent)} ${result.sent === 1 ? 'person' : 'people'}.`;
+      emailShareFor = null;
+    } catch (caught) {
+      emailError = messageFrom(caught, 'The share could not be sent.');
+    } finally {
+      emailBusy = false;
+    }
   };
 
   const menuRevokeShare = async (shareId: string): Promise<void> => {
@@ -3131,6 +3187,62 @@
 <!-- Right-click menu. Positioned at the pointer and dismissed by the next
      click anywhere, Escape, or a scroll -- a menu that outlives its context is
      worse than no menu. -->
+<!-- Sending a share, in Onelight's own words: a review link that arrives looking
+     like the tool it opens rather than like whatever somebody typed at half past
+     eleven at night. A passphrase is never in the message and the form says so,
+     because a link and its password together is the password not existing. -->
+{#if emailShareFor}
+  {@const share = emailShare}
+  <div
+    class="emailsheet"
+    role="presentation"
+    onclick={(event) => { if (event.target === event.currentTarget) emailShareFor = null; }}
+  >
+    <form
+      class="emailbody"
+      role="dialog"
+      aria-label={`Send ${share?.title ?? 'share'} by email`}
+      onsubmit={sendShareEmail}
+    >
+      <h2>Send “{share?.title ?? 'this share'}”</h2>
+      <p class="emailnote">
+        They get a link straight into the review. Nothing else about this project
+        goes with it.
+      </p>
+      <label>
+        <span>To</span>
+        <textarea
+          bind:value={emailRecipients}
+          rows="2"
+          placeholder="dana@client.com, sam@agency.com"
+          aria-label="Recipient addresses"
+        ></textarea>
+      </label>
+      <label>
+        <span>A line from you <small>optional</small></span>
+        <textarea
+          bind:value={emailMessage}
+          rows="3"
+          maxlength="1000"
+          placeholder="First cut for your notes. Sound is temp."
+          aria-label="Message"
+        ></textarea>
+      </label>
+      {#if share?.has_passphrase}
+        <p class="emailnote warn">
+          This share has a password. It is deliberately not in the email: send it
+          to them another way.
+        </p>
+      {/if}
+      {#if emailError}<p class="error" role="alert">{emailError}</p>{/if}
+      <div class="emailactions">
+        <button type="button" class="quiet" onclick={() => (emailShareFor = null)}>Cancel</button>
+        <button type="submit" disabled={emailBusy}>{emailBusy ? 'Sending…' : 'Send'}</button>
+      </div>
+    </form>
+  </div>
+{/if}
+
 {#if shareMenu}
   {@const menu = shareMenu}
   <div
@@ -3237,6 +3349,9 @@
       <button type="button" role="menuitem" onclick={() => { const taken = takeRowMenu(); if (taken?.kind === 'share') void menuCopyShareLink(taken.id); }}>
         Copy link
       </button>
+      <button type="button" role="menuitem" onclick={() => { const taken = takeRowMenu(); if (taken?.kind === 'share') openEmailShare(taken.id); }}>
+        Send by email…
+      </button>
       <button type="button" role="menuitem" onclick={() => { const taken = takeRowMenu(); if (taken?.kind === 'share') openShare(taken.id); }}>
         Share settings
       </button>
@@ -3252,6 +3367,43 @@
 {/if}
 
 <style>
+  /* ---- send a share ---- */
+  .emailsheet {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgb(0 0 0 / 0.5);
+  }
+  .emailbody {
+    width: min(460px, 100%);
+    display: grid;
+    gap: 14px;
+    padding: 22px;
+    border: 1px solid var(--ink-300);
+    border-radius: 14px;
+    background: var(--ink-100);
+  }
+  .emailbody h2 { margin: 0; font-size: var(--text-15); font-weight: 600; }
+  .emailnote { margin: 0; color: var(--ink-text-dim); font-size: var(--text-12); }
+  .emailnote.warn { color: var(--note); }
+  .emailbody label { display: grid; gap: 5px; font-size: var(--text-13); }
+  .emailbody label small { color: var(--ink-text-dim); font-weight: 400; }
+  .emailbody textarea {
+    width: 100%;
+    border: 1px solid var(--ink-300);
+    border-radius: var(--radius);
+    background: var(--ink-200);
+    color: var(--ink-text);
+    padding: 8px 10px;
+    font: inherit;
+    font-size: var(--text-13);
+    resize: vertical;
+  }
+  .emailactions { display: flex; justify-content: flex-end; gap: 10px; }
+
   /* App world: dark ink base, the project's palette as the header wash.
      Separation by value step and space, not borders. */
   /* The palette washes the whole room, not a band across the top. It used to be

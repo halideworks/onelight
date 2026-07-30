@@ -35,10 +35,12 @@ import {
   parseResolveEdl,
   parseSmtpConfig,
   projectRoleAtLeast,
+  unsubscribeSubject,
   randomBytes,
   utf8,
   verifyTotp,
   renderEmail,
+  mailHeaders,
   AUDIO_MATCH_MAX_DISTANCE,
   MOTION_MATCH_MAX_DISTANCE,
   bitDistance,
@@ -205,6 +207,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
             subject: string;
             text: string;
             html?: string;
+            headers?: Record<string, string>;
           }) => env.mailer!.send(message),
           reload: (): void => {},
         }
@@ -1051,6 +1054,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         id: env.ids.ulid(),
         userId,
         kind: options.kind,
+        /* As a column, so the badge on a project card is a counted answer
+           rather than whatever the browser had loaded. */
+        projectId: options.projectId,
         payloadJson,
         readAt: null,
         createdAt: now,
@@ -1653,6 +1659,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     title: share.title,
     layout: share.layout,
     expires_at: share.expiresAt,
+    /* Whether it has one, never what it is. The room needs this to warn that a
+       password is deliberately not in the email it just sent. */
+    has_passphrase: share.passphraseHash !== null,
     allow_download: share.allowDownload,
     allow_comments: Boolean(share.allowComments),
     allow_approvals: Boolean(share.allowApprovals),
@@ -5225,6 +5234,11 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           asset_id: row.asset.id,
           asset_name: row.asset.name,
           version_id: row.version.id,
+          /* Why, where the worker managed to say why: the difference between
+             a message somebody can act on and one they forward to support. */
+          ...(row.version.transcodeError
+            ? { reason: row.version.transcodeError }
+            : {}),
           preview: `Transcode failed for ${row.asset.name}`,
         },
       });
@@ -5264,17 +5278,56 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.post("/notifications/read", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const body = await jsonBody(c, bodies.notificationsRead);
+    /* Either a list of rows, or a whole project. The project form exists
+       because clearing a badge from a list of ids only clears the ids the
+       browser had, and the badge counts everything: the two disagreed, so the
+       count came back the moment anything reloaded. */
+    const scope =
+      body.project_id === undefined
+        ? or(...(body.ids ?? []).map((id) => eq(notifications.id, id)))
+        : eq(notifications.projectId, body.project_id);
+    if (!scope) throw errors.validation("Nothing to mark read.");
     await env.db
       .update(notifications)
       .set({ readAt: env.clock.now() })
       .where(
         and(
           eq(notifications.userId, actor.id),
-          or(...body.ids.map((id) => eq(notifications.id, id))),
+          isNull(notifications.readAt),
+          scope,
         ),
       )
       .run();
     return c.body(null, 204);
+  });
+
+  /* Unread per project, counted. This is what the badges on the projects list
+     are drawn from; the whole point is that it does not depend on how much of
+     the notification list the browser has fetched. */
+  api.get("/notifications/badges", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const rows = await env.db
+      .select({
+        projectId: notifications.projectId,
+        unread: sql<number>`count(*)`,
+      })
+      .from(notifications)
+      .where(
+        and(
+          eq(notifications.userId, actor.id),
+          isNull(notifications.readAt),
+          isNotNull(notifications.projectId),
+        ),
+      )
+      .groupBy(notifications.projectId)
+      .all();
+    return c.json({
+      total: rows.reduce((sum, row) => sum + Number(row.unread), 0),
+      projects: rows.map((row) => ({
+        project_id: row.projectId as string,
+        unread: Number(row.unread),
+      })),
+    });
   });
 
   api.get("/notifications/preferences", requireAuth, async (c) => {
@@ -5291,33 +5344,74 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       existing
         ? {
             mode: existing.mode,
+            kind_modes: parseJsonObject(existing.kindModesJson),
+            digest_hour: existing.digestHour,
+            utc_offset_minutes: existing.utcOffsetMinutes,
             muted_projects: JSON.parse(existing.mutedProjectsJson),
           }
-        : { mode: "instant", muted_projects: [] },
+        : {
+            mode: "instant",
+            kind_modes: {},
+            digest_hour: 8,
+            utc_offset_minutes: 0,
+            muted_projects: [],
+          },
     );
   });
 
   api.patch("/notifications/preferences", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const body = await jsonBody(c, bodies.notificationPreferencesPatch);
+    const values = {
+      mode: body.mode,
+      kindModesJson: JSON.stringify(body.kind_modes),
+      digestHour: body.digest_hour,
+      utcOffsetMinutes: body.utc_offset_minutes,
+      mutedProjectsJson: JSON.stringify(body.muted_projects),
+      updatedAt: env.clock.now(),
+    };
     await env.db
       .insert(notificationPreferences)
-      .values({
-        userId: actor.id,
-        mode: body.mode,
-        mutedProjectsJson: JSON.stringify(body.muted_projects),
-        updatedAt: env.clock.now(),
-      })
+      .values({ userId: actor.id, ...values })
       .onConflictDoUpdate({
         target: notificationPreferences.userId,
-        set: {
-          mode: body.mode,
-          mutedProjectsJson: JSON.stringify(body.muted_projects),
-          updatedAt: env.clock.now(),
-        },
+        set: values,
       })
       .run();
-    return c.json({ mode: body.mode, muted_projects: body.muted_projects });
+    return c.json({
+      mode: body.mode,
+      kind_modes: body.kind_modes,
+      digest_hour: body.digest_hour,
+      utc_offset_minutes: body.utc_offset_minutes,
+      muted_projects: body.muted_projects,
+    });
+  });
+
+  /* One click, no session.
+
+     Gmail and Outlook render their own unsubscribe control when a message
+     carries List-Unsubscribe plus List-Unsubscribe-Post, and they POST to the
+     URL with no cookies at all. Somebody who cannot find an unsubscribe reports
+     the message as spam instead, and that is what actually damages delivery for
+     everybody else on the instance.
+
+     So the authority is a signed token naming the user, not a session, and the
+     only thing it can do is turn email off. Notifications keep arriving in the
+     app: unsubscribing from mail is not resigning from the project. */
+  api.post("/notifications/unsubscribe", async (c) => {
+    const token = c.req.query("t") ?? "";
+    const userId = await unsubscribeSubject(env.config.SECRET_KEY, token);
+    if (!userId) throw errors.forbidden("That unsubscribe link is not valid.");
+    const now = env.clock.now();
+    await env.db
+      .insert(notificationPreferences)
+      .values({ userId, mode: "off", updatedAt: now })
+      .onConflictDoUpdate({
+        target: notificationPreferences.userId,
+        set: { mode: "off", updatedAt: now },
+      })
+      .run();
+    return c.body(null, 204);
   });
 
   api.get("/sessions", requireAuth, async (c) => {
@@ -6668,6 +6762,121 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
      clip in front of a client meant building a second share with a second link
      -- so the project page could only ever offer "create a share", never "add
      to that one". */
+  /* Send a share to the people it is for.
+
+     Until now a link left Onelight by being copied into somebody else's email
+     client, which means the client's first impression of the work was whatever
+     that person typed at half past eleven at night. This is the same renderer
+     everything else uses, so a review link arrives looking like the tool it
+     opens.
+
+     Two rules it keeps. A passphrase is never in the message: a link and its
+     password in the same email is the password not existing. And an expiry is
+     said out loud, because a client who opens it a week late deserves to know
+     why nothing is there rather than thinking the tool is broken. */
+  api.post("/shares/:id/email", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const share = (
+      await env.db
+        .select()
+        .from(shares)
+        .where(eq(shares.id, c.req.param("id")))
+        .limit(1)
+        .all()
+    )[0];
+    if (!share) throw errors.notFound();
+    await requireProject(share.projectId, actor, "manager");
+    if (share.revokedAt)
+      throw errors.validation("That share has been revoked.");
+    const body = await jsonBody(c, bodies.shareEmail);
+    if (!mailControl || (await mailStatus()).state !== "ready")
+      throw errors.validation(
+        "Email is not configured on this Onelight, so a share cannot be sent from it.",
+      );
+    /* One person cannot turn a share into a mailing list. */
+    await hitRateLimit(`share_email:user:${actor.id}`, 20, 60 * 60 * 1000);
+    const project = (
+      await env.db
+        .select({ name: projects.name })
+        .from(projects)
+        .where(eq(projects.id, share.projectId))
+        .limit(1)
+        .all()
+    )[0];
+    const workspace = await workspaceFor(actor.workspaceId);
+    const url = `${env.config.PUBLIC_URL.replace(/\/$/, "")}/s/${share.slug}`;
+    const assetCount = (
+      await env.db
+        .select({ count: sql<number>`count(*)` })
+        .from(shareAssets)
+        .where(eq(shareAssets.shareId, share.id))
+        .all()
+    )[0];
+    const items = Number(assetCount?.count ?? 0);
+    const what = share.title ?? project?.name ?? "work";
+    const facts: string[] = [
+      `${String(items)} ${items === 1 ? "file" : "files"} to look at`,
+    ];
+    if (share.allowComments) facts.push("You can leave notes on the frame");
+    if (share.allowApprovals) facts.push("You can approve or ask for changes");
+    if (share.allowDownload !== "none")
+      facts.push(
+        share.allowDownload === "original"
+          ? "Downloads are the original files"
+          : "Downloads are review copies",
+      );
+    if (share.expiresAt)
+      facts.push(
+        `The link stops working on ${new Date(share.expiresAt).toISOString().slice(0, 10)}`,
+      );
+    if (share.passphraseHash)
+      /* Named, never included: a link and its password in one message is the
+         password not existing. */
+      facts.push(`${actor.name} will send you the password for it separately`);
+    const rendered = renderEmail({
+      subject: `${actor.name} shared ${what} with you`,
+      preheader: body.message?.trim()
+        ? body.message.trim()
+        : `${String(items)} ${items === 1 ? "file" : "files"} to review in Onelight.`,
+      heading: `${actor.name} shared ${what} with you`,
+      ...(workspace?.name ? { workspace: workspace.name } : {}),
+      ...(body.message?.trim() ? { intro: body.message.trim() } : {}),
+      sections: [
+        {
+          items: facts.map((fact) => ({ meta: fact, tone: "quiet" as const })),
+        },
+      ],
+      action: { label: "Open the review", href: url },
+      footer: [
+        `Sent by ${actor.name} from Onelight. Replies to this message are not read; leave notes in the review itself.`,
+      ],
+    });
+    for (const recipient of body.recipients) {
+      try {
+        await mailControl.send({
+          to: recipient,
+          ...rendered,
+          headers: mailHeaders({
+            publicUrl: env.config.PUBLIC_URL,
+            messageKey: `share-${share.id}-${await sha256Hex(recipient)}`,
+            threadKey: `share-${share.id}`,
+          }),
+        });
+      } catch {
+        /* One bad address must not stop the rest: the link still works and the
+           sender can see who it reached in the audit log. */
+      }
+    }
+    await audit(
+      actor.workspaceId,
+      actor.id,
+      "share.emailed",
+      `share:${share.id}`,
+      { recipients: body.recipients.length },
+    );
+    return c.json({ sent: body.recipients.length });
+  });
+
   api.post("/shares/:id/assets", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const share = (
