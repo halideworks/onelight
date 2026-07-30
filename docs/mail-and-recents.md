@@ -120,3 +120,21 @@ schemes, which found three things no assertion would have:
 
 All three are now asserted in the sweep's tests: one occurrence of the button
 label, no linked meta line, and `ol-page` on more than one element.
+
+### What looking at the shelf caught
+
+Screenshotted on a throwaway stack with seven projects, three of them opened at
+different times, in Firefox at 1280px and 390px:
+
+- **The cards were empty rectangles.** `ProjectCover` is a block with no height
+  of its own -- it fills the frame it is given, and the shelf's frame gave it
+  none. The cards below work because they have `\`.thumb :global(.cover) { height:
+  100% }\``; the shelf needed the same rule. Every DOM assertion passed while the
+  shelf showed nothing, which is the same failure mode as
+  \`css-mask-clips-what-fixed-escapes\`.
+- **RECENT was jammed under the create form**, with no space above it.
+
+Then the wiring no unit test can see, driven through a real browser: clicking a
+project that had never been opened fires exactly one `POST .../opened`, and
+going back to the list puts that project at the head of the shelf. Both are
+asserted in the check rather than eyeballed.

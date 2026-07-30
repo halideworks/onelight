@@ -627,7 +627,7 @@
                 oncontextmenu={(event) => openMenu(event, project.id)}
               >
                 <span class="rthumb">
-                  <ProjectCover {project} monogram={false} />
+                  <ProjectCover {project} />
                   {#if unread > 0}
                     <button
                       type="button"
@@ -1148,7 +1148,7 @@
   .thumb { position: relative; }
   /* The unread count: the same yellow disc the nav bell wears. */
   /* ---- recent shelf ---- */
-  .recent { margin: 0 0 18px; }
+  .recent { margin: 22px 0 20px; }
   .recent h2 {
     margin: 0 0 8px;
     font-size: var(--text-12);
@@ -1182,12 +1182,16 @@
   .rcard:focus-visible { outline: 2px solid var(--accent-bright); outline-offset: 2px; }
   .rthumb {
     position: relative;
-    display: block;
+    display: grid;
     aspect-ratio: 16 / 9;
     border-radius: var(--radius);
     overflow: hidden;
     background: var(--ink-200);
   }
+  /* The cover is a block with no height of its own: it fills the frame it is
+     given, exactly as it does on the cards below. Without this the shelf was a
+     row of empty rectangles, which is what looking at it caught. */
+  .rthumb :global(.cover) { width: 100%; height: 100%; }
   .rcard:hover .rthumb { outline: 1px solid var(--ink-300); }
   .rname {
     font-size: var(--text-13);
