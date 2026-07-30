@@ -128,10 +128,10 @@ different times, in Firefox at 1280px and 390px:
 
 - **The cards were empty rectangles.** `ProjectCover` is a block with no height
   of its own -- it fills the frame it is given, and the shelf's frame gave it
-  none. The cards below work because they have `\`.thumb :global(.cover) { height:
-  100% }\``; the shelf needed the same rule. Every DOM assertion passed while the
-  shelf showed nothing, which is the same failure mode as
-  \`css-mask-clips-what-fixed-escapes\`.
+  none. The cards below work because they set the cover to full height; the
+  shelf needed the same rule. Every DOM assertion passed while the shelf showed
+  nothing, which is the same failure mode as the fade mask that hid three phone
+  panels.
 - **RECENT was jammed under the create form**, with no space above it.
 
 Then the wiring no unit test can see, driven through a real browser: clicking a
