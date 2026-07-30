@@ -727,6 +727,31 @@ export const notifications = sqliteTable(
   }),
 );
 
+/* When each person last opened each project (migration 0035).
+
+   The projects list's recent shelf ranks by the later of two things: what the
+   work moved on, which the project's own activity already says, and what you
+   were last looking at, which is this. */
+export const projectVisits = sqliteTable(
+  "project_visits",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    openedAt: integer("opened_at").notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.userId, table.projectId] }),
+    recentIndex: index("project_visits_recent_idx").on(
+      table.userId,
+      table.openedAt,
+    ),
+  }),
+);
+
 export const passwordResets = sqliteTable("password_resets", {
   id: text("id").primaryKey(),
   userId: text("user_id")

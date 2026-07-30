@@ -38,6 +38,7 @@ import {
   randomBytes,
   utf8,
   verifyTotp,
+  renderEmail,
   AUDIO_MATCH_MAX_DISTANCE,
   MOTION_MATCH_MAX_DISTANCE,
   bitDistance,
@@ -82,6 +83,7 @@ import {
   jobs,
   projectMembers,
   projectEvents,
+  projectVisits,
   projects,
   rateLimits,
   renditions,
@@ -198,8 +200,12 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
               detail: null,
               source: "env" as const,
             }),
-          send: (message: { to: string; subject: string; text: string }) =>
-            env.mailer!.send(message),
+          send: (message: {
+            to: string;
+            subject: string;
+            text: string;
+            html?: string;
+          }) => env.mailer!.send(message),
           reload: (): void => {},
         }
       : undefined);
@@ -500,6 +506,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     grant: (typeof projectMembers.$inferSelect)["role"] | undefined;
     coverUrl: string | null;
     lastActivityAt: number | null;
+    /** When THIS person last opened it, which only they can be told. */
+    lastOpenedAt: number | null;
   };
 
   const projectWire = async (
@@ -561,6 +569,24 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
                 .limit(1)
                 .all()
             )[0]?.createdAt) ?? project.updatedAt,
+      /* When you last opened it. Not when anyone did: the recent shelf is a
+         record of where this person has been, so it is per viewer and the
+         only honest answer for somebody who has never opened it is null. */
+      last_opened_at: precomputed
+        ? precomputed.lastOpenedAt
+        : ((
+            await env.db
+              .select({ openedAt: projectVisits.openedAt })
+              .from(projectVisits)
+              .where(
+                and(
+                  eq(projectVisits.userId, userId),
+                  eq(projectVisits.projectId, project.id),
+                ),
+              )
+              .limit(1)
+              .all()
+          )[0]?.openedAt ?? null),
       my_role: myRole,
     };
   };
@@ -603,6 +629,25 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .all();
     const activityByProject = new Map(
       activityRows.map((row) => [row.projectId, row.at]),
+    );
+
+    /* And when this person last opened each of them: one indexed read for the
+       whole page. */
+    const visitRows = await env.db
+      .select({
+        projectId: projectVisits.projectId,
+        openedAt: projectVisits.openedAt,
+      })
+      .from(projectVisits)
+      .where(
+        and(
+          eq(projectVisits.userId, userId),
+          inArray(projectVisits.projectId, ids),
+        ),
+      )
+      .all();
+    const openedByProject = new Map(
+      visitRows.map((row) => [row.projectId, row.openedAt]),
     );
 
     /* Asset-backed covers (an uploaded cover is its own blob, no join). The
@@ -662,6 +707,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         grant: grantByProject.get(project.id),
         coverUrl,
         lastActivityAt: activityByProject.get(project.id) ?? null,
+        lastOpenedAt: openedByProject.get(project.id) ?? null,
       });
     }
     return facts;
@@ -978,7 +1024,25 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       }),
     );
     const now = env.clock.now();
-    const payloadJson = JSON.stringify(options.payload);
+    /* Which job this is about, put in once here rather than at each of the
+       call sites that would have to remember. It is the first thing a person
+       reading a notification needs and the mail had no way to say it: every
+       message about every project looked the same in an inbox. */
+    const named = options.payload.project_name
+      ? options.payload
+      : {
+          ...options.payload,
+          project_name:
+            (
+              await env.db
+                .select({ name: projects.name })
+                .from(projects)
+                .where(eq(projects.id, options.projectId))
+                .limit(1)
+                .all()
+            )[0]?.name ?? "",
+        };
+    const payloadJson = JSON.stringify(named);
     // One multi-row insert instead of a round trip per recipient.
     const values = [];
     for (const userId of recipients) {
@@ -1904,17 +1968,25 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         })
         .run();
       if (mailControl && (await mailStatus()).state === "ready") {
+        const resetUrl = `${env.config.PUBLIC_URL.replace(/\/$/, "")}/reset/${token}`;
+        const workspace = await workspaceFor(user.workspaceId);
         await mailControl.send({
           to: user.email,
-          subject: "Reset your Onelight password",
-          text: [
-            `A password reset was requested for ${user.email}.`,
-            "",
-            "Reset your password within the next hour:",
-            `${env.config.PUBLIC_URL.replace(/\/$/, "")}/reset/${token}`,
-            "",
-            "If you did not request this, you can ignore this message.",
-          ].join("\n"),
+          ...renderEmail({
+            subject: "Reset your Onelight password",
+            /* What the inbox shows beside the subject: the deadline, which is
+               the one fact that decides whether to act now or later. */
+            preheader: "The link works for one hour.",
+            heading: "Reset your password",
+            intro: `Somebody asked to reset the password for ${user.email}. If that was you, set a new one within the hour.`,
+            ...(workspace?.name ? { workspace: workspace.name } : {}),
+            sections: [],
+            action: { label: "Choose a new password", href: resetUrl },
+            footer: [
+              "If it was not you, nothing has changed and you can ignore this. The link expires on its own.",
+              "Onelight never asks for your password by email.",
+            ],
+          }),
         });
         await audit(
           user.workspaceId,
@@ -2993,13 +3065,20 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         try {
           await mailControl.send({
             to: email,
-            subject: `${actor.name} invited you to ${workspace?.name ?? "Onelight"}`,
-            text: [
-              `${actor.name} invited you to review work in ${workspace?.name ?? "their workspace"} on Onelight.`,
-              "",
-              "Create your account here (the link works for seven days):",
-              acceptUrl,
-            ].join("\n"),
+            ...renderEmail({
+              subject: `${actor.name} invited you to ${workspace?.name ?? "Onelight"}`,
+              preheader: `Review work with ${actor.name}. The invitation is good for seven days.`,
+              heading: `${actor.name} invited you to ${workspace?.name ?? "Onelight"}`,
+              intro:
+                "Onelight is where this team reviews cuts, stills and deliveries: you watch the actual file, leave notes on the frame, and approve when it is right.",
+              ...(workspace?.name ? { workspace: workspace.name } : {}),
+              sections: [],
+              action: { label: "Create your account", href: acceptUrl },
+              footer: [
+                "The invitation is good for seven days. It only works for this address.",
+                "If you were not expecting it, you can ignore it and nothing happens.",
+              ],
+            }),
           });
           emailed = true;
         } catch {
@@ -3372,6 +3451,31 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       "viewer",
     );
     return c.json(await projectWire(project, user.id, user.role));
+  });
+
+  /* "I opened this." Recorded on purpose rather than inferred from a GET,
+     because a GET happens for a hundred reasons -- a poll, a prefetch, a
+     search result, another tab -- and a recent shelf built out of those is a
+     record of the software's behaviour rather than the person's. It also
+     clears the project's badge, which is what a badge means: a count of what
+     you have not looked at yet. */
+  api.post("/projects/:id/opened", requireAuth, async (c) => {
+    const user = userFromContext(c);
+    const { project } = await requireProject(
+      await projectParam(c.req.param("id")),
+      user,
+      "viewer",
+    );
+    const now = env.clock.now();
+    await env.db
+      .insert(projectVisits)
+      .values({ userId: user.id, projectId: project.id, openedAt: now })
+      .onConflictDoUpdate({
+        target: [projectVisits.userId, projectVisits.projectId],
+        set: { openedAt: now },
+      })
+      .run();
+    return c.body(null, 204);
   });
 
   /* A connection carrying Last-Event-ID is catching up and gets everything it

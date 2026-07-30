@@ -48,6 +48,8 @@ export interface AppEnv {
       to: string;
       subject: string;
       text: string;
+      /** The HTML alternative; text rides with it, never instead of it. */
+      html?: string;
     }) => Promise<void>;
     reload: () => void;
   };

@@ -4,6 +4,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api, apiDelete, apiPatch, apiPost, createAssetVersion, messageFrom } from '$lib/api.js';
+  import { notifications } from '$lib/notifications.svelte.js';
   import { copyText } from '$lib/clipboard.js';
   import { canonicalizePath } from '$lib/canonical.js';
   import { downloadSequentially, triggerDownload } from '$lib/downloads.js';
@@ -297,6 +298,14 @@
       projectId = loaded.id;
       canonical = loaded.id;
       canonicalizePath(`/projects/${pretty(loaded.public_id, loaded.name)}`);
+      /* You are here: this is what the recent shelf on the projects list is
+         built from, and what clears this project's badge. Told to the server
+         on purpose rather than inferred from the GET above, which also happens
+         for polls and prefetches. Nothing waits on it. */
+      void apiPost(`/api/v1/projects/${loaded.id}/opened`).catch(
+        () => undefined
+      );
+      void notifications.markProjectRead(loaded.id);
     } catch (caught) {
       error = messageFrom(caught, 'This project is not available.');
       return;

@@ -12,8 +12,14 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { UlidGenerator } from "@onelight/core";
-import type { BlobStore, MultipartBlobStore } from "@onelight/core";
+import {
+  UlidGenerator,
+  countPhrase,
+  describeNotification,
+  frameLabel,
+  renderEmail,
+} from "@onelight/core";
+import type { BlobStore, EmailItem, MultipartBlobStore } from "@onelight/core";
 import { LocalBlobStore } from "@onelight/worker";
 import {
   assetVersions,
@@ -25,6 +31,7 @@ import {
   exportJobs,
   notificationPreferences,
   notifications,
+  workspaces,
   projectCoverUploads,
   projects,
   renditions,
@@ -141,12 +148,16 @@ export interface SweepNotificationRow {
   createdAt: number;
   email: string;
   mode: NotificationMode;
+  /** Whose workspace this is, shown small at the top of the message. */
+  workspaceName?: string;
 }
 
 export interface PlannedEmail {
   to: string;
   subject: string;
   text: string;
+  /** The HTML alternative; the text above is sent with it, never replaced. */
+  html: string;
   notificationIds: string[];
 }
 
@@ -156,24 +167,24 @@ export interface EmailSweepPlan {
   skippedIds: string[];
 }
 
-export const subjectForKind = (kind: string): string => {
-  switch (kind) {
-    case "comment.created":
-      return "Onelight: new comment";
-    case "comment.reply":
-      return "Onelight: new reply";
-    case "comment.mention":
-      return "Onelight: you were mentioned";
-    case "approval.updated":
-      return "Onelight: approval status changed";
-    case "transcode.failed":
-      return "Onelight: transcode failed";
-    case "version.created":
-      return "Onelight: new version uploaded";
-    default:
-      return "Onelight: notification";
-  }
+/* A subject line that means something on its own.
+
+   The old one was the kind's name with a colon in front of it: "Onelight: new
+   comment". Every message about every project in every workspace looked
+   identical in a mailbox, which is the same as having no subject at all. Now
+   the subject IS the news, and where there is more than one piece of news it is
+   the count and the project. */
+export const subjectForRow = (row: SweepNotificationRow): string => {
+  const payload = parseObjectJson(row.payloadJson);
+  const { headline } = describeNotification({ kind: row.kind, payload });
+  const project =
+    typeof payload.project_name === "string" ? payload.project_name : "";
+  return project ? `${headline} - ${project}` : headline;
 };
+
+/** Kept for callers that only have a kind. The row form is the good one. */
+export const subjectForKind = (kind: string): string =>
+  describeNotification({ kind, payload: {} }).headline;
 
 /**
  * Deep link into the app for a notification payload. Requires project_id
@@ -197,29 +208,109 @@ export const notificationDeepLink = (
   return frame === null ? base : `${base}?f=${frame}`;
 };
 
-const notificationLine = (
+const trimmedUrl = (publicUrl: string): string => publicUrl.replace(/\/+$/, "");
+
+/* Where it happened, on one line: the project, the asset, and the timecode if
+   the note is pinned to a frame. This is the line that tells somebody with four
+   jobs running which of them this is about, which the old mail never did.
+
+   What the line above it already said is left out: repeating the asset name
+   directly under "Dana commented on SPOT_30_v3" is the padding that makes a
+   digest twice as long as it needs to be. */
+const metaLine = (
+  payload: Record<string, unknown>,
+  omit: { project?: boolean; asset?: boolean } = {},
+): string | undefined => {
+  const parts: string[] = [];
+  const project =
+    typeof payload.project_name === "string" ? payload.project_name : "";
+  if (project && !omit.project) parts.push(project);
+  const asset =
+    typeof payload.asset_name === "string" ? payload.asset_name : "";
+  if (asset && !omit.asset) parts.push(asset);
+  if (typeof payload.frame === "number" && Number.isInteger(payload.frame))
+    parts.push(`at ${frameLabel(payload.frame)}`);
+  return parts.length ? parts.join(" \u00b7 ") : undefined;
+};
+
+const itemFor = (
   publicUrl: string,
   row: SweepNotificationRow,
-): { summary: string; link: string | null } => {
+  omit: { project?: boolean; asset?: boolean } = {},
+): EmailItem => {
   const payload = parseObjectJson(row.payloadJson);
-  const preview = typeof payload.preview === "string" ? payload.preview : "";
-  const assetName =
-    typeof payload.asset_name === "string" ? payload.asset_name : "";
-  const summary = preview || assetName || subjectForKind(row.kind);
-  return { summary, link: notificationDeepLink(publicUrl, payload) };
+  const described = describeNotification({ kind: row.kind, payload });
+  const link = notificationDeepLink(publicUrl, payload);
+  const meta = metaLine(payload, omit);
+  return {
+    headline: described.headline,
+    ...(described.tone ? { tone: described.tone } : {}),
+    ...(described.quote ? { quote: described.quote } : {}),
+    ...(meta ? { meta } : {}),
+    ...(link ? { href: link } : {}),
+  };
 };
+
+/* How much of a digest is worth sending. Past a dozen items nobody is reading
+   any more, and a digest that scrolls is one people learn to archive unread. */
+const DIGEST_ITEM_LIMIT = 12;
+
+const footerFor = (
+  publicUrl: string,
+  mode: NotificationMode,
+  reason: string,
+): string[] => [
+  reason,
+  `Change what Onelight emails you: ${trimmedUrl(publicUrl)}/settings${
+    mode === "instant" ? "" : ""
+  }`,
+];
 
 const instantEmail = (
   publicUrl: string,
   row: SweepNotificationRow,
+  workspace: string,
 ): PlannedEmail => {
-  const { summary, link } = notificationLine(publicUrl, row);
-  const lines = [summary];
-  if (link) lines.push("", `Open in Onelight: ${link}`);
+  const payload = parseObjectJson(row.payloadJson);
+  const item = itemFor(publicUrl, row);
+  const link = item.href ?? trimmedUrl(publicUrl);
+  const sentence =
+    item.headline ?? describeNotification({ kind: row.kind, payload }).headline;
+  const document = renderEmail({
+    subject: subjectForRow(row),
+    /* The inbox shows this next to the subject, so it carries what was said
+       rather than "view in browser". */
+    preheader: item.quote ?? item.meta ?? sentence,
+    heading: sentence,
+    ...(workspace ? { workspace } : {}),
+    /* The heading above the card is already the sentence, so inside it there is
+       only where this happened and what was said. No second headline, and no
+       per-item link: the button below is the one action. */
+    sections: [
+      {
+        items: [
+          {
+            ...(item.meta ? { meta: item.meta } : {}),
+            ...(item.quote ? { quote: item.quote } : {}),
+            ...(item.tone ? { tone: item.tone } : {}),
+          },
+        ],
+      },
+    ],
+    action: { label: "Open it in Onelight", href: link },
+    footer: footerFor(
+      publicUrl,
+      "instant",
+      row.kind === "comment.mention"
+        ? "You were sent this because you were mentioned."
+        : "You were sent this because you are on this project.",
+    ),
+  });
   return {
     to: row.email,
-    subject: subjectForKind(row.kind),
-    text: lines.join("\n") + "\n",
+    subject: document.subject,
+    text: document.text,
+    html: document.html,
     notificationIds: [row.id],
   };
 };
@@ -227,23 +318,92 @@ const instantEmail = (
 const digestEmail = (
   publicUrl: string,
   rows: SweepNotificationRow[],
+  workspace: string,
 ): PlannedEmail => {
   const first = rows[0] as SweepNotificationRow;
-  const lines = [
-    `You have ${rows.length} unread notification${rows.length === 1 ? "" : "s"} in Onelight.`,
-    "",
-  ];
+  const kinds = rows.map((row) => row.kind);
+  /* Grouped by project, newest first inside each, because "which job" is the
+     first question and a flat list of fifteen lines answers it last. */
+  const groups = new Map<
+    string,
+    { name: string; named: boolean; rows: SweepNotificationRow[] }
+  >();
   for (const row of rows) {
-    const { summary, link } = notificationLine(publicUrl, row);
-    lines.push(
-      `- ${subjectForKind(row.kind).replace(/^Onelight: /, "")}: ${summary}`,
-    );
-    if (link) lines.push(`  ${link}`);
+    const payload = parseObjectJson(row.payloadJson);
+    const id = typeof payload.project_id === "string" ? payload.project_id : "";
+    const name =
+      typeof payload.project_name === "string" && payload.project_name
+        ? payload.project_name
+        : "";
+    const group = groups.get(id) ?? {
+      name: name || "Elsewhere in Onelight",
+      named: name.length > 0,
+      rows: [],
+    };
+    group.rows.push(row);
+    groups.set(id, group);
   }
+  const ordered = [...groups.values()].sort(
+    (left, right) => right.rows.length - left.rows.length,
+  );
+  let budget = DIGEST_ITEM_LIMIT;
+  const sections = [];
+  for (const group of ordered) {
+    if (budget <= 0) break;
+    const take = group.rows.slice(0, budget);
+    budget -= take.length;
+    sections.push({
+      /* One project needs no heading: the subject already said which. */
+      ...(ordered.length > 1 ? { title: group.name } : {}),
+      /* The headline names the asset and, where there is more than one job,
+         the section heading names the project. Neither is worth saying twice,
+         so what is left under each line is the timecode and nothing else. */
+      items: take.map((row) =>
+        itemFor(publicUrl, row, { asset: true, project: ordered.length > 1 }),
+      ),
+    });
+  }
+  const shown = DIGEST_ITEM_LIMIT - budget;
+  const hidden = rows.length - shown;
+  const phrase = countPhrase(kinds);
+  /* "3 comments on Nike Spring" when there is one job to name, "...across 3
+     projects" when there are several, and just the count when the rows carry no
+     project name to stand behind. A subject must never invent a place. */
+  const single = ordered.length === 1 ? ordered[0] : undefined;
+  const subject = single
+    ? single.named
+      ? `${phrase} on ${single.name}`
+      : phrase
+    : `${phrase} across ${String(ordered.length)} projects`;
+  const lead = itemFor(publicUrl, first);
+  const document = renderEmail({
+    subject,
+    preheader: lead.quote ?? lead.headline ?? subject,
+    /* The subject carries "across 2 projects" because an inbox has no other
+       context; the heading does not, because the sections below it are the
+       projects, named. */
+    heading: single ? subject : phrase,
+    ...(workspace ? { workspace } : {}),
+    sections,
+    ...(hidden > 0
+      ? {
+          more: `And ${String(hidden)} more ${hidden === 1 ? "update" : "updates"}, waiting in Onelight.`,
+        }
+      : {}),
+    action: { label: "Open Onelight", href: trimmedUrl(publicUrl) },
+    footer: footerFor(
+      publicUrl,
+      first.mode,
+      first.mode === "daily"
+        ? "Your daily summary of the projects you are on."
+        : "Your hourly summary of the projects you are on.",
+    ),
+  });
   return {
     to: first.email,
-    subject: `Onelight: ${rows.length} new notification${rows.length === 1 ? "" : "s"}`,
-    text: lines.join("\n") + "\n",
+    subject: document.subject,
+    text: document.text,
+    html: document.html,
     notificationIds: rows.map((row) => row.id),
   };
 };
@@ -259,6 +419,7 @@ export const planEmailSweep = (
   rows: SweepNotificationRow[],
   now: number,
   publicUrl: string,
+  workspace = "",
 ): EmailSweepPlan => {
   const emails: PlannedEmail[] = [];
   const skippedIds: string[] = [];
@@ -273,15 +434,21 @@ export const planEmailSweep = (
     byUser.set(row.userId, list);
   }
   for (const userRows of byUser.values()) {
-    const mode = (userRows[0] as SweepNotificationRow).mode;
+    const first = userRows[0] as SweepNotificationRow;
+    const mode = first.mode;
+    /* Whose workspace, from the rows themselves where the query provided it,
+       so a message says which studio it came from without the caller having
+       to know. */
+    const name = first.workspaceName ?? workspace;
     if (mode === "instant") {
-      for (const row of userRows) emails.push(instantEmail(publicUrl, row));
+      for (const row of userRows)
+        emails.push(instantEmail(publicUrl, row, name));
       continue;
     }
     const windowMs = mode === "hourly" ? HOURLY_WINDOW_MS : DAILY_WINDOW_MS;
     const oldest = Math.min(...userRows.map((row) => row.createdAt));
     if (now - oldest < windowMs) continue;
-    emails.push(digestEmail(publicUrl, userRows));
+    emails.push(digestEmail(publicUrl, userRows, name));
   }
   return { emails, skippedIds };
 };
@@ -297,10 +464,12 @@ const fetchUnmailedNotifications = async (
       payloadJson: notifications.payloadJson,
       createdAt: notifications.createdAt,
       email: users.email,
+      workspaceName: workspaces.name,
       mode: sql<NotificationMode>`coalesce(${notificationPreferences.mode}, 'instant')`,
     })
     .from(notifications)
     .innerJoin(users, eq(users.id, notifications.userId))
+    .innerJoin(workspaces, eq(workspaces.id, users.workspaceId))
     .leftJoin(
       notificationPreferences,
       eq(notificationPreferences.userId, notifications.userId),
@@ -356,6 +525,7 @@ const sweepNotificationEmails = async (
         to: email.to,
         subject: email.subject,
         text: email.text,
+        html: email.html,
       });
       await markEmailed(db, email.notificationIds, now);
     } catch (error) {

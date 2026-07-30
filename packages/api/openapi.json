@@ -4247,6 +4247,16 @@
                           "last_activity_at": {
                             "type": "integer"
                           },
+                          "last_opened_at": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "my_role": {
                             "type": "string",
                             "enum": [
@@ -4272,7 +4282,8 @@
                           "created_by",
                           "created_at",
                           "updated_at",
-                          "last_activity_at"
+                          "last_activity_at",
+                          "last_opened_at"
                         ],
                         "additionalProperties": false
                       }
@@ -4463,6 +4474,16 @@
                     "last_activity_at": {
                       "type": "integer"
                     },
+                    "last_opened_at": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "my_role": {
                       "type": "string",
                       "enum": [
@@ -4488,7 +4509,8 @@
                     "created_by",
                     "created_at",
                     "updated_at",
-                    "last_activity_at"
+                    "last_activity_at",
+                    "last_opened_at"
                   ],
                   "additionalProperties": false
                 }
@@ -4630,6 +4652,16 @@
                     "last_activity_at": {
                       "type": "integer"
                     },
+                    "last_opened_at": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "my_role": {
                       "type": "string",
                       "enum": [
@@ -4655,7 +4687,8 @@
                     "created_by",
                     "created_at",
                     "updated_at",
-                    "last_activity_at"
+                    "last_activity_at",
+                    "last_opened_at"
                   ],
                   "additionalProperties": false
                 }
@@ -4866,6 +4899,16 @@
                     "last_activity_at": {
                       "type": "integer"
                     },
+                    "last_opened_at": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "my_role": {
                       "type": "string",
                       "enum": [
@@ -4891,7 +4934,8 @@
                     "created_by",
                     "created_at",
                     "updated_at",
-                    "last_activity_at"
+                    "last_activity_at",
+                    "last_opened_at"
                   ],
                   "additionalProperties": false
                 }
@@ -4954,6 +4998,66 @@
         "responses": {
           "204": {
             "description": "No content"
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/opened": {
+      "post": {
+        "summary": "Record that the caller opened this project, and clear its unread badge. Feeds the recent shelf on the projects list, which ranks by the later of what the work moved on and when you last looked at it. Deliberately a write the client makes rather than a side effect of GET: a GET happens for polls, prefetches and other tabs, and a recent list built out of those describes the software rather than the person.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Recorded."
           },
           "400": {
             "description": "Validation failure",
@@ -5177,6 +5281,16 @@
                     "last_activity_at": {
                       "type": "integer"
                     },
+                    "last_opened_at": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "my_role": {
                       "type": "string",
                       "enum": [
@@ -5202,7 +5316,8 @@
                     "created_by",
                     "created_at",
                     "updated_at",
-                    "last_activity_at"
+                    "last_activity_at",
+                    "last_opened_at"
                   ],
                   "additionalProperties": false
                 }

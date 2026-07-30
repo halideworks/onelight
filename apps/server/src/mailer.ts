@@ -12,6 +12,8 @@ export interface MailMessage {
   to: string;
   subject: string;
   text: string;
+  /** The HTML alternative. Sent alongside the text, never instead of it. */
+  html?: string;
 }
 
 /** Build a nodemailer-backed Mailer for a parsed config. */
@@ -32,6 +34,7 @@ export const createMailerForConfig = (config: SmtpConfig): Mailer => {
         to: message.to,
         subject: message.subject,
         text: message.text,
+        ...(message.html ? { html: message.html } : {}),
       });
     },
   };

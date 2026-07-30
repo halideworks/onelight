@@ -217,6 +217,15 @@ const versionsHaveMotionHash = async (
   return Boolean(row?.sql?.includes("motion_hash"));
 };
 
+const projectVisitsExist = async (binding: D1Database): Promise<boolean> => {
+  const row = await binding
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_visits'",
+    )
+    .first<{ name: string }>();
+  return Boolean(row?.name);
+};
+
 const usersHaveAvatarKey = async (binding: D1Database): Promise<boolean> => {
   const row = await binding
     .prepare(
@@ -629,6 +638,14 @@ export const d1Migrations: D1Migration[] = [
     statements: [
       "ALTER TABLE asset_versions ADD COLUMN motion_hash TEXT",
       "ALTER TABLE upload_sessions ADD COLUMN motion_hash TEXT",
+    ],
+  },
+  {
+    name: "0035_project_visits.sql",
+    applied: projectVisitsExist,
+    statements: [
+      "CREATE TABLE project_visits (\n  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,\n  opened_at INTEGER NOT NULL,\n  PRIMARY KEY (user_id, project_id)\n) WITHOUT ROWID",
+      "CREATE INDEX project_visits_recent_idx ON project_visits(user_id, opened_at)",
     ],
   },
 ];

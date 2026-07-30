@@ -29,7 +29,7 @@ import {
   planEmailSweep,
   purgeTrashedAssets,
   reapUploadSessions,
-  subjectForKind,
+  subjectForRow,
   walkBlobObjects,
 } from "./maintenance.js";
 import type { SweepNotificationRow } from "./maintenance.js";
@@ -44,8 +44,12 @@ const row = (
   kind: "comment.created",
   payloadJson: JSON.stringify({
     project_id: "proj",
+    project_name: "Nike Spring",
     asset_id: "asset",
-    preview: "Looks good",
+    asset_name: "SPOT_30_v3.mov",
+    actor_name: "Dana",
+    frame: 288,
+    preview: "Trim the head, it lands late",
   }),
   createdAt: 1_000,
   email: "user@example.com",
@@ -108,16 +112,49 @@ describe("planEmailSweep", () => {
     );
     expect(plan.skippedIds).toEqual([]);
     expect(plan.emails).toHaveLength(2);
+    /* The subject is the news, not the category: a mailbox full of
+       "Onelight: new comment" is a mailbox with no subjects in it. */
     expect(plan.emails[0]).toMatchObject({
       to: "user@example.com",
-      subject: subjectForKind("comment.created"),
+      subject: "Dana commented on SPOT_30_v3.mov - Nike Spring",
       notificationIds: ["n1"],
     });
-    expect(plan.emails[0]?.text).toContain("Looks good");
-    expect(plan.emails[0]?.text).toContain(
-      "https://x.test/projects/proj/assets/asset",
+    /* And the subject the planner used is the one the row describes: the two
+       are the same function, so they cannot drift apart. */
+    expect(plan.emails[0]?.subject).toBe(subjectForRow(row({ id: "n1" })));
+    /* What was said, where it was said, and the frame it was pinned to, in
+       both alternatives. */
+    for (const body of [plan.emails[0]?.text, plan.emails[0]?.html]) {
+      expect(body).toContain("Trim the head, it lands late");
+      expect(body).toContain("Nike Spring");
+      expect(body).toContain("00:00:12:00");
+      expect(body).toContain("https://x.test/projects/proj/assets/asset?f=288");
+    }
+    /* The preheader is what the inbox shows beside the subject, so it carries
+       the note rather than boilerplate. */
+    expect(plan.emails[0]?.html).toContain(
+      'style="display:none;font-size:1px;color:#f4f2ee;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">Trim the head',
     );
+    /* One action, said once. The item used to carry its own "Open it in
+       Onelight" under the button that says the same thing, and a digest of
+       five carried it five times. */
+    expect(plan.emails[0]?.html?.split("Open it in Onelight").length).toBe(2);
+    /* And the line under the heading is context, not a second link: the meta
+       used to be rendered as a linked headline, which read as two headings. */
+    expect(plan.emails[0]?.html).not.toContain(
+      ">Nike Spring 26 \u00b7 SPOT_30_v3.mov",
+    );
+    /* The page itself has to be dark in a dark client, which needs the class
+       on the wrapper as well as the body: an inline background on an untagged
+       table beat the media query and left a light band around the card. */
+    expect(plan.emails[0]?.html).toContain('class="ol-page"');
+    expect(
+      plan.emails[0]?.html?.split('class="ol-page"').length,
+    ).toBeGreaterThan(2);
+    /* And an approval reads as an approval. */
     expect(plan.emails[1]?.notificationIds).toEqual(["n2"]);
+    expect(plan.emails[1]?.subject).toContain("Nike Spring");
+    expect(plan.emails[1]?.subject).toMatch(/Dana|SPOT_30/);
   });
 
   it("holds hourly digests until the oldest row is an hour old", () => {
@@ -130,7 +167,8 @@ describe("planEmailSweep", () => {
     const due = planEmailSweep(rows, 1_000 + HOUR, "https://x.test");
     expect(due.emails).toHaveLength(1);
     expect(due.emails[0]?.notificationIds).toEqual(["n1", "n2"]);
-    expect(due.emails[0]?.subject).toContain("2 new notifications");
+    /* A digest says what and where, in the reader's words. */
+    expect(due.emails[0]?.subject).toBe("2 comments on Nike Spring");
   });
 
   it("holds daily digests for 24 hours", () => {

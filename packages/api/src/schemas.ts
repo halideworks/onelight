@@ -664,6 +664,9 @@ const project = z.object({
   /* Newest project event, falling back to updated_at where nothing has
      happened yet: "recently edited" in the sense a person means it. */
   last_activity_at: timestamp,
+  /* When the CALLER last opened it, or null if they never have. Per viewer,
+     because the recent shelf is a record of where this person has been. */
+  last_opened_at: timestamp.nullable(),
   my_role: projectRole.optional(),
 });
 
@@ -1459,6 +1462,11 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: { "201": created(project) },
   },
   "GET /projects/:id": { responses: { "200": ok(project) } },
+  "POST /projects/:id/opened": {
+    summary:
+      "Record that the caller opened this project, and clear its unread badge. Feeds the recent shelf on the projects list, which ranks by the later of what the work moved on and when you last looked at it. Deliberately a write the client makes rather than a side effect of GET: a GET happens for polls, prefetches and other tabs, and a recent list built out of those describes the software rather than the person.",
+    responses: { "204": { description: "Recorded." } },
+  },
   "PATCH /projects/:id": {
     request: bodies.projectPatch,
     responses: { "200": ok(project) },

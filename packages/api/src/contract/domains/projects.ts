@@ -420,6 +420,72 @@ export const registerProjectsDomain = (ctx: SuiteContext): void => {
       });
       expect(gone.status).toBe(404);
     });
+
+    it("remembers who opened it and tells only them", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, { name: "Opened" });
+      /* Nobody has been in yet, and the list says so rather than pretending. */
+      const before = await json<{
+        items: Array<{ id: string; last_opened_at: number | null }>;
+      }>(await req(h, "/api/v1/projects", { cookie: seed.admin.cookie }));
+      expect(
+        before.items.find((item) => item.id === project.id)?.last_opened_at,
+      ).toBeNull();
+
+      const opened = await req(h, `/api/v1/projects/${project.id}/opened`, {
+        method: "POST",
+        cookie: seed.admin.cookie,
+      });
+      expect(opened.status).toBe(204);
+      const after = await json<{
+        items: Array<{ id: string; last_opened_at: number | null }>;
+      }>(await req(h, "/api/v1/projects", { cookie: seed.admin.cookie }));
+      const mine = after.items.find((item) => item.id === project.id);
+      expect(mine?.last_opened_at).toBe(h.clock.now());
+      /* The single-project read agrees with the list, which is where the
+         precomputed path and the per-project path can silently drift. */
+      const single = await json<{ last_opened_at: number | null }>(
+        await req(h, `/api/v1/projects/${project.id}`, {
+          cookie: seed.admin.cookie,
+        }),
+      );
+      expect(single.last_opened_at).toBe(h.clock.now());
+
+      /* And it is nobody else's business where this person has been. */
+      const theirs = await json<{
+        items: Array<{ id: string; last_opened_at: number | null }>;
+      }>(await req(h, "/api/v1/projects", { cookie: seed.editor.cookie }));
+      const seenByThem = theirs.items.find((item) => item.id === project.id);
+      if (seenByThem) expect(seenByThem.last_opened_at).toBeNull();
+
+      /* Opening it again moves the mark rather than adding a second row. */
+      h.clock.advance(60_000);
+      await req(h, `/api/v1/projects/${project.id}/opened`, {
+        method: "POST",
+        cookie: seed.admin.cookie,
+      });
+      const again = await json<{
+        items: Array<{ id: string; last_opened_at: number | null }>;
+      }>(await req(h, "/api/v1/projects", { cookie: seed.admin.cookie }));
+      expect(
+        again.items.find((item) => item.id === project.id)?.last_opened_at,
+      ).toBe(h.clock.now());
+    });
+
+    it("refuses to record an open for a project you cannot see", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const project = await createProject(h, seed.admin, {
+        name: "Restricted",
+        restricted: true,
+      });
+      const response = await req(h, `/api/v1/projects/${project.id}/opened`, {
+        method: "POST",
+        cookie: seed.nograntee.cookie,
+      });
+      expect([403, 404]).toContain(response.status);
+    });
   });
 
   describe("project members", () => {

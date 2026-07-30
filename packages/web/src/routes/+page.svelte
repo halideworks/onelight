@@ -29,6 +29,8 @@
     /* Older servers do not send it; the sort falls back rather than sorting
        everything into one heap. */
     last_activity_at?: number;
+    /* When this person last opened it, or null if they never have. */
+    last_opened_at?: number | null;
   };
   let projects = $state<Project[]>([]);
   let archived = $state<Project[]>([]);
@@ -52,6 +54,38 @@
 
   const activityOf = (project: Project): number =>
     project.last_activity_at ?? project.updated_at ?? project.created_at ?? 0;
+
+  /* ---- the recent shelf ----
+
+     Recent means two things at once and a person means both: the job that
+     moved, and the job you were just in. So a card's recency is the later of
+     the two, which puts the thing you left an hour ago next to the thing
+     somebody commented on while you were away.
+
+     It is a shortcut, not a second list, so it stays small and it only
+     appears when the full list is long enough to be worth skipping past. */
+  const RECENT_MAX = 6;
+  const RECENT_MIN_PROJECTS = 5;
+  const touchedOf = (project: Project): number =>
+    Math.max(activityOf(project), project.last_opened_at ?? 0);
+  const recent = $derived.by(() => {
+    if (showArchived || projects.length < RECENT_MIN_PROJECTS) return [];
+    /* Somewhere you have actually been beats somewhere that merely changed:
+       without this, one busy project nobody opened fills the shelf. */
+    const seen = projects.filter((project) => project.last_opened_at);
+    const pool = seen.length ? seen : projects;
+    return [...pool]
+      .sort((a, b) => touchedOf(b) - touchedOf(a))
+      .slice(0, RECENT_MAX);
+  });
+  const recentWhen = (project: Project): string => {
+    const opened = project.last_opened_at ?? 0;
+    /* Say which of the two reasons it is here, because "3h ago" alone leaves
+       you wondering whether you did that or somebody else did. */
+    return opened >= activityOf(project)
+      ? `opened ${whenRelative(opened)}`
+      : `updated ${whenRelative(activityOf(project))}`;
+  };
 
   const displayed = $derived.by(() => {
     const needle = filter.trim().toLowerCase();
@@ -577,6 +611,40 @@
       {/if}
       {#if createError}<p class="error" role="alert">{createError}</p>{/if}
 
+      <!-- The shortcut: where you were, and what moved while you were away.
+           Small cards, one row, scrolled sideways rather than wrapped, so it
+           can never grow into a second projects list. -->
+      {#if recent.length > 0}
+        <section class="recent" aria-label="Recent projects">
+          <h2>Recent</h2>
+          <div class="recentrow">
+            {#each recent as project (project.id)}
+              {@const unread = unreadFor(project.id)}
+              <a
+                class="rcard"
+                href={`/projects/${pretty(project.public_id, project.name)}`}
+                onclick={() => void notifications.markProjectRead(project.id)}
+                oncontextmenu={(event) => openMenu(event, project.id)}
+              >
+                <span class="rthumb">
+                  <ProjectCover {project} monogram={false} />
+                  {#if unread > 0}
+                    <button
+                      type="button"
+                      class="badge"
+                      title={`${unread} unread ${unread === 1 ? 'notification' : 'notifications'}. Click to clear.`}
+                      onclick={(event) => void clearBadge(event, project.id)}
+                    >{unread > 99 ? '99+' : unread}</button>
+                  {/if}
+                </span>
+                <span class="rname">{project.name}</span>
+                <small title={whenAbsolute(touchedOf(project))}>{recentWhen(project)}</small>
+              </a>
+            {/each}
+          </div>
+        </section>
+      {/if}
+
       <div class="listhead">
         <span class="count">
           {displayed.length}
@@ -1079,6 +1147,61 @@
   .project:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
   .thumb { position: relative; }
   /* The unread count: the same yellow disc the nav bell wears. */
+  /* ---- recent shelf ---- */
+  .recent { margin: 0 0 18px; }
+  .recent h2 {
+    margin: 0 0 8px;
+    font-size: var(--text-12);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-text-dim);
+  }
+  /* Sideways, and it says so: a shelf that wraps is a list, and a list of
+     recent things beside a list of all things is two lists. */
+  .recentrow {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 4px;
+    scroll-snap-type: x proximity;
+    scrollbar-width: thin;
+  }
+  .rcard {
+    flex: none;
+    width: 148px;
+    display: grid;
+    gap: 4px;
+    padding: 0;
+    border-radius: var(--radius);
+    color: inherit;
+    text-decoration: none;
+    scroll-snap-align: start;
+  }
+  .rcard:focus-visible { outline: 2px solid var(--accent-bright); outline-offset: 2px; }
+  .rthumb {
+    position: relative;
+    display: block;
+    aspect-ratio: 16 / 9;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--ink-200);
+  }
+  .rcard:hover .rthumb { outline: 1px solid var(--ink-300); }
+  .rname {
+    font-size: var(--text-13);
+    font-weight: 600;
+    color: var(--ink-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rcard small { font-size: var(--text-12); color: var(--ink-text-dim); }
+  @media (max-width: 620px) {
+    .rcard { width: 124px; }
+  }
+
   .badge { position: absolute; top: 5px; right: 5px; min-width: 18px; height: 18px; display: grid; place-items: center; padding: 0 5px; border: 0; border-radius: 9px; background: #edc95f; color: #191307; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; cursor: pointer; }
   .badge:hover { background: #f6dc8b; }
   .projectlist:not(.grid) .badge { top: -3px; right: -3px; }

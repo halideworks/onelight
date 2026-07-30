@@ -3044,6 +3044,7 @@ export interface paths {
                                 created_at: number;
                                 updated_at: number;
                                 last_activity_at: number;
+                                last_opened_at: number | null;
                                 /** @enum {string} */
                                 my_role?: "manager" | "editor" | "commenter" | "viewer";
                             }[];
@@ -3133,6 +3134,7 @@ export interface paths {
                             created_at: number;
                             updated_at: number;
                             last_activity_at: number;
+                            last_opened_at: number | null;
                             /** @enum {string} */
                             my_role?: "manager" | "editor" | "commenter" | "viewer";
                         };
@@ -3224,6 +3226,7 @@ export interface paths {
                             created_at: number;
                             updated_at: number;
                             last_activity_at: number;
+                            last_opened_at: number | null;
                             /** @enum {string} */
                             my_role?: "manager" | "editor" | "commenter" | "viewer";
                         };
@@ -3378,6 +3381,7 @@ export interface paths {
                             created_at: number;
                             updated_at: number;
                             last_activity_at: number;
+                            last_opened_at: number | null;
                             /** @enum {string} */
                             my_role?: "manager" | "editor" | "commenter" | "viewer";
                         };
@@ -3421,6 +3425,78 @@ export interface paths {
                 };
             };
         };
+        trace?: never;
+    };
+    "/api/v1/projects/{id}/opened": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record that the caller opened this project, and clear its unread badge. Feeds the recent shelf on the projects list, which ranks by the later of what the work moved on and when you last looked at it. Deliberately a write the client makes rather than a side effect of GET: a GET happens for polls, prefetches and other tabs, and a recent list built out of those describes the software rather than the person. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Recorded. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/projects/{id}/events": {
@@ -3547,6 +3623,7 @@ export interface paths {
                             created_at: number;
                             updated_at: number;
                             last_activity_at: number;
+                            last_opened_at: number | null;
                             /** @enum {string} */
                             my_role?: "manager" | "editor" | "commenter" | "viewer";
                         };

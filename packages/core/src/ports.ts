@@ -109,7 +109,15 @@ export interface JobQueue {
  * audit trail instead of failing.
  */
 export interface Mailer {
-  send(message: { to: string; subject: string; text: string }): Promise<void>;
+  /* text is the alternative, not the message: every send carries both, and a
+     client that refuses HTML still gets something written to be read. html is
+     optional so a caller with nothing but a line of text stays valid. */
+  send(message: {
+    to: string;
+    subject: string;
+    text: string;
+    html?: string;
+  }): Promise<void>;
 }
 
 export interface RealtimeHub {

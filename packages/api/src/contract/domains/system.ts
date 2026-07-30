@@ -1003,6 +1003,8 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       "post /api/v1/uploads/{id}/multipart",
       "post /api/v1/uploads/{id}/abort",
       "post /api/v1/assets/{id}/trash",
+      /* "I opened this" has nothing to say beyond who and which. */
+      "post /api/v1/projects/{id}/opened",
       "post /api/v1/assets/{id}/restore",
       "post /api/v1/users/me/totp",
       "post /api/v1/admin/system/test-email",
