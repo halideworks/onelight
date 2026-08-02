@@ -128,6 +128,13 @@ export interface ConfigGroup {
    * over a typo in a notification transport is worse than the typo.
    */
   severity: "error" | "report";
+  /**
+   * Only judged when the server itself is booting. The headless admin pair is
+   * the case: the server's first-run path needs both or it creates nothing,
+   * but `pnpm seed` has its own independent fallbacks (a generated password, a
+   * demo address) and either variable alone is a supported way to run it.
+   */
+  startupOnly?: boolean;
   message: string;
 }
 
@@ -689,6 +696,7 @@ export const CONFIG_GROUPS: readonly ConfigGroup[] = [
     subsystem: "admin",
     members: ["ONELIGHT_ADMIN_EMAIL", "ONELIGHT_ADMIN_PASSWORD"],
     severity: "error",
+    startupOnly: true,
     message:
       "ONELIGHT_ADMIN_EMAIL and ONELIGHT_ADMIN_PASSWORD must be set together, or first-run setup creates no admin.",
   },

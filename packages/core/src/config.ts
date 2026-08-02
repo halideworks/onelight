@@ -108,9 +108,22 @@ const defaultOf = (name: string, scope: ConfigScope = "server"): string => {
   return entry.default;
 };
 
-export const loadConfig = (input: NodeJS.ProcessEnv | RawEnv): AppConfig => {
+/**
+ * `startup: false` is for the tools that borrow this parser without being the
+ * server: `pnpm seed` and the CLI. They skip the rules that only make sense
+ * when the server itself is booting, such as the headless admin pair, which
+ * seed satisfies its own way.
+ */
+export const loadConfig = (
+  input: NodeJS.ProcessEnv | RawEnv,
+  options: { startup?: boolean } = {},
+): AppConfig => {
   const env: RawEnv = input;
-  const { values, issues, reported } = parseScope(env, "server");
+  const { values, issues, reported } = parseScope(
+    env,
+    "server",
+    options.startup ?? true,
+  );
 
   /* Reported, not fatal: mail owns its own failure surface (the admin mail
      page, the boot log, the effective-config report), and stored admin

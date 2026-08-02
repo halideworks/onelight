@@ -17,6 +17,7 @@ import {
   type ConfigSubsystem,
   type ConfigVar,
 } from "./config-manifest.js";
+import { isSmtpConfigError, parseSmtpConfig } from "./mail-config.js";
 
 export type RawEnv = Record<string, string | undefined>;
 
@@ -123,6 +124,13 @@ export const parseConfigValue = (
         return {
           issue: `${entry.name} must be at least ${entry.min} characters.`,
         };
+      /* Validate on the trimmed copy, hand back the bytes the operator set.
+         A credential is whatever the provider issued, trailing space and all:
+         trimming SECRET_KEY would invalidate every live session on upgrade,
+         and trimming OIDC_CLIENT_SECRET would fail against a provider whose
+         secret has not changed. */
+      if (entry.secret && raw !== undefined && raw !== "")
+        return { value: raw };
       return { value: source };
     }
   }
@@ -144,7 +152,11 @@ export interface ParsedConfig {
  * its own (mail). Keeping them apart is the difference between "the mail port
  * is a typo" and "the server will not start".
  */
-export const parseScope = (env: RawEnv, scope: ConfigScope): ParsedConfig => {
+export const parseScope = (
+  env: RawEnv,
+  scope: ConfigScope,
+  startup = true,
+): ParsedConfig => {
   const values: Record<string, ConfigValue> = {};
   const issues: ConfigIssue[] = [];
   const reported: ConfigIssue[] = [];
@@ -157,8 +169,8 @@ export const parseScope = (env: RawEnv, scope: ConfigScope): ParsedConfig => {
       });
     else values[entry.name] = result.value;
   }
-  issues.push(...groupIssues(env, scope, "error"));
-  reported.push(...groupIssues(env, scope, "report"));
+  issues.push(...groupIssues(env, scope, "error", startup));
+  reported.push(...groupIssues(env, scope, "report", startup));
   return { values, issues, reported };
 };
 
@@ -171,11 +183,13 @@ export const groupIssues = (
   env: RawEnv,
   scope: ConfigScope,
   severity: "error" | "report",
+  startup = true,
 ): ConfigIssue[] => {
   const issues: ConfigIssue[] = [];
   const scoped = varsForScope(scope);
   for (const group of CONFIG_GROUPS) {
     if (group.severity !== severity) continue;
+    if (group.startupOnly && !startup) continue;
     /* A group belongs to the scope that owns EVERY member, not any of them.
        WORKER_SECRET is read by both containers but WORKER_URL only by the
        server, so judging the pair in worker scope would fail a stock stack:
@@ -314,6 +328,24 @@ export const effectiveConfig = (
     if (brokenVar) {
       active = false;
       detail = brokenVar.issue ?? detail;
+    }
+
+    /* Mail's state comes from the transport parser itself, not from a second
+       description of its rules. SMTP_USER without SMTP_PASS, or an SMTP_URL
+       with the wrong scheme, satisfies every rule expressible here and is
+       still refused by parseSmtpConfig. One parser, one answer. */
+    if (name === "mail") {
+      const parsed = parseSmtpConfig(env);
+      if (parsed === null) {
+        active = false;
+        detail = detail ?? "Inactive: no SMTP transport is configured.";
+      } else if (isSmtpConfigError(parsed)) {
+        active = false;
+        detail = parsed.error;
+      } else if (!brokenVar) {
+        active = true;
+        detail = null;
+      }
     }
 
     subsystems.push({

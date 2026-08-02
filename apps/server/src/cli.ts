@@ -40,7 +40,7 @@ import { NodePasswordHasher } from "./password.js";
 const argv = process.argv.slice(2);
 const command = argv[0];
 
-const config = loadConfig(process.env);
+const config = loadConfig(process.env, { startup: false });
 fs.mkdirSync(path.dirname(config.DATABASE_PATH), { recursive: true });
 const { db, sqlite } = createNodeDb(config.DATABASE_PATH);
 /* Same rollback safety the server boot has: a CLI run that would apply pending

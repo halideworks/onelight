@@ -178,6 +178,116 @@ describe("mail never stops the server", () => {
   });
 });
 
+describe("credentials keep the bytes the operator set", () => {
+  /* Trimming a secret invalidates every live session on upgrade, or fails
+     against a provider whose client secret has not changed. */
+  it("does not trim a secret while validating it", () => {
+    const key = "  0123456789abcdef0123456789abcdef  ";
+    expect(loadConfig({ ...base, SECRET_KEY: key }).SECRET_KEY).toBe(key);
+    expect(
+      loadConfig({
+        ...base,
+        OIDC_ISSUER: "https://id.test",
+        OIDC_CLIENT_ID: "x",
+        OIDC_CLIENT_SECRET: " shh ",
+      }).OIDC_CLIENT_SECRET,
+    ).toBe(" shh ");
+  });
+
+  it("still trims a path, where whitespace is a typo and not a value", () => {
+    expect(
+      loadConfig({ ...base, BACKUP_DIR: " /data/backups " }).backupDir,
+    ).toBe("/data/backups");
+  });
+
+  /* Whitespace alone is still nothing at all. */
+  it("treats an all-whitespace value as unset", () => {
+    expect(
+      loadConfig({ ...base, BACKUP_DIR: "   " }).backupDir,
+    ).toBeUndefined();
+  });
+});
+
+describe("tools that borrow the parser", () => {
+  /* pnpm seed generates a password when only the address is given, and uses
+     demo@onelight.local when only the password is. Both are supported ways to
+     run it, and the server's first-run pairing rule must not break them. */
+  it("lets seed set one half of the admin pair", () => {
+    expect(() =>
+      loadConfig(
+        { ...base, ONELIGHT_ADMIN_EMAIL: "a@example.com" },
+        { startup: false },
+      ),
+    ).not.toThrow();
+    expect(() =>
+      loadConfig(
+        { ...base, ONELIGHT_ADMIN_PASSWORD: "long-enough" },
+        { startup: false },
+      ),
+    ).not.toThrow();
+  });
+
+  it("still holds the server to the pair", () => {
+    expect(() =>
+      loadConfig({ ...base, ONELIGHT_ADMIN_EMAIL: "a@example.com" }),
+    ).toThrow(/must be set together/);
+  });
+
+  /* Only the startup-only rules relax: a group that is wrong in any context
+     is still wrong here. */
+  it("keeps every other group in force", () => {
+    expect(() =>
+      loadConfig(
+        { ...base, OIDC_ISSUER: "https://id.test" },
+        { startup: false },
+      ),
+    ).toThrow(/must be set together/);
+  });
+});
+
+describe("mail state comes from the transport parser", () => {
+  const mailState = (env: Record<string, string>) =>
+    effectiveConfig({ ...base, ...env }, "server").subsystems.find(
+      (item) => item.name === "mail",
+    );
+
+  /* These satisfy every rule the manifest can express and are still refused
+     by parseSmtpConfig, so the report has to ask it rather than guess. */
+  it("reports a user without a password as off", () => {
+    const mail = mailState({
+      SMTP_HOST: "mail.example.com",
+      MAIL_FROM: "Onelight <onelight@example.com>",
+      SMTP_USER: "onelight",
+    });
+    expect(mail?.active).toBe(false);
+    expect(mail?.detail).toMatch(/SMTP_USER and SMTP_PASS/);
+  });
+
+  it("reports a non-SMTP url as off", () => {
+    const mail = mailState({
+      SMTP_URL: "https://mail.example.com",
+      MAIL_FROM: "Onelight <onelight@example.com>",
+    });
+    expect(mail?.active).toBe(false);
+    expect(mail?.detail).toMatch(/smtp:\/\//);
+  });
+
+  it("reports a usable transport as on", () => {
+    expect(
+      mailState({
+        SMTP_HOST: "mail.example.com",
+        MAIL_FROM: "Onelight <onelight@example.com>",
+      })?.active,
+    ).toBe(true);
+    expect(
+      mailState({
+        SMTP_URL: "smtp://user:pass@mail.example.com:587",
+        MAIL_FROM: "Onelight <onelight@example.com>",
+      })?.active,
+    ).toBe(true);
+  });
+});
+
 describe("the worker parses the same manifest", () => {
   it("reads a boolean by its declared type, not by one magic string", () => {
     /* "false" used to leave the software AV1 encode ON, because the old reader
