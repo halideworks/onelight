@@ -24,6 +24,8 @@
     "openapi:check": "tsx packages/api/src/generate-openapi.ts --check",
     "db:generate": "drizzle-kit generate --config packages/db/drizzle.config.ts",
     "db:check": "tsx packages/db/src/check-schema.ts",
+    "config:gen": "tsx scripts/gen-config.ts",
+    "config:check": "tsx scripts/gen-config.ts --check && tsx scripts/check-config-parity.ts",
     "seed": "tsx apps/server/src/seed.ts"
   },
   "devDependencies": {

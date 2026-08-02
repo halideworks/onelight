@@ -2,6 +2,7 @@ import type {
   AppConfig,
   BlobStore,
   Clock,
+  EffectiveConfig,
   IdGen,
   Mailer,
   PasswordHasher,
@@ -57,6 +58,10 @@ export interface AppEnv {
   };
   /* Process start, for uptime on the status page. */
   startedAt?: number;
+  /* The resolved configuration, redacted, for the admin system page. Absent on
+     Workers, where there is no operator-supplied environment to report and the
+     endpoint says so rather than inventing one. */
+  effectiveConfig?: () => EffectiveConfig;
   /* Re-anchoring hook for carry-forward: given two version ids, returns a
      frame mapping from the source's timeline to the target's, or null when
      the versions cannot be compared. A mapped frame of null means "the

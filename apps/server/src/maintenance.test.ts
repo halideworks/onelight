@@ -15,6 +15,7 @@ import {
   users,
   workspaces,
 } from "@onelight/db";
+import { loadConfig } from "@onelight/core";
 import type { BlobStore } from "@onelight/core";
 import type { MailMessage, Mailer } from "./mailer.js";
 import {
@@ -23,7 +24,7 @@ import {
   DEFAULT_UPLOAD_REAP_AFTER_MS,
   backupReferencedBlobKeys,
   diffOrphanBlobs,
-  maintenanceConfigFromEnv,
+  maintenanceConfigFromConfig,
   referencedBlobKeys,
   notificationDeepLink,
   planEmailSweep,
@@ -341,34 +342,56 @@ describe("planEmailSweep", () => {
   });
 });
 
-describe("maintenanceConfigFromEnv", () => {
+describe("maintenanceConfigFromConfig", () => {
   const base = {
     publicUrl: "https://x.test",
     blobStore: { delete: () => Promise.resolve() } as never,
   };
+  const env = {
+    PUBLIC_URL: "https://x.test",
+    SECRET_KEY: "0123456789abcdef0123456789abcdef",
+  };
 
   it("applies defaults", () => {
-    const config = maintenanceConfigFromEnv({}, base);
+    const config = maintenanceConfigFromConfig(loadConfig(env), base);
     expect(config.uploadReapAfterMs).toBe(DEFAULT_UPLOAD_REAP_AFTER_MS);
     expect(config.trashPurgeAfterMs).toBe(DEFAULT_TRASH_PURGE_AFTER_MS);
     expect(config.gcIntervalMs).toBe(DEFAULT_GC_INTERVAL_MS);
     expect(config.gcDelete).toBe(false);
   });
 
-  it("reads overrides and rejects nonsense values", () => {
-    const config = maintenanceConfigFromEnv(
-      {
+  it("reads overrides", () => {
+    const config = maintenanceConfigFromConfig(
+      loadConfig({
+        ...env,
         UPLOAD_REAP_AFTER_MS: "60000",
-        TRASH_PURGE_AFTER_MS: "-5",
-        GC_INTERVAL_MS: "oops",
         ONELIGHT_GC_DELETE: "true",
-      },
+      }),
       base,
     );
     expect(config.uploadReapAfterMs).toBe(60_000);
-    expect(config.trashPurgeAfterMs).toBe(DEFAULT_TRASH_PURGE_AFTER_MS);
-    expect(config.gcIntervalMs).toBe(DEFAULT_GC_INTERVAL_MS);
     expect(config.gcDelete).toBe(true);
+  });
+
+  /* This used to fall back to the default and say nothing, which meant a
+     deployment asking for a 6-week purge silently got 30 days. */
+  it("refuses a retention window that cannot be honoured", () => {
+    expect(() => loadConfig({ ...env, TRASH_PURGE_AFTER_MS: "-5" })).toThrow(
+      /TRASH_PURGE_AFTER_MS/,
+    );
+    expect(() => loadConfig({ ...env, GC_INTERVAL_MS: "oops" })).toThrow(
+      /GC_INTERVAL_MS/,
+    );
+  });
+
+  /* The unsubscribe secret was dropped on the floor here, so every
+     notification email went out without its one-click unsubscribe header. */
+  it("carries the signing secret through to the email sweep", () => {
+    const config = maintenanceConfigFromConfig(loadConfig(env), {
+      ...base,
+      secretKey: "signing-secret",
+    });
+    expect(config.secretKey).toBe("signing-secret");
   });
 });
 

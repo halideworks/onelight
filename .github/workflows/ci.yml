@@ -19,6 +19,10 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm openapi:check
+      # Fails when a documented setting is not passed by compose, when compose
+      # passes something the manifest does not declare, or when the generated
+      # .env.example and docs are stale.
+      - run: pnpm config:check
       - run: pnpm format
       # The SPA build runs svelte-kit sync, generating the .svelte-kit
       # tsconfig that web:check extends; it also satisfies the wrangler

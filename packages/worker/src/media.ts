@@ -3,6 +3,7 @@ import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { cpus } from "node:os";
 import path from "node:path";
 import {
+  booleanSetting,
   captureIdentityFromTags,
   captureKeyOf,
   encodePeaks,
@@ -463,11 +464,6 @@ export interface HardwareAccelerationPlan {
   required: boolean;
 }
 
-const enabled = (value: string | undefined, fallback: boolean): boolean =>
-  value === undefined
-    ? fallback
-    : !["0", "false", "no", "off"].includes(value.toLowerCase());
-
 /* Auto is intentionally capability-tested, not inferred from encoder names:
    ffmpeg can list NVENC while the NVIDIA runtime library is absent, and a
    mounted render node can still be denied to the container user. Explicit
@@ -477,7 +473,10 @@ export const hardwareAccelerationPlanFromEnv = (
   env: Readonly<Record<string, string | undefined>> = process.env,
   platform = process.platform,
 ): HardwareAccelerationPlan => {
-  const requested = (env[HWACCEL_ENV] ?? "auto").trim().toLowerCase();
+  /* Empty counts as unset. Compose passes an empty string for every variable
+     the operator did not set, and an empty backend is not a request for no
+     backend: without this the worker refuses to start under a stock stack. */
+  const requested = (env[HWACCEL_ENV] || "auto").trim().toLowerCase();
   if (
     !["auto", "software", "none", "vaapi", "nvenc", "amf"].includes(requested)
   )
@@ -487,7 +486,12 @@ export const hardwareAccelerationPlanFromEnv = (
   const vaapi: HardwareAcceleration = {
     backend: "vaapi",
     device: env[VAAPI_DEVICE_ENV] || "/dev/dri/renderD128",
-    lowPower: enabled(env.ONELIGHT_VAAPI_LOW_POWER, true),
+    /* Strict, and manifest-declared: "garbage" used to read as on, because the
+       old parser treated anything outside a deny list as true. */
+    lowPower: booleanSetting(
+      "ONELIGHT_VAAPI_LOW_POWER",
+      env.ONELIGHT_VAAPI_LOW_POWER,
+    ),
     rateControl: "QVBR",
   };
   const nvenc: HardwareAcceleration = {
@@ -2467,13 +2471,16 @@ export const runTranscode = async (
          * always made, at a preset and parallelism chosen so it cannot hurt
          * the machine (see buildHdrAv1Args).
          *
-         * ONELIGHT_SOFTWARE_AV1=0 opts out for an operator who would rather
-         * lose reference HDR in Chrome than spend the cores.
+         * ONELIGHT_SOFTWARE_AV1=false (or 0) opts out for an operator who
+         * would rather lose reference HDR in Chrome than spend the cores.
          */
         if (
           output.kind === "hdr_av1" &&
           outputAcceleration.backend === "software" &&
-          process.env.ONELIGHT_SOFTWARE_AV1 === "0"
+          !booleanSetting(
+            "ONELIGHT_SOFTWARE_AV1",
+            process.env.ONELIGHT_SOFTWARE_AV1,
+          )
         ) {
           console.log(
             `[onelight-worker] skipping hdr_av1 for job ${job.id}: ONELIGHT_SOFTWARE_AV1=0 and this GPU cannot encode AV1. hdr_hevc still carries the HDR picture, but reference HDR will be unavailable in Chrome.`,

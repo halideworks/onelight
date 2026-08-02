@@ -23,7 +23,7 @@ import {
   transfers,
   users,
 } from "@onelight/db";
-import { backupConfigFromEnv, backupOnce } from "./backup.js";
+import { backupConfigFromConfig, backupOnce } from "./backup.js";
 import { NodePasswordHasher } from "./password.js";
 
 /* Operator commands, run inside the server container:
@@ -40,13 +40,13 @@ import { NodePasswordHasher } from "./password.js";
 const argv = process.argv.slice(2);
 const command = argv[0];
 
-const config = loadConfig(process.env);
+const config = loadConfig(process.env, { startup: false });
 fs.mkdirSync(path.dirname(config.DATABASE_PATH), { recursive: true });
 const { db, sqlite } = createNodeDb(config.DATABASE_PATH);
 /* Same rollback safety the server boot has: a CLI run that would apply pending
    migrations snapshots the DB first, into the same premigrate series, so an
    operator running migrations by hand gets the same restore point. */
-const cliBackupConfig = backupConfigFromEnv(process.env);
+const cliBackupConfig = backupConfigFromConfig(config);
 const cliPending = pendingMigrations(sqlite);
 if (
   cliBackupConfig &&
@@ -113,8 +113,7 @@ const offload = async (): Promise<void> => {
       "Usage: offload --project <id or name> --dest <path> [--transfer <slug>]",
     );
   const blobRoot =
-    process.env.BLOB_ROOT ??
-    path.join(path.dirname(config.DATABASE_PATH), "blobs");
+    config.BLOB_ROOT ?? path.join(path.dirname(config.DATABASE_PATH), "blobs");
   const projectRows = await db.select().from(projects).all();
   const project = projectRows.find(
     (row: typeof projects.$inferSelect) =>

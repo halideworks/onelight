@@ -2226,6 +2226,88 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     });
   });
 
+  /* What the server is ACTUALLY running with, subsystem by subsystem.
+     Compose passes only the keys it names, so an operator can set a variable,
+     read it back from their own .env, and still be looking at a feature that
+     never turned on. This answers "is it on, and if not, what is missing"
+     without anyone reading container logs. Values are reported; secrets are
+     reported only as set or unset, because the question is never what the
+     client secret is. */
+  api.get("/admin/system/config", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    if (actor.role !== "admin") throw errors.forbidden();
+    const report = env.effectiveConfig?.();
+    if (!report)
+      return c.json({
+        available: false,
+        scope: null,
+        subsystems: [],
+        issues: [],
+      });
+
+    /* Mail is the one subsystem the environment does not decide. Stored admin
+       settings take precedence over it, so the report has to defer to the same
+       resolution the mail card uses, or one page states two things: a working
+       stored transport would read as inactive because no SMTP_* is set, and a
+       broken stored one would read as active because the environment is fine.
+       The source travels with it so the variables below make sense. */
+    const mail = await mailStatus();
+    /* Every name a mail complaint can be filed under: the variables
+       themselves, plus the group's own name. */
+    const mailNames = new Set<string>([
+      "mail",
+      ...(report.subsystems
+        .find((subsystem) => subsystem.name === "mail")
+        ?.vars.map((entry) => entry.name) ?? []),
+    ]);
+    const mailDetail =
+      mail.source === "settings"
+        ? mail.state === "ready"
+          ? "Active from the admin mail settings, which take precedence over these variables."
+          : (mail.detail ??
+            "The stored mail settings are in use and cannot send.")
+        : mail.detail;
+
+    return c.json({
+      available: true,
+      scope: report.scope,
+      subsystems: report.subsystems.map((subsystem) => ({
+        name: subsystem.name,
+        title: subsystem.title,
+        active:
+          subsystem.name === "mail" ? mail.state === "ready" : subsystem.active,
+        detail:
+          subsystem.name === "mail"
+            ? (mailDetail ?? subsystem.detail)
+            : subsystem.detail,
+        vars: subsystem.vars.map((entry) => ({
+          name: entry.name,
+          set: entry.set,
+          source: entry.source,
+          value: entry.value,
+          secret: entry.secret,
+          summary: entry.summary,
+          /* An unused environment value cannot be what is wrong: with stored
+             settings in force, SMTP_PORT=oops is a stale line nobody reads,
+             and flagging it warns that a working transport is broken. */
+          issue:
+            mail.source === "settings" && mailNames.has(entry.name)
+              ? null
+              : (entry.issue ?? null),
+        })),
+      })),
+      /* Environment-derived mail complaints are dropped once the stored
+         settings are what the server actually uses. Otherwise the page shows
+         "set MAIL_FROM or email stays disabled" as an alert directly above a
+         mail subsystem it just reported as active, and both cannot be true. */
+      issues: report.issues
+        .filter(
+          (issue) => !(mail.source === "settings" && mailNames.has(issue.name)),
+        )
+        .map((issue) => ({ name: issue.name, message: issue.message })),
+    });
+  });
+
   /* A test email is the only way an operator can tell a configured
      transport from a working one without waiting for a notification to
      fail silently. It goes to the caller's own address on purpose: the

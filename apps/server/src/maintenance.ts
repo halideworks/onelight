@@ -88,30 +88,30 @@ export interface MaintenanceConfig {
   backupDir?: string;
 }
 
-const positiveInt = (value: string | undefined, fallback: number): number => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-};
-
-export const maintenanceConfigFromEnv = (
-  env: Record<string, string | undefined>,
+/**
+ * Retention windows come from loadConfig, which validates them against the
+ * manifest: a malformed TRASH_PURGE_AFTER_MS fails at startup instead of
+ * becoming a silent 30 days.
+ */
+export const maintenanceConfigFromConfig = (
+  config: {
+    uploadReapAfterMs: number;
+    trashPurgeAfterMs: number;
+    gcIntervalMs: number;
+    gcDelete: boolean;
+    backupDir?: string | undefined;
+  },
   base: { publicUrl: string; secretKey?: string; blobStore: BlobStore },
 ): MaintenanceConfig => {
-  const gcDelete = (env.ONELIGHT_GC_DELETE ?? "").trim().toLowerCase();
-  const backupDir = (env.BACKUP_DIR ?? "").trim();
+  const backupDir = (config.backupDir ?? "").trim();
   return {
     publicUrl: base.publicUrl,
+    ...(base.secretKey !== undefined ? { secretKey: base.secretKey } : {}),
     blobStore: base.blobStore,
-    uploadReapAfterMs: positiveInt(
-      env.UPLOAD_REAP_AFTER_MS,
-      DEFAULT_UPLOAD_REAP_AFTER_MS,
-    ),
-    trashPurgeAfterMs: positiveInt(
-      env.TRASH_PURGE_AFTER_MS,
-      DEFAULT_TRASH_PURGE_AFTER_MS,
-    ),
-    gcIntervalMs: positiveInt(env.GC_INTERVAL_MS, DEFAULT_GC_INTERVAL_MS),
-    gcDelete: gcDelete === "true" || gcDelete === "1",
+    uploadReapAfterMs: config.uploadReapAfterMs,
+    trashPurgeAfterMs: config.trashPurgeAfterMs,
+    gcIntervalMs: config.gcIntervalMs,
+    gcDelete: config.gcDelete,
     ...(backupDir ? { backupDir } : {}),
   };
 };

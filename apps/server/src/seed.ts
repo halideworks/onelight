@@ -18,7 +18,7 @@ import {
 } from "@onelight/core";
 import { NodePasswordHasher } from "./password.js";
 
-const config = loadConfig(process.env);
+const config = loadConfig(process.env, { startup: false });
 fs.mkdirSync(path.dirname(config.DATABASE_PATH), { recursive: true });
 const { db, sqlite } = createNodeDb(config.DATABASE_PATH);
 applyNodeMigrations(sqlite);
