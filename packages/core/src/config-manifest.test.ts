@@ -80,6 +80,20 @@ describe("strict parsing", () => {
     });
   });
 
+  /* The planner has always lowercased this, so an uppercase spelling is a
+     deployment that has been working and must keep working. */
+  it("accepts an enum in any case and normalises it", () => {
+    expect(parseConfigValue(entry("ONELIGHT_HWACCEL"), "VAAPI")).toEqual({
+      value: "vaapi",
+    });
+    expect(parseConfigValue(entry("ONELIGHT_HWACCEL"), "NvEnc")).toEqual({
+      value: "nvenc",
+    });
+    expect(
+      loadWorkerConfig({ ONELIGHT_HWACCEL: "VAAPI" }).ONELIGHT_HWACCEL,
+    ).toBe("vaapi");
+  });
+
   it("rejects an unknown enum value", () => {
     expect(
       parseConfigValue(entry("ONELIGHT_HWACCEL"), "quicksync"),

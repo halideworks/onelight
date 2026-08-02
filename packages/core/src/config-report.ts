@@ -105,11 +105,17 @@ export const parseConfigValue = (
     }
     case "enum": {
       const allowed = entry.values ?? [];
-      if (!allowed.includes(source))
+      /* Case-insensitive, and normalised to the canonical spelling. The
+         hardware planner has always done trim().toLowerCase(), so
+         ONELIGHT_HWACCEL=VAAPI is a deployment that has been working for
+         months and must not start failing here. */
+      const normalized = source.toLowerCase();
+      const match = allowed.find((value) => value.toLowerCase() === normalized);
+      if (match === undefined)
         return {
           issue: `${entry.name} accepts ${allowed.join(", ")}. Got "${source}".`,
         };
-      return { value: source };
+      return { value: match };
     }
     case "list": {
       const items = source
