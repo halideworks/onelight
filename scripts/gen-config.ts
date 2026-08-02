@@ -233,6 +233,18 @@ const renderDocs = (): string => {
         entry.compose === "omit"
           ? `Not passed by compose: ${entry.composeNote ?? "deliberately"}.`
           : undefined,
+        /* Pinned is as inert as absent, from the operator's side: a matching
+           line in .env is read back fine and ignored. Say so here, since this
+           guide is where somebody looks before editing anything. */
+        entry.compose === "literal"
+          ? `Pinned by compose to \`${entry.composeValueByScope?.server ?? entry.composeValue ?? ""}\`${
+              entry.composeValueByScope?.worker !== undefined &&
+              entry.composeValueByScope.worker !==
+                entry.composeValueByScope.server
+                ? ` in the server and \`${entry.composeValueByScope.worker}\` in the worker`
+                : ""
+            }: setting it in .env does nothing, edit deploy/docker-compose.yml instead.`
+          : undefined,
         entry.secret ? "Credential: never shown in the admin view." : undefined,
       ]
         .filter(Boolean)

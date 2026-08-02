@@ -17,14 +17,14 @@ to a default nobody asked for.
 |---|---|---|---|
 | `PUBLIC_URL` | server | required | Public origin users reach the app at. Drives absolute URLs and the COOKIE_SECURE default. |
 | `SECRET_KEY` | server | required | Session and signing key. At least 32 random characters. Credential: never shown in the admin view. |
-| `DATABASE_PATH` | server | `/data/onelight.db` | SQLite database file. Absolute in production. Relative paths resolve against the working directory and move when it does. In docker this must live on the volume the worker also mounts. |
-| `BLOB_ROOT` | server | a "blobs" directory beside DATABASE_PATH | Blob storage root for originals, renditions, and exports. DATABASE_PATH and BLOB_ROOT must resolve to the same filesystem the worker mounts, or the worker cannot read sources and write renditions. |
+| `DATABASE_PATH` | server | `/data/onelight.db` | SQLite database file. Absolute in production. Relative paths resolve against the working directory and move when it does. In docker this must live on the volume the worker also mounts. Pinned by compose to `/data/onelight.db`: setting it in .env does nothing, edit deploy/docker-compose.yml instead. |
+| `BLOB_ROOT` | server | a "blobs" directory beside DATABASE_PATH | Blob storage root for originals, renditions, and exports. DATABASE_PATH and BLOB_ROOT must resolve to the same filesystem the worker mounts, or the worker cannot read sources and write renditions. Pinned by compose to `/data/blobs`: setting it in .env does nothing, edit deploy/docker-compose.yml instead. |
 
 ## Network and proxying
 
 | Variable | Container | Default | Notes |
 |---|---|---|---|
-| `PORT` | server, worker | `3000` | Listen port. The worker defaults to 8080. |
+| `PORT` | server, worker | `3000` | Listen port. The worker defaults to 8080. Pinned by compose to `3000` in the server and `8080` in the worker: setting it in .env does nothing, edit deploy/docker-compose.yml instead. |
 | `HOST` | server | `0.0.0.0` | Listen address. Not passed by compose: the container must listen on all interfaces; binding it elsewhere only makes the service unreachable from the port mapping. |
 | `COOKIE_SECURE` | server | true when PUBLIC_URL is https, false otherwise | Force the secure flag on session cookies. |
 | `TRUST_PROXY` | server | `false` | Take client IPs from X-Forwarded-For. Set this behind a reverse proxy. With this off, every request behind a proxy carries the proxy's address, so per-IP rate limits collapse into one bucket for the whole internet. |
