@@ -173,12 +173,16 @@ export const groupIssues = (
   severity: "error" | "report",
 ): ConfigIssue[] => {
   const issues: ConfigIssue[] = [];
+  const scoped = varsForScope(scope);
   for (const group of CONFIG_GROUPS) {
     if (group.severity !== severity) continue;
-    const inScope = group.members.some((name) => {
-      const entry = varsForScope(scope).find((item) => item.name === name);
-      return entry !== undefined;
-    });
+    /* A group belongs to the scope that owns EVERY member, not any of them.
+       WORKER_SECRET is read by both containers but WORKER_URL only by the
+       server, so judging the pair in worker scope would fail a stock stack:
+       the worker legitimately receives the secret and no URL. */
+    const inScope = group.members.every((name) =>
+      scoped.some((item) => item.name === name),
+    );
     if (!inScope) continue;
     const set = group.members.filter((name) => present(env, name));
     if (set.length === 0) continue;
@@ -301,6 +305,15 @@ export const effectiveConfig = (
     if (groupIssue) {
       active = false;
       detail = groupIssue.message;
+    }
+    /* A value that cannot be parsed turns the subsystem off no matter how
+       complete the rest looks. SMTP_HOST and MAIL_FROM with SMTP_PORT=oops is
+       a transport parseSmtpConfig refuses, and reporting it as active would
+       tell an operator their mail works while nothing is being sent. */
+    const brokenVar = vars.find((entry) => entry.issue !== undefined);
+    if (brokenVar) {
+      active = false;
+      detail = brokenVar.issue ?? detail;
     }
 
     subsystems.push({

@@ -553,7 +553,10 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     scope: ["worker"],
     subsystem: "hwaccel",
     kind: "enum",
-    values: ["auto", "vaapi", "nvenc", "amf", "software"],
+    /* "none" is a long-standing alias for software that the runtime planner
+       still accepts; leaving it out of this list would refuse to start a
+       worker that has been configured that way for months. */
+    values: ["auto", "vaapi", "nvenc", "amf", "software", "none"],
     default: "auto",
     summary: "Hardware encoding backend.",
     doc: [

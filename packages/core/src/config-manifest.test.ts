@@ -153,6 +153,23 @@ describe("mail never stops the server", () => {
     expect(parsed.reported.map((issue) => issue.name)).toContain("SMTP_PORT");
   });
 
+  /* But it must not then read as working. A complete-looking mail group with
+     one unparseable value is a transport that sends nothing. */
+  it("reports mail as off when a value it needs cannot be parsed", () => {
+    const report = effectiveConfig(
+      {
+        ...base,
+        SMTP_HOST: "mail.example.com",
+        MAIL_FROM: "Onelight <onelight@example.com>",
+        SMTP_PORT: "oops",
+      },
+      "server",
+    );
+    const mail = report.subsystems.find((item) => item.name === "mail");
+    expect(mail?.active).toBe(false);
+    expect(mail?.detail).toMatch(/SMTP_PORT/);
+  });
+
   it("still refuses a malformed value anywhere else", () => {
     expect(() => loadConfig({ ...base, TRUST_PROXY: "garbage" })).toThrow();
     expect(() =>
@@ -184,6 +201,30 @@ describe("the worker parses the same manifest", () => {
     expect(() => loadWorkerConfig({ ONELIGHT_HWACCEL: "quicksync" })).toThrow(
       /ONELIGHT_HWACCEL/,
     );
+  });
+
+  /* The stock compose stack gives the worker WORKER_SECRET and no WORKER_URL,
+     because only the server dials the worker. Judging that pair in worker
+     scope made every default deployment fail to start. */
+  it("starts on exactly what the stock compose stack passes it", () => {
+    expect(() =>
+      loadWorkerConfig({
+        PORT: "8080",
+        WORKER_SECRET: "worker-secret",
+        ONELIGHT_HWACCEL: "",
+        ONELIGHT_VAAPI_DEVICE: "",
+        ONELIGHT_VAAPI_LOW_POWER: "",
+        ONELIGHT_NVENC_DEVICE: "",
+        ONELIGHT_SOFTWARE_AV1: "",
+      }),
+    ).not.toThrow();
+  });
+
+  /* A worker configured this way months ago must keep starting. */
+  it("still accepts none as the software alias", () => {
+    expect(
+      loadWorkerConfig({ ONELIGHT_HWACCEL: "none" }).ONELIGHT_HWACCEL,
+    ).toBe("none");
   });
 
   it("applies the documented defaults", () => {

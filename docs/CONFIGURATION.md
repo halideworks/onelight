@@ -74,7 +74,7 @@ Startup fails: WORKER_URL and WORKER_SECRET must be set together, or media proce
 
 | Variable | Container | Default | Notes |
 |---|---|---|---|
-| `ONELIGHT_HWACCEL` | worker | `auto` | Hardware encoding backend. auto probes usable backends and falls back to libx264. vaapi covers Intel Quick Sync, Intel Arc, and AMD on Linux; nvenc covers NVIDIA; amf covers AMD on Windows; software is libx264. Explicit GPU modes are strict. The worker performs a real one-frame encode before listening and refuses to start if the requested device, driver, or rate-control mode is unusable, so production cannot silently fall to CPU. One of: auto, vaapi, nvenc, amf, software. |
+| `ONELIGHT_HWACCEL` | worker | `auto` | Hardware encoding backend. auto probes usable backends and falls back to libx264. vaapi covers Intel Quick Sync, Intel Arc, and AMD on Linux; nvenc covers NVIDIA; amf covers AMD on Windows; software is libx264. Explicit GPU modes are strict. The worker performs a real one-frame encode before listening and refuses to start if the requested device, driver, or rate-control mode is unusable, so production cannot silently fall to CPU. One of: auto, vaapi, nvenc, amf, software, none. |
 | `ONELIGHT_VAAPI_DEVICE` | worker | unset | VAAPI render node. |
 | `ONELIGHT_VAAPI_LOW_POWER` | worker | `true` | Use the VAAPI low-power encode path. |
 | `ONELIGHT_NVENC_DEVICE` | worker | `0` | NVENC device index. |
