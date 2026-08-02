@@ -62,15 +62,17 @@ const allVars = (): ConfigVar[] => [
   ...varsForScope("worker").filter((entry) => !serverNames.has(entry.name)),
 ];
 
-/* What an operator can actually set in this file.
+/* What an operator can actually change from this file.
 
-   Anything compose does not pass is left out, however real a setting it is.
-   Writing WORK_ROOT or HOST into the file people copy would recreate the exact
-   defect this manifest exists to end: a line in .env that reads back fine and
-   changes nothing at all. They stay in docs/CONFIGURATION.md, which says per
-   variable why compose does not carry it. */
+   Two kinds are left out, however real a setting each one is. Compose does not
+   pass the "omit" entries at all (WORK_ROOT, HOST), and it pins the "literal"
+   ones to a container value that ignores .env (PORT, DATABASE_PATH,
+   BLOB_ROOT). Offering either here would recreate the exact defect this
+   manifest exists to end: a line in .env that reads back fine and changes
+   nothing at all. Both stay in docs/CONFIGURATION.md with what they resolve
+   to under compose. */
 const CONFIG_VARS_FOR_ENV: ConfigVar[] = allVars().filter(
-  (entry) => entry.compose !== "omit",
+  (entry) => entry.compose !== "omit" && entry.compose !== "literal",
 );
 
 /* .env.example: every variable an operator can set, grouped by subsystem, with

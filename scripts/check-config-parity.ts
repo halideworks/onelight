@@ -165,11 +165,13 @@ for (const root of SOURCE_ROOTS) {
    whole defect, and it would be a poor joke to reintroduce it here. */
 const envExample = readFileSync(path.join(repo, ".env.example"), "utf8");
 for (const entry of CONFIG_VARS) {
-  if (entry.compose !== "omit") continue;
+  if (entry.compose !== "omit" && entry.compose !== "literal") continue;
   const assigned = new RegExp(`^#?\\s*${entry.name}=`, "m").test(envExample);
   if (assigned)
     fail(
-      `.env.example offers ${entry.name}, which compose does not pass, so setting it there does nothing.`,
+      entry.compose === "omit"
+        ? `.env.example offers ${entry.name}, which compose does not pass, so setting it there does nothing.`
+        : `.env.example offers ${entry.name}, which compose pins to a literal, so setting it there does nothing.`,
     );
 }
 
