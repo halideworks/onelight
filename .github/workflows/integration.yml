@@ -72,6 +72,33 @@ jobs:
             -e E2E_PROJECT_ID="$project_id" \
             mcr.microsoft.com/playwright:v1.56.1-noble \
             sh -c 'npm i --silent --no-save playwright@1.56.1 >/dev/null 2>&1 && node share-flows.e2e.mjs && node settings.e2e.mjs && node review-room.e2e.mjs'
+      # Configuration acceptance: turn on OIDC, backups, a custom retention
+      # window and a non-default worker timeout using nothing but an env file,
+      # recreate the stack, and assert the running server reports every one of
+      # them. This is the only place the whole path is exercised: a setting
+      # missing from the compose environment list reads back fine from .env and
+      # still never reaches the container, which is how SMTP, the GC sweeper and
+      # OIDC were all silently inert.
+      - name: Configuration reaches the container
+        run: |
+          cat > ci-config.env <<EOF
+          SECRET_KEY=${SECRET_KEY}
+          WORKER_SECRET=${WORKER_SECRET}
+          PUBLIC_URL=${PUBLIC_URL}
+          ONELIGHT_ALLOWED_ORIGINS=${ONELIGHT_ALLOWED_ORIGINS}
+          OIDC_ISSUER=https://id.integration.test
+          OIDC_CLIENT_ID=onelight-integration
+          OIDC_CLIENT_SECRET=integration-oidc-client-secret
+          BACKUP_DIR=/data/backups
+          BACKUP_KEEP=5
+          TRASH_PURGE_AFTER_MS=1209600000
+          WORKER_JOB_TIMEOUT_MS=900000
+          EOF
+          docker compose -f deploy/docker-compose.yml --env-file ci-config.env \
+            up -d --wait --wait-timeout 180
+          node scripts/integration-config.mjs
+        env:
+          BASE_URL: http://localhost:3000
       - name: Graceful shutdown within 15 seconds
         run: |
           started=$(date +%s)

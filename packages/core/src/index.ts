@@ -1,4 +1,6 @@
 export * from "./config.js";
+export * from "./config-manifest.js";
+export * from "./config-report.js";
 export * from "./avatar.js";
 export * from "./crypto-password.js";
 export * from "./crypto.js";

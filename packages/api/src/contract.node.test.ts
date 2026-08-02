@@ -2,6 +2,7 @@ import {
   Pbkdf2PasswordHasher,
   UlidGenerator,
   loadConfig,
+  serverEffectiveConfig,
 } from "@onelight/core";
 import {
   applyNodeMigrations,
@@ -32,10 +33,15 @@ const makeEnv = (): Promise<ContractHarness> => {
   const hasher = new Pbkdf2PasswordHasher();
   const blobStore = new MemoryBlobStore();
   const mailer = new StubMailer();
-  const config = loadConfig({
+  const env = {
     PUBLIC_URL: "http://onelight.test",
     SECRET_KEY: "contract-suite-secret-key-with-32-plus-chars",
-  });
+    /* A subsystem that is on and one that is off, so the config endpoint has
+       both answers to give. */
+    BACKUP_DIR: "/tmp/onelight-contract-backups",
+    BACKUP_KEEP: "9",
+  };
+  const config = loadConfig(env);
   const app = createApp({
     db,
     hasher,
@@ -46,6 +52,7 @@ const makeEnv = (): Promise<ContractHarness> => {
     searchBackend,
     blobStore,
     mailer,
+    effectiveConfig: () => serverEffectiveConfig(env),
   });
   return Promise.resolve({
     app,
@@ -56,6 +63,7 @@ const makeEnv = (): Promise<ContractHarness> => {
     config,
     blobStore,
     mailer,
+    reportsConfig: true,
     teardown: () => {
       sqlite.close();
     },

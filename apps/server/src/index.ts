@@ -17,6 +17,7 @@ import {
   isSmtpConfigError,
   mailSettingsToInput,
   parseSmtpConfig,
+  serverEffectiveConfig,
   systemClock,
 } from "@onelight/core";
 import type { Mailer, SmtpConfig, StoredMailSettings } from "@onelight/core";
@@ -32,12 +33,15 @@ import {
 import { appSettings } from "@onelight/db/schema";
 import { LocalBlobStore } from "@onelight/worker";
 import { createMailerForConfig } from "./mailer.js";
-import { maintenanceConfigFromEnv, startMaintenance } from "./maintenance.js";
-import { backupConfigFromEnv, backupOnce, startBackups } from "./backup.js";
+import {
+  maintenanceConfigFromConfig,
+  startMaintenance,
+} from "./maintenance.js";
+import { backupConfigFromConfig, backupOnce, startBackups } from "./backup.js";
 import { NodePasswordHasher } from "./password.js";
 import { spriteFrameMatcher } from "./reanchor.js";
 import { isShareLandingPath } from "./share-shell.js";
-import { startWorkerPump } from "./worker-pump.js";
+import { configurePumpPacing, startWorkerPump } from "./worker-pump.js";
 
 const config = loadConfig(process.env);
 fs.mkdirSync(path.dirname(config.DATABASE_PATH), { recursive: true });
@@ -48,7 +52,7 @@ const { db, sqlite } = createNodeDb(config.DATABASE_PATH);
    rollback path is to restore this pre-migration snapshot and redeploy the old
    image. Kept in its own short-retained series so a burst of deploys never
    evicts the day's ordinary backups. */
-const backupConfig = backupConfigFromEnv(process.env);
+const backupConfig = backupConfigFromConfig(config);
 const pending = pendingMigrations(sqlite);
 if (backupConfig && pending.length > 0 && fs.existsSync(config.DATABASE_PATH)) {
   try {
@@ -129,8 +133,7 @@ process.once("SIGINT", shutdown);
 const start = async (): Promise<void> => {
   await ensureHeadlessAdmin();
   const blobRoot =
-    process.env.BLOB_ROOT ??
-    path.join(path.dirname(config.DATABASE_PATH), "blobs");
+    config.BLOB_ROOT ?? path.join(path.dirname(config.DATABASE_PATH), "blobs");
   const blobStore = new LocalBlobStore(blobRoot);
   /* Dynamic mail control: admin settings (app_settings key "mail") take
      precedence over the environment, resolved per use so a settings change
@@ -240,7 +243,7 @@ const start = async (): Promise<void> => {
       return null;
     }
   };
-  const backupConfig = backupConfigFromEnv(process.env);
+  const backupConfig = backupConfigFromConfig(config);
   /* Host facts for the admin system page: the database file's size and the
      snapshot state of BACKUP_DIR. Both are best-effort reads; the page
      renders nulls rather than the server failing over a stat. */
@@ -288,6 +291,10 @@ const start = async (): Promise<void> => {
     diskInfo,
     systemInfo,
     startedAt: Date.now(),
+    /* Read per request rather than captured once: a restart is the only way
+       these change, but reading them live means the page can never show a
+       stale snapshot of what the process was started with. */
+    effectiveConfig: () => serverEffectiveConfig(process.env),
     frameMatcher: spriteFrameMatcher(db, blobRoot),
     mail,
   });
@@ -406,11 +413,16 @@ const start = async (): Promise<void> => {
     port: config.PORT,
     hostname: config.HOST,
   });
-  const stopWorkerPump = startWorkerPump(db, {
-    ...(process.env.WORKER_URL ? { workerUrl: process.env.WORKER_URL } : {}),
-    ...(process.env.WORKER_SECRET
-      ? { workerSecret: process.env.WORKER_SECRET }
+  configurePumpPacing({
+    workerJobTimeoutMs: config.workerJobTimeoutMs,
+    watermarkSweepLimit: config.watermarkSweepLimit,
+    ...(config.mediaConcurrency !== undefined
+      ? { mediaConcurrency: config.mediaConcurrency }
       : {}),
+  });
+  const stopWorkerPump = startWorkerPump(db, {
+    ...(config.WORKER_URL ? { workerUrl: config.WORKER_URL } : {}),
+    ...(config.WORKER_SECRET ? { workerSecret: config.WORKER_SECRET } : {}),
     blobRoot,
   });
   const stopBackups = backupConfig
@@ -422,7 +434,7 @@ const start = async (): Promise<void> => {
     );
   const stopMaintenance = startMaintenance(
     db,
-    maintenanceConfigFromEnv(process.env, {
+    maintenanceConfigFromConfig(config, {
       publicUrl: config.PUBLIC_URL,
       secretKey: config.SECRET_KEY,
       blobStore,

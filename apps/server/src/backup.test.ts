@@ -9,7 +9,8 @@ import {
   users,
   workspaces,
 } from "@onelight/db";
-import { backupConfigFromEnv, backupOnce } from "./backup.js";
+import { loadConfig } from "@onelight/core";
+import { backupConfigFromConfig, backupOnce } from "./backup.js";
 import type { AppDb } from "@onelight/db";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "onelight-backup-"));
@@ -48,14 +49,34 @@ const seededDb = async (
 
 describe("backups", () => {
   it("is off without BACKUP_DIR and reads the knobs when set", () => {
-    expect(backupConfigFromEnv({})).toBeNull();
+    const env = {
+      PUBLIC_URL: "https://x.test",
+      SECRET_KEY: "0123456789abcdef0123456789abcdef",
+    };
+    expect(backupConfigFromConfig(loadConfig(env))).toBeNull();
     expect(
-      backupConfigFromEnv({
-        BACKUP_DIR: "/b",
-        BACKUP_INTERVAL_MS: "60000",
+      backupConfigFromConfig(
+        loadConfig({
+          ...env,
+          BACKUP_DIR: "/b",
+          BACKUP_INTERVAL_MS: "60000",
+          BACKUP_KEEP: "3",
+        }),
+      ),
+    ).toEqual({ dir: "/b", intervalMs: 60000, keep: 3 });
+  });
+
+  /* An interval or retention count without a directory is a backup schedule
+     that never runs, which is the failure mode nobody notices until they need
+     a restore. */
+  it("refuses backup knobs set without a directory", () => {
+    expect(() =>
+      loadConfig({
+        PUBLIC_URL: "https://x.test",
+        SECRET_KEY: "0123456789abcdef0123456789abcdef",
         BACKUP_KEEP: "3",
       }),
-    ).toEqual({ dir: "/b", intervalMs: 60000, keep: 3 });
+    ).toThrow(/BACKUP_DIR/);
   });
 
   it("writes a consistent snapshot and a manifest of its referenced blobs", async () => {

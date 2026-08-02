@@ -2388,6 +2388,38 @@ export const routeDocs: Record<string, RouteDoc> = {
       ),
     },
   },
+  "GET /admin/system/config": {
+    summary:
+      "The configuration this server is actually running with (admin): each subsystem as active or inactive with the reason, and each variable as set, defaulted, or unset. Secret values are never returned, only whether they are set. available is false on platforms with no operator-supplied environment to report.",
+    responses: {
+      "200": ok(
+        z.object({
+          available: z.boolean(),
+          scope: z.enum(["server", "worker"]).nullable(),
+          subsystems: z.array(
+            z.object({
+              name: z.string(),
+              title: z.string(),
+              active: z.boolean().nullable(),
+              detail: z.string().nullable(),
+              vars: z.array(
+                z.object({
+                  name: z.string(),
+                  set: z.boolean(),
+                  source: z.enum(["environment", "default", "unset"]),
+                  value: z.string().nullable(),
+                  secret: z.boolean(),
+                  summary: z.string(),
+                  issue: z.string().nullable(),
+                }),
+              ),
+            }),
+          ),
+          issues: z.array(z.object({ name: z.string(), message: z.string() })),
+        }),
+      ),
+    },
+  },
   "POST /admin/system/test-email": {
     summary:
       "Send a test email to the calling administrator's own address, proving the configured mail transport end to end. 409 when email is not configured or the transport refuses the message.",

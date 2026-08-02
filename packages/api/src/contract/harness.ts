@@ -101,6 +101,8 @@ export interface ContractHarness {
   blobStore: MultipartBlobStore | null;
   /** Present when the leg wires a StubMailer into the app under test. */
   mailer?: StubMailer;
+  /** True when the leg reports an effective configuration (the Node server). */
+  reportsConfig?: boolean;
   teardown?: () => Promise<void> | void;
 }
 

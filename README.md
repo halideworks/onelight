@@ -29,6 +29,8 @@ docker compose -f deploy/docker-compose.yml up --build
 
 Browse to the configured `PUBLIC_URL`, complete first-run setup, create a project, and invite a member. `deploy/Caddyfile.example` shows a TLS-terminating reverse proxy. Production deployments must set an explicit `SECRET_KEY`; compose refuses to start without it.
 
+Every setting is listed in `docs/CONFIGURATION.md` with its default and which container reads it. Both that file and `.env.example` are generated from `packages/core/src/config-manifest.ts`, and CI fails if a documented setting is not actually passed to the container. Administrators can see what the running server resolved, subsystem by subsystem, on the admin system page.
+
 GPU encoding is opt-in through a Compose override. Intel integrated graphics
 and Intel Arc use Quick Sync through VAAPI:
 
@@ -62,6 +64,7 @@ pnpm test           # Node / better-sqlite3 contract and unit suites
 pnpm test:workers   # the same contract suite on the D1 workers pool
 pnpm db:check       # migration D1-safety and foreign-key check
 pnpm openapi:check  # committed OpenAPI document and generated client are current
+pnpm config:check   # every documented setting is passed to the container
 pnpm web:check      # svelte-check
 pnpm qa             # media verification harness (skips where ffmpeg is absent)
 ```

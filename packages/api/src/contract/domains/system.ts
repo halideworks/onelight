@@ -472,6 +472,80 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       expect(foreign.export_jobs.queued ?? 0).toBe(0);
     });
 
+    it("reports the effective configuration without leaking a secret", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const member = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      const forbidden = await req(h, "/api/v1/admin/system/config", {
+        cookie: member.cookie,
+      });
+      expect(forbidden.status).toBe(403);
+
+      const response = await req(h, "/api/v1/admin/system/config", {
+        cookie: seed.admin.cookie,
+      });
+      expect(response.status).toBe(200);
+      type ConfigView = {
+        available: boolean;
+        scope: string | null;
+        subsystems: Array<{
+          name: string;
+          active: boolean | null;
+          detail: string | null;
+          vars: Array<{
+            name: string;
+            set: boolean;
+            source: string;
+            value: string | null;
+            secret: boolean;
+            issue: string | null;
+          }>;
+        }>;
+        issues: Array<{ name: string; message: string }>;
+      };
+      const body = await json<ConfigView>(response);
+      expect(assertSnakeCaseKeys(body)).toEqual([]);
+
+      // The Workers leg has no operator environment to report, and says so
+      // rather than inventing one.
+      if (!h.reportsConfig) {
+        expect(body.available).toBe(false);
+        expect(body.subsystems).toEqual([]);
+        return;
+      }
+
+      expect(body.available).toBe(true);
+      expect(body.scope).toBe("server");
+      const flat = body.subsystems.flatMap((subsystem) => subsystem.vars);
+      // The credential the harness boots with is never in the payload, by any
+      // route: not as a value, and not inside an error message.
+      expect(JSON.stringify(body)).not.toContain(h.config.SECRET_KEY);
+      expect(flat.find((entry) => entry.name === "SECRET_KEY")).toMatchObject({
+        set: true,
+        secret: true,
+        value: null,
+      });
+      // A subsystem the harness configured reads as on, with its value.
+      const backups = body.subsystems.find((item) => item.name === "backups");
+      expect(backups?.active).toBe(true);
+      expect(flat.find((entry) => entry.name === "BACKUP_KEEP")).toMatchObject({
+        set: true,
+        source: "environment",
+        value: "9",
+      });
+      // One it did not reads as off, with the reason.
+      const oidc = body.subsystems.find((item) => item.name === "oidc");
+      expect(oidc?.active).toBe(false);
+      expect(oidc?.detail).toMatch(/OIDC_/);
+      // And a defaulted value is reported as a default rather than as set.
+      expect(
+        flat.find((entry) => entry.name === "TRASH_PURGE_AFTER_MS"),
+      ).toMatchObject({ set: false, source: "default" });
+    });
+
     it("sends a test email to the calling admin, or refuses plainly", async () => {
       const h = ctx.h();
       const seed = ctx.seed();

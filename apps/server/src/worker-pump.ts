@@ -114,12 +114,27 @@ interface ExportFilter {
 
 const DEFAULT_WORKER_JOB_TIMEOUT_MS = 6 * 60 * 60_000;
 
-const workerJobTimeoutMs = (): number => {
-  const parsed = Number(process.env.WORKER_JOB_TIMEOUT_MS);
-  return Number.isFinite(parsed) && parsed > 0
-    ? parsed
-    : DEFAULT_WORKER_JOB_TIMEOUT_MS;
+/* Pacing knobs come from the validated config the server boots with. They
+   stay behind accessors because the pump is also driven directly by tests and
+   by the CLI, neither of which builds a full AppConfig. */
+let pacing: {
+  workerJobTimeoutMs: number;
+  watermarkSweepLimit: number;
+  mediaConcurrency?: number;
+} = {
+  workerJobTimeoutMs: DEFAULT_WORKER_JOB_TIMEOUT_MS,
+  watermarkSweepLimit: 8,
 };
+
+export const configurePumpPacing = (next: {
+  workerJobTimeoutMs: number;
+  watermarkSweepLimit: number;
+  mediaConcurrency?: number;
+}): void => {
+  pacing = next;
+};
+
+const workerJobTimeoutMs = (): number => pacing.workerJobTimeoutMs;
 
 const parsePayload = (value: string): JobPayload => {
   try {
@@ -602,14 +617,7 @@ const processWatermarkJob = async (
 // poll loop, so a large backlog drains across sweeps instead of stalling the
 // queue.
 const WATERMARK_SWEEP_INTERVAL_MS = 30_000;
-const DEFAULT_WATERMARK_SWEEP_LIMIT = 8;
-
-const watermarkSweepLimit = (): number => {
-  const parsed = Number(process.env.WATERMARK_SWEEP_LIMIT);
-  return Number.isFinite(parsed) && parsed > 0
-    ? parsed
-    : DEFAULT_WATERMARK_SWEEP_LIMIT;
-};
+const watermarkSweepLimit = (): number => pacing.watermarkSweepLimit;
 
 export const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
   const now = Date.now();
@@ -2399,12 +2407,8 @@ const processExportJob = async (
    it. One restores exactly the old behaviour. */
 const DEFAULT_MEDIA_CONCURRENCY = Math.max(1, cpus().length - 2);
 
-const mediaConcurrency = (): number => {
-  const parsed = Number(process.env.MEDIA_CONCURRENCY);
-  return Number.isFinite(parsed) && parsed >= 1
-    ? Math.floor(parsed)
-    : DEFAULT_MEDIA_CONCURRENCY;
-};
+const mediaConcurrency = (): number =>
+  pacing.mediaConcurrency ?? DEFAULT_MEDIA_CONCURRENCY;
 
 export const startWorkerPump = (
   db: AppDb,

@@ -2226,6 +2226,49 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     });
   });
 
+  /* What the server is ACTUALLY running with, subsystem by subsystem.
+     Compose passes only the keys it names, so an operator can set a variable,
+     read it back from their own .env, and still be looking at a feature that
+     never turned on. This answers "is it on, and if not, what is missing"
+     without anyone reading container logs. Values are reported; secrets are
+     reported only as set or unset, because the question is never what the
+     client secret is. */
+  api.get("/admin/system/config", requireAuth, (c) => {
+    const actor = userFromContext(c);
+    if (actor.role !== "admin") throw errors.forbidden();
+    const report = env.effectiveConfig?.();
+    if (!report)
+      return c.json({
+        available: false,
+        scope: null,
+        subsystems: [],
+        issues: [],
+      });
+    return c.json({
+      available: true,
+      scope: report.scope,
+      subsystems: report.subsystems.map((subsystem) => ({
+        name: subsystem.name,
+        title: subsystem.title,
+        active: subsystem.active,
+        detail: subsystem.detail,
+        vars: subsystem.vars.map((entry) => ({
+          name: entry.name,
+          set: entry.set,
+          source: entry.source,
+          value: entry.value,
+          secret: entry.secret,
+          summary: entry.summary,
+          issue: entry.issue ?? null,
+        })),
+      })),
+      issues: report.issues.map((issue) => ({
+        name: issue.name,
+        message: issue.message,
+      })),
+    });
+  });
+
   /* A test email is the only way an operator can tell a configured
      transport from a working one without waiting for a notification to
      fail silently. It goes to the caller's own address on purpose: the

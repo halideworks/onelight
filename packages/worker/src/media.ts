@@ -477,7 +477,10 @@ export const hardwareAccelerationPlanFromEnv = (
   env: Readonly<Record<string, string | undefined>> = process.env,
   platform = process.platform,
 ): HardwareAccelerationPlan => {
-  const requested = (env[HWACCEL_ENV] ?? "auto").trim().toLowerCase();
+  /* Empty counts as unset. Compose passes an empty string for every variable
+     the operator did not set, and an empty backend is not a request for no
+     backend: without this the worker refuses to start under a stock stack. */
+  const requested = (env[HWACCEL_ENV] || "auto").trim().toLowerCase();
   if (
     !["auto", "software", "none", "vaapi", "nvenc", "amf"].includes(requested)
   )

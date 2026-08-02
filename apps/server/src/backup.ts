@@ -28,19 +28,22 @@ export interface BackupConfig {
   keep: number;
 }
 
-export const backupConfigFromEnv = (
-  env: Record<string, string | undefined>,
-): BackupConfig | null => {
-  const dir = (env.BACKUP_DIR ?? "").trim();
+/**
+ * Backups are off unless BACKUP_DIR is set. The interval and retention are
+ * already validated by loadConfig against the manifest, so a malformed value
+ * fails at startup rather than silently reverting to the default here.
+ */
+export const backupConfigFromConfig = (config: {
+  backupDir?: string | undefined;
+  backupIntervalMs: number;
+  backupKeep: number;
+}): BackupConfig | null => {
+  const dir = (config.backupDir ?? "").trim();
   if (!dir) return null;
-  const positive = (value: string | undefined, fallback: number): number => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-  };
   return {
     dir,
-    intervalMs: positive(env.BACKUP_INTERVAL_MS, 6 * 60 * 60_000),
-    keep: positive(env.BACKUP_KEEP, 28),
+    intervalMs: config.backupIntervalMs,
+    keep: config.backupKeep,
   };
 };
 
