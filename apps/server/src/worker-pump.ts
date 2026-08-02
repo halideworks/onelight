@@ -430,6 +430,27 @@ const enqueueTranscode = async (
 // idempotency key carries the spec hash, so a spec change enqueues a fresh
 // job and the superseded rendition rows and blobs are deleted on
 // registration.
+/* One media job, sent and awaited.
+ *
+ * Every kind used to repeat this pair: build a request, sendJob, then
+ * waitForWorker with the same five arguments. Collapsing it leaves exactly one
+ * place where the server talks to a worker, which is the seam the pull
+ * protocol in specs/p0-3-stateless-workers.md inverts: the request becomes
+ * what a claiming worker is handed, and the awaited result becomes what it
+ * posts back. Keeping the transport in one function is what makes that a small
+ * change rather than a scattered one. */
+const runOnWorker = async (
+  db: AppDb,
+  job: typeof jobs.$inferSelect,
+  request: Record<string, unknown>,
+  workerUrl: string,
+  workerSecret: string,
+  workerId: string,
+): Promise<WorkerResponse> => {
+  await sendJob(workerUrl, workerSecret, { job_id: job.id, ...request });
+  return waitForWorker(db, workerUrl, workerSecret, job.id, workerId);
+};
+
 const processWatermarkJob = async (
   db: AppDb,
   job: typeof jobs.$inferSelect,
@@ -486,29 +507,28 @@ const processWatermarkJob = async (
       ? { num: version.frameRateNum, den: version.frameRateDen }
       : undefined;
   const outputPath = path.join(blobRoot, outputKey);
-  await sendJob(workerUrl, workerSecret, {
-    job_id: job.id,
-    kind: "watermark",
-    source_path: sourcePath,
-    output_path: outputPath,
-    spec,
-    // The burned path is per share, not per viewer, so the identity tokens
-    // resolve to the share; {email} and {name} stay empty until a per-viewer
-    // burned option exists (the session overlay carries viewer identity).
-    tokens: {
-      share: share.title,
-      date: new Date().toISOString().slice(0, 10),
-    },
-    ...(rate ? { rate } : {}),
-    ...(version?.sourceTimecodeStart
-      ? { timecode: version.sourceTimecodeStart }
-      : {}),
-  });
-  const state = await waitForWorker(
+  const state = await runOnWorker(
     db,
+    job,
+    {
+      kind: "watermark",
+      source_path: sourcePath,
+      output_path: outputPath,
+      spec,
+      // The burned path is per share, not per viewer, so the identity tokens
+      // resolve to the share; {email} and {name} stay empty until a per-viewer
+      // burned option exists (the session overlay carries viewer identity).
+      tokens: {
+        share: share.title,
+        date: new Date().toISOString().slice(0, 10),
+      },
+      ...(rate ? { rate } : {}),
+      ...(version?.sourceTimecodeStart
+        ? { timecode: version.sourceTimecodeStart }
+        : {}),
+    },
     workerUrl,
     workerSecret,
-    job.id,
     workerId,
   );
   if (state.status !== "complete")
@@ -1555,16 +1575,12 @@ const processJob = async (
       })),
     ];
     if (!sources.length) return;
-    await sendJob(workerUrl, workerSecret, {
-      job_id: job.id,
-      kind: "fingerprint",
-      sources,
-    });
-    const state = await waitForWorker(
+    const state = await runOnWorker(
       db,
+      job,
+      { kind: "fingerprint", sources },
       workerUrl,
       workerSecret,
-      job.id,
       workerId,
     );
     if (state.status !== "complete" || !state.result?.fingerprints)
@@ -1665,17 +1681,16 @@ const processJob = async (
             path: path.join(blobRoot, "renditions", versionId, entry.filename),
           }))
         : [];
-    await sendJob(workerUrl, workerSecret, {
-      job_id: job.id,
-      kind: "probe",
-      source_path: sourcePath,
-      ...(stillOutputs.length ? { outputs: stillOutputs } : {}),
-    });
-    const state = await waitForWorker(
+    const state = await runOnWorker(
       db,
+      job,
+      {
+        kind: "probe",
+        source_path: sourcePath,
+        ...(stillOutputs.length ? { outputs: stillOutputs } : {}),
+      },
       workerUrl,
       workerSecret,
-      job.id,
       workerId,
     );
     if (state.status !== "complete" || !state.result?.media_info)
@@ -1835,18 +1850,17 @@ const processJob = async (
     path: path.join(blobRoot, "renditions", version.id, entry.filename),
     ...(entry.height === undefined ? {} : { height: entry.height }),
   }));
-  await sendJob(workerUrl, workerSecret, {
-    job_id: job.id,
-    kind: "transcode",
-    source_path: sourcePath,
-    media_info: mediaInfo,
-    outputs,
-  });
-  const state = await waitForWorker(
+  const state = await runOnWorker(
     db,
+    job,
+    {
+      kind: "transcode",
+      source_path: sourcePath,
+      media_info: mediaInfo,
+      outputs,
+    },
     workerUrl,
     workerSecret,
-    job.id,
     workerId,
   );
   if (state.status !== "complete" || !state.result?.renditions)
