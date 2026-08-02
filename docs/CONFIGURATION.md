@@ -11,6 +11,12 @@ Values are validated at startup. A malformed number or an unknown enum value
 stops the server with a message naming the variable, rather than falling back
 to a default nobody asked for.
 
+Outgoing email is the one exception. A bad SMTP setting is logged and leaves
+the transport disabled, reported on the admin system page, rather than
+stopping the server: a typo in a notification transport should not take a
+review platform offline, and stored admin mail settings may be in use
+instead of these variables anyway.
+
 ## Core
 
 | Variable | Container | Default | Notes |
