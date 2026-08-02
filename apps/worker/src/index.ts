@@ -11,6 +11,7 @@ import {
   captureIdentityFromTags,
   captureKeyOf,
   isStillSource,
+  loadWorkerConfig,
 } from "@onelight/core";
 import {
   DEFAULT_WATERMARK_FONTFILE,
@@ -68,11 +69,16 @@ interface JobState {
   finishedAt?: number;
 }
 
-const port = Number(process.env.PORT ?? 8080);
-const secret = process.env.WORKER_SECRET ?? "";
-const workRoot = path.resolve(process.env.WORK_ROOT ?? "/data/work");
+/* Parsed against the same manifest the server uses, so the worker's settings
+   are governed by their declared types rather than by whatever each reader
+   happened to accept. A malformed value stops the worker here, before it
+   accepts a job it would run with the wrong settings. */
+const workerConfig = loadWorkerConfig(process.env);
+const port = workerConfig.PORT;
+const secret = workerConfig.WORKER_SECRET ?? "";
+const workRoot = path.resolve(workerConfig.WORK_ROOT);
 const jobs = new Map<string, JobState>();
-const ffmpeg = process.env.FFMPEG_PATH ?? "ffmpeg";
+const ffmpeg = workerConfig.FFMPEG_PATH;
 let hardwareAcceleration: HardwareAcceleration = SOFTWARE_ACCELERATION;
 const SIGNATURE_SKEW_MS = 5 * 60_000;
 const PRUNE_AFTER_MS = 60 * 60_000;
@@ -168,9 +174,9 @@ const runOutputs = async (
     transcodeJob,
     outputs,
     ffmpeg,
-    process.env.PDFTOPPM_PATH ?? "pdftoppm",
+    workerConfig.PDFTOPPM_PATH,
     hardwareAcceleration,
-    process.env.FFPROBE_PATH ?? "ffprobe",
+    workerConfig.FFPROBE_PATH,
   );
 };
 
@@ -387,7 +393,7 @@ const handler = async (
       status: "ok",
       worker: "onelight-worker",
       ffmpeg,
-      ffprobe: process.env.FFPROBE_PATH ?? "ffprobe",
+      ffprobe: workerConfig.FFPROBE_PATH,
       hardware_acceleration: hardwareAccelerationName(hardwareAcceleration),
     });
     return;

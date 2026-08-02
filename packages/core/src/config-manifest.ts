@@ -68,6 +68,11 @@ export interface ConfigVar {
    */
   default?: string;
   /**
+   * Per-container default, where one name means two things. PORT is 3000 in
+   * the server and 8080 in the worker, and both have to be true at once.
+   */
+  defaultByScope?: Partial<Record<ConfigScope, string>>;
+  /**
    * Prose for a default that is derived rather than fixed (COOKIE_SECURE
    * follows PUBLIC_URL's scheme, MEDIA_CONCURRENCY follows the core count).
    * Documentation only.
@@ -161,6 +166,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     min: 1,
     max: 65535,
     default: "3000",
+    defaultByScope: { server: "3000", worker: "8080" },
     summary: "Listen port. The worker defaults to 8080.",
     // Pinned per container: the published port is the host's business, and a
     // .env PORT that moved the listener without moving the port mapping would
@@ -719,8 +725,16 @@ const byName = new Map(CONFIG_VARS.map((entry) => [entry.name, entry]));
 export const configVar = (name: string): ConfigVar | undefined =>
   byName.get(name);
 
+/**
+ * The variables one container reads, each already resolved to that
+ * container's default. Callers never see defaultByScope, so there is no way
+ * to parse a worker variable against the server's default by accident.
+ */
 export const varsForScope = (scope: ConfigScope): readonly ConfigVar[] =>
-  CONFIG_VARS.filter((entry) => entry.scope.includes(scope));
+  CONFIG_VARS.filter((entry) => entry.scope.includes(scope)).map((entry) => {
+    const scoped = entry.defaultByScope?.[scope];
+    return scoped === undefined ? entry : { ...entry, default: scoped };
+  });
 
 /** The order subsystems appear in generated files and the admin report. */
 export const SUBSYSTEM_ORDER: readonly ConfigSubsystem[] = [
@@ -750,6 +764,22 @@ export const SUBSYSTEM_TITLES: Record<ConfigSubsystem, string> = {
   maintenance: "Retention and cleanup",
   tools: "External tools",
 };
+
+/**
+ * Subsystems whose malformed values are reported rather than fatal.
+ *
+ * The rule everywhere else is that a value which cannot be honoured stops the
+ * server, because the alternative is a setting that silently does nothing.
+ * Mail is the exception, for the same reason its group is: a typo in
+ * SMTP_PORT must not stop a review platform from serving, and mail already
+ * has a place to say it is broken (the admin mail page, the boot log, and the
+ * effective-config report). Stored admin mail settings also take precedence
+ * over the environment, so a bad SMTP_PORT may not even be in use.
+ */
+export const REPORT_ONLY_SUBSYSTEMS: readonly ConfigSubsystem[] = ["mail"];
+
+export const isStartupFatal = (entry: ConfigVar): boolean =>
+  !REPORT_ONLY_SUBSYSTEMS.includes(entry.subsystem);
 
 /**
  * Subsystems that are off until configured, and what turns each one on. The

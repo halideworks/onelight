@@ -59,12 +59,15 @@ const defaultLine = (entry: ConfigVar): string | null => {
 /* Variables worth showing an operator. The tool paths are real settings but
    they belong to the image, not to a deployment, so they stay in the docs and
    out of the file people copy. */
-const CONFIG_VARS_FOR_ENV: ConfigVar[] = [
+const serverNames = new Set(varsForScope("server").map((entry) => entry.name));
+const allVars = (): ConfigVar[] => [
   ...varsForScope("server"),
-  ...varsForScope("worker").filter(
-    (entry) => !varsForScope("server").includes(entry),
-  ),
-].filter((entry) => entry.subsystem !== "tools");
+  ...varsForScope("worker").filter((entry) => !serverNames.has(entry.name)),
+];
+
+const CONFIG_VARS_FOR_ENV: ConfigVar[] = allVars().filter(
+  (entry) => entry.subsystem !== "tools",
+);
 
 /* .env.example: every variable an operator can set, grouped by subsystem, with
    the prose that explains what happens if they get it wrong. */
@@ -187,12 +190,7 @@ const renderDocs = (): string => {
   ];
 
   for (const subsystem of SUBSYSTEM_ORDER) {
-    const entries = [
-      ...varsForScope("server"),
-      ...varsForScope("worker").filter(
-        (entry) => !varsForScope("server").includes(entry),
-      ),
-    ].filter((entry) => entry.subsystem === subsystem);
+    const entries = allVars().filter((entry) => entry.subsystem === subsystem);
     if (entries.length === 0) continue;
     lines.push("", `## ${SUBSYSTEM_TITLES[subsystem]}`, "");
     for (const group of CONFIG_GROUPS.filter(

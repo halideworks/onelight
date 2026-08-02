@@ -21,7 +21,34 @@
     webhook_deliveries: Record<string, number>;
   };
 
+  /* What the server actually resolved, subsystem by subsystem. Compose passes
+     only the keys it names, so a setting can be present in .env, read back
+     fine, and never reach the container: this is where an operator sees that
+     rather than guessing from behaviour. Secret values are never sent. */
+  type ConfigVar = {
+    name: string;
+    set: boolean;
+    source: 'environment' | 'default' | 'unset';
+    value: string | null;
+    secret: boolean;
+    summary: string;
+    issue: string | null;
+  };
+  type ConfigView = {
+    available: boolean;
+    subsystems: Array<{
+      name: string;
+      title: string;
+      active: boolean | null;
+      detail: string | null;
+      vars: ConfigVar[];
+    }>;
+    issues: Array<{ name: string; message: string }>;
+  };
+
   let status = $state<Status | null>(null);
+  let config = $state<ConfigView | null>(null);
+  let configOpen = $state(false);
   let error = $state('');
   let mailTesting = $state(false);
   let mailTestResult = $state('');
@@ -48,6 +75,14 @@
       error = '';
     } catch (caught) {
       error = messageFrom(caught, 'System status is not available.');
+    }
+    /* Best effort and separate: configuration is a slower-moving fact than
+       queue depth, and a platform that cannot report it (Workers) must not
+       take the whole page down. */
+    try {
+      config = await api<ConfigView>('/api/v1/admin/system/config');
+    } catch {
+      config = null;
     }
   };
 
@@ -191,6 +226,67 @@
         {/each}
       </section>
     </div>
+    {#if config?.available}
+      <section class="config" aria-label="Configuration">
+        <h2>
+          Configuration
+          <button type="button" class="toggle" onclick={() => (configOpen = !configOpen)} aria-expanded={configOpen}>
+            {configOpen ? 'Hide settings' : 'Show settings'}
+          </button>
+        </h2>
+        <p class="hint">
+          What this server resolved at startup. A setting can be present in your <code>.env</code> and still not
+          reach the container, so this is the value actually in force. Secrets show only as set.
+        </p>
+
+        {#if config.issues.length > 0}
+          <ul class="issues" role="alert">
+            {#each config.issues as issue (issue.name)}
+              <li class="warn">{issue.message}</li>
+            {/each}
+          </ul>
+        {/if}
+
+        <ul class="subsystems">
+          {#each config.subsystems.filter((item) => item.active !== null) as item (item.name)}
+            <li>
+              <span class="dot" class:on={item.active} aria-hidden="true"></span>
+              <span class="subname">{item.title}</span>
+              <span class="state">{item.active ? 'active' : (item.detail ?? 'inactive')}</span>
+            </li>
+          {/each}
+        </ul>
+
+        {#if configOpen}
+          {#each config.subsystems as item (item.name)}
+            <div class="group">
+              <h3>{item.title}</h3>
+              <table>
+                <tbody>
+                  {#each item.vars as entry (entry.name)}
+                    <tr class:warn={Boolean(entry.issue)}>
+                      <th scope="row"><code>{entry.name}</code></th>
+                      <td class="value tc">
+                        {#if entry.secret}
+                          <span class="muted">{entry.set ? 'set' : 'not set'}</span>
+                        {:else if entry.value === null}
+                          <span class="muted">not set</span>
+                        {:else}
+                          {entry.value}
+                        {/if}
+                      </td>
+                      <td class="src muted">{entry.source === 'environment' ? 'configured' : entry.source}</td>
+                      <td class="why muted">{entry.issue ?? entry.summary}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/each}
+        {/if}
+      </section>
+    {/if}
+
     <p class="hint footer">Refreshes every 15 seconds. Restore steps live in docs/BACKUPS.md.</p>
   {:else}
     <GhostRows rows={5} />
@@ -227,6 +323,33 @@
   .mailtest { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 8px 14px; font-size: var(--text-13); }
   .mailtest:hover { background: var(--ink-300); }
   .mailtest:disabled { opacity: 0.5; }
+
+  /* Configuration reads as a list of facts, not a dashboard: value steps and
+     space, no rules between rows. */
+  .config { max-width: 1200px; margin: 24px 0 0; background: var(--ink-100); border-radius: var(--radius); padding: 20px; }
+  .config h2 { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+  .toggle { border: 0; border-radius: var(--radius); background: var(--ink-200); color: var(--ink-text); padding: 6px 12px; font-size: var(--text-13); font-weight: 400; }
+  .toggle:hover { background: var(--ink-300); }
+  .toggle:focus-visible { outline: 1px solid var(--accent-bright); outline-offset: 2px; }
+
+  .subsystems { list-style: none; margin: 14px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 6px 20px; }
+  .subsystems li { display: flex; align-items: baseline; gap: 8px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-300); flex: none; }
+  .dot.on { background: var(--ok); }
+  .subname { color: var(--ink-text); }
+  .state { color: var(--ink-text-dim); }
+
+  .issues { list-style: none; margin: 14px 0 0; padding: 0; }
+
+  .group { margin: 20px 0 0; }
+  .group h3 { margin: 0 0 6px; }
+  .config table { width: 100%; border-collapse: collapse; }
+  .config th { text-align: left; font-weight: 400; padding: 3px 16px 3px 0; vertical-align: top; }
+  .config td { padding: 3px 16px 3px 0; vertical-align: top; }
+  .config td.value { white-space: nowrap; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; }
+  .config td.why { width: 55%; }
+  .muted { color: var(--ink-text-dim); }
+  .config tr.warn th, .config tr.warn td { color: var(--warn); }
 
   .hint { margin: 12px 0 0; color: var(--ink-text-dim); }
   .hint.footer { margin-top: 20px; }

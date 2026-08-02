@@ -11,6 +11,7 @@ import {
   SUBSYSTEM_ACTIVATION,
   SUBSYSTEM_ORDER,
   SUBSYSTEM_TITLES,
+  isStartupFatal,
   varsForScope,
   type ConfigScope,
   type ConfigSubsystem,
@@ -129,21 +130,36 @@ export const parseConfigValue = (
 
 export interface ParsedConfig {
   values: Record<string, ConfigValue>;
+  /** Startup-fatal: the server must not run with these. */
   issues: ConfigIssue[];
+  /** Surfaced to the operator, but the process still starts. */
+  reported: ConfigIssue[];
 }
 
-/** Parse every variable in scope. Collects all issues rather than stopping. */
+/**
+ * Parse every variable in scope. Collects all issues rather than stopping, so
+ * one boot prints every problem instead of one per restart.
+ *
+ * `issues` are startup-fatal; `reported` are the ones a subsystem handles on
+ * its own (mail). Keeping them apart is the difference between "the mail port
+ * is a typo" and "the server will not start".
+ */
 export const parseScope = (env: RawEnv, scope: ConfigScope): ParsedConfig => {
   const values: Record<string, ConfigValue> = {};
   const issues: ConfigIssue[] = [];
+  const reported: ConfigIssue[] = [];
   for (const entry of varsForScope(scope)) {
     const result = parseConfigValue(entry, env[entry.name]);
     if ("issue" in result)
-      issues.push({ name: entry.name, message: result.issue });
+      (isStartupFatal(entry) ? issues : reported).push({
+        name: entry.name,
+        message: result.issue,
+      });
     else values[entry.name] = result.value;
   }
   issues.push(...groupIssues(env, scope, "error"));
-  return { values, issues };
+  reported.push(...groupIssues(env, scope, "report"));
+  return { values, issues, reported };
 };
 
 /**

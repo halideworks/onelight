@@ -10,12 +10,17 @@
 
 import {
   effectiveConfig,
+  parseConfigValue,
   parseScope,
   type ConfigIssue,
   type EffectiveConfig,
   type RawEnv,
 } from "./config-report.js";
-import { CONFIG_VARS } from "./config-manifest.js";
+import {
+  CONFIG_VARS,
+  varsForScope,
+  type ConfigScope,
+} from "./config-manifest.js";
 
 export interface AppConfig {
   PUBLIC_URL: string;
@@ -95,8 +100,9 @@ const stringOf = (
   return typeof value === "string" ? value : undefined;
 };
 
-const defaultOf = (name: string): string => {
-  const entry = CONFIG_VARS.find((item) => item.name === name);
+/* Scoped, because PORT is 3000 in the server and 8080 in the worker. */
+const defaultOf = (name: string, scope: ConfigScope = "server"): string => {
+  const entry = varsForScope(scope).find((item) => item.name === name);
   if (entry?.default === undefined)
     throw new Error(`${name} has no manifest default.`);
   return entry.default;
@@ -104,7 +110,14 @@ const defaultOf = (name: string): string => {
 
 export const loadConfig = (input: NodeJS.ProcessEnv | RawEnv): AppConfig => {
   const env: RawEnv = input;
-  const { values, issues } = parseScope(env, "server");
+  const { values, issues, reported } = parseScope(env, "server");
+
+  /* Reported, not fatal: mail owns its own failure surface (the admin mail
+     page, the boot log, the effective-config report), and stored admin
+     settings may be in use instead of these anyway. A typo in SMTP_PORT must
+     not stop a review platform from serving. */
+  for (const issue of reported)
+    console.warn(`[onelight] ${issue.message} Email may be disabled.`);
 
   /* Origins get their own message because a typo here is otherwise only ever
      discovered by somebody who cannot log in. */
@@ -233,3 +246,77 @@ export const loadConfig = (input: NodeJS.ProcessEnv | RawEnv): AppConfig => {
 /** The redacted effective-configuration report for the admin system page. */
 export const serverEffectiveConfig = (input: RawEnv): EffectiveConfig =>
   effectiveConfig(input, "server");
+
+export interface WorkerConfig {
+  PORT: number;
+  WORKER_SECRET?: string;
+  WORK_ROOT: string;
+  ONELIGHT_HWACCEL: string;
+  ONELIGHT_VAAPI_DEVICE?: string;
+  ONELIGHT_VAAPI_LOW_POWER: boolean;
+  ONELIGHT_NVENC_DEVICE: number;
+  ONELIGHT_SOFTWARE_AV1: boolean;
+  FFMPEG_PATH: string;
+  FFPROBE_PATH: string;
+  PDFTOPPM_PATH: string;
+  DCRAW_PATH: string;
+  HEIF_DEC_PATH: string;
+  HEIF_ENC_PATH: string;
+}
+
+/**
+ * The worker's own settings, parsed against the same manifest the server uses.
+ *
+ * Without this the manifest would describe the worker's variables without
+ * governing them: ONELIGHT_SOFTWARE_AV1=false would still enable the software
+ * encode, because the old reader only recognised the exact string "0", and
+ * ONELIGHT_VAAPI_LOW_POWER=garbage would silently read as on.
+ */
+export const loadWorkerConfig = (input: RawEnv): WorkerConfig => {
+  const { values, issues } = parseScope(input, "worker");
+  if (issues.length > 0) fail(issues);
+  const vaapiDevice = stringOf(values, "ONELIGHT_VAAPI_DEVICE");
+  const workerSecret = stringOf(values, "WORKER_SECRET");
+  const path = (name: string): string =>
+    stringOf(values, name) ?? defaultOf(name, "worker");
+  return {
+    PORT: numberOf(values, "PORT", Number(defaultOf("PORT", "worker"))),
+    ...(workerSecret !== undefined ? { WORKER_SECRET: workerSecret } : {}),
+    WORK_ROOT: path("WORK_ROOT"),
+    ONELIGHT_HWACCEL:
+      stringOf(values, "ONELIGHT_HWACCEL") ??
+      defaultOf("ONELIGHT_HWACCEL", "worker"),
+    ...(vaapiDevice !== undefined
+      ? { ONELIGHT_VAAPI_DEVICE: vaapiDevice }
+      : {}),
+    ONELIGHT_VAAPI_LOW_POWER: boolOf(values, "ONELIGHT_VAAPI_LOW_POWER"),
+    ONELIGHT_NVENC_DEVICE: numberOf(
+      values,
+      "ONELIGHT_NVENC_DEVICE",
+      Number(defaultOf("ONELIGHT_NVENC_DEVICE", "worker")),
+    ),
+    ONELIGHT_SOFTWARE_AV1: boolOf(values, "ONELIGHT_SOFTWARE_AV1"),
+    FFMPEG_PATH: path("FFMPEG_PATH"),
+    FFPROBE_PATH: path("FFPROBE_PATH"),
+    PDFTOPPM_PATH: path("PDFTOPPM_PATH"),
+    DCRAW_PATH: path("DCRAW_PATH"),
+    HEIF_DEC_PATH: path("HEIF_DEC_PATH"),
+    HEIF_ENC_PATH: path("HEIF_ENC_PATH"),
+  };
+};
+
+/**
+ * One manifest-declared boolean, parsed strictly. For the places inside the
+ * media code that read a single flag and should not carry the whole worker
+ * configuration to do it.
+ */
+export const booleanSetting = (
+  name: string,
+  raw: string | undefined,
+): boolean => {
+  const entry = CONFIG_VARS.find((item) => item.name === name);
+  if (!entry) throw new Error(`${name} is not declared in the manifest.`);
+  const result = parseConfigValue(entry, raw);
+  if ("issue" in result) throw new Error(result.issue);
+  return result.value === true;
+};

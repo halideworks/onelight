@@ -5,8 +5,12 @@ import {
   SUBSYSTEM_ORDER,
   varsForScope,
 } from "./config-manifest.js";
-import { effectiveConfig, parseConfigValue } from "./config-report.js";
-import { loadConfig } from "./config.js";
+import {
+  effectiveConfig,
+  parseConfigValue,
+  parseScope,
+} from "./config-report.js";
+import { loadConfig, loadWorkerConfig } from "./config.js";
 
 const base = {
   PUBLIC_URL: "http://localhost:3000",
@@ -134,6 +138,62 @@ describe("mutually dependent settings", () => {
     const mail = report.subsystems.find((item) => item.name === "mail");
     expect(mail?.active).toBe(false);
     expect(mail?.detail).toMatch(/MAIL_FROM/);
+  });
+});
+
+describe("mail never stops the server", () => {
+  /* Every other malformed value is fatal. Mail is not: stored admin settings
+     may be in use instead of the environment, and a typo in a notification
+     transport must not take a review platform offline. */
+  it("reports a malformed mail value instead of refusing to boot", () => {
+    expect(() => loadConfig({ ...base, SMTP_PORT: "oops" })).not.toThrow();
+    expect(() => loadConfig({ ...base, SMTP_SECURE: "garbage" })).not.toThrow();
+    const parsed = parseScope({ ...base, SMTP_PORT: "oops" }, "server");
+    expect(parsed.issues).toEqual([]);
+    expect(parsed.reported.map((issue) => issue.name)).toContain("SMTP_PORT");
+  });
+
+  it("still refuses a malformed value anywhere else", () => {
+    expect(() => loadConfig({ ...base, TRUST_PROXY: "garbage" })).toThrow();
+    expect(() =>
+      loadConfig({ ...base, BACKUP_DIR: "/b", BACKUP_KEEP: "x" }),
+    ).toThrow();
+  });
+});
+
+describe("the worker parses the same manifest", () => {
+  it("reads a boolean by its declared type, not by one magic string", () => {
+    /* "false" used to leave the software AV1 encode ON, because the old reader
+       only recognised the exact string "0". */
+    expect(loadWorkerConfig({}).ONELIGHT_SOFTWARE_AV1).toBe(true);
+    expect(
+      loadWorkerConfig({ ONELIGHT_SOFTWARE_AV1: "false" })
+        .ONELIGHT_SOFTWARE_AV1,
+    ).toBe(false);
+    expect(
+      loadWorkerConfig({ ONELIGHT_SOFTWARE_AV1: "0" }).ONELIGHT_SOFTWARE_AV1,
+    ).toBe(false);
+  });
+
+  it("refuses a malformed worker value instead of guessing", () => {
+    /* This one silently read as ON before: anything outside a deny list was
+       treated as true. */
+    expect(() =>
+      loadWorkerConfig({ ONELIGHT_VAAPI_LOW_POWER: "garbage" }),
+    ).toThrow(/ONELIGHT_VAAPI_LOW_POWER/);
+    expect(() => loadWorkerConfig({ ONELIGHT_HWACCEL: "quicksync" })).toThrow(
+      /ONELIGHT_HWACCEL/,
+    );
+  });
+
+  it("applies the documented defaults", () => {
+    const config = loadWorkerConfig({});
+    /* The worker's own default, not the server's: one name, two containers. */
+    expect(config.PORT).toBe(8080);
+    expect(config.WORK_ROOT).toBe("/data/work");
+    expect(config.ONELIGHT_HWACCEL).toBe("auto");
+    expect(config.ONELIGHT_VAAPI_LOW_POWER).toBe(true);
+    expect(config.FFMPEG_PATH).toBe("ffmpeg");
   });
 });
 
