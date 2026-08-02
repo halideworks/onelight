@@ -1622,6 +1622,7 @@
                                   "enum": [
                                     "environment",
                                     "default",
+                                    "derived",
                                     "unset"
                                   ]
                                 },

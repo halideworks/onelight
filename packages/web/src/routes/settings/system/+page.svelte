@@ -28,7 +28,7 @@
   type ConfigVar = {
     name: string;
     set: boolean;
-    source: 'environment' | 'default' | 'unset';
+    source: 'environment' | 'default' | 'derived' | 'unset';
     value: string | null;
     secret: boolean;
     summary: string;

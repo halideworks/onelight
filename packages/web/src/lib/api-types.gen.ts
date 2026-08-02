@@ -1198,7 +1198,7 @@ export interface paths {
                                     name: string;
                                     set: boolean;
                                     /** @enum {string} */
-                                    source: "environment" | "default" | "unset";
+                                    source: "environment" | "default" | "derived" | "unset";
                                     value: string | null;
                                     secret: boolean;
                                     summary: string;

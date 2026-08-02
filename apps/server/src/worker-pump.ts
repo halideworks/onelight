@@ -2410,6 +2410,9 @@ const DEFAULT_MEDIA_CONCURRENCY = Math.max(1, cpus().length - 2);
 const mediaConcurrency = (): number =>
   pacing.mediaConcurrency ?? DEFAULT_MEDIA_CONCURRENCY;
 
+/** How many media jobs this process will actually run at once. */
+export const resolvedMediaConcurrency = (): number => mediaConcurrency();
+
 export const startWorkerPump = (
   db: AppDb,
   options: { workerUrl?: string; workerSecret?: string; blobRoot: string },

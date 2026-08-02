@@ -41,7 +41,11 @@ import { backupConfigFromConfig, backupOnce, startBackups } from "./backup.js";
 import { NodePasswordHasher } from "./password.js";
 import { spriteFrameMatcher } from "./reanchor.js";
 import { isShareLandingPath } from "./share-shell.js";
-import { configurePumpPacing, startWorkerPump } from "./worker-pump.js";
+import {
+  configurePumpPacing,
+  resolvedMediaConcurrency,
+  startWorkerPump,
+} from "./worker-pump.js";
 
 const config = loadConfig(process.env);
 fs.mkdirSync(path.dirname(config.DATABASE_PATH), { recursive: true });
@@ -293,8 +297,17 @@ const start = async (): Promise<void> => {
     startedAt: Date.now(),
     /* Read per request rather than captured once: a restart is the only way
        these change, but reading them live means the page can never show a
-       stale snapshot of what the process was started with. */
-    effectiveConfig: () => serverEffectiveConfig(process.env),
+       stale snapshot of what the process was started with.
+
+       The derived values are the ones the runtime worked out rather than read,
+       so the page reports what is in force instead of "not set" for settings
+       the server is actively using. */
+    effectiveConfig: () =>
+      serverEffectiveConfig(process.env, {
+        COOKIE_SECURE: String(config.cookieSecure),
+        BLOB_ROOT: blobRoot,
+        MEDIA_CONCURRENCY: String(resolvedMediaConcurrency()),
+      }),
     frameMatcher: spriteFrameMatcher(db, blobRoot),
     mail,
   });

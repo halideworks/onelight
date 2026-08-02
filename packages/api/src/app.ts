@@ -2287,7 +2287,13 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           value: entry.value,
           secret: entry.secret,
           summary: entry.summary,
-          issue: entry.issue ?? null,
+          /* An unused environment value cannot be what is wrong: with stored
+             settings in force, SMTP_PORT=oops is a stale line nobody reads,
+             and flagging it warns that a working transport is broken. */
+          issue:
+            mail.source === "settings" && mailNames.has(entry.name)
+              ? null
+              : (entry.issue ?? null),
         })),
       })),
       /* Environment-derived mail complaints are dropped once the stored

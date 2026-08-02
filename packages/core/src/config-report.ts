@@ -242,7 +242,14 @@ export interface EffectiveConfigVar {
   name: string;
   /** Whether the environment carries a value for it at all. */
   set: boolean;
-  source: "environment" | "default" | "unset";
+  /**
+   * Where the value in force came from. "derived" is a value the runtime
+   * computed rather than read: secure cookies following PUBLIC_URL's scheme,
+   * the blob root beside the database, the media concurrency the core count
+   * allows. Reporting those as "unset" would be the page's own version of the
+   * defect it exists to expose.
+   */
+  source: "environment" | "default" | "derived" | "unset";
   /** Rendered value, or null for a secret the caller may not read. */
   value: string | null;
   secret: boolean;
@@ -281,6 +288,15 @@ const render = (value: ConfigValue): string | null => {
 export const effectiveConfig = (
   env: RawEnv,
   scope: ConfigScope,
+  /**
+   * Values the runtime computed rather than read, by variable name. The caller
+   * supplies them because only it knows: the core count behind
+   * MEDIA_CONCURRENCY, the path it resolved for BLOB_ROOT, the scheme it read
+   * off PUBLIC_URL for COOKIE_SECURE. Without them a page that exists to
+   * answer "what is in force" answers "not set" for settings the server is
+   * actively using.
+   */
+  derived: Record<string, string> = {},
 ): EffectiveConfig => {
   const entries = varsForScope(scope);
   const issues: ConfigIssue[] = [
@@ -298,18 +314,28 @@ export const effectiveConfig = (
     const vars: EffectiveConfigVar[] = owned.map((entry) => {
       const isSet = present(env, entry.name);
       const parsed = parseConfigValue(entry, env[entry.name]);
-      const value =
+      const parsedValue =
         "issue" in parsed
           ? isSet
             ? (env[entry.name] as string)
             : null
           : render(parsed.value);
+      /* A derived value only fills in where nothing was read: an operator who
+         set the variable is looking at their own value, not the fallback. */
+      const derivedValue = isSet ? undefined : derived[entry.name];
+      const value = parsedValue ?? derivedValue ?? null;
       const single =
         "issue" in parsed ? parsed.issue : issueByName.get(entry.name);
       return {
         name: entry.name,
         set: isSet,
-        source: isSet ? "environment" : value === null ? "unset" : "default",
+        source: isSet
+          ? "environment"
+          : parsedValue !== null
+            ? "default"
+            : derivedValue !== undefined
+              ? "derived"
+              : "unset",
         value: entry.secret ? null : value,
         secret: entry.secret === true,
         summary: entry.summary,

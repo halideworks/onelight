@@ -2406,7 +2406,12 @@ export const routeDocs: Record<string, RouteDoc> = {
                 z.object({
                   name: z.string(),
                   set: z.boolean(),
-                  source: z.enum(["environment", "default", "unset"]),
+                  source: z.enum([
+                    "environment",
+                    "default",
+                    "derived",
+                    "unset",
+                  ]),
                   value: z.string().nullable(),
                   secret: z.boolean(),
                   summary: z.string(),

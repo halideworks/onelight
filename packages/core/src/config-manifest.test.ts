@@ -436,6 +436,47 @@ describe("the effective configuration report", () => {
     ).toMatchObject({ set: false, source: "default" });
   });
 
+  /* A page that answers "what is in force" must not answer "not set" for a
+     value the server computed and is actively using. */
+  it("reports a derived value as in force, not as unset", () => {
+    const report = effectiveConfig(
+      { ...base, PUBLIC_URL: "https://review.example.com" },
+      "server",
+      {
+        COOKIE_SECURE: "true",
+        BLOB_ROOT: "/data/blobs",
+        MEDIA_CONCURRENCY: "2",
+      },
+    );
+    const flat = report.subsystems.flatMap((item) => item.vars);
+    expect(flat.find((item) => item.name === "COOKIE_SECURE")).toMatchObject({
+      set: false,
+      source: "derived",
+      value: "true",
+    });
+    expect(flat.find((item) => item.name === "BLOB_ROOT")).toMatchObject({
+      source: "derived",
+      value: "/data/blobs",
+    });
+  });
+
+  /* But a value the operator set is theirs, not the runtime's. */
+  it("prefers the configured value over a derived one", () => {
+    const report = effectiveConfig(
+      { ...base, COOKIE_SECURE: "false" },
+      "server",
+      {
+        COOKIE_SECURE: "true",
+      },
+    );
+    const flat = report.subsystems.flatMap((item) => item.vars);
+    expect(flat.find((item) => item.name === "COOKIE_SECURE")).toMatchObject({
+      set: true,
+      source: "environment",
+      value: "false",
+    });
+  });
+
   it("reports a value it cannot honour against the variable", () => {
     const report = effectiveConfig({ ...base, BACKUP_KEEP: "oops" }, "server");
     const flat = report.subsystems.flatMap((item) => item.vars);

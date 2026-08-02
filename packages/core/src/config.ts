@@ -257,8 +257,10 @@ export const loadConfig = (
 };
 
 /** The redacted effective-configuration report for the admin system page. */
-export const serverEffectiveConfig = (input: RawEnv): EffectiveConfig =>
-  effectiveConfig(input, "server");
+export const serverEffectiveConfig = (
+  input: RawEnv,
+  derived: Record<string, string> = {},
+): EffectiveConfig => effectiveConfig(input, "server", derived);
 
 export interface WorkerConfig {
   PORT: number;
