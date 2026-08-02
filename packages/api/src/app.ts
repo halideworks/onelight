@@ -2233,7 +2233,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
      without anyone reading container logs. Values are reported; secrets are
      reported only as set or unset, because the question is never what the
      client secret is. */
-  api.get("/admin/system/config", requireAuth, (c) => {
+  api.get("/admin/system/config", requireAuth, async (c) => {
     const actor = userFromContext(c);
     if (actor.role !== "admin") throw errors.forbidden();
     const report = env.effectiveConfig?.();
@@ -2244,14 +2244,34 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
         subsystems: [],
         issues: [],
       });
+
+    /* Mail is the one subsystem the environment does not decide. Stored admin
+       settings take precedence over it, so the report has to defer to the same
+       resolution the mail card uses, or one page states two things: a working
+       stored transport would read as inactive because no SMTP_* is set, and a
+       broken stored one would read as active because the environment is fine.
+       The source travels with it so the variables below make sense. */
+    const mail = await mailStatus();
+    const mailDetail =
+      mail.source === "settings"
+        ? mail.state === "ready"
+          ? "Active from the admin mail settings, which take precedence over these variables."
+          : (mail.detail ??
+            "The stored mail settings are in use and cannot send.")
+        : mail.detail;
+
     return c.json({
       available: true,
       scope: report.scope,
       subsystems: report.subsystems.map((subsystem) => ({
         name: subsystem.name,
         title: subsystem.title,
-        active: subsystem.active,
-        detail: subsystem.detail,
+        active:
+          subsystem.name === "mail" ? mail.state === "ready" : subsystem.active,
+        detail:
+          subsystem.name === "mail"
+            ? (mailDetail ?? subsystem.detail)
+            : subsystem.detail,
         vars: subsystem.vars.map((entry) => ({
           name: entry.name,
           set: entry.set,

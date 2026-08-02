@@ -544,6 +544,17 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       expect(
         flat.find((entry) => entry.name === "TRASH_PURGE_AFTER_MS"),
       ).toMatchObject({ set: false, source: "default" });
+
+      /* Mail is resolved, not read off the environment: stored admin settings
+         outrank it. The two views on this page must never disagree, so the
+         config report's mail state is the same one the status card shows. */
+      const statusMail = await json<{
+        mail: { state: string };
+      }>(await req(h, "/api/v1/admin/system", { cookie: seed.admin.cookie }));
+      const mailSubsystem = body.subsystems.find(
+        (item) => item.name === "mail",
+      );
+      expect(mailSubsystem?.active).toBe(statusMail.mail.state === "ready");
     });
 
     it("sends a test email to the calling admin, or refuses plainly", async () => {
