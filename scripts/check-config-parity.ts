@@ -160,6 +160,19 @@ for (const root of SOURCE_ROOTS) {
   }
 }
 
+/* Property 4: the file operators copy must not offer a setting compose will
+   not carry. A line in .env that reads back fine and changes nothing is the
+   whole defect, and it would be a poor joke to reintroduce it here. */
+const envExample = readFileSync(path.join(repo, ".env.example"), "utf8");
+for (const entry of CONFIG_VARS) {
+  if (entry.compose !== "omit") continue;
+  const assigned = new RegExp(`^#?\\s*${entry.name}=`, "m").test(envExample);
+  if (assigned)
+    fail(
+      `.env.example offers ${entry.name}, which compose does not pass, so setting it there does nothing.`,
+    );
+}
+
 if (failures.length > 0) {
   console.error("Configuration parity check failed:\n");
   for (const message of new Set(failures)) console.error(`  - ${message}`);

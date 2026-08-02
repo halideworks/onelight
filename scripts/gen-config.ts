@@ -56,17 +56,21 @@ const defaultLine = (entry: ConfigVar): string | null => {
   return null;
 };
 
-/* Variables worth showing an operator. The tool paths are real settings but
-   they belong to the image, not to a deployment, so they stay in the docs and
-   out of the file people copy. */
 const serverNames = new Set(varsForScope("server").map((entry) => entry.name));
 const allVars = (): ConfigVar[] => [
   ...varsForScope("server"),
   ...varsForScope("worker").filter((entry) => !serverNames.has(entry.name)),
 ];
 
+/* What an operator can actually set in this file.
+
+   Anything compose does not pass is left out, however real a setting it is.
+   Writing WORK_ROOT or HOST into the file people copy would recreate the exact
+   defect this manifest exists to end: a line in .env that reads back fine and
+   changes nothing at all. They stay in docs/CONFIGURATION.md, which says per
+   variable why compose does not carry it. */
 const CONFIG_VARS_FOR_ENV: ConfigVar[] = allVars().filter(
-  (entry) => entry.subsystem !== "tools",
+  (entry) => entry.compose !== "omit",
 );
 
 /* .env.example: every variable an operator can set, grouped by subsystem, with
@@ -80,6 +84,10 @@ const renderEnvExample = (): string => {
     "#",
     "# docker compose refuses to start unless SECRET_KEY and WORKER_SECRET are",
     "# set, because there are no insecure defaults for either.",
+    "#",
+    "# Every setting compose passes is here. A few the code reads are absent on",
+    "# purpose, because compose pins them to the container: docs/CONFIGURATION.md",
+    "# lists those with the reason.",
   ];
 
   for (const subsystem of SUBSYSTEM_ORDER) {
