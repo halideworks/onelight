@@ -58,8 +58,6 @@ interface WorkerRequest {
   timecode?: string;
   spec?: WatermarkSpec;
   tokens?: WatermarkTokens;
-  callback_url?: string;
-  callback_secret?: string;
   sources?: FingerprintSource[];
 }
 interface JobState {
@@ -135,22 +133,6 @@ const sourceFor = (body: WorkerRequest): string => {
   const source = body.source_path ?? body.source_url;
   if (!source) throw new Error("A source_path or source_url is required.");
   return source;
-};
-
-const callback = async (body: WorkerRequest, event: unknown): Promise<void> => {
-  if (!body.callback_url || !body.callback_secret) return;
-  const payload = JSON.stringify(event);
-  const signature = createHmac("sha256", body.callback_secret)
-    .update(payload)
-    .digest("hex");
-  await fetch(body.callback_url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-onelight-signature": signature,
-    },
-    body: payload,
-  });
 };
 
 const runOutputs = async (
@@ -265,7 +247,6 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
         result: complete,
         finishedAt: Date.now(),
       });
-      await callback(body, complete);
       return;
     }
     const source = sourceFor(body);
@@ -320,7 +301,6 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
         result: complete,
         finishedAt: Date.now(),
       });
-      await callback(body, complete);
       return;
     }
     const mediaInfo = body.media_info ?? (await probeFile(source));
@@ -353,7 +333,6 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
         result,
         finishedAt: Date.now(),
       });
-      await callback(body, result);
       return;
     }
     const result = await runOutputs(body, mediaInfo, source);
@@ -369,7 +348,6 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
       result: complete,
       finishedAt: Date.now(),
     });
-    await callback(body, complete);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Worker job failed.";
@@ -380,7 +358,6 @@ const runJob = async (body: WorkerRequest): Promise<void> => {
       result: failed,
       finishedAt: Date.now(),
     });
-    await callback(body, failed);
   }
 };
 
