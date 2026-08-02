@@ -222,24 +222,42 @@ export const reapAbandonedJobs = async (
     )
     .limit(100)
     .all();
-  for (const job of abandoned)
-    await db
-      .update(jobs)
-      .set({
-        status: "dead",
-        finishedAt: now,
-        heartbeatAt: null,
-        leaseExpiresAt: null,
-        error:
-          "The worker holding this job stopped reporting and its attempts are spent.",
-      })
-      .where(
-        and(
-          eq(jobs.id, job.id),
-          eq(jobs.status, "processing"),
-          lt(jobs.leaseExpiresAt, now),
-        ),
-      )
-      .run();
-  return abandoned;
+  /* Reported one at a time, as each one lands.
+     
+     Returning the whole selection at the end would lose everything already
+     buried if a later update threw: those rows are `dead` by then, so the next
+     sweep, which selects `processing`, can never see them again, and the
+     versions behind them would stay pending forever. A row that fails here is
+     still `processing` and comes back on the next sweep. */
+  const buried: Array<typeof jobs.$inferSelect> = [];
+  for (const job of abandoned) {
+    try {
+      await db
+        .update(jobs)
+        .set({
+          status: "dead",
+          finishedAt: now,
+          heartbeatAt: null,
+          leaseExpiresAt: null,
+          error:
+            "The worker holding this job stopped reporting and its attempts are spent.",
+        })
+        .where(
+          and(
+            eq(jobs.id, job.id),
+            eq(jobs.status, "processing"),
+            lt(jobs.leaseExpiresAt, now),
+          ),
+        )
+        .run();
+      buried.push(job);
+    } catch (error) {
+      console.warn(
+        `[onelight] could not bury abandoned job ${job.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  return buried;
 };

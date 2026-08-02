@@ -209,6 +209,44 @@ describe("a worker that vanishes", () => {
     sqlite.close();
   });
 
+  /* If a later burial throws, the ones already buried are `dead`, so a sweep
+     selecting `processing` can never see them again. Losing them here means
+     their versions stay pending forever. */
+  it("still reports what it buried when a later one fails", async () => {
+    const { db, sqlite } = openDb();
+    const first = await seedJob(db, {
+      id: "01J0000000000000000000000A",
+      maxAttempts: 1,
+    });
+    await seedJob(db, { id: "01J0000000000000000000000B", maxAttempts: 1 });
+    await claimNextJob(db, 1_000, "gone-1");
+    await claimNextJob(db, 1_100, "gone-2");
+
+    // Fail every update after the first one.
+    const realUpdate = db.update.bind(db);
+    let updates = 0;
+    (db as unknown as { update: typeof db.update }).update = ((
+      table: Parameters<typeof db.update>[0],
+    ) => {
+      updates += 1;
+      if (updates > 1) throw new Error("database went away");
+      return realUpdate(table);
+    }) as typeof db.update;
+
+    const buried = await reapAbandonedJobs(db, 10_000_000);
+    (db as unknown as { update: typeof db.update }).update = realUpdate;
+
+    // The one that landed is reported, so its version can be marked failed.
+    expect(buried.map((job) => job.id)).toEqual([first]);
+    // And the one that did not is still processing, so the next sweep retries.
+    const rows = await db.select().from(jobs).all();
+    expect(rows.find((row) => row.id === first)?.status).toBe("dead");
+    expect(
+      rows.find((row) => row.id === "01J0000000000000000000000B")?.status,
+    ).toBe("processing");
+    sqlite.close();
+  });
+
   /* A job still inside its lease belongs to whoever holds it. */
   it("leaves a live claim alone", async () => {
     const { db, sqlite } = openDb();
