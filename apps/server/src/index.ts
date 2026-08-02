@@ -76,6 +76,16 @@ if (backupConfig && pending.length > 0 && fs.existsSync(config.DATABASE_PATH)) {
 applyNodeMigrations(sqlite);
 const searchBackend = configureNodeSearch(sqlite);
 
+/* SMTP_SECURE where the operator left it to the port. Empty when mail is not
+   configured from the environment at all, or when the operator set it. */
+const derivedSmtpSecure = (env: NodeJS.ProcessEnv): Record<string, string> => {
+  if ((env.SMTP_SECURE ?? "").trim() !== "") return {};
+  const parsed = parseSmtpConfig(env);
+  if (!parsed || isSmtpConfigError(parsed) || parsed.kind !== "options")
+    return {};
+  return { SMTP_SECURE: String(parsed.secure) };
+};
+
 const ensureHeadlessAdmin = async (): Promise<void> => {
   if (!config.ONELIGHT_ADMIN_EMAIL || !config.ONELIGHT_ADMIN_PASSWORD) return;
   const existing = await db.select({ id: users.id }).from(users).limit(1).all();
@@ -307,6 +317,10 @@ const start = async (): Promise<void> => {
         COOKIE_SECURE: String(config.cookieSecure),
         BLOB_ROOT: blobRoot,
         MEDIA_CONCURRENCY: String(resolvedMediaConcurrency()),
+        /* Implicit TLS follows the port when SMTP_SECURE is unset, so port 465
+           is a deployment using it without having asked for it. Ask the same
+           parser the transport is built from rather than restating the rule. */
+        ...derivedSmtpSecure(process.env),
       }),
     frameMatcher: spriteFrameMatcher(db, blobRoot),
     mail,
