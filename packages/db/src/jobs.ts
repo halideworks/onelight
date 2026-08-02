@@ -33,6 +33,13 @@ export const claimNextJob = async (
     .where(
       and(
         lte(jobs.runAfter, now),
+        /* A job at its attempt ceiling is not claimable, however its last
+           attempt ended. Without this an abandoned job is reclaimed forever:
+           the ceiling is only ever enforced by failJob, and a worker that
+           vanishes never calls it -- the lease simply expires and the next
+           claim takes the job again, incrementing attempts past max_attempts
+           with nothing to stop it. */
+        sql`${jobs.attempts} < ${jobs.maxAttempts}`,
         or(
           eq(jobs.status, "queued"),
           and(eq(jobs.status, "processing"), lt(jobs.leaseExpiresAt, now)),
@@ -64,6 +71,7 @@ export const claimNextJob = async (
         and(
           eq(jobs.id, candidate.id),
           lte(jobs.runAfter, now),
+          sql`${jobs.attempts} < ${jobs.maxAttempts}`,
           or(
             eq(jobs.status, "queued"),
             and(eq(jobs.status, "processing"), lt(jobs.leaseExpiresAt, now)),
@@ -185,4 +193,53 @@ export const failJob = async (
       ),
     )
     .run();
+};
+
+/**
+ * Move abandoned jobs to the dead letter.
+ *
+ * A job whose worker vanished is never failed by anyone: the lease expires and
+ * that is all that happens. Claiming refuses it once its attempts are spent,
+ * which stops the endless cycle, but something still has to record the outcome
+ * or the row sits in `processing` forever and the version it belongs to never
+ * reads as failed. This is that something.
+ *
+ * Returns the ids it buried, so the caller can mark their versions failed.
+ */
+export const reapAbandonedJobs = async (
+  db: AppDb,
+  now: number,
+): Promise<Array<typeof jobs.$inferSelect>> => {
+  const abandoned = await db
+    .select()
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.status, "processing"),
+        lt(jobs.leaseExpiresAt, now),
+        sql`${jobs.attempts} >= ${jobs.maxAttempts}`,
+      ),
+    )
+    .limit(100)
+    .all();
+  for (const job of abandoned)
+    await db
+      .update(jobs)
+      .set({
+        status: "dead",
+        finishedAt: now,
+        heartbeatAt: null,
+        leaseExpiresAt: null,
+        error:
+          "The worker holding this job stopped reporting and its attempts are spent.",
+      })
+      .where(
+        and(
+          eq(jobs.id, job.id),
+          eq(jobs.status, "processing"),
+          lt(jobs.leaseExpiresAt, now),
+        ),
+      )
+      .run();
+  return abandoned;
 };

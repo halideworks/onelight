@@ -61,7 +61,13 @@ import {
   shares,
   uploadSessions,
 } from "@onelight/db/schema";
-import { claimNextJob, completeJob, failJob, heartbeatJob } from "@onelight/db";
+import {
+  claimNextJob,
+  completeJob,
+  failJob,
+  heartbeatJob,
+  reapAbandonedJobs,
+} from "@onelight/db";
 import type { AppDb } from "@onelight/db";
 
 interface WorkerResponse {
@@ -2608,6 +2614,16 @@ export const startWorkerPump = (
           await reclaimStuckExports(db, now);
         } else {
           await reclaimStuckExports(db, now - EXPORT_RECLAIM_STALE_MS);
+        }
+        /* Media jobs whose worker vanished for good. Claiming already refuses
+           them once their attempts are spent, so without this they would sit
+           in `processing` forever and the version would never read as failed:
+           nothing else fails a job nobody is holding. */
+        for (const abandoned of await reapAbandonedJobs(db, now)) {
+          console.warn(
+            `[onelight] job ${abandoned.id} (${abandoned.kind}) was abandoned by its worker after ${String(abandoned.attempts)} attempts.`,
+          );
+          await recordDeadMediaJob(db, abandoned);
         }
         // Reconcile missing renditions on a throttle rather than every poll;
         // each sweep is bounded per pass.
