@@ -84,8 +84,18 @@ export interface ConfigVar {
   secret?: boolean;
   /** Ships commented out in .env.example (optional, no useful default value). */
   commented?: boolean;
-  /** Permitted values for kind: "enum". */
+  /** Permitted values for kind: "enum". Matched case-insensitively. */
   values?: readonly string[];
+  /**
+   * Extra spellings a boolean accepts, beyond true/1/false/0.
+   *
+   * Booleans are strict by design: "yes" was silently true under an earlier
+   * parser and that class of surprise is what this manifest exists to end. But
+   * the worker's hardware flags went through a reader that explicitly treated
+   * "no" and "off" as false, so a worker configured that way is running in
+   * production right now and must not fail to start after an upgrade.
+   */
+  booleanAliases?: { true: readonly string[]; false: readonly string[] };
   min?: number;
   max?: number;
   /**
@@ -588,6 +598,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     subsystem: "hwaccel",
     kind: "boolean",
     default: "true",
+    booleanAliases: { true: ["yes", "on"], false: ["no", "off"] },
     summary: "Use the VAAPI low-power encode path.",
     commented: true,
     compose: "interpolate",
@@ -609,6 +620,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     subsystem: "hwaccel",
     kind: "boolean",
     default: "true",
+    booleanAliases: { true: ["yes", "on"], false: ["no", "off"] },
     summary: "Encode the AV1 HDR rendition in software where the GPU cannot.",
     doc: "It runs at the lowest priority so it yields to anything the site is doing. Turning it off trades cores for a feature: AV1 is the only HDR codec Chrome decodes in software, and only a software decoder returns frames the reference renderer can read, so without this rendition reference HDR is unavailable in Chrome no matter what else is present.",
     commented: true,

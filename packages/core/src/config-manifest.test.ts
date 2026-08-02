@@ -94,6 +94,30 @@ describe("strict parsing", () => {
     ).toBe("vaapi");
   });
 
+  /* The worker's hardware flags went through a reader that treated these as
+     false, so a worker set that way is running somewhere right now. */
+  it("keeps the worker's no and off spellings working", () => {
+    for (const value of ["no", "off", "NO", "Off"])
+      expect(
+        loadWorkerConfig({ ONELIGHT_VAAPI_LOW_POWER: value })
+          .ONELIGHT_VAAPI_LOW_POWER,
+        value,
+      ).toBe(false);
+    for (const value of ["yes", "on"])
+      expect(
+        loadWorkerConfig({ ONELIGHT_VAAPI_LOW_POWER: value })
+          .ONELIGHT_VAAPI_LOW_POWER,
+        value,
+      ).toBe(true);
+  });
+
+  /* But the server's booleans stay strict: "yes" reading as true under an
+     older parser is the surprise this manifest exists to end. */
+  it("does not grant those spellings to the server's booleans", () => {
+    expect(() => loadConfig({ ...base, TRUST_PROXY: "off" })).toThrow();
+    expect(() => loadConfig({ ...base, TRUST_PROXY: "yes" })).toThrow();
+  });
+
   it("rejects an unknown enum value", () => {
     expect(
       parseConfigValue(entry("ONELIGHT_HWACCEL"), "quicksync"),

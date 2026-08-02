@@ -63,8 +63,19 @@ export const parseConfigValue = (
       const normalized = source.toLowerCase();
       if (BOOLEAN_TRUE.has(normalized)) return { value: true };
       if (BOOLEAN_FALSE.has(normalized)) return { value: false };
+      /* Only where the manifest grants them: the worker's hardware flags had
+         a looser reader, and a worker set to "off" is running somewhere. */
+      if (entry.booleanAliases?.true.includes(normalized))
+        return { value: true };
+      if (entry.booleanAliases?.false.includes(normalized))
+        return { value: false };
+      const extra = entry.booleanAliases
+        ? `, ${[...entry.booleanAliases.true, ...entry.booleanAliases.false]
+            .map((alias) => `"${alias}"`)
+            .join(", ")}`
+        : "";
       return {
-        issue: `${entry.name} accepts only "true", "1", "false", "0", or empty. Got "${source}".`,
+        issue: `${entry.name} accepts only "true", "1", "false", "0"${extra}, or empty. Got "${source}".`,
       };
     }
     case "number":
