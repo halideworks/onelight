@@ -2252,6 +2252,14 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
        broken stored one would read as active because the environment is fine.
        The source travels with it so the variables below make sense. */
     const mail = await mailStatus();
+    /* Every name a mail complaint can be filed under: the variables
+       themselves, plus the group's own name. */
+    const mailNames = new Set<string>([
+      "mail",
+      ...(report.subsystems
+        .find((subsystem) => subsystem.name === "mail")
+        ?.vars.map((entry) => entry.name) ?? []),
+    ]);
     const mailDetail =
       mail.source === "settings"
         ? mail.state === "ready"
@@ -2282,10 +2290,15 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
           issue: entry.issue ?? null,
         })),
       })),
-      issues: report.issues.map((issue) => ({
-        name: issue.name,
-        message: issue.message,
-      })),
+      /* Environment-derived mail complaints are dropped once the stored
+         settings are what the server actually uses. Otherwise the page shows
+         "set MAIL_FROM or email stays disabled" as an alert directly above a
+         mail subsystem it just reported as active, and both cannot be true. */
+      issues: report.issues
+        .filter(
+          (issue) => !(mail.source === "settings" && mailNames.has(issue.name)),
+        )
+        .map((issue) => ({ name: issue.name, message: issue.message })),
     });
   });
 
