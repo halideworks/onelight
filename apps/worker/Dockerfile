@@ -40,12 +40,16 @@ FROM node:22-trixie-slim
 # what every iPhone since 2017 hands over. Both are decoders only: the stills
 # ladder is still rendered by sharp, so orientation and colour behave the same
 # whatever opened the file.
+# /scratch exists here, owned by the unprivileged user, so that a named volume
+# mounted over it inherits that ownership. Docker seeds an empty volume from
+# the image's directory, permissions included; without this the volume arrives
+# root-owned and a worker running as onelight cannot write its scratch at all.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg mesa-va-drivers mesa-vulkan-drivers libvulkan1 poppler-utils libvips-tools libraw-bin libheif-examples fonts-dejavu-core ca-certificates intel-media-va-driver libva2 libva-drm2 vainfo \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --create-home --uid 10001 onelight \
-  && mkdir -p /data \
-  && chown onelight:onelight /data
+  && mkdir -p /data /scratch \
+  && chown onelight:onelight /data /scratch
 WORKDIR /app
 COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/packages /app/packages
