@@ -518,9 +518,11 @@ let running = 0;
 let idleDelay = CLAIM_INTERVAL_MS;
 
 /* A claim, a heartbeat or a failure is a small round trip. A completion is
-   not: the server checksums every file the job produced before it answers,
-   and a 4K proxy takes real time to hash. Timing that out would report a
-   failure for work the server was in the middle of accepting. */
+   the one report the server does real work behind: it asks storage about
+   every object the job says it wrote, and writes the rows. It no longer reads
+   those objects back -- the checksums arrive with the report -- but the
+   allowance stays generous, because timing a completion out reports a failure
+   for work the server was in the middle of accepting. */
 const REPORT_TIMEOUT_MS = 30_000;
 const COMPLETE_TIMEOUT_MS = 10 * 60_000;
 
@@ -591,10 +593,10 @@ const runClaim = async (claim: Claim): Promise<void> => {
     );
   let lost = false;
   /* The work is done and the answer is being posted. The heartbeat keeps
-     running through it -- the server checksums the outputs before it answers,
-     which can outlast a lease -- but from here a 409 means the server has
-     already settled this job, not that it was taken away mid-encode: nothing
-     of ours is still writing. */
+     running through it -- the server checks every object the report describes
+     before it answers, which can outlast a lease -- but from here a 409 means
+     the server has already settled this job, not that it was taken away
+     mid-encode: nothing of ours is still writing. */
   let reporting = false;
   const beat = setInterval(() => {
     void (async () => {
