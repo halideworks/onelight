@@ -43,7 +43,7 @@ describe.skipIf(fixturesMissing !== undefined)(
 
       it.skipIf(browserMissing !== undefined)(
         `${engine.name} returns the exact native-path classification`,
-        async () => {
+        async (ctx) => {
           const browser = await engine.type.launch();
           try {
             const page = await browser.newPage();
@@ -94,6 +94,26 @@ describe.skipIf(fixturesMissing !== undefined)(
                  says. Bounding it would only pin another number belonging to
                  whichever WebKit is installed. */
               expect(result.patchMaxDelta).not.toBeNull();
+            } else if (
+              result.outcome === "unsupported" &&
+              result.stage === "decode"
+            ) {
+              /* The build on this machine cannot decode the fixture at all.
+                 That is a fact about the browser binary, not about the
+                 product: Playwright's bundled Chromium ships without the
+                 proprietary codecs, and which build a runner gets varies.
+                 Asserting `pass` here made the job fail on roughly half of
+                 otherwise identical runs, which is a gate that reports the
+                 environment rather than the code (see the CI rule in
+                 docs/ROADMAP.md).
+
+                 Skipped, loudly, rather than passed: a vacuous pass would
+                 claim colour was checked when nothing decoded. Any other
+                 outcome is still held to the classification below. */
+              console.log(
+                `[qa] product color self-check ${engine.name}: skipped, this build cannot decode the fixture (${String(result.failure)})`,
+              );
+              ctx.skip();
             } else {
               expect(result).toMatchObject({
                 outcome: "pass",
