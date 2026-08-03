@@ -1887,6 +1887,22 @@ const processJob = async (
 // version is marked failed (the API materializes transcode.failed
 // notifications from that state) and a failed transcode event is emitted.
 /**
+ * Whether a dead media job says anything about whether its version is usable.
+ *
+ * Only the primary pipeline does. A job carrying `only` was asked for one named
+ * rendition -- the full-size still rendered on demand the first time somebody
+ * zooms, or a ladder rung backfilled long afterwards -- and a version that has
+ * been ready for months must not be marked failed because an optional zoom
+ * rung could not be built. `secondary_only` says the same thing for the
+ * shuttle-audio pass.
+ */
+export const judgesTheVersion = (payload: JobPayload): boolean => {
+  if (payload.secondary_only) return false;
+  if (Array.isArray(payload.only) && payload.only.length > 0) return false;
+  return true;
+};
+
+/**
  * Mark the version behind an abandoned media job failed.
  *
  * Runs while the job is still `processing`, before it is buried, so a failure
@@ -1904,7 +1920,7 @@ const markAbandonedVersionFailed = async (
 ): Promise<void> => {
   if (job.kind !== "probe" && job.kind !== "transcode") return;
   const payload = parsePayload(job.payloadJson);
-  if (payload.secondary_only) return;
+  if (!judgesTheVersion(payload)) return;
   const versionId = payload.version_id;
   if (!versionId) return;
   const version = (
@@ -1915,7 +1931,10 @@ const markAbandonedVersionFailed = async (
       .limit(1)
       .all()
   )[0];
-  if (!version || version.status === "failed") return;
+  /* Already failed: nothing to say twice. Already ready: it has its
+     renditions, and a later job dying does not take them away. */
+  if (!version || version.status === "failed" || version.status === "ready")
+    return;
   await db
     .update(assetVersions)
     .set({
@@ -1953,9 +1972,18 @@ const recordDeadMediaJob = async (
     )[0];
     if (state?.status !== "dead") return;
     const payload = parsePayload(job.payloadJson);
-    if (payload.secondary_only) return;
+    if (!judgesTheVersion(payload)) return;
     const versionId = payload.version_id;
     if (!versionId) return;
+    const current = (
+      await db
+        .select({ status: assetVersions.transcodeStatus })
+        .from(assetVersions)
+        .where(eq(assetVersions.id, versionId))
+        .limit(1)
+        .all()
+    )[0];
+    if (current?.status === "ready") return;
     await db
       .update(assetVersions)
       .set({

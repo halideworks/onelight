@@ -17,6 +17,7 @@ import {
 } from "@onelight/db";
 import { CLIP_HASH_POSITIONS } from "@onelight/worker";
 import {
+  judgesTheVersion,
   startWorkerPump,
   sweepFingerprints,
   sweepReKindStills,
@@ -1179,4 +1180,30 @@ describe("fingerprint jobs, against a stand-in worker", () => {
       sqlite.close();
     }
   }, 20_000);
+});
+
+describe("which dead jobs condemn their version", () => {
+  /* A zoom rung is rendered on demand, long after the version was ready. Its
+     job dying says nothing about the version, and marking a months-old ready
+     asset failed because an optional rendition could not be built is worse
+     than not having the rung. */
+  it("spares a version when the job asked for one named rendition", () => {
+    expect(judgesTheVersion({ version_id: "v1", only: ["still_full"] })).toBe(
+      false,
+    );
+    expect(judgesTheVersion({ version_id: "v1", only: ["proxy_1080"] })).toBe(
+      false,
+    );
+  });
+
+  it("spares a version for the shuttle audio pass", () => {
+    expect(
+      judgesTheVersion({ version_id: "v1", secondary_only: "shuttle_audio" }),
+    ).toBe(false);
+  });
+
+  it("condemns it for the primary pipeline", () => {
+    expect(judgesTheVersion({ version_id: "v1" })).toBe(true);
+    expect(judgesTheVersion({ version_id: "v1", only: [] })).toBe(true);
+  });
 });
