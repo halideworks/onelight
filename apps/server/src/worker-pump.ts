@@ -458,17 +458,22 @@ const runOnWorker = async (
   return waitForWorker(db, workerUrl, workerSecret, job.id, workerId);
 };
 
-const processWatermarkJob = async (
+/* The share this render belongs to, as the job named it.
+   
+   share_id, spec_hash and output_key all travel in the payload, so both halves
+   read the same three values rather than deriving them from state that moves.
+   What CAN move is the share itself, which is why both halves check it. */
+const watermarkTarget = async (
   db: AppDb,
   job: typeof jobs.$inferSelect,
   payload: JobPayload,
-  versionId: string,
-  sourcePath: string,
-  workerUrl: string,
-  workerSecret: string,
-  blobRoot: string,
-  workerId: string,
-): Promise<void> => {
+): Promise<{
+  shareId: string;
+  specHash: string;
+  outputKey: string;
+  spec: Record<string, unknown>;
+  share: typeof shares.$inferSelect;
+} | null> => {
   const shareId =
     typeof payload.share_id === "string" ? payload.share_id : undefined;
   const specHash =
@@ -499,8 +504,22 @@ const processWatermarkJob = async (
     console.warn(
       `[onelight] watermark job ${job.id} skipped: share ${shareId} is revoked or its spec changed.`,
     );
-    return;
+    return null;
   }
+  return { shareId, specHash, outputKey, spec, share };
+};
+
+const planWatermarkJob = async (
+  db: AppDb,
+  job: typeof jobs.$inferSelect,
+  payload: JobPayload,
+  versionId: string,
+  sourcePath: string,
+  blobRoot: string,
+): Promise<JobPlan> => {
+  const target = await watermarkTarget(db, job, payload);
+  if (!target) return null;
+  const { outputKey, spec, share } = target;
   const version = (
     await db
       .select()
@@ -514,10 +533,8 @@ const processWatermarkJob = async (
       ? { num: version.frameRateNum, den: version.frameRateDen }
       : undefined;
   const outputPath = path.join(blobRoot, outputKey);
-  const state = await runOnWorker(
-    db,
-    job,
-    {
+  return {
+    request: {
       kind: "watermark",
       source_path: sourcePath,
       output_path: outputPath,
@@ -534,10 +551,32 @@ const processWatermarkJob = async (
         ? { timecode: version.sourceTimecodeStart }
         : {}),
     },
-    workerUrl,
-    workerSecret,
-    workerId,
-  );
+  };
+};
+
+const applyWatermarkResult = async (
+  db: AppDb,
+  job: typeof jobs.$inferSelect,
+  payload: JobPayload,
+  versionId: string,
+  state: WorkerResponse,
+  blobRoot: string,
+): Promise<void> => {
+  /* Checked again, not carried over. A share revoked WHILE the render ran
+     used to have its burned rendition registered anyway, because the only
+     check happened before the encode started. */
+  const target = await watermarkTarget(db, job, payload);
+  if (!target) return;
+  const { specHash, outputKey, shareId } = target;
+  const outputPath = path.join(blobRoot, outputKey);
+  const version = (
+    await db
+      .select()
+      .from(assetVersions)
+      .where(eq(assetVersions.id, versionId))
+      .limit(1)
+      .all()
+  )[0];
   if (state.status !== "complete")
     throw new Error(state.error ?? "Watermark render failed.");
   const renderedMeta =
@@ -1956,17 +1995,24 @@ const processJob = async (
     return;
   }
   if (job.kind === "watermark") {
-    await processWatermarkJob(
+    const plan = await planWatermarkJob(
       db,
       job,
       payload,
       versionId,
       sourcePath,
+      blobRoot,
+    );
+    if (!plan) return;
+    const state = await runOnWorker(
+      db,
+      job,
+      plan.request,
       workerUrl,
       workerSecret,
-      blobRoot,
       workerId,
     );
+    await applyWatermarkResult(db, job, payload, versionId, state, blobRoot);
     return;
   }
   if (job.kind !== "transcode")
