@@ -133,10 +133,20 @@ const storeOf = (objects: Record<string, number> = {}) => {
     /* Contents nothing here reads, at the length the object is declared to be:
      what the blob route is asked to prove is that it serves the right object,
      entirely, to the right caller. */
-    getStream: (key: string): Promise<ReadableStream> => {
+    getStream: (
+      key: string,
+      range?: { start: number; end?: number },
+    ): Promise<ReadableStream> => {
       if (!(key in objects))
         return Promise.reject(new Error(`No object at ${key}.`));
-      const bytes = new Uint8Array(objects[key] as number).fill(7);
+      /* Each byte is its own offset modulo 256, so a ranged read can be
+         checked against the offsets it claims to have served rather than only
+         its length. Uniform filler would let an off-by-one through. */
+      const size = objects[key] as number;
+      const whole = Uint8Array.from({ length: size }, (_, at) => at % 256);
+      const bytes = range
+        ? whole.slice(range.start, (range.end ?? size - 1) + 1)
+        : whole;
       return Promise.resolve(
         new ReadableStream({
           start(controller) {
@@ -527,6 +537,96 @@ describe("the worker claim", () => {
    claim signed. */
 describe("the source a claim hands out", () => {
   const SOURCE_KEY = "originals/picture.mov";
+
+  /* Ranged reads are what let a worker decode a source it never holds. A
+     camera master is routinely tens of gigabytes, and copying one onto the
+     machine before it can be decoded caps where this runs by the largest file
+     anyone uploads -- 20 GB on a Cloudflare container, for instance. ffmpeg
+     does not need the copy: it seeks, and over HTTP it seeks by asking. */
+  it("serves the range it was asked for, and says which one", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const app = routes(db, storeOf({ "originals/picture.mov": 1000 }));
+      const claimed = await claimJob(app, "w-1");
+      const url = claimed.request.source_url as string;
+      const response = await app.request(url, {
+        headers: { range: "bytes=100-199" },
+      });
+      expect(response.status).toBe(206);
+      expect(response.headers.get("content-range")).toBe("bytes 100-199/1000");
+      expect(response.headers.get("content-length")).toBe("100");
+      expect(response.headers.get("accept-ranges")).toBe("bytes");
+      /* The bytes themselves, not just the headers: each byte is its own
+         offset, so this catches a range served from the wrong place. */
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      expect(bytes).toHaveLength(100);
+      expect(bytes[0]).toBe(100 % 256);
+      expect(bytes[99]).toBe(199 % 256);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("serves a suffix range", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const app = routes(db, storeOf({ "originals/picture.mov": 1000 }));
+      const claimed = await claimJob(app, "w-1");
+      const response = await app.request(claimed.request.source_url as string, {
+        headers: { range: "bytes=-50" },
+      });
+      expect(response.status).toBe(206);
+      expect(response.headers.get("content-range")).toBe("bytes 950-999/1000");
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      expect(bytes[0]).toBe(950 % 256);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("refuses a range past the end, and says how long the object is", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const app = routes(db, storeOf({ "originals/picture.mov": 1000 }));
+      const claimed = await claimJob(app, "w-1");
+      const response = await app.request(claimed.request.source_url as string, {
+        headers: { range: "bytes=2000-3000" },
+      });
+      expect(response.status).toBe(416);
+      expect(response.headers.get("content-range")).toBe("bytes */1000");
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("ignores a range header it cannot parse and serves the whole object", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const app = routes(db, storeOf({ "originals/picture.mov": 1000 }));
+      const claimed = await claimJob(app, "w-1");
+      const response = await app.request(claimed.request.source_url as string, {
+        headers: { range: "furlongs=1-2" },
+      });
+      /* The whole object is a correct answer to a request nobody could read,
+         and refusing would strand a client over a header it can simply drop. */
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-length")).toBe("1000");
+    } finally {
+      sqlite.close();
+    }
+  });
 
   it("serves the whole object to the attempt it was signed for", async () => {
     const { db, sqlite } = createNodeDb(":memory:");

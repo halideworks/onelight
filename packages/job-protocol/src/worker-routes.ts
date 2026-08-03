@@ -480,6 +480,30 @@ export const createWorkerRoutes = (options: {
     return null;
   };
 
+  /* A byte range, if the caller asked for one.
+   *
+   * The same grammar the media route parses, and deliberately the same
+   * behaviour: an unparseable header is ignored rather than refused, because
+   * the whole object is a correct answer to a request nobody could read. */
+  const parseRange = (
+    header: string,
+    size: number,
+  ): { start: number; end: number } | "unsatisfiable" | undefined => {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+    if (!match) return undefined;
+    const [, startRaw, endRaw] = match;
+    if (!startRaw && !endRaw) return undefined;
+    if (!startRaw) {
+      const suffix = Number(endRaw);
+      if (suffix < 1 || size === 0) return "unsatisfiable";
+      return { start: Math.max(0, size - suffix), end: size - 1 };
+    }
+    const start = Number(startRaw);
+    const end = endRaw ? Math.min(Number(endRaw), size - 1) : size - 1;
+    if (start >= size || start > end) return "unsatisfiable";
+    return { start, end };
+  };
+
   app.get("/api/v1/worker/blobs/:key{.+}", async (c) => {
     if (!secret) return c.json({ error: "media processing is disabled" }, 503);
     const key = c.req.param("key");
@@ -491,12 +515,32 @@ export const createWorkerRoutes = (options: {
     } catch {
       return c.json({ error: "no such blob" }, 404);
     }
+    /* Ranged reads exist so a worker does not have to hold the whole source.
+       A camera master is routinely tens of gigabytes; copying one onto a
+       machine before it can be decoded bounds where this can run by the size
+       of the largest file anyone uploads, and ffmpeg does not need it -- it
+       seeks, and over HTTP it seeks by asking for ranges. */
+    const requested = c.req.header("range");
+    const range = requested ? parseRange(requested, size) : undefined;
+    if (range === "unsatisfiable")
+      return c.body(null, 416, {
+        "content-range": `bytes */${String(size)}`,
+        "accept-ranges": "bytes",
+      });
     /* The length goes out with the bytes so the worker can tell a truncated
        download from a complete one; a decoder handed half a file produces a
        plausible, wrong answer rather than an error. */
-    return c.body(await store.getStream(key), 200, {
+    if (!range)
+      return c.body(await store.getStream(key), 200, {
+        "content-type": "application/octet-stream",
+        "content-length": String(size),
+        "accept-ranges": "bytes",
+      });
+    return c.body(await store.getStream(key, range), 206, {
       "content-type": "application/octet-stream",
-      "content-length": String(size),
+      "content-length": String(range.end - range.start + 1),
+      "content-range": `bytes ${String(range.start)}-${String(range.end)}/${String(size)}`,
+      "accept-ranges": "bytes",
     });
   });
 
