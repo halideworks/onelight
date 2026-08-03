@@ -20,6 +20,7 @@ import {
   dHashFromLuma,
   isSilentEnvelope,
   joinHashes,
+  CLIP_HASH_POSITIONS,
 } from "@onelight/core";
 import { runProcess } from "./run-process.js";
 
@@ -73,10 +74,7 @@ export const isFlat = (luma: Uint8Array): boolean => {
 
    They avoid both ends, where a slate, a fade or black would make every clip
    look like every other. */
-export const CLIP_HASH_POSITIONS = Array.from(
-  { length: 16 },
-  (_, index) => 0.06 + (index * 0.88) / 15,
-);
+export { CLIP_HASH_POSITIONS };
 
 /* A clip shorter than the grid is spaced on cannot answer sixteen distinct
    seeks: the same frame comes back over and over, or nothing does past the

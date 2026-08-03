@@ -7,8 +7,23 @@ import {
   captureIdentityFromTags,
   captureKeyOf,
   encodePeaks,
+  isHdrSource,
+  planRenditions,
+  primaryRenditionKinds,
+  videoStream,
 } from "@onelight/core";
-import type { MediaInfo, TranscodeJob, TranscodeResult } from "@onelight/core";
+import type {
+  MediaInfo,
+  PlannedRendition,
+  TranscodeJob,
+  TranscodeResult,
+} from "@onelight/core";
+
+/* The deciding half of this file is in core, where a runtime with no
+   node:child_process can read it. Re-exported here because the recipes below
+   and everything that imports them already look for it in this module. */
+export { isHdrSource, planRenditions, primaryRenditionKinds, videoStream };
+export type { PlannedRendition };
 import { ALL_FORMATS, FilePathSource, Input } from "mediabunny";
 import { fingerprintClipSignatures } from "./fingerprint-media.js";
 import { PROCESS_IDLE_TIMEOUT_MS, runProcess } from "./run-process.js";
@@ -44,12 +59,6 @@ export interface NormalizedMediaInfo extends MediaInfo {
    which word the note was on. The flag rides along so the UI can say the
    timecode is nominal rather than pretending the file carried one. */
 export const NOMINAL_AUDIO_RATE = { num: 60, den: 1 };
-
-export interface PlannedRendition {
-  kind: string;
-  filename: string;
-  height?: number;
-}
 
 export interface TranscodeRunResult extends TranscodeResult {
   failures: Array<{ kind: string; error: string }>;
@@ -304,11 +313,6 @@ export const probeFile = async (
   return normalizeProbe(JSON.parse(result.stdout) as ProbeDocument);
 };
 
-const videoStream = (
-  mediaInfo: MediaInfo,
-): Record<string, unknown> | undefined =>
-  mediaInfo.streams.find((stream) => stream.codec_type === "video");
-
 const positiveProbeNumber = (value: unknown): number | undefined => {
   const result = Number(value);
   return Number.isFinite(result) && result > 0 ? result : undefined;
@@ -378,41 +382,6 @@ const hdrMetadataType = (
   if (value.includes("smpte2094-10")) return "smpteSt2094-10";
   if (value.includes("mastering display metadata")) return "smpteSt2086";
   return null;
-};
-
-const sourceTransfer = (mediaInfo: MediaInfo): string | undefined =>
-  asString(videoStream(mediaInfo)?.color_transfer) ??
-  asString(mediaInfo.format["color_transfer"]);
-
-/*
- * A tagged PQ or HLG transfer is HDR, and so is an untagged source deeper
- * than eight bits.
- *
- * The second half exists because a Dolby Vision master arrived with its
- * transfer, primaries and matrix all reading "unknown". It was therefore
- * classified SDR, skipped the tonemap, and had BT.709 stamped on it by the
- * colour defaults -- PQ code values encoded as though they were gamma, which
- * looks exactly as wrong as it sounds.
- *
- * Depth is the honest signal. SDR deliverables are eight bit; ten bit and
- * deeper is HDR, log, or a mastering format, and none of those are gamma. So
- * where there is no transfer tag to go on, depth decides, and the untagged
- * 8-bit case keeps the SDR assumption that is right for it.
- */
-const sourceBitDepth = (mediaInfo: MediaInfo): number => {
-  const video = videoStream(mediaInfo);
-  const declared = Number(asString(video?.bits_per_raw_sample));
-  if (Number.isFinite(declared) && declared > 0) return declared;
-  const format = asString(video?.pix_fmt) ?? "";
-  const match = /p(\d{2})(?:le|be)?$/.exec(format);
-  return match ? Number(match[1]) : 8;
-};
-
-export const isHdrSource = (mediaInfo: MediaInfo): boolean => {
-  const transfer = sourceTransfer(mediaInfo);
-  if (transfer === "smpte2084" || transfer === "arib-std-b67") return true;
-  const untagged = transfer === undefined || transfer === "unknown";
-  return untagged && sourceBitDepth(mediaInfo) > 8;
 };
 
 // libplacebo handles the HLG inverse OOTF internally when converting to an
@@ -2182,88 +2151,6 @@ export const buildOutputArgs = (
 // or peak sidecar failed is still a version you can play and comment on, and
 // audio_peaks stays in the list so a version transcoded before proxy_audio
 // existed is not retroactively unready.
-export const primaryRenditionKinds = (assetKind: string): string[] =>
-  assetKind === "audio"
-    ? ["proxy_audio", "audio_peaks"]
-    : assetKind === "image"
-      ? /* still_tiles stays in the list although nothing produces it any
-           more: a version transcoded before the stills ladder existed is a
-           picture you can still open, and must not be made unready by a
-           change to how the next one is rendered. */
-        ["still_review", "poster", "still_tiles"]
-      : assetKind === "pdf"
-        ? ["pdf_pages"]
-        : ["proxy_1080"];
-
-export const planRenditions = (
-  assetKind: string,
-  mediaInfo: MediaInfo,
-): PlannedRendition[] => {
-  /* An audio asset gets everything its page is made of: the proxy it plays,
-     the peak data the waveform is drawn from, the spectrogram under it, and a
-     poster so the file is not a blank tile everywhere it is listed. */
-  if (assetKind === "audio")
-    return [
-      { kind: "proxy_audio", filename: "proxy_audio.m4a" },
-      { kind: "shuttle_audio_2x", filename: "shuttle_audio_2x.m4a" },
-      { kind: "shuttle_audio_4x", filename: "shuttle_audio_4x.m4a" },
-      { kind: "waveform_data", filename: "waveform.dat" },
-      { kind: "spectrogram", filename: "spectrogram.png" },
-      { kind: "poster", filename: "poster.png" },
-    ];
-  /* Stills get the ladder in stills.ts, not an ffmpeg recipe. The old plan
-     made a 4096-wide PNG (14 MB was ordinary) and served it as both the grid
-     tile and the review picture, and its poster silently produced nothing at
-     all on a JPEG source. See stills.ts for why sharp renders these. */
-  if (assetKind === "image")
-    return STILL_LADDER.map((rung) => ({
-      kind: rung.kind,
-      filename: rung.filename,
-    }));
-  if (assetKind === "pdf")
-    return [{ kind: "pdf_pages", filename: "pages/page" }];
-  if (assetKind !== "video") return [];
-  const video = videoStream(mediaInfo);
-  const audio = mediaInfo.streams.find(
-    (stream) => stream.codec_type === "audio",
-  );
-  const sourceWidth = Number(video?.width ?? 1920);
-  const ladder =
-    sourceWidth >= 3840
-      ? [
-          { kind: "proxy_2160", height: 2160 },
-          { kind: "proxy_1080", height: 1080 },
-          { kind: "proxy_540", height: 540 },
-        ]
-      : [
-          { kind: "proxy_1080", height: 1080 },
-          { kind: "proxy_540", height: 540 },
-        ];
-  const planned: PlannedRendition[] = ladder.map((rung) => ({
-    ...rung,
-    filename: `${rung.kind}.mp4`,
-  }));
-  if (isHdrSource(mediaInfo))
-    planned.push(
-      { kind: "hdr_av1", filename: "hdr_av1.mp4" },
-      { kind: "hdr_hevc", filename: "hdr_hevc.mp4" },
-    );
-  planned.push(
-    { kind: "poster", filename: "poster.png" },
-    { kind: "sprite", filename: "sprite.png" },
-  );
-  /* Peak data rather than the old showwavespic PNG: the timeline's waveform
-     lane is drawn from it now, at whatever width the lane happens to be. */
-  if (audio)
-    planned.push(
-      { kind: "waveform_data", filename: "waveform.dat" },
-      { kind: "reference_audio_1x", filename: "reference_audio_1x.m4a" },
-      { kind: "shuttle_audio_2x", filename: "shuttle_audio_2x.m4a" },
-      { kind: "shuttle_audio_4x", filename: "shuttle_audio_4x.m4a" },
-    );
-  return planned;
-};
-
 /* Which ladder rung an output is, or nothing if this job is not a still. The
    source's own extension decides: a poster means one thing for a photograph
    and another for a movie, and only the filename can tell them apart here. */
