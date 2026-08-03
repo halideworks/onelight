@@ -18,6 +18,7 @@ export * from "./permissions.js";
 export * from "./time.js";
 export * from "./ports.js";
 export * from "./rendition-plan.js";
+export * from "./secret-box.js";
 export * from "./timecode.js";
 export * from "./markers.js";
 export * from "./totp.js";

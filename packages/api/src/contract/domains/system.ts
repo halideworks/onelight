@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { hmacSha256Hex } from "@onelight/core";
 import {
+  appSettings,
   commentAttachments,
   webhookDeliveries,
   webhooks,
@@ -662,6 +663,22 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       expect(edited.stored?.host).toBe("mail2.example.com");
       expect(edited.stored?.has_pass).toBe(true);
 
+      // What actually landed in the row. The settings page has always masked
+      // the password on the way out; what it did not do was keep it out of
+      // the database, so a backup, a `.dump`, or a screenshot of the table
+      // handed over a credential to somebody else's mail server.
+      const row = (
+        await h.db
+          .select()
+          .from(appSettings)
+          .where(eq(appSettings.key, "mail"))
+          .all()
+      )[0];
+      expect(row?.valueJson).not.toContain("a-secret");
+      /* And it is unreadable rather than merely absent: the host is still
+         plain in the row, because configuration is not a credential. */
+      expect(row?.valueJson).toContain("mail2.example.com");
+
       // A URL with a credential comes back masked but remembered.
       const viaUrl = await json<MailView>(
         await req(h, "/api/v1/admin/settings/mail", {
@@ -675,6 +692,16 @@ export const registerSystemDomain = (ctx: SuiteContext): void => {
       );
       expect(viaUrl.stored?.smtp_url).not.toContain("hunter2");
       expect(viaUrl.stored?.has_pass).toBe(true);
+      /* The credential inside a URL is a credential too, and it was going in
+         the row in full. */
+      const urlRow = (
+        await h.db
+          .select()
+          .from(appSettings)
+          .where(eq(appSettings.key, "mail"))
+          .all()
+      )[0];
+      expect(urlRow?.valueJson).not.toContain("hunter2");
 
       // An API token must not be able to redirect the instance's mail.
       const tokenResponse = await req(h, "/api/v1/tokens", {
