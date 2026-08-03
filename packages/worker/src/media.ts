@@ -1670,6 +1670,91 @@ const sdrProxyOutputTail = (
   return args;
 };
 
+export const COMBINABLE_AUDIO_KINDS = [
+  "reference_audio_1x",
+  "shuttle_audio_2x",
+  "shuttle_audio_4x",
+];
+
+/* What each shuttle sidecar does to time. 1x is the same audio, re-encoded to
+   the same small AAC as the others so the player has one kind of file to
+   handle. Chained for 4x because a single large tempo factor takes a
+   lower-quality sample-skipping path in older ffmpeg builds. */
+const audioTempoFilter = (kind: string): string | undefined =>
+  kind === "shuttle_audio_2x"
+    ? "atempo=2"
+    : kind === "shuttle_audio_4x"
+      ? "atempo=2,atempo=2"
+      : undefined;
+
+const AAC_SIDECAR_TAIL = [
+  "-c:a",
+  "aac",
+  "-profile:a",
+  "aac_low",
+  "-b:a",
+  "64k",
+  "-ac",
+  "2",
+  "-ar",
+  "48000",
+  "-map_metadata",
+  "-1",
+  "-map_chapters",
+  "-1",
+  "-movflags",
+  "+faststart",
+];
+
+/* One demux, every audio sidecar.
+ *
+ * The three differ only in what they do to time: 1x does nothing, 2x is one
+ * atempo, 4x is two. Built as three separate invocations they read and demux
+ * the source three times, which was measured as three of the eight source
+ * reads a transcode used to make. A split costs nothing and they come out of
+ * one.
+ *
+ * Same contract as the SDR combined pass: undefined when there is nothing to
+ * save, and any failure at the call site falls back to encoding each one on
+ * its own. This can make a job faster; it must never make one fail. */
+export const buildCombinedAudioArgs = (
+  job: TranscodeJob,
+  outputs: Array<{ kind: string; path: string }>,
+): string[] | undefined => {
+  const sidecars = outputs.filter((output) =>
+    COMBINABLE_AUDIO_KINDS.includes(output.kind),
+  );
+  if (sidecars.length < 2) return undefined;
+  const labels = sidecars.map((_, index) => `a${String(index)}`);
+  const chains = [
+    `[0:a]asplit=${String(labels.length)}${labels.map((l) => `[${l}]`).join("")}`,
+    ...sidecars.flatMap((output, index) => {
+      const tempo = audioTempoFilter(output.kind);
+      return tempo
+        ? [`[${labels[index] as string}]${tempo}[o${String(index)}]`]
+        : [];
+    }),
+  ];
+  const args = [
+    "-hide_banner",
+    "-y",
+    "-i",
+    job.sourceKey,
+    "-filter_complex",
+    chains.join(";"),
+  ];
+  sidecars.forEach((output, index) => {
+    const tempo = audioTempoFilter(output.kind);
+    args.push(
+      "-map",
+      tempo ? `[o${String(index)}]` : `[${labels[index] as string}]`,
+      ...AAC_SIDECAR_TAIL,
+      output.path,
+    );
+  });
+  return args;
+};
+
 export const COMBINABLE_PROXY_KINDS = ["proxy_2160", "proxy_1080", "proxy_540"];
 
 /* One decode, every SDR video rendition.
@@ -2264,6 +2349,45 @@ export const runTranscode = async (
     } catch (error) {
       console.warn(
         `[onelight-worker] one-pass encode failed for job ${job.id}, falling back to one ffmpeg per rendition: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      for (const { temp } of temps) await rm(temp, { force: true });
+    }
+  }
+
+  /* Same fast path for the audio sidecars, and the same rules: temp names
+     renamed on success, and any failure falls through to the loop below,
+     which encodes each one exactly as it always did. */
+  const combinedAudio = buildCombinedAudioArgs(
+    job,
+    pending.map((output) => ({
+      ...output,
+      path: path.join(
+        path.dirname(output.path),
+        `.tmp-combined-${path.basename(output.path)}`,
+      ),
+    })),
+  );
+  if (combinedAudio) {
+    const temps = pending
+      .filter((output) => COMBINABLE_AUDIO_KINDS.includes(output.kind))
+      .map((output) => ({
+        final: output.path,
+        temp: path.join(
+          path.dirname(output.path),
+          `.tmp-combined-${path.basename(output.path)}`,
+        ),
+      }));
+    try {
+      await mkdir(path.dirname(temps[0]?.final ?? job.sourceKey), {
+        recursive: true,
+      });
+      await runProcess(ffmpeg, combinedAudio);
+      for (const { temp, final } of temps) await rename(temp, final);
+    } catch (error) {
+      console.warn(
+        `[onelight-worker] one-pass audio failed for job ${job.id}, falling back to one ffmpeg per sidecar: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );

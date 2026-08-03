@@ -19,6 +19,7 @@ import {
   SOFTWARE_AV1_NICENESS,
   buildHdrHevcArgs,
   buildPdfPagesArgs,
+  buildCombinedAudioArgs,
   buildCombinedSdrArgs,
   buildSdrProxyArgs,
   buildStillArgs,
@@ -725,6 +726,56 @@ describe("one-pass SDR encode", () => {
     // Poster and waveform are not video branches: they stay separate.
     expect(args).not.toContain("/out/poster.png");
     expect(args).not.toContain("/out/audio_peaks.png");
+  });
+
+  it("demuxes once for every audio sidecar", () => {
+    /* Measured before this existed: a transcode read its source eight times,
+       and three of those were the sidecars, which differ only in what they do
+       to time. */
+    const args =
+      buildCombinedAudioArgs(jobOf(mediaInfoOf()), [
+        { kind: "reference_audio_1x", path: "/out/ref.m4a" },
+        { kind: "shuttle_audio_2x", path: "/out/s2.m4a" },
+        { kind: "shuttle_audio_4x", path: "/out/s4.m4a" },
+      ]) ?? [];
+    expect(args.filter((a) => a === "-i")).toHaveLength(1);
+    const graph = flag(args, "-filter_complex") ?? "";
+    expect(graph).toContain("[0:a]asplit=3[a0][a1][a2]");
+    /* 1x is not filtered at all; 4x chains two atempo rather than using one
+       large factor, which older ffmpeg builds handle by skipping samples. */
+    expect(graph).toContain("[a1]atempo=2[o1]");
+    expect(graph).toContain("[a2]atempo=2,atempo=2[o2]");
+    expect(args).toContain("/out/ref.m4a");
+    expect(args).toContain("/out/s2.m4a");
+    expect(args).toContain("/out/s4.m4a");
+    /* Every sidecar keeps the same small AAC the player expects. */
+    expect(args.filter((a) => a === "aac")).toHaveLength(3);
+    expect(args.filter((a) => a === "64k")).toHaveLength(3);
+  });
+
+  it("maps the unfiltered sidecar from the split, not through a tempo label", () => {
+    const args =
+      buildCombinedAudioArgs(jobOf(mediaInfoOf()), [
+        { kind: "reference_audio_1x", path: "/out/ref.m4a" },
+        { kind: "shuttle_audio_2x", path: "/out/s2.m4a" },
+      ]) ?? [];
+    expect(args).toContain("[a0]");
+    expect(args).toContain("[o1]");
+  });
+
+  it("does not bother when there is nothing to save", () => {
+    /* One sidecar is one decode either way, and the caller then encodes it
+       through the ordinary per-output path. */
+    expect(
+      buildCombinedAudioArgs(jobOf(mediaInfoOf()), [
+        { kind: "reference_audio_1x", path: "/out/ref.m4a" },
+      ]),
+    ).toBeUndefined();
+    expect(
+      buildCombinedAudioArgs(jobOf(mediaInfoOf()), [
+        { kind: "proxy_1080", path: "/out/p.mp4" },
+      ]),
+    ).toBeUndefined();
   });
 
   it("keeps each output's own quality, colour tags and audio", () => {
