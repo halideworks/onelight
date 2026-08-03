@@ -37,8 +37,11 @@ import {
   isRawStill,
   isSharpStill,
   isStillSource,
+  STILL_FULL_MAX_EDGE,
+  STILL_FULL_RUNG,
+  STILL_LADDER,
 } from "@onelight/core";
-import type { CaptureIdentity } from "@onelight/core";
+import type { CaptureIdentity, StillRung, StillRungKind } from "@onelight/core";
 import { readNetpbm } from "./netpbm.js";
 import { readPsdComposite } from "./psd-image.js";
 import { runProcess } from "./run-process.js";
@@ -48,46 +51,11 @@ import { runProcess } from "./run-process.js";
    server imports this package for the recipe builders alone). */
 const loadSharp = async () => (await import("sharp")).default;
 
-export type StillRungKind = "poster" | "still_review" | "still_full";
-
-export interface StillRung {
-  kind: StillRungKind;
-  /** Longest edge in pixels; 0 means the source's own size. */
-  longEdge: number;
-  filename: string;
-  contentType: string;
-}
-
-/* q82 mozjpeg for the poster because it is the compatibility surface: link
-   unfurls, mail clients and anything else that will not be told what WebP is.
-   q82 WebP with smart subsampling for the review still because chroma is what
-   a retoucher is looking at, and 4:2:0 on a 2048 still is visible damage;
-   measured at 87 KB against 411 KB for the equivalent 4:4:4 JPEG. */
-export const STILL_LADDER: StillRung[] = [
-  {
-    kind: "poster",
-    longEdge: 640,
-    filename: "poster.jpg",
-    contentType: "image/jpeg",
-  },
-  {
-    kind: "still_review",
-    longEdge: 2048,
-    filename: "still_review.webp",
-    contentType: "image/webp",
-  },
-];
-
-export const STILL_FULL_RUNG: StillRung = {
-  kind: "still_full",
-  longEdge: 0,
-  filename: "still_full.webp",
-  contentType: "image/webp",
-};
-
-/** A ceiling on the on-demand full-size rung, so a 200 MP scan cannot ask the
-    browser for a texture no browser will allocate. */
-export const STILL_FULL_MAX_EDGE = 8192;
+/* The ladder itself is in core: the server plans a job from it and this file
+   renders it, so it cannot live behind an import that pulls sharp and ffmpeg
+   in. Re-exported here because this is where every reader already looks. */
+export { STILL_FULL_MAX_EDGE, STILL_FULL_RUNG, STILL_LADDER };
+export type { StillRung, StillRungKind };
 
 /* A ceiling on what will be decoded at all.
 
