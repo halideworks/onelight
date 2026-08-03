@@ -134,13 +134,27 @@ jobs:
             sleep 5
           done
           test "$code" = "200" || { echo "the deployment never became healthy"; exit 1; }
-          claim=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CI_URL/api/v1/worker/claim" \
+          claim=$(curl -s -w '\n%{http_code}' -X POST "$CI_URL/api/v1/worker/claim" \
             -H 'content-type: application/json' \
             -H "x-onelight-signature: $(printf '0%.0s' $(seq 1 64))" \
             -d '{"worker_id":"probe","capabilities":["cpu"],"timestamp":0}')
-          echo "unsigned claim: ${claim}"
-          test "$claim" != "404" || { echo "the worker routes are not mounted on the deployment"; exit 1; }
-          test "$claim" = "401" || { echo "expected 401 from an unsigned claim, got ${claim}"; exit 1; }
+          body=$(echo "$claim" | head -n -1)
+          code=$(echo "$claim" | tail -1)
+          # The body, not just the status. A 500 here says only that something
+          # threw; what it says is the difference between one more run and a
+          # guess, and the Worker is deleted at the end of this job so there is
+          # nothing left to tail afterwards.
+          echo "unsigned claim: ${code}"
+          echo "body: ${body}"
+          test "$code" != "404" || { echo "the worker routes are not mounted on the deployment"; exit 1; }
+          test "$code" = "401" || { echo "expected 401 from an unsigned claim, got ${code}"; exit 1; }
+
+      # What the Worker itself logged. Deployment logs are the only place an
+      # exception inside an isolate is visible, and this Worker does not
+      # outlive the job, so they are pulled while it still exists.
+      - name: Deployment logs
+        if: failure()
+        run: timeout 20 pnpm exec wrangler tail "$CI_NAME" --format pretty || true
 
       # Three workers, no volume between them and nothing local to claim from:
       # the only way any byte moves is over the signed URLs the deployment
