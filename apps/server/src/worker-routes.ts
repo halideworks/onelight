@@ -39,7 +39,18 @@ import {
   WORKER_LEASE_MS,
   workerJobTimeoutMs,
 } from "./worker-pump.js";
-import type { PumpBlobStore } from "./worker-pump.js";
+import type { PumpBlobStore, SignBlobUrl } from "./worker-pump.js";
+
+/**
+ * Storage, as these routes need it: what the pump asks of it, plus the reads a
+ * worker without a shared volume makes through this server.
+ */
+export type WorkerBlobStore = PumpBlobStore & {
+  getStream(
+    key: string,
+    range?: { start: number; end?: number },
+  ): Promise<ReadableStream>;
+};
 
 /* Mirrors the skew the old push protocol allowed, and exists for the same
    reason: a captured signed claim cannot be replayed tomorrow. */
@@ -87,6 +98,24 @@ export const attemptToken = (
     .update(`${jobId}:${String(attempts)}:${workerId}`)
     .digest("hex");
 
+/**
+ * The capability that lets one attempt read one blob.
+ *
+ * Distinct from the attempt token, and bound to the key: a source URL is a
+ * query string, and query strings end up in access logs and proxy logs in a
+ * way a request body does not. Leaking this one buys read access to a blob the
+ * holder was already being handed; it does not let anybody complete a job.
+ */
+export const blobToken = (
+  secret: string,
+  key: string,
+  jobId: string,
+  attempts: number,
+): string =>
+  createHmac("sha256", secret)
+    .update(`blob:${key}:${jobId}:${String(attempts)}`)
+    .digest("hex");
+
 const hexMatches = (expected: string, presented: unknown): boolean => {
   if (typeof presented !== "string" || !HEX_64.test(presented)) return false;
   return timingSafeEqual(
@@ -127,12 +156,31 @@ const asRecord = (value: string): Record<string, unknown> | null => {
 export const createWorkerRoutes = (options: {
   db: AppDb;
   blobRoot: string;
-  store: PumpBlobStore;
+  store: WorkerBlobStore;
   workerSecret?: string | undefined;
 }): Hono => {
   const app = new Hono();
   const { db, blobRoot, store } = options;
   const secret = options.workerSecret;
+
+  /* Where a worker fetches a source it cannot open itself, signed for one
+     attempt at one job and for that key alone. Relative, because the worker
+     already knows this server: it resolves the URL against the same
+     ONELIGHT_SERVER_URL it claims from, and a deployment that hands out
+     presigned storage URLs instead can return an absolute one here without
+     the worker noticing the difference. */
+  const signBlobUrl: SignBlobUrl = (key, jobId, attempts) => {
+    const query = new URLSearchParams({
+      job: jobId,
+      attempt: String(attempts),
+      token: blobToken(secret ?? "", key, jobId, attempts),
+    });
+    const path = key
+      .split("/")
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
+    return `/api/v1/worker/blobs/${path}?${query.toString()}`;
+  };
 
   /* A body has to be read before it can be authenticated -- the claim's
      signature is over its exact bytes -- so the size cap is enforced while it
@@ -174,6 +222,7 @@ export const createWorkerRoutes = (options: {
       blobRoot,
       workerId,
       capabilitiesOf(body.capabilities),
+      signBlobUrl,
     );
     /* 204 rather than an empty job: an idle queue is not an error, and the
        worker's loop reads the status instead of parsing a body to find out. */
@@ -309,6 +358,47 @@ export const createWorkerRoutes = (options: {
        what materialises the transcode.failed notification. */
     await recordDeadMediaJob(db, job);
     return c.json({ status: "failed" });
+  });
+
+  /**
+   * The bytes a job reads, for a worker that cannot open them itself.
+   *
+   * Authorised by the signature in the URL and nothing else: the token is over
+   * this key, this job and this attempt, so it cannot be pointed at another
+   * blob, and it stops working the moment the attempt ends. That is checked
+   * against the job row rather than inferred from the token's age, because
+   * what makes a URL stale is the lease moving to another worker.
+   */
+  app.get("/api/v1/worker/blobs/:key{.+}", async (c) => {
+    if (!secret) return c.json({ error: "media processing is disabled" }, 503);
+    const key = c.req.param("key");
+    const jobId = c.req.query("job") ?? "";
+    const attempt = Number(c.req.query("attempt"));
+    if (!key || !jobId || !Number.isInteger(attempt))
+      return c.json({ error: "invalid blob request" }, 400);
+    if (
+      !hexMatches(blobToken(secret, key, jobId, attempt), c.req.query("token"))
+    )
+      return c.json({ error: "invalid blob token" }, 401);
+    const job = (
+      await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1).all()
+    )[0];
+    if (!job) return c.json({ error: "no such job" }, 404);
+    if (job.status !== "processing" || job.attempts !== attempt)
+      return c.json({ error: "this attempt no longer holds the job" }, 409);
+    let size: number;
+    try {
+      ({ size } = await store.head(key));
+    } catch {
+      return c.json({ error: "no such blob" }, 404);
+    }
+    /* The length goes out with the bytes so the worker can tell a truncated
+       download from a complete one; a decoder handed half a file produces a
+       plausible, wrong answer rather than an error. */
+    return c.body(await store.getStream(key), 200, {
+      "content-type": "application/octet-stream",
+      "content-length": String(size),
+    });
   });
 
   /* Nothing else lives under this prefix, and a stray path must not fall

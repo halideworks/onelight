@@ -127,6 +127,22 @@ const storeOf = (objects: Record<string, number> = {}) => ({
     key in objects
       ? Promise.resolve({ size: objects[key] as number })
       : Promise.reject(new Error(`No object at ${key}.`)),
+  /* Contents nothing here reads, at the length the object is declared to be:
+     what the blob route is asked to prove is that it serves the right object,
+     entirely, to the right caller. */
+  getStream: (key: string): Promise<ReadableStream> => {
+    if (!(key in objects))
+      return Promise.reject(new Error(`No object at ${key}.`));
+    const bytes = new Uint8Array(objects[key] as number).fill(7);
+    return Promise.resolve(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+    );
+  },
   delete: (key: string): Promise<void> => {
     delete objects[key];
     return Promise.resolve();
@@ -264,14 +280,113 @@ describe("the worker claim", () => {
       expect(claimed.request).toMatchObject({
         job_id: "job-probe",
         kind: "probe",
+        source_key: "originals/picture.mov",
         source_path: "/blobs/originals/picture.mov",
       });
+      /* And a way to reach those bytes without the volume: the worker uses
+         the path when the file is really there and this when it is not. */
+      expect(claimed.request.source_url).toMatch(
+        /^\/api\/v1\/worker\/blobs\/originals\/picture\.mov\?job=job-probe&attempt=1&token=[0-9a-f]{64}$/,
+      );
       const row = (
         await db.select().from(jobs).where(eq(jobs.id, "job-probe")).all()
       )[0];
       expect(row?.status).toBe("processing");
       expect(row?.workerId).toBe("w-1");
       expect(row?.leaseExpiresAt).toBeGreaterThan(Date.now());
+    } finally {
+      sqlite.close();
+    }
+  });
+});
+
+/* The source route exists for a worker that mounts nothing: on the Workers
+   target there is no shared volume, and the only way to the bytes is a URL the
+   claim signed. */
+describe("the source a claim hands out", () => {
+  const SOURCE_KEY = "originals/picture.mov";
+
+  it("serves the whole object to the attempt it was signed for", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueProbe(db);
+      const app = routes(db, storeOf({ [SOURCE_KEY]: 1024 }));
+      const claimed = await claimJob(app, "w-1");
+      const url = claimed.request.source_url as string;
+      const served = await app.request(url);
+      expect(served.status).toBe(200);
+      expect(served.headers.get("content-length")).toBe("1024");
+      expect((await served.arrayBuffer()).byteLength).toBe(1024);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("refuses a signature that is not for this key", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueProbe(db);
+      const app = routes(
+        db,
+        storeOf({ [SOURCE_KEY]: 1024, "originals/other.mov": 8 }),
+      );
+      const claimed = await claimJob(app, "w-1");
+      const url = new URL(
+        claimed.request.source_url as string,
+        "http://server",
+      );
+      /* The same token, pointed at another object. It is an HMAC over the key
+         as well as the job, so it does not travel. */
+      const elsewhere = await app.request(
+        `/api/v1/worker/blobs/originals/other.mov${url.search}`,
+      );
+      expect(elsewhere.status).toBe(401);
+      const tampered = await app.request(
+        `/api/v1/worker/blobs/${SOURCE_KEY}?job=job-probe&attempt=1&token=${"0".repeat(64)}`,
+      );
+      expect(tampered.status).toBe(401);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("stops working once the attempt is over", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueProbe(db);
+      const app = routes(db, storeOf({ [SOURCE_KEY]: 1024 }));
+      const claimed = await claimJob(app, "w-1");
+      const url = claimed.request.source_url as string;
+      expect((await app.request(url)).status).toBe(200);
+      /* The lease went to somebody else: the URL a worker was handed is
+         authority over an attempt, and this one is no longer running. */
+      await db
+        .update(jobs)
+        .set({ status: "queued", attempts: 2 })
+        .where(eq(jobs.id, "job-probe"))
+        .run();
+      expect((await app.request(url)).status).toBe(409);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("is a 404 when the store does not hold it", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueProbe(db);
+      const app = routes(db, storeOf());
+      const claimed = await claimJob(app, "w-1");
+      const missing = await app.request(claimed.request.source_url as string);
+      expect(missing.status).toBe(404);
     } finally {
       sqlite.close();
     }
