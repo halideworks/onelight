@@ -1,4 +1,5 @@
-import type { MultipartBlobStore } from "@onelight/core";
+import { presignS3Url } from "@onelight/core";
+import type { MultipartBlobStore, S3Credentials } from "@onelight/core";
 
 // R2 multipart limits (docs/research/cloudflare-platform.md, section 2):
 // parts are 5 MiB to 5 GiB, at most 10,000 per upload, and every part except
@@ -46,9 +47,46 @@ const normalizeKey = (key: string): string => {
 
 export class R2BlobStore implements MultipartBlobStore {
   private readonly bucket: R2Bucket;
+  private readonly s3: S3Credentials | undefined;
 
-  constructor(bucket: R2Bucket) {
+  /**
+   * The binding does the work; the credentials are only for presigning.
+   *
+   * A binding cannot mint a URL somebody else can use, and that is exactly
+   * what a media worker needs for a large source: a 40 GB master must not be
+   * streamed through an isolate, and cannot be copied onto a worker whose disk
+   * is smaller than it. Presigning needs an access key, which is a separate
+   * thing from the binding and optional -- without it this store behaves
+   * exactly as it did.
+   */
+  constructor(bucket: R2Bucket, s3?: S3Credentials) {
     this.bucket = bucket;
+    this.s3 = s3;
+  }
+
+  /**
+   * A URL a worker can read this object from directly, or nothing.
+   *
+   * Deliberately not used for playback. `/api/v1/media` enforces what a share
+   * allows, and a presigned URL answers to whoever holds it, so putting one in
+   * front of a viewer would hand out an object that outlives the permission
+   * that produced it. This is for the job protocol, where the reader is a
+   * worker that has already been authorised for this key by its claim.
+   */
+  async presignGet(key: string, expiresIn: number): Promise<string | null> {
+    if (!this.s3) return null;
+    return presignS3Url(this.s3, "GET", normalizeKey(key), {
+      expiresIn,
+      now: new Date(),
+    });
+  }
+
+  async presignPut(key: string, expiresIn: number): Promise<string | null> {
+    if (!this.s3) return null;
+    return presignS3Url(this.s3, "PUT", normalizeKey(key), {
+      expiresIn,
+      now: new Date(),
+    });
   }
 
   // The port hands putPart and abortMultipart only an uploadId, but the R2
