@@ -80,6 +80,37 @@ services:
       ONELIGHT_NVENC_DEVICE: ${ONELIGHT_NVENC_DEVICE:-}
       ONELIGHT_SOFTWARE_AV1: ${ONELIGHT_SOFTWARE_AV1:-}
       # ONELIGHT-CONFIG:END
+    # The worker opens files nobody vetted. Every asset an outside reviewer
+    # uploads is parsed here by ffmpeg, Poppler, LibRaw and libheif, which is
+    # a large amount of C for a stranger's bytes to reach, so the blast radius
+    # of a bad decode is bounded rather than trusted.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      # A decoder that gets code execution cannot then gain privileges through
+      # a setuid binary it finds in the image.
+      - no-new-privileges:true
+    tmpfs:
+      # read_only leaves the image immutable, so the scratch these tools want
+      # has to come from somewhere; bounded, so a crafted file cannot fill the
+      # host by writing temporary output. /data stays writable: it is a volume,
+      # and the renditions the server reads are written there.
+      - /tmp:size=1g,mode=1777
+    # Bounds, not budgets. A malformed file that sends a decoder into an
+    # allocation loop or a fork storm stops at these instead of taking the
+    # machine, and the site keeps serving. Raise the memory ceiling for very
+    # large HDR or 4K work: an encode that exceeds it is killed, and the job
+    # fails rather than the host suffering.
+    mem_limit: ${ONELIGHT_WORKER_MEMORY:-6g}
+    pids_limit: ${ONELIGHT_WORKER_PIDS:-512}
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+      # No core dumps: a crash on a stranger's file would otherwise write the
+      # decoded contents of that file to disk.
+      core: 0
     volumes:
       - onelight-data:/data
     healthcheck:
