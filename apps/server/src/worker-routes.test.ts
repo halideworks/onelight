@@ -301,6 +301,24 @@ const filesNamedIn = (value: unknown): string[] => {
   );
 };
 
+/* Both queued jobs, by id, however the queue chose to order them.
+ *
+ * Two jobs queued in the same millisecond at the same priority are ordered by
+ * whatever the tie-break happens to be, so which one a claim returns first is
+ * not something a test may assume: asserting it made this pass on one machine
+ * and fail on another. */
+const claimAll = async (
+  db: ReturnType<typeof createNodeDb>["db"],
+  blobRoot: string | undefined,
+): Promise<Map<string, Record<string, unknown>>> => {
+  const claimed = new Map<string, Record<string, unknown>>();
+  for (;;) {
+    const next = await claimWorkerJob(db, blobRoot, "w-1", ["cpu"]);
+    if (!next) return claimed;
+    claimed.set(next.job.id, next.request);
+  }
+};
+
 describe("the files a claim names", () => {
   /* The plans describe storage and nothing else, so the paths are the claim's
      addition, made where the deployment is known. Asserted here because a
@@ -314,14 +332,14 @@ describe("the files a claim names", () => {
       await seed(db);
       await queueProbe(db);
       await seedImage(db);
-      const video = await claimWorkerJob(db, "/blobs", "w-1", ["cpu"]);
-      expect(video?.request).toMatchObject({
+      const claimed = await claimAll(db, "/blobs");
+      expect(claimed.get("job-probe")).toMatchObject({
         source_key: "originals/picture.mov",
         source_path: "/blobs/originals/picture.mov",
       });
-      const image = await claimWorkerJob(db, "/blobs", "w-1", ["cpu"]);
-      expect(image?.job.id).toBe("job-image");
-      const outputs = image?.request.outputs as Array<Record<string, unknown>>;
+      const outputs = claimed.get("job-image")?.outputs as Array<
+        Record<string, unknown>
+      >;
       expect(outputs.length).toBeGreaterThan(0);
       /* Each output's file is its key under the root, and nothing else: the
          two are one definition now, so they cannot describe different files. */
@@ -341,14 +359,15 @@ describe("the files a claim names", () => {
       await seedImage(db);
       /* What the Workers target claims with. The envelope has to be usable
          without a path in it, because there is no path to put there. */
-      const video = await claimWorkerJob(db, undefined, "w-1", ["cpu"]);
-      const image = await claimWorkerJob(db, undefined, "w-1", ["cpu"]);
-      expect(video?.request.source_key).toBe("originals/picture.mov");
+      const claimed = await claimAll(db, undefined);
+      expect(claimed.get("job-probe")?.source_key).toBe(
+        "originals/picture.mov",
+      );
       expect(
-        (image?.request.outputs as unknown[] | undefined)?.length,
+        (claimed.get("job-image")?.outputs as unknown[] | undefined)?.length,
       ).toBeGreaterThan(0);
-      expect(filesNamedIn(video?.request)).toEqual([]);
-      expect(filesNamedIn(image?.request)).toEqual([]);
+      for (const request of claimed.values())
+        expect(filesNamedIn(request)).toEqual([]);
     } finally {
       sqlite.close();
     }
