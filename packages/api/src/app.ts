@@ -61,6 +61,8 @@ import {
   zipEntryName,
   zipLength,
   zipStreamFrom,
+  openStored,
+  seal,
 } from "@onelight/core";
 import type { ContentBits, HashBits, ZipEntry } from "@onelight/core";
 import type {
@@ -2394,6 +2396,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .run();
   };
 
+  /* The two fields that carry a credential to somebody else's system. The
+     rest of the row -- host, port, the from address -- is configuration, and
+     sealing it would only make the settings page unreadable to its admin. */
   const readStoredMail = async (): Promise<StoredMailSettings | null> => {
     const rows = await env.db
       .select()
@@ -2402,11 +2407,26 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .all();
     const row = rows[0];
     if (!row) return null;
+    let stored: StoredMailSettings;
     try {
-      return JSON.parse(row.valueJson) as StoredMailSettings;
+      stored = JSON.parse(row.valueJson) as StoredMailSettings;
     } catch {
       return null;
     }
+    const key = env.config.SECRET_KEY;
+    const pass = await openStored(key, stored.pass);
+    const url = await openStored(key, stored.smtp_url);
+    /* A sealed value that will not open means SECRET_KEY changed. Every one
+       of them is unreadable at once, so the honest answer is that mail is not
+       configured -- not a 500 on the settings page, and certainly not sending
+       through a half-read config. */
+    if ((stored.pass && pass === null) || (stored.smtp_url && url === null)) {
+      console.warn(
+        "[onelight] the stored SMTP credential cannot be read; SECRET_KEY has changed since it was saved. Mail is disabled until the settings are entered again.",
+      );
+      return null;
+    }
+    return { ...stored, pass, smtp_url: url };
   };
 
   const maskedMailUrl = (
@@ -2504,21 +2524,28 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       );
     if (isSmtpConfigError(parsed)) throw errors.validation(parsed.error);
     const now = env.clock.now();
+    /* Sealed on the way in, so what lands in the row -- and therefore in every
+       backup and every dump of it -- is not the password an admin typed. The
+       config was validated above against the plaintext, because what is being
+       checked is whether these settings work. */
+    const key = env.config.SECRET_KEY;
+    const atRest: StoredMailSettings = {
+      ...next,
+      pass: next.pass === null ? null : await seal(key, next.pass),
+      smtp_url: next.smtp_url === null ? null : await seal(key, next.smtp_url),
+    };
+    const valueJson = JSON.stringify(atRest);
     await env.db
       .insert(appSettings)
       .values({
         key: MAIL_SETTINGS_KEY,
-        valueJson: JSON.stringify(next),
+        valueJson,
         updatedAt: now,
         updatedBy: actor.id,
       })
       .onConflictDoUpdate({
         target: appSettings.key,
-        set: {
-          valueJson: JSON.stringify(next),
-          updatedAt: now,
-          updatedBy: actor.id,
-        },
+        set: { valueJson, updatedAt: now, updatedBy: actor.id },
       })
       .run();
     env.mail?.reload();
