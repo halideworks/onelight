@@ -30,14 +30,14 @@ entirely serverless on Cloudflare Workers, D1 and R2.
   sending video to people is the line that would otherwise dominate: 1 TB
   stored costs about $15 a month and serving all of it costs nothing.
 - [Benchmarks](https://github.com/halideworks/onelight/wiki/Benchmarks) covers
-  encoding throughput and what the workers need to keep up. The methodology is
-  written down; the measurements are not taken yet, and the page says so
-  rather than offering a number nobody checked.
+  encoding throughput and what the workers need to keep up. Methodology only;
+  no measurements taken yet, and the page says so.
 
-Encoding is the one part that is never serverless: ffmpeg needs a machine, so
-a media worker is a container you run. It claims jobs over HTTP, encodes,
-uploads, and keeps nothing, so it can be a spare desktop or a spot instance
-that dies without consequence.
+Encoding always needs a machine, because ffmpeg does. A media worker is a
+container that claims jobs over HTTP, encodes, uploads and keeps nothing, so
+it can be a spare desktop, a VM, or a spot instance that dies without
+consequence. Cloudflare Containers can run it too, with caveats that
+[Encoding](https://github.com/halideworks/onelight/wiki/Encoding) sets out.
 
 ## Quick start with Docker
 
