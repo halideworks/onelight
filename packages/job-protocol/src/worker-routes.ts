@@ -23,12 +23,12 @@
  *     says nothing about any other job.
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { eq } from "drizzle-orm";
-import { hmacSha256Hex } from "@onelight/core";
+import { constantTimeEqual, hmacSha256Hex } from "@onelight/core";
 import { completeJob, failJob, heartbeatJob } from "@onelight/db";
 import type { AppDb } from "@onelight/db";
 import { jobs } from "@onelight/db/schema";
@@ -141,12 +141,19 @@ export const blobToken = (
     .update(`${mode}:${key}:${jobId}:${String(attempts)}`)
     .digest("hex");
 
+/* Compared through core's own constant-time helper rather than node's.
+ *
+ * This module is mounted on both targets, and `Buffer` and `timingSafeEqual`
+ * are node builtins that happen to be available under nodejs_compat -- which
+ * makes them a dependency on a compatibility flag for a comparison that is ten
+ * lines of arithmetic. Both are already hex of a known length, so decoding
+ * them buys nothing either: the strings compare in constant time directly. */
+const hexBytes = (value: string): Uint8Array =>
+  Uint8Array.from(value.toLowerCase(), (character) => character.charCodeAt(0));
+
 const hexMatches = (expected: string, presented: unknown): boolean => {
   if (typeof presented !== "string" || !HEX_64.test(presented)) return false;
-  return timingSafeEqual(
-    Buffer.from(presented.toLowerCase(), "hex"),
-    Buffer.from(expected, "hex"),
-  );
+  return constantTimeEqual(hexBytes(presented), hexBytes(expected));
 };
 
 const capabilitiesOf = (value: unknown): string[] =>
