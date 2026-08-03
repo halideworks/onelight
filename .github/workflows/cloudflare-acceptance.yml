@@ -134,6 +134,19 @@ jobs:
             sleep 5
           done
           test "$code" = "200" || { echo "the deployment never became healthy"; exit 1; }
+          # A 200 is not proof the Worker ran. The assets layer serves
+          # index.html for unmatched GETs under single-page-application
+          # not_found_handling, which is also a 200 and would mean the script
+          # never sees a request. So check what came back, not just that
+          # something did.
+          health=$(curl -s "$CI_URL/healthz" || true)
+          echo "healthz body: ${health}"
+          case "$health" in
+            *"<html"*|*"<!DOCTYPE"*|*"<!doctype"*)
+              echo "the assets layer answered /healthz, so the Worker is not being invoked"
+              exit 1
+              ;;
+          esac
           claim=$(curl -s -w '\n%{http_code}' -X POST "$CI_URL/api/v1/worker/claim" \
             -H 'content-type: application/json' \
             -H "x-onelight-signature: $(printf '0%.0s' $(seq 1 64))" \
