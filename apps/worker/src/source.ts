@@ -186,6 +186,120 @@ export const placeOutputs = async (
  * not take a body without one, and a store writing to a file wants to know
  * when what it was promised did not all arrive.
  */
+/* Above this, an output goes up in parts.
+ *
+ * The Workers runtime refuses a request body much past 100 MB, and a 4K proxy
+ * is routinely larger, so a single PUT cannot be the only way home. Well under
+ * the cap rather than at it: the limit is the whole request, and the margin
+ * costs nothing because a file under it takes the single PUT anyway.
+ *
+ * The node target has no such limit and does not need this, but the worker
+ * cannot tell which target it is talking to and does not have to: one rule for
+ * both, chosen by the only thing that matters, which is how big the file is. */
+export const MULTIPART_THRESHOLD = 64 * 1024 * 1024;
+
+const encodeKey = (key: string): string =>
+  key
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+
+const failed = async (key: string, response: Response): Promise<Error> =>
+  new Error(
+    `${key} could not be stored: ${String(response.status)} ${await response
+      .text()
+      .catch(() => "")}`.trim(),
+  );
+
+/**
+ * An output sent in parts, for one too large to be a single request body.
+ *
+ * Three steps against the one capability the claim handed out: start the
+ * upload, send each part, then name the parts that make up the object. The
+ * part size comes back from the server rather than being chosen here, because
+ * it is a property of the storage underneath and not of this process.
+ *
+ * Nothing is retried. A part that fails fails the job, which is then retried
+ * whole on some worker -- the same worker or another one -- and that is the
+ * behaviour every other failure here already has. Resuming an upload across
+ * attempts would mean an attempt inheriting authority from an earlier one,
+ * which is exactly what the capability is scoped to prevent.
+ */
+const uploadInParts = async (
+  template: string,
+  key: string,
+  file: string,
+  size: number,
+  options: {
+    serverUrl: string;
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+  },
+): Promise<void> => {
+  const send = options.fetchImpl ?? fetch;
+  const base = `${options.serverUrl.replace(/\/$/, "")}/`;
+  const at = (action: string, query = ""): URL =>
+    new URL(
+      `${template.replace("{action}", action).replace("{key}", encodeKey(key))}${query}`,
+      base,
+    );
+  const signal = () =>
+    AbortSignal.timeout(options.timeoutMs ?? SOURCE_TIMEOUT_MS);
+
+  const started = await send(at("create"), {
+    method: "POST",
+    signal: signal(),
+  });
+  if (!started.ok) throw await failed(key, started);
+  const upload = (await started.json()) as {
+    upload_id?: unknown;
+    part_size?: unknown;
+  };
+  const uploadId =
+    typeof upload.upload_id === "string" ? upload.upload_id : undefined;
+  const partSize =
+    typeof upload.part_size === "number" && upload.part_size > 0
+      ? upload.part_size
+      : undefined;
+  if (!uploadId || !partSize)
+    throw new Error(`${key} could not be started as a multipart upload.`);
+
+  const parts: Array<{ part: number; etag: string }> = [];
+  const whole = await openAsBlob(file);
+  for (
+    let offset = 0, partNo = 1;
+    offset < size;
+    offset += partSize, partNo++
+  ) {
+    const end = Math.min(offset + partSize, size);
+    const response = await send(
+      at(
+        "part",
+        `&upload=${encodeURIComponent(uploadId)}&part=${String(partNo)}`,
+      ),
+      { method: "PUT", body: whole.slice(offset, end), signal: signal() },
+    );
+    if (!response.ok) throw await failed(key, response);
+    const stored = (await response.json()) as { etag?: unknown };
+    if (typeof stored.etag !== "string" || !stored.etag)
+      throw new Error(
+        `${key} part ${String(partNo)} was stored without a tag.`,
+      );
+    parts.push({ part: partNo, etag: stored.etag });
+  }
+
+  const done = await send(
+    at("complete", `&upload=${encodeURIComponent(uploadId)}`),
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ parts }),
+      signal: signal(),
+    },
+  );
+  if (!done.ok) throw await failed(key, done);
+};
+
 export const uploadBlob = async (
   template: string,
   key: string,
@@ -194,14 +308,19 @@ export const uploadBlob = async (
     serverUrl: string;
     fetchImpl?: typeof fetch;
     timeoutMs?: number;
+    /* The multipart capability from the same claim. Absent only for a
+       deployment that never issued one, in which case a file too large for a
+       single body fails loudly at the server rather than silently here. */
+    multipartTemplate?: string | undefined;
+    threshold?: number;
   },
 ): Promise<void> => {
-  const encoded = key
-    .split("/")
-    .map((segment) => encodeURIComponent(segment))
-    .join("/");
+  const size = (await stat(file)).size;
+  const threshold = options.threshold ?? MULTIPART_THRESHOLD;
+  if (size > threshold && options.multipartTemplate)
+    return uploadInParts(options.multipartTemplate, key, file, size, options);
   const target = new URL(
-    template.replace("{key}", encoded),
+    template.replace("{key}", encodeKey(key)),
     `${options.serverUrl.replace(/\/$/, "")}/`,
   );
   const response = await (options.fetchImpl ?? fetch)(target, {
@@ -209,10 +328,5 @@ export const uploadBlob = async (
     body: await openAsBlob(file),
     signal: AbortSignal.timeout(options.timeoutMs ?? SOURCE_TIMEOUT_MS),
   });
-  if (!response.ok)
-    throw new Error(
-      `${key} could not be stored: ${String(response.status)} ${await response
-        .text()
-        .catch(() => "")}`.trim(),
-    );
+  if (!response.ok) throw await failed(key, response);
 };

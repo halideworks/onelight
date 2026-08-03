@@ -55,6 +55,21 @@ export type WorkerBlobStore = PumpBlobStore & {
     stream: ReadableStream,
     meta: { contentType?: string; size?: number },
   ): Promise<void>;
+  createMultipart(
+    key: string,
+    meta: { contentType?: string; size?: number },
+  ): Promise<{ uploadId: string; partSize: number }>;
+  putPart(
+    uploadId: string,
+    partNo: number,
+    stream: ReadableStream,
+    partLength?: number,
+  ): Promise<{ etag: string; size: number }>;
+  completeMultipart(
+    key: string,
+    uploadId: string,
+    parts: Array<{ partNo: number; etag: string }>,
+  ): Promise<void>;
 };
 
 /* Mirrors the skew the old push protocol allowed, and exists for the same
@@ -210,6 +225,19 @@ export const createWorkerRoutes = (options: {
         token: blobToken(secret ?? "", "put", scope, jobId, attempts),
       });
       return `/api/v1/worker/blobs/{key}?${query.toString()}`;
+    },
+    /* The same capability, signed the same way, for an object that cannot go
+       in one request body. Two placeholders rather than three URLs, because
+       a worker that may write a namespace may write every part of every
+       object in it -- there is nothing narrower to express. */
+    multipart: (scope, jobId, attempts) => {
+      const query = new URLSearchParams({
+        job: jobId,
+        attempt: String(attempts),
+        scope,
+        token: blobToken(secret ?? "", "put", scope, jobId, attempts),
+      });
+      return `/api/v1/worker/multipart/{action}/{key}?${query.toString()}`;
     },
   };
 
@@ -507,6 +535,133 @@ export const createWorkerRoutes = (options: {
       );
     }
     return c.json({ key, size: declared });
+  });
+
+  /**
+   * The same write, for an object that will not fit in one request.
+   *
+   * The Workers runtime caps a request body near 100 MB, and a 4K proxy is
+   * routinely larger, so the single PUT above cannot be the only way home.
+   * These three steps are the same capability as that PUT -- the token is the
+   * one signed over the job's namespace -- and every one of them re-checks the
+   * key against that scope, because holding an upload id must not widen what a
+   * job may write.
+   *
+   * The worker decides which path to take from the size of what it produced;
+   * nothing here needs to know which store is underneath, and both of them
+   * already implement these three calls.
+   */
+  const multipartGate = async (
+    c: Context,
+    key: string,
+  ): Promise<{ status: 400 | 401 | 403 | 404 | 409; error: string } | null> => {
+    const scope = c.req.query("scope") ?? "";
+    const refused = await blobGate(c, "put", key, scope);
+    if (refused) return refused;
+    if (key !== scope && !key.startsWith(scope))
+      return { status: 403, error: "that key is outside this job's scope" };
+    return null;
+  };
+
+  app.post("/api/v1/worker/multipart/create/:key{.+}", async (c) => {
+    if (!secret) return c.json({ error: "media processing is disabled" }, 503);
+    const key = c.req.param("key");
+    const refused = await multipartGate(c, key);
+    if (refused) return c.json({ error: refused.error }, refused.status);
+    try {
+      /* partSize comes back from the store rather than being chosen here: it
+         is a property of the storage, and the worker cuts its file to it. */
+      const created = await store.createMultipart(key, {});
+      return c.json({
+        upload_id: created.uploadId,
+        part_size: created.partSize,
+      });
+    } catch (error) {
+      return c.json(
+        {
+          error: `that upload could not be started: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        },
+        502,
+      );
+    }
+  });
+
+  app.put("/api/v1/worker/multipart/part/:key{.+}", async (c) => {
+    if (!secret) return c.json({ error: "media processing is disabled" }, 503);
+    const key = c.req.param("key");
+    const refused = await multipartGate(c, key);
+    if (refused) return c.json({ error: refused.error }, refused.status);
+    const uploadId = c.req.query("upload") ?? "";
+    const partNo = Number(c.req.query("part"));
+    if (!uploadId || !Number.isInteger(partNo) || partNo < 1)
+      return c.json(
+        { error: "an upload id and a part number are required" },
+        400,
+      );
+    /* Same rule as the single PUT: a length is required, not inferred, so a
+       part that did not all arrive fails here rather than corrupting the
+       object at completion. */
+    const declared = Number(c.req.header("content-length"));
+    if (!Number.isSafeInteger(declared) || declared < 0)
+      return c.json({ error: "a content-length is required" }, 411);
+    const body = c.req.raw.body;
+    if (!body) return c.json({ error: "no body" }, 400);
+    try {
+      const part = await store.putPart(uploadId, partNo, body, declared);
+      return c.json({ part: partNo, etag: part.etag, size: part.size });
+    } catch (error) {
+      return c.json(
+        {
+          error: `that part could not be stored: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        },
+        502,
+      );
+    }
+  });
+
+  app.post("/api/v1/worker/multipart/complete/:key{.+}", async (c) => {
+    if (!secret) return c.json({ error: "media processing is disabled" }, 503);
+    const key = c.req.param("key");
+    const refused = await multipartGate(c, key);
+    if (refused) return c.json({ error: refused.error }, refused.status);
+    const uploadId = c.req.query("upload") ?? "";
+    if (!uploadId) return c.json({ error: "an upload id is required" }, 400);
+    const body = asRecord(await c.req.text());
+    const listed = Array.isArray(body?.parts) ? body.parts : null;
+    if (!listed?.length)
+      return c.json({ error: "the parts of the upload are required" }, 400);
+    const parts: Array<{ partNo: number; etag: string }> = [];
+    for (const entry of listed) {
+      const part = entry as { part?: unknown; etag?: unknown };
+      if (
+        !Number.isInteger(part.part) ||
+        (part.part as number) < 1 ||
+        typeof part.etag !== "string" ||
+        !part.etag
+      )
+        return c.json({ error: "a part is missing its number or etag" }, 400);
+      parts.push({ partNo: part.part as number, etag: part.etag });
+    }
+    try {
+      await store.completeMultipart(key, uploadId, parts);
+    } catch (error) {
+      return c.json(
+        {
+          error: `that upload could not be completed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        },
+        502,
+      );
+    }
+    /* Deliberately says nothing about whether this counts as a rendition:
+       that is the completion request's business, and it checks the length and
+       the checksum the worker reported against what the store now holds. */
+    return c.json({ key, parts: parts.length });
   });
 
   /* Nothing else lives under this prefix, and a stray path must not fall
