@@ -1946,6 +1946,56 @@ const applyProbeResult = async (
   return;
 };
 
+/* One frame of a proxy, decoded for a comment report.
+ *
+ * Nothing is registered when it lands: the PNG is scratch that the export
+ * reads back and deletes. The job exists so the frame is rendered by whoever
+ * holds a decoder rather than by the process that happens to be assembling
+ * the report, which is what let the export dial a single worker directly. */
+const planStillJob = (
+  payload: JobPayload,
+  sourcePath: string,
+  blobRoot: string,
+): { request: Record<string, unknown> } => {
+  const outputKey =
+    typeof payload.output_key === "string" ? payload.output_key : undefined;
+  const frame = payload.frame;
+  if (!outputKey || typeof frame !== "number" || !Number.isInteger(frame))
+    throw new Error("Still payload is missing output_key or frame.");
+  const rate = recordValue(payload.rate);
+  const usableRate =
+    rate && positiveInteger(rate.num) && positiveInteger(rate.den)
+      ? { num: rate.num as number, den: rate.den as number }
+      : undefined;
+  return {
+    request: {
+      kind: "still",
+      source_path: sourcePath,
+      output_path: path.join(blobRoot, outputKey),
+      frame,
+      ...(usableRate ? { rate: usableRate } : {}),
+    },
+  };
+};
+
+const applyStillResult = async (
+  payload: JobPayload,
+  state: WorkerResponse,
+  blobRoot: string,
+): Promise<void> => {
+  if (state.status !== "complete")
+    throw new Error(state.error ?? "Still extraction failed.");
+  const outputKey =
+    typeof payload.output_key === "string" ? payload.output_key : undefined;
+  if (!outputKey) throw new Error("Still payload is missing output_key.");
+  /* The frame is proven here rather than where it is read: a zero byte PNG
+     would otherwise reach the report as a corrupt image block instead of as
+     the text-only fallback that a failed still is meant to produce. */
+  const written = await stat(path.join(blobRoot, outputKey)).catch(() => null);
+  if (!written?.size)
+    throw new Error("The still job wrote nothing at its output key.");
+};
+
 const processJob = async (
   db: AppDb,
   job: typeof jobs.$inferSelect,
@@ -2013,6 +2063,22 @@ const processJob = async (
       workerId,
     );
     await applyWatermarkResult(db, job, payload, versionId, state, blobRoot);
+    return;
+  }
+  if (job.kind === "still") {
+    /* Always plannable, unlike the other kinds: the payload is written by the
+       export that is waiting on it, not reconstructed from state that may have
+       moved since. */
+    const plan = planStillJob(payload, sourcePath, blobRoot);
+    const state = await runOnWorker(
+      db,
+      job,
+      plan.request,
+      workerUrl,
+      workerSecret,
+      workerId,
+    );
+    await applyStillResult(payload, state, blobRoot);
     return;
   }
   if (job.kind !== "transcode")
@@ -2171,8 +2237,100 @@ interface ExportRow {
 }
 
 // Stills decode linearly up to the requested frame (accurate seek), so the
-// per-still deadline is generous but far below the transcode ceiling.
+// deadline is generous but far below the transcode ceiling. It now covers the
+// whole batch rather than one still at a time, because the batch renders
+// concurrently across however many workers exist.
 const STILL_JOB_TIMEOUT_MS = 10 * 60_000;
+const STILL_SETTLE_POLL_MS = 250;
+
+/* Queue a report still, or leave alone the one already queued under this key.
+ *
+ * Priority above the media pipeline: a report that waits behind a morning's
+ * uploads is a report that hits its deadline and ships text-only blocks. Two
+ * attempts, because a frame that will not decode fails the same way twice and
+ * the report should degrade rather than wait for a third try. */
+const enqueueExportStill = async (
+  db: AppDb,
+  key: string,
+  payload: JobPayload,
+): Promise<void> => {
+  const existing = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(eq(jobs.idempotencyKey, key))
+    .limit(1)
+    .all();
+  if (existing.length) return;
+  const now = Date.now();
+  await db
+    .insert(jobs)
+    .values({
+      id: new UlidGenerator().ulid(),
+      kind: "still",
+      payloadJson: JSON.stringify(payload),
+      idempotencyKey: key,
+      status: "queued",
+      priority: 5,
+      capabilityJson: "{}",
+      maxAttempts: 2,
+      attempts: 0,
+      runAfter: now,
+      createdAt: now,
+      startedAt: null,
+      heartbeatAt: null,
+      leaseExpiresAt: null,
+      finishedAt: null,
+      error: null,
+      workerId: null,
+    })
+    .run();
+};
+
+/* Wait for a batch of jobs, named by idempotency key, and answer which of them
+   completed. A job that dies, or that is still running when the deadline
+   passes, is simply absent from the answer: its comment becomes a text-only
+   block, exactly as it did when a still failed under the old direct call. */
+const settledStillJobs = async (
+  db: AppDb,
+  keys: string[],
+  deadline: number,
+): Promise<Set<string>> => {
+  const complete = new Set<string>();
+  let pending = keys;
+  while (pending.length) {
+    const rows = await db
+      .select({ key: jobs.idempotencyKey, status: jobs.status })
+      .from(jobs)
+      .where(inArray(jobs.idempotencyKey, pending))
+      .all();
+    const stillRunning: string[] = [];
+    for (const row of rows) {
+      if (row.status === "complete") complete.add(row.key);
+      else if (row.status !== "dead") stillRunning.push(row.key);
+    }
+    /* A key with no row at all is finished as far as this wait is concerned:
+       something deleted it, and nothing is going to render it now. */
+    pending = stillRunning;
+    if (!pending.length || Date.now() >= deadline) break;
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, STILL_SETTLE_POLL_MS),
+    );
+  }
+  return complete;
+};
+
+/* The report is built or abandoned, so its stills are of no further interest.
+   Rows are dropped rather than left complete: a retried export re-enqueues the
+   same keys, and finding them already complete -- with the PNGs long deleted --
+   would silently give every comment a text-only block. A row that is somehow
+   still running is dropped too, and its worker's completion lands on nothing. */
+const discardExportStillJobs = async (
+  db: AppDb,
+  keys: string[],
+): Promise<void> => {
+  if (!keys.length) return;
+  await db.delete(jobs).where(inArray(jobs.idempotencyKey, keys)).run();
+};
 
 const summarizeFilter = (filter: ExportFilter): string => {
   const parts: string[] = [];
@@ -2199,7 +2357,7 @@ const buildPdfExport = async (
   db: AppDb,
   job: typeof exportJobs.$inferSelect,
   blobRoot: string,
-  media: { workerUrl?: string | undefined; workerSecret?: string | undefined },
+  mediaEnabled: boolean,
   allRows: ExportRow[],
   selected: ExportRow[],
 ): Promise<Uint8Array> => {
@@ -2237,10 +2395,9 @@ const buildPdfExport = async (
       .limit(1)
       .all()
   )[0];
-  const workerConfigured = Boolean(media.workerUrl && media.workerSecret);
-  if (!workerConfigured)
+  if (!mediaEnabled)
     console.warn(
-      `[onelight] pdf export ${job.id}: media worker is not configured; the report falls back to text-only blocks.`,
+      `[onelight] pdf export ${job.id}: media processing is not configured; the report falls back to text-only blocks.`,
     );
   const stillsDir = path.join(blobRoot, "exports", `.stills-${job.id}`);
   const proxyByVersion = new Map<string, string | undefined>();
@@ -2263,7 +2420,48 @@ const buildPdfExport = async (
     proxyByVersion.set(versionId, proxy?.blobKey);
     return proxy?.blobKey;
   };
+  /* Every frame the report wants, queued in one pass before any of them is
+     waited on. Under the old direct call these were one round trip each, in
+     comment order, against one configured worker; as jobs they render
+     concurrently on whatever workers exist, and a report is no longer a
+     reason for the server to hold a worker's address. */
+  const stillKeyFor = (commentId: string): string =>
+    `still:${job.id}:${commentId}`;
+  const stillKeys: string[] = [];
   try {
+    if (mediaEnabled)
+      for (const row of topLevel) {
+        const { comment, version } = row;
+        if (comment.frameIn === null || version.transcodeStatus !== "ready")
+          continue;
+        const proxyKey = await proxyFor(version.id);
+        if (!proxyKey) continue;
+        const key = stillKeyFor(comment.id);
+        await enqueueExportStill(db, key, {
+          version_id: version.id,
+          blob_key: proxyKey,
+          output_key: path.posix.join(
+            "exports",
+            `.stills-${job.id}`,
+            `${comment.id}.png`,
+          ),
+          frame: comment.frameIn,
+          rate:
+            version.frameRateNum && version.frameRateDen
+              ? { num: version.frameRateNum, den: version.frameRateDen }
+              : { num: 24, den: 1 },
+        });
+        stillKeys.push(key);
+      }
+    const renderedStills = stillKeys.length
+      ? await settledStillJobs(db, stillKeys, Date.now() + STILL_JOB_TIMEOUT_MS)
+      : new Set<string>();
+    if (stillKeys.length > renderedStills.size)
+      console.warn(
+        `[onelight] pdf export ${job.id}: ${String(
+          stillKeys.length - renderedStills.size,
+        )} of ${String(stillKeys.length)} stills did not render in time; those comments fall back to text-only blocks.`,
+      );
     const reportComments: ReportComment[] = [];
     for (const row of topLevel) {
       const comment = row.comment;
@@ -2273,40 +2471,15 @@ const buildPdfExport = async (
           ? { num: version.frameRateNum, den: version.frameRateDen }
           : { num: 24, den: 1 };
       let stillPng: Uint8Array | undefined;
-      const proxyKey =
-        workerConfigured &&
-        comment.frameIn !== null &&
-        version.transcodeStatus === "ready"
-          ? await proxyFor(version.id)
-          : undefined;
-      if (proxyKey && comment.frameIn !== null) {
-        const stillPath = path.join(stillsDir, `${comment.id}.png`);
+      if (renderedStills.has(stillKeyFor(comment.id))) {
         try {
-          await sendJob(
-            media.workerUrl as string,
-            media.workerSecret as string,
-            {
-              job_id: `still-${job.id}-${comment.id}`,
-              kind: "still",
-              source_path: path.join(blobRoot, proxyKey),
-              output_path: stillPath,
-              frame: comment.frameIn,
-              rate,
-            },
+          stillPng = new Uint8Array(
+            await readFile(path.join(stillsDir, `${comment.id}.png`)),
           );
-          const state = await pollWorker(
-            media.workerUrl as string,
-            media.workerSecret as string,
-            `still-${job.id}-${comment.id}`,
-            STILL_JOB_TIMEOUT_MS,
-          );
-          if (state.status !== "complete")
-            throw new Error(state.error ?? "Still extraction failed.");
-          stillPng = new Uint8Array(await readFile(stillPath));
         } catch (error) {
           stillPng = undefined;
           console.warn(
-            `[onelight] pdf export ${job.id}: still for comment ${comment.id} failed, falling back to a text-only block: ${
+            `[onelight] pdf export ${job.id}: still for comment ${comment.id} could not be read, falling back to a text-only block: ${
               error instanceof Error ? error.message : String(error)
             }`,
           );
@@ -2369,6 +2542,7 @@ const buildPdfExport = async (
     });
   } finally {
     await rm(stillsDir, { recursive: true, force: true });
+    await discardExportStillJobs(db, stillKeys);
   }
 };
 
@@ -2452,7 +2626,7 @@ const processExportJob = async (
   db: AppDb,
   job: typeof exportJobs.$inferSelect,
   blobRoot: string,
-  media: { workerUrl?: string | undefined; workerSecret?: string | undefined },
+  mediaEnabled: boolean,
 ): Promise<void> => {
   const filter = parseObject(job.filtersJson) as ExportFilter;
   const rows = await db
@@ -2607,7 +2781,14 @@ const processExportJob = async (
   let output: string | Uint8Array;
   let outputName: string;
   if (job.format === "pdf") {
-    output = await buildPdfExport(db, job, blobRoot, media, rows, selected);
+    output = await buildPdfExport(
+      db,
+      job,
+      blobRoot,
+      mediaEnabled,
+      rows,
+      selected,
+    );
     outputName = "onelight-comment-report.pdf";
   } else {
     const extension = exportExtension(job.format);
@@ -2787,10 +2968,12 @@ export const startWorkerPump = (
             ),
           )
           .run();
-        await processExportJob(db, pendingExport, options.blobRoot, {
-          workerUrl: mediaEnabled ? options.workerUrl : undefined,
-          workerSecret: mediaEnabled ? options.workerSecret : undefined,
-        });
+        await processExportJob(
+          db,
+          pendingExport,
+          options.blobRoot,
+          mediaEnabled,
+        );
       } catch (error) {
         await db
           .update(exportJobs)
