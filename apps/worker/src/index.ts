@@ -38,20 +38,19 @@ import type {
   WatermarkSpec,
   WatermarkTokens,
 } from "@onelight/worker";
-import { canWriteInto, fetchSource, uploadBlob } from "./source.js";
-import type { Fetched, SourceRef } from "./source.js";
+import {
+  canWriteInto,
+  fetchSource,
+  placeOutputs,
+  uploadBlob,
+} from "./source.js";
+import type {
+  Fetched,
+  PlacedOutput,
+  PlannedOutput,
+  SourceRef,
+} from "./source.js";
 
-interface WorkerOutput {
-  kind: string;
-  /* Where this output belongs in storage, and where it is written today. The
-     key is what the worker reports back and what lands on a rendition row; the
-     path is how it reaches the bytes while server and worker share a volume.
-     P0-2 replaces the path with a presigned destination; the key does not
-     change, because it never described a filesystem. */
-  key: string;
-  path: string;
-  height?: number;
-}
 interface FingerprintSource {
   id: string;
   key?: string;
@@ -65,7 +64,7 @@ interface WorkerRequest {
   source_path?: string;
   source_url?: string;
   media_info?: MediaInfo;
-  outputs?: WorkerOutput[];
+  outputs?: PlannedOutput[];
   upload_url?: string;
   output_key?: string;
   output_path?: string;
@@ -140,37 +139,6 @@ const json = (
 const sourceFile = (reference: SourceRef, label: string): Promise<Fetched> =>
   fetchSource(reference, { workRoot, serverUrl, label });
 
-/**
- * Where this worker will write what it produces, and whether it has to send it.
- *
- * The envelope names a place on the shared volume. If this process can write
- * there, that is where the rendition goes and nothing has to move afterwards.
- * If it cannot -- another machine, or the Workers target, where there is no
- * volume at all -- it encodes into its own scratch and uploads each output
- * when it is finished.
- */
-const destinationsFor = async (
-  body: WorkerRequest,
-): Promise<{ outputs: WorkerOutput[]; sending: boolean }> => {
-  const outputs = body.outputs ?? [];
-  /* A probe of a video asks for nothing to be written, so there is nothing to
-     place and nothing to send. Deciding otherwise would demand an upload URL
-     for a job that produces no bytes. */
-  if (outputs.length === 0) return { outputs, sending: false };
-  if (await canWriteInto(path.dirname(outputs[0]?.path ?? "")))
-    return { outputs, sending: false };
-  /* Scratch that mirrors the key, so a PDF's pages/ nesting and the sprite's
-     cue sheet still land beside the output they belong to, and the key each
-     file maps back to is unchanged. */
-  return {
-    outputs: outputs.map((output) => ({
-      ...output,
-      path: path.join(workRoot, body.job_id, output.key),
-    })),
-    sending: true,
-  };
-};
-
 /* Sending a single output where the envelope said outputs go, or nothing at
    all when the file is already in place on a shared volume. */
 const senderFor = (
@@ -218,7 +186,7 @@ const describeFile = async (
  * of the output they belong to. A path that matches nothing planned is not
  * something the server asked for, and is refused rather than guessed at.
  */
-const keyForPath = (outputs: WorkerOutput[], file: string): string => {
+const keyForPath = (outputs: PlacedOutput[], file: string): string => {
   const resolved = path.resolve(file);
   const exact = outputs.find(
     (output) => path.resolve(output.path) === resolved,
@@ -248,7 +216,7 @@ const keyForPath = (outputs: WorkerOutput[], file: string): string => {
  * question, which is only possible while the two processes share a volume.
  */
 const describeRenditions = async (
-  outputs: WorkerOutput[],
+  outputs: PlacedOutput[],
   produced: Array<{ kind: string; key: string; meta: Record<string, unknown> }>,
   send: ((key: string, file: string) => Promise<void>) | null,
 ): Promise<
@@ -296,7 +264,7 @@ const describeRenditions = async (
 
 const runOutputs = async (
   body: WorkerRequest,
-  outputs: WorkerOutput[],
+  outputs: PlacedOutput[],
   mediaInfo: MediaInfo,
   source: string,
 ) => {
@@ -496,7 +464,10 @@ const runJobAgainst = async (
     };
   }
   const mediaInfo = body.media_info ?? (await probeFile(source));
-  const { outputs, sending } = await destinationsFor(body);
+  const { outputs, sending } = await placeOutputs(body.outputs ?? [], {
+    workRoot,
+    jobId: body.job_id,
+  });
   const send = senderFor(body, sending);
   if (body.kind === "probe") {
     /* A probe that arrives carrying outputs is a still: its ladder does not

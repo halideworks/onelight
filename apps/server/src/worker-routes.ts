@@ -158,10 +158,11 @@ const asRecord = (value: string): Record<string, unknown> | null => {
 /**
  * The worker-facing routes, mounted by the server process.
  *
- * `blobRoot` is here because planning a job still resolves source and output
- * paths against it; `store` is how the result is checked, because a completion
- * is checked against stored objects and not against the server's own disk.
- * When P0-2 replaces the paths with presigned URLs, blobRoot is what leaves.
+ * `blobRoot` is here so a claim can tell a worker sharing this volume where the
+ * keys it was given are today; a deployment whose storage is not a mounted
+ * filesystem leaves it out and the envelope carries keys and URLs alone.
+ * `store` is how the result is checked, because a completion is checked against
+ * stored objects and not against the server's own disk.
  */
 export const createWorkerRoutes = (options: {
   db: AppDb;

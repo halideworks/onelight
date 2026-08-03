@@ -116,6 +116,65 @@ export const canWriteInto = async (directory: string): Promise<boolean> => {
   }
 };
 
+/* What the envelope asks for: a key, which is where the output belongs in
+   storage, and on a deployment whose storage this process might share, the file
+   that key is today. The path is optional because it is the deployment's
+   addition and not the job's -- a Workers deployment has no filesystem to name. */
+export interface PlannedOutput {
+  kind: string;
+  key: string;
+  path?: string;
+  height?: number;
+}
+
+/* The same output once this process has decided where it will write it. */
+export interface PlacedOutput extends PlannedOutput {
+  path: string;
+}
+
+/**
+ * Where this worker will write what it produces, and whether it has to send it.
+ *
+ * If the envelope named files and this process can write where they go, that is
+ * where the renditions go and nothing has to move afterwards. If it named none
+ * -- storage the server does not mount -- or named files this process cannot
+ * write, it encodes into its own scratch and uploads each output when it is
+ * finished.
+ *
+ * An envelope with no paths in it has to be read as "you cannot write in
+ * place", and not merely fail the writability check by accident: the empty
+ * string has a dirname of `.`, so a worker with a writable working directory
+ * would otherwise be told it could write where the server had named nowhere.
+ */
+export const placeOutputs = async (
+  outputs: PlannedOutput[],
+  options: { workRoot: string; jobId: string },
+): Promise<{ outputs: PlacedOutput[]; sending: boolean }> => {
+  /* A probe of a video asks for nothing to be written, so there is nothing to
+     place and nothing to send. Deciding otherwise would demand an upload URL
+     for a job that produces no bytes. */
+  if (outputs.length === 0) return { outputs: [], sending: false };
+  if (
+    outputs.every(
+      (output): output is PlacedOutput => typeof output.path === "string",
+    )
+  ) {
+    const first = outputs[0];
+    if (first && (await canWriteInto(path.dirname(first.path))))
+      return { outputs, sending: false };
+  }
+  /* Scratch that mirrors the key, so a PDF's pages/ nesting and the sprite's
+     cue sheet still land beside the output they belong to, and the key each
+     file maps back to is unchanged. */
+  return {
+    outputs: outputs.map((output) => ({
+      ...output,
+      path: path.join(options.workRoot, options.jobId, output.key),
+    })),
+    sending: true,
+  };
+};
+
 /**
  * A file this job produced, put where the server said outputs go.
  *

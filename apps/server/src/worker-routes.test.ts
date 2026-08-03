@@ -15,6 +15,7 @@ import {
 } from "@onelight/db";
 import { renditions } from "@onelight/db/schema";
 import { createWorkerRoutes } from "./worker-routes.js";
+import { claimWorkerJob } from "./worker-pump.js";
 
 const SECRET = "worker-secret-for-tests";
 
@@ -217,6 +218,142 @@ const claimJob = async (
   expect(response.status).toBe(200);
   return (await response.json()) as ClaimResponse;
 };
+
+/* A second asset whose probe carries outputs: a still ladder does not depend
+   on what the probe finds, so an image is planned and probed in one job, which
+   is the only job kind whose envelope names more than one destination. */
+const seedImage = async (db: ReturnType<typeof createNodeDb>["db"]) => {
+  await db
+    .insert(uploadSessions)
+    .values({
+      id: "upload-2",
+      workspaceId: "ws-1",
+      projectId: "project-1",
+      createdBy: "user-1",
+      clientFilename: "still.jpg",
+      relativePath: "",
+      size: 100,
+      blobKey: "originals/still.jpg",
+      status: "completed",
+      createdAt: 1,
+      completedAt: 1,
+    })
+    .run();
+  await db
+    .insert(assets)
+    .values({
+      id: "asset-2",
+      projectId: "project-1",
+      name: "Still",
+      kind: "image",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    .run();
+  await db
+    .insert(assetVersions)
+    .values({
+      id: "version-2",
+      assetId: "asset-2",
+      uploadSessionId: "upload-2",
+      versionNo: 1,
+      originalBlobKey: "originals/still.jpg",
+      originalFilename: "still.jpg",
+      size: 100,
+      checksumCrc32c: "",
+      uploadedBy: "user-1",
+      transcodeStatus: "pending",
+      createdAt: 1,
+    })
+    .run();
+  await db
+    .insert(jobs)
+    .values({
+      id: "job-image",
+      kind: "probe",
+      payloadJson: JSON.stringify({
+        workspace_id: "ws-1",
+        project_id: "project-1",
+        version_id: "version-2",
+        blob_key: "originals/still.jpg",
+      }),
+      idempotencyKey: "probe:version-2",
+      status: "queued",
+      priority: 0,
+      capabilityJson: "{}",
+      maxAttempts: 3,
+      attempts: 0,
+      runAfter: Date.now(),
+      createdAt: Date.now(),
+    })
+    .run();
+};
+
+/* Every string under a key that names a file, wherever it is nested. */
+const filesNamedIn = (value: unknown): string[] => {
+  if (Array.isArray(value)) return value.flatMap(filesNamedIn);
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value as Record<string, unknown>).flatMap(
+    ([key, nested]) =>
+      (key === "path" || key.endsWith("_path")) && typeof nested === "string"
+        ? [nested]
+        : filesNamedIn(nested),
+  );
+};
+
+describe("the files a claim names", () => {
+  /* The plans describe storage and nothing else, so the paths are the claim's
+     addition, made where the deployment is known. Asserted here because a
+     mistake is invisible in a running stack: a worker handed the wrong path
+     finds nothing there, falls back to the URL, and produces the same
+     rendition a little more slowly. */
+  it("tells a worker on the volume where each key is today", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueProbe(db);
+      await seedImage(db);
+      const video = await claimWorkerJob(db, "/blobs", "w-1", ["cpu"]);
+      expect(video?.request).toMatchObject({
+        source_key: "originals/picture.mov",
+        source_path: "/blobs/originals/picture.mov",
+      });
+      const image = await claimWorkerJob(db, "/blobs", "w-1", ["cpu"]);
+      expect(image?.job.id).toBe("job-image");
+      const outputs = image?.request.outputs as Array<Record<string, unknown>>;
+      expect(outputs.length).toBeGreaterThan(0);
+      /* Each output's file is its key under the root, and nothing else: the
+         two are one definition now, so they cannot describe different files. */
+      for (const output of outputs)
+        expect(output.path).toBe(`/blobs/${String(output.key)}`);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("names no file at all where storage is not a mounted filesystem", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueProbe(db);
+      await seedImage(db);
+      /* What the Workers target claims with. The envelope has to be usable
+         without a path in it, because there is no path to put there. */
+      const video = await claimWorkerJob(db, undefined, "w-1", ["cpu"]);
+      const image = await claimWorkerJob(db, undefined, "w-1", ["cpu"]);
+      expect(video?.request.source_key).toBe("originals/picture.mov");
+      expect(
+        (image?.request.outputs as unknown[] | undefined)?.length,
+      ).toBeGreaterThan(0);
+      expect(filesNamedIn(video?.request)).toEqual([]);
+      expect(filesNamedIn(image?.request)).toEqual([]);
+    } finally {
+      sqlite.close();
+    }
+  });
+});
 
 describe("the worker claim", () => {
   it("refuses a body that is not signed with the worker secret", async () => {
