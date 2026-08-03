@@ -500,8 +500,6 @@ const planWatermarkJob = async (
   job: typeof jobs.$inferSelect,
   payload: JobPayload,
   versionId: string,
-  sourcePath: string,
-  blobRoot: string,
 ): Promise<JobPlan> => {
   const target = await watermarkTarget(db, job, payload);
   if (!target) return null;
@@ -518,14 +516,11 @@ const planWatermarkJob = async (
     version?.frameRateNum && version?.frameRateDen
       ? { num: version.frameRateNum, den: version.frameRateDen }
       : undefined;
-  const outputPath = path.join(blobRoot, outputKey);
   return {
     request: {
       kind: "watermark",
       upload_scope: outputKey,
-      source_path: sourcePath,
       output_key: outputKey,
-      output_path: outputPath,
       spec,
       // The burned path is per share, not per viewer, so the identity tokens
       // resolve to the share; {email} and {name} stay empty until a per-viewer
@@ -1617,7 +1612,6 @@ const stringIds = (value: unknown): string[] =>
 const planFingerprintJob = async (
   db: AppDb,
   payload: JobPayload,
-  blobRoot: string,
 ): Promise<JobPlan> => {
   const ids = stringIds(payload.upload_ids);
   const versionIds = stringIds(payload.version_ids);
@@ -1639,16 +1633,8 @@ const planFingerprintJob = async (
   const sources = [
     ...rows
       .filter((row) => row.status === "completed")
-      .map((row) => ({
-        id: row.id,
-        key: row.blobKey,
-        path: path.join(blobRoot, row.blobKey),
-      })),
-    ...versionRows.map((row) => ({
-      id: row.id,
-      key: row.originalBlobKey,
-      path: path.join(blobRoot, row.originalBlobKey),
-    })),
+      .map((row) => ({ id: row.id, key: row.blobKey })),
+    ...versionRows.map((row) => ({ id: row.id, key: row.originalBlobKey })),
   ];
   if (!sources.length) return null;
   return { request: { kind: "fingerprint", sources } };
@@ -1722,8 +1708,6 @@ const planTranscodeJob = async (
   db: AppDb,
   payload: JobPayload,
   versionId: string,
-  sourcePath: string,
-  blobRoot: string,
 ): Promise<JobPlan> => {
   const version = (
     await db
@@ -1766,18 +1750,13 @@ const planTranscodeJob = async (
   }
   const outputs = planned.map((entry) => ({
     kind: entry.kind,
-    /* Both, for now. The key is what the worker reports and what lands on the
-       rendition row; the path is how it reaches the bytes today. P0-2 replaces
-       the path with a presigned destination and the key stays as it is. */
     key: `${renditionPrefix(version.id)}${entry.filename}`,
-    path: path.join(blobRoot, "renditions", version.id, entry.filename),
     ...(entry.height === undefined ? {} : { height: entry.height }),
   }));
   return {
     request: {
       kind: "transcode",
       upload_scope: renditionPrefix(version.id),
-      source_path: sourcePath,
       media_info: mediaInfo,
       outputs,
     },
@@ -1818,8 +1797,6 @@ const planProbeJob = async (
   db: AppDb,
   payload: JobPayload,
   versionId: string,
-  sourcePath: string,
-  blobRoot: string,
 ): Promise<JobPlan> => {
   const assetKind = await assetKindFor(db, payload, versionId);
   if (assetKind === "pdf" || assetKind === "file") {
@@ -1861,7 +1838,6 @@ const planProbeJob = async (
         }).map((entry) => ({
           kind: entry.kind,
           key: `${renditionPrefix(versionId)}${entry.filename}`,
-          path: path.join(blobRoot, "renditions", versionId, entry.filename),
         }))
       : [];
   return {
@@ -1870,7 +1846,6 @@ const planProbeJob = async (
       ...(stillOutputs.length
         ? { upload_scope: renditionPrefix(versionId) }
         : {}),
-      source_path: sourcePath,
       ...(stillOutputs.length ? { outputs: stillOutputs } : {}),
     },
   };
@@ -1991,8 +1966,6 @@ const applyProbeResult = async (
  * the report, which is what let the export dial a single worker directly. */
 const planStillJob = (
   payload: JobPayload,
-  sourcePath: string,
-  blobRoot: string,
 ): { request: Record<string, unknown> } => {
   const outputKey =
     typeof payload.output_key === "string" ? payload.output_key : undefined;
@@ -2008,9 +1981,7 @@ const planStillJob = (
     request: {
       kind: "still",
       upload_scope: outputKey,
-      source_path: sourcePath,
       output_key: outputKey,
-      output_path: path.join(blobRoot, outputKey),
       frame,
       ...(usableRate ? { rate: usableRate } : {}),
     },
@@ -2046,20 +2017,22 @@ const applyStillResult = async (
  * the payload and the database.
  *
  * Null means the job is moot (its share was revoked, its uploads vanished):
- * there is nothing for a worker to do, and the caller completes it. */
+ * there is nothing for a worker to do, and the caller completes it.
+ *
+ * A plan names storage and nothing else. Every source and every output is a
+ * key, because a key is true wherever the bytes live; where those keys land on
+ * a filesystem is a property of the deployment, not of the job, and is stamped
+ * on at the claim by `withLocalPaths`. */
 const planJob = async (
   db: AppDb,
   job: typeof jobs.$inferSelect,
   payload: JobPayload,
-  blobRoot: string,
 ): Promise<JobPlan> => {
-  if (job.kind === "fingerprint")
-    return planFingerprintJob(db, payload, blobRoot);
+  if (job.kind === "fingerprint") return planFingerprintJob(db, payload);
   const sourceKey = payload.blob_key;
   const versionId = payload.version_id;
   if (!sourceKey || !versionId)
     throw new Error("Job payload is missing blob_key or version_id.");
-  const sourcePath = path.join(blobRoot, sourceKey);
   /* Every job of these kinds reads one source, so the key is stamped on the
      envelope here rather than in each plan: the claim turns it into something
      the worker can fetch, and a worker that cannot see the volume has no other
@@ -2067,22 +2040,15 @@ const planJob = async (
   const withSource = (plan: JobPlan): JobPlan =>
     plan && { request: { source_key: sourceKey, ...plan.request } };
   if (job.kind === "probe")
-    return withSource(
-      await planProbeJob(db, payload, versionId, sourcePath, blobRoot),
-    );
+    return withSource(await planProbeJob(db, payload, versionId));
   if (job.kind === "watermark")
-    return withSource(
-      await planWatermarkJob(db, job, payload, versionId, sourcePath, blobRoot),
-    );
+    return withSource(await planWatermarkJob(db, job, payload, versionId));
   /* Always plannable, unlike the others: a still's payload is written by the
      export waiting on it, not reconstructed from state that may have moved. */
-  if (job.kind === "still")
-    return withSource(planStillJob(payload, sourcePath, blobRoot));
+  if (job.kind === "still") return withSource(planStillJob(payload));
   if (job.kind !== "transcode")
     throw new Error(`Unsupported worker job kind: ${job.kind}.`);
-  return withSource(
-    await planTranscodeJob(db, payload, versionId, sourcePath, blobRoot),
-  );
+  return withSource(await planTranscodeJob(db, payload, versionId));
 };
 
 /** What a worker reported, written down. Throwing fails the job. */
@@ -2177,9 +2143,46 @@ const withBlobUrls = (
   return signed;
 };
 
+/**
+ * Every key in an envelope, given the file it is today on a shared volume.
+ *
+ * The mirror of `withBlobUrls`, and deliberately the same shape: the plan says
+ * which objects a job reads and writes, and each way of reaching those objects
+ * is added here, where the deployment is known. This is the node target's
+ * addition. A deployment whose storage is not a mounted filesystem -- the
+ * Workers target -- passes no blob root and the envelope goes out without a
+ * path in it, which is what the worker in the detached CI leg already runs
+ * against.
+ *
+ * Paths are derived from the keys rather than carried alongside them, so there
+ * is one definition of where a key lives and the two cannot drift.
+ */
+const withLocalPaths = (
+  request: Record<string, unknown>,
+  blobRoot: string,
+): Record<string, unknown> => {
+  const local = { ...request };
+  const fileFor = (key: string): string => path.join(blobRoot, key);
+  if (typeof local.source_key === "string")
+    local.source_path = fileFor(local.source_key);
+  if (typeof local.output_key === "string")
+    local.output_path = fileFor(local.output_key);
+  const placed = (entry: unknown): unknown =>
+    entry &&
+    typeof entry === "object" &&
+    typeof (entry as { key?: unknown }).key === "string"
+      ? { ...entry, path: fileFor((entry as { key: string }).key) }
+      : entry;
+  if (Array.isArray(local.outputs)) local.outputs = local.outputs.map(placed);
+  if (Array.isArray(local.sources)) local.sources = local.sources.map(placed);
+  return local;
+};
+
 export const claimWorkerJob = async (
   db: AppDb,
-  blobRoot: string,
+  /* Undefined where storage is not a filesystem this process has mounted; the
+     envelope then names keys and URLs only. */
+  blobRoot: string | undefined,
   workerId: string,
   capabilities: string[],
   urls?: BlobUrls,
@@ -2196,7 +2199,7 @@ export const claimWorkerJob = async (
     const payload = parsePayload(job.payloadJson);
     let plan: JobPlan;
     try {
-      plan = await planJob(db, job, payload, blobRoot);
+      plan = await planJob(db, job, payload);
     } catch (error) {
       await failJob(
         db,
@@ -2213,9 +2216,12 @@ export const claimWorkerJob = async (
       await completeJob(db, job.id, workerId, Date.now());
       continue;
     }
+    const reachable = blobRoot
+      ? withLocalPaths(plan.request, blobRoot)
+      : plan.request;
     return {
       job,
-      request: urls ? withBlobUrls(plan.request, job, urls) : plan.request,
+      request: urls ? withBlobUrls(reachable, job, urls) : reachable,
     };
   }
   return null;

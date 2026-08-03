@@ -2,7 +2,12 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { canWriteInto, fetchSource, uploadBlob } from "./source.js";
+import {
+  canWriteInto,
+  fetchSource,
+  placeOutputs,
+  uploadBlob,
+} from "./source.js";
 
 const bytes = Buffer.from("a source file, as far as anything here knows");
 
@@ -130,6 +135,64 @@ describe("where a worker writes what it produces", () => {
     expect(
       await canWriteInto(path.join(root, "not-a-directory", "renditions")),
     ).toBe(false);
+  });
+
+  it("writes into the shared volume when the envelope named one it can use", async () => {
+    const placed = await placeOutputs(
+      [
+        {
+          kind: "proxy_1080",
+          key: "renditions/v1/proxy_1080.mp4",
+          path: path.join(root, "renditions", "v1", "proxy_1080.mp4"),
+        },
+      ],
+      { workRoot: work, jobId: "job-1" },
+    );
+    expect(placed.sending).toBe(false);
+    expect(placed.outputs[0]?.path).toBe(
+      path.join(root, "renditions", "v1", "proxy_1080.mp4"),
+    );
+  });
+
+  it("encodes into its own scratch when the named directory is unusable", async () => {
+    await writeFile(path.join(root, "not-a-directory"), "x");
+    const placed = await placeOutputs(
+      [
+        {
+          kind: "proxy_1080",
+          key: "renditions/v1/proxy_1080.mp4",
+          path: path.join(root, "not-a-directory", "v1", "proxy_1080.mp4"),
+        },
+      ],
+      { workRoot: work, jobId: "job-1" },
+    );
+    expect(placed.sending).toBe(true);
+    /* Scratch that mirrors the key, so the sprite's cue sheet and a PDF's page
+       rasters still land beside the output they belong to. */
+    expect(placed.outputs[0]?.path).toBe(
+      path.join(work, "job-1", "renditions/v1/proxy_1080.mp4"),
+    );
+  });
+
+  it("sends when the envelope named no path at all", async () => {
+    /* What a deployment whose storage is not a mounted filesystem hands out.
+       The empty path must not be read as a writable directory: its dirname is
+       `.`, and this process's working directory is writable, so a worker that
+       merely tested the named directory would decide it could write in place
+       and then have nowhere to write. */
+    const placed = await placeOutputs(
+      [{ kind: "proxy_1080", key: "renditions/v1/proxy_1080.mp4" }],
+      { workRoot: work, jobId: "job-1" },
+    );
+    expect(placed.sending).toBe(true);
+    expect(placed.outputs[0]?.path).toBe(
+      path.join(work, "job-1", "renditions/v1/proxy_1080.mp4"),
+    );
+  });
+
+  it("places nothing for a job that writes nothing", async () => {
+    const placed = await placeOutputs([], { workRoot: work, jobId: "job-1" });
+    expect(placed).toEqual({ outputs: [], sending: false });
   });
 
   it("sends an output with its length, where the template says", async () => {
