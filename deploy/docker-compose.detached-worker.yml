@@ -30,21 +30,23 @@ services:
       ONELIGHT_SERVER_URL: ${ONELIGHT_SERVER_URL:-http://onelight:3000}
       WORKER_SECRET: ${WORKER_SECRET:?WORKER_SECRET is required}
       MEDIA_CONCURRENCY: ${MEDIA_CONCURRENCY:-}
-      # There is no /data here, so the scratch every job needs has to be
-      # somewhere a read-only container can write: the tmpfs below. Sources
-      # land there, renditions are encoded there, and both are removed when
-      # the job ends.
-      WORK_ROOT: /tmp/onelight-work
+      # On disk, not in RAM. A worker with no shared volume downloads the
+      # whole source before it can decode it -- ffmpeg wants a seekable file
+      # and a proxy ladder reads it many times -- and a camera master is
+      # routinely tens of gigabytes. tmpfs is memory, so scratch that size
+      # would have to be resident; this is a volume, bounded by the host's
+      # disk instead. Everything a job writes here is removed when it ends.
+      WORK_ROOT: /scratch
     read_only: true
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     tmpfs:
-      # Larger than the base stack's, because this worker holds a whole source
-      # and its renditions here rather than on a volume. Bounded all the same:
-      # a crafted file cannot fill the host, it fills this and the job fails.
-      - /tmp:size=2g,mode=1777
+      # Only what the decoders themselves scratch: read_only leaves the image
+      # immutable, and ffmpeg, Poppler and LibRaw all want somewhere small to
+      # write. What a job downloads and encodes goes to /scratch, not here.
+      - /tmp:size=512m,mode=1777
     mem_limit: ${ONELIGHT_WORKER_MEMORY:-6g}
     pids_limit: ${ONELIGHT_WORKER_PIDS:-512}
     ulimits:
@@ -62,3 +64,12 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    volumes:
+      - onelight-worker-scratch:/scratch
+
+# Shared between replicas on purpose: every job works inside its own directory
+# named for the job id, and removes it when it ends, so there is nothing for
+# two workers to collide over. One volume is easier to size and to watch than
+# one per replica.
+volumes:
+  onelight-worker-scratch:
