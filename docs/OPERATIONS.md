@@ -23,10 +23,11 @@
 
 ## What it needs to run whole
 
-- **The media worker** (`WORKER_URL` + `WORKER_SECRET`): probe, transcode,
-  filmstrips, waveforms, watermarking, PDF frame stills. Without it uploads
-  stay queued and the log says so once at boot. Comment exports run either
-  way; they are database-to-file work.
+- **The media worker** (`ONELIGHT_SERVER_URL` + `WORKER_SECRET` on the worker,
+  `WORKER_SECRET` on the server): probe, transcode, filmstrips, waveforms,
+  watermarking, PDF frame stills. Without it uploads stay queued and the log
+  says so once at boot. Comment exports run either way; they are
+  database-to-file work.
 - **Email** (`SMTP_URL` or `SMTP_HOST` + `MAIL_FROM`): password resets and
   notification digests. Off means those emails silently do not exist, not a
   broken install.
@@ -34,6 +35,34 @@
   consistent database snapshots. Restore steps are in docs/BACKUPS.md. The
   system page warns when backups are off and calls a newest snapshot older
   than a day stale.
+
+## Running more than one worker
+
+Workers pull. Each one claims a job from the server, reports progress against
+a lease while it works, and posts the result back; the server never dials a
+worker, so there is no address to load balance and no reason a second worker
+needs anything the first did not have. Give them all the same
+`ONELIGHT_SERVER_URL` and `WORKER_SECRET`:
+
+```sh
+docker compose -f deploy/docker-compose.yml up -d --scale onelight-worker=3
+```
+
+`MEDIA_CONCURRENCY` is per worker: how many jobs one of them runs at once,
+defaulting to the CPU count minus two so a worker sharing a host with the site
+leaves cores alone.
+
+A worker that dies mid-encode stops renewing its lease. Within a minute the
+job is claimable again and another worker takes it, writing to the same output
+keys, so the retry overwrites the half-written work rather than duplicating
+it. A job whose attempts are spent is dead-lettered and its version reads as
+failed. Killing a worker is therefore a supported operation, not an incident:
+`docker compose restart onelight-worker` during a queue is safe.
+
+Each worker probes what it can actually do at startup (`cpu`, plus `vaapi` or
+`nvenc` where an encode really succeeded, `av1`, `hdr`, `raw`, `pdf`) and sends
+that with every claim; `GET /healthz` on the worker reports the same list. A
+job that needs a capability is only ever handed to a worker that has it.
 
 ## Hardware encoding
 

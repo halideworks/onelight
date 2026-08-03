@@ -20,6 +20,13 @@
  *                          equal the stack's PUBLIC_URL or origin checks fail
  *   ONELIGHT_E2E_EMAIL     admin email (default e2e-admin@example.com)
  *   ONELIGHT_E2E_PASSWORD  admin password (default an e2e-only value)
+ *   ONELIGHT_E2E_WORKER_KILL  when "1", adds the leg that kills a worker
+ *                          mid-encode and asserts the job is retried on
+ *                          another one; needs docker and a stack scaled to
+ *                          at least three workers, and FAILS rather than
+ *                          skips when it does not find them
+ *   ONELIGHT_E2E_COMPOSE_FILE  compose file the kill leg drives (default
+ *                          deploy/docker-compose.yml)
  *   ONELIGHT_E2E_STATE_FILE  when set, a JSON summary of what the run
  *                          left on the instance (the project id and its
  *                          two transcoded assets) is written here, so the
@@ -549,6 +556,209 @@ const assertBt709Proxy = (probe, label, expectedRate) => {
 /* Legs                                                                */
 /* ------------------------------------------------------------------ */
 
+/* Long enough at 1080p that a proxy encode is still running when the kill
+   lands: the leg polls for a live ffmpeg inside a worker and kills that
+   container, so a fixture that transcodes in a blink would test nothing. */
+const KILL_SECONDS = 20;
+const KILL_RATE = { num: 25, den: 1 };
+const COMPOSE_FILE =
+  process.env.ONELIGHT_E2E_COMPOSE_FILE ?? "deploy/docker-compose.yml";
+
+export const killFixtureArgs = (outputPath, fontFile) => [
+  "-hide_banner",
+  "-y",
+  "-f",
+  "lavfi",
+  "-i",
+  `testsrc2=s=1920x1080:r=${KILL_RATE.num}/${KILL_RATE.den}:d=${KILL_SECONDS}`,
+  "-f",
+  "lavfi",
+  "-i",
+  `sine=frequency=220:sample_rate=48000:duration=${KILL_SECONDS}`,
+  ...(fontFile ? ["-vf", counterFilter(fontFile).join(",")] : []),
+  "-c:v",
+  "libx264",
+  "-preset",
+  "veryfast",
+  "-crf",
+  "18",
+  "-pix_fmt",
+  "yuv420p",
+  "-colorspace",
+  "bt709",
+  "-color_primaries",
+  "bt709",
+  "-color_trc",
+  "bt709",
+  "-color_range",
+  "tv",
+  "-c:a",
+  "aac",
+  "-b:a",
+  "96k",
+  "-movflags",
+  "+faststart",
+  outputPath,
+];
+
+const workerContainerIds = async () => {
+  const { stdout } = await run("docker", [
+    "compose",
+    "-f",
+    COMPOSE_FILE,
+    "ps",
+    "-q",
+    "onelight-worker",
+  ]);
+  return stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+};
+
+/* Which worker is actually decoding right now. `docker top` is the honest
+   answer: the server knows which worker holds the lease, but the point of
+   this leg is to kill a process that is mid-encode, and only the host can
+   see that.
+
+   The ps arguments must include a PID field or the daemon refuses the whole
+   call ("Couldn't find PID field in ps output"), which is exactly how the
+   first version of this failed: every call errored, the error was swallowed,
+   and the leg waited two minutes to report that nothing was decoding. So the
+   first failure is reported rather than absorbed. */
+let topFailureReported = false;
+
+const workerRunningFfmpeg = async (ids) => {
+  for (const id of ids) {
+    try {
+      const { stdout } = await run("docker", ["top", id, "-eo", "pid,comm"]);
+      if (/\bffmpeg\b/.test(stdout)) return id;
+    } catch (error) {
+      /* A container that has just been killed cannot be inspected, which is
+         normal here. Anything else is worth saying out loud once. */
+      if (!topFailureReported) {
+        topFailureReported = true;
+        log(
+          `docker top ${id.slice(0, 12)} failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  }
+  return undefined;
+};
+
+/**
+ * Three workers, one killed mid-encode.
+ *
+ * The acceptance criterion of specs/p0-3-stateless-workers.md, against real
+ * containers: no load balancer, no worker address, three peers pulling from
+ * one queue. SIGKILL one while it is encoding and the job must come back to
+ * the queue on its expired lease, be claimed by another worker, and produce a
+ * playable proxy with exactly one rendition row per kind.
+ */
+const workerKillLeg = async (client, projectId, workDir, fontFile) => {
+  log("--- worker kill leg (three workers, one killed mid-encode) ---");
+  const ids = await workerContainerIds();
+  assert(
+    ids.length >= 3,
+    `at least three worker containers are running (got ${ids.length})`,
+  );
+  log(`${ids.length} workers up`);
+
+  const clipPath = path.join(workDir, "e2e-kill-1080.mp4");
+  await run(ffmpegBin(), killFixtureArgs(clipPath, fontFile));
+  const asset = await uploadAndAttach(
+    client,
+    projectId,
+    clipPath,
+    "e2e-kill-1080.mp4",
+  );
+
+  const victim = await poll(
+    "a worker to start decoding",
+    120_000,
+    250,
+    async () => (await workerRunningFfmpeg(ids)) ?? undefined,
+  );
+  await run("docker", ["kill", "-s", "KILL", victim]);
+  log(`killed worker ${victim.slice(0, 12)} mid-encode`);
+
+  const version = await waitForReadyVersion(client, asset);
+  assert(
+    version.transcode_status === "ready",
+    `version is ready after the kill (got ${version.transcode_status})`,
+  );
+
+  const renditions = await (
+    await client("GET", `${API}/versions/${asset.version_id}/renditions`)
+  ).json();
+  const kinds = renditions.items.map((item) => item.kind);
+  for (const required of ["proxy_1080", "poster", "sprite", "waveform_data"])
+    assert(
+      kinds.includes(required),
+      `renditions include ${required} after the kill (got ${kinds.join(", ")})`,
+    );
+  /* Registration upserts on (version, kind, share): a retry that inserted
+     instead would show up here as the same kind twice. */
+  assert(
+    new Set(kinds).size === kinds.length,
+    `no rendition kind is registered twice (got ${kinds.sort().join(", ")})`,
+  );
+
+  /* The retry really happened: something was attempted more than once for
+     this version. Without this the leg would pass just as happily if the
+     kill had landed after every job was already finished. */
+  const seen = [];
+  for (const status of ["complete", "processing", "queued"]) {
+    const page = await (
+      await client("GET", `${API}/admin/jobs?status=${status}&limit=100`)
+    ).json();
+    for (const job of page.items ?? [])
+      if (job.payload?.version_id === asset.version_id) seen.push(job);
+  }
+  assert(
+    seen.some((job) => job.attempts >= 2),
+    `a job for this version was attempted more than once (got ${seen
+      .map((job) => `${job.kind}:${job.attempts}`)
+      .join(", ")})`,
+  );
+
+  const proxy = renditions.items.find((item) => item.kind === "proxy_1080");
+  assert(
+    proxy?.url,
+    "proxy_1080 rendition carries a signed URL after the kill",
+  );
+  const { bytes } = await downloadBytes(client, proxy.url);
+  const proxyPath = path.join(workDir, "downloaded-kill-proxy.mp4");
+  await writeFile(proxyPath, bytes);
+  const probe = await ffprobeJson(proxyPath);
+  /* Decodable, not merely present: the retry overwrote whatever the killed
+     worker left half-written at the same key. */
+  assertBt709Proxy(probe, "proxy_1080 after the kill", KILL_RATE);
+  const frames = await run(ffprobeBin(), [
+    "-v",
+    "error",
+    "-count_frames",
+    "-select_streams",
+    "v:0",
+    "-show_entries",
+    "stream=nb_read_frames",
+    "-of",
+    "default=nokey=1:noprint_wrappers=1",
+    proxyPath,
+  ]);
+  const decoded = Number(frames.stdout.trim());
+  assert(
+    decoded === KILL_SECONDS * KILL_RATE.num,
+    `every frame of the proxy decodes (${decoded} of ${
+      KILL_SECONDS * KILL_RATE.num
+    })`,
+  );
+  log("the job survived its worker being killed, and the proxy plays");
+};
+
 const sdrLeg = async (client, projectId, workDir, fontFile) => {
   log("--- SDR drop-frame leg (30000/1001, 00:59:55;00) ---");
   const clipPath = path.join(workDir, "e2e-df-2997.mp4");
@@ -896,7 +1106,17 @@ const dryRun = () => {
       "renditions (proxy_1080, poster, sprite, waveform_data) -> proxy ffprobe " +
       "(bt709 + tmcd) -> range 206 -> comment -> passphrase share with " +
       "watermark -> viewer 202 then burned rendition differs -> resolve EDL " +
-      "export -> HDR PQ upload -> tonemapped bt709 proxy",
+      "export -> HDR PQ upload -> tonemapped bt709 proxy" +
+      (process.env.ONELIGHT_E2E_WORKER_KILL === "1"
+        ? " -> 1080p upload, kill the worker that is decoding it, retried " +
+          "elsewhere, one rendition row per kind, every proxy frame decodes"
+        : ""),
+  );
+  const killArgs = killFixtureArgs("/tmp/kill.mp4", fontFile);
+  assert(
+    killArgs.includes("1920x1080") ||
+      killArgs.some((arg) => arg.includes("1920x1080")),
+    "kill fixture is 1080p, so its encode lasts long enough to be interrupted",
   );
   log("dry run ok");
 };
@@ -944,6 +1164,8 @@ const main = async () => {
     );
     await edlExportLeg(client, share, commentBody);
     await hdrLeg(client, project.id, workDir);
+    if (process.env.ONELIGHT_E2E_WORKER_KILL === "1")
+      await workerKillLeg(client, project.id, workDir, fontFile);
 
     if (process.env.ONELIGHT_E2E_STATE_FILE) {
       await writeFile(

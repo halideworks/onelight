@@ -208,9 +208,9 @@ export const groupIssues = (
     if (group.severity !== severity) continue;
     if (group.startupOnly && !startup) continue;
     /* A group belongs to the scope that owns EVERY member, not any of them.
-       WORKER_SECRET is read by both containers but WORKER_URL only by the
-       server, so judging the pair in worker scope would fail a stock stack:
-       the worker legitimately receives the secret and no URL. */
+       WORKER_SECRET is read by both containers but ONELIGHT_SERVER_URL only by
+       the worker, so judging that pair in server scope would fail a stock
+       stack: the server legitimately receives the secret and no server URL. */
     const inScope = group.members.every((name) =>
       scoped.some((item) => item.name === name),
     );

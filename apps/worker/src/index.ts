@@ -1,10 +1,13 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { spawn } from "node:child_process";
+import { createHmac } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
 import { mkdir } from "node:fs/promises";
+import { hostname } from "node:os";
+import { cpus } from "node:os";
 import path from "node:path";
 import type { MediaInfo, TranscodeJob } from "@onelight/core";
 import {
@@ -47,7 +50,6 @@ interface FingerprintSource {
 interface WorkerRequest {
   job_id: string;
   kind: "probe" | "transcode" | "still" | "watermark" | "fingerprint";
-  timestamp?: number;
   source_path?: string;
   source_url?: string;
   media_info?: MediaInfo;
@@ -60,11 +62,17 @@ interface WorkerRequest {
   tokens?: WatermarkTokens;
   sources?: FingerprintSource[];
 }
-interface JobState {
-  status: "queued" | "processing" | "complete" | "failed";
-  result?: unknown;
-  error?: string;
-  finishedAt?: number;
+
+/* What a claim hands back. The envelope is self-contained: everything needed
+   to run the job travels with it, and the worker reads no database. */
+interface Claim {
+  job_id: string;
+  kind: string;
+  attempt: number;
+  token: string;
+  lease_ms: number;
+  deadline_ms: number;
+  request: WorkerRequest;
 }
 
 /* Parsed against the same manifest the server uses, so the worker's settings
@@ -74,49 +82,33 @@ interface JobState {
 const workerConfig = loadWorkerConfig(process.env);
 const port = workerConfig.PORT;
 const secret = workerConfig.WORKER_SECRET ?? "";
+const serverUrl = workerConfig.ONELIGHT_SERVER_URL.replace(/\/$/, "");
 const workRoot = path.resolve(workerConfig.WORK_ROOT);
-const jobs = new Map<string, JobState>();
 const ffmpeg = workerConfig.FFMPEG_PATH;
 let hardwareAcceleration: HardwareAcceleration = SOFTWARE_ACCELERATION;
-const SIGNATURE_SKEW_MS = 5 * 60_000;
-const PRUNE_AFTER_MS = 60 * 60_000;
-/* A status read may hold the connection this long waiting for its job, and
-   checks this often while it does. */
-const MAX_STATUS_WAIT_MS = 25_000;
-const STATUS_WAIT_STEP_MS = 50;
+let capabilities: string[] = ["cpu"];
 
-const validSignature = (
-  body: string,
-  header: string | string[] | undefined,
-  signingSecret = secret,
-): boolean => {
-  const value = Array.isArray(header) ? header[0] : header;
-  if (!signingSecret || !value || !/^[0-9a-f]{64}$/i.test(value)) return false;
-  const expected = createHmac("sha256", signingSecret)
-    .update(body)
-    .digest("hex");
-  return timingSafeEqual(
-    Buffer.from(value, "hex"),
-    Buffer.from(expected, "hex"),
-  );
-};
+/* Encodes are the heaviest thing a box does, and a worker sharing a host with
+   the site should leave cores alone. One claim per slot, no more. */
+const slots = Math.max(
+  1,
+  workerConfig.mediaConcurrency ?? Math.max(1, cpus().length - 2),
+);
+/* How often an idle worker asks again, and the ceiling it backs off to. A busy
+   worker never waits: each slot claims again the moment its job finishes. */
+const CLAIM_INTERVAL_MS = 1000;
+const IDLE_CEILING_MS = 5000;
+/* Progress reports push the lease out. Three per lease, so two can be lost to
+   a blip without the server deciding this worker is gone. */
+const heartbeatIntervalMs = (leaseMs: number): number =>
+  Math.max(2000, Math.floor(leaseMs / 3));
 
-const readBody = (request: IncomingMessage): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    request.on("data", (chunk: Buffer) => {
-      size += chunk.byteLength;
-      if (size > 1_048_576) {
-        request.destroy();
-        reject(new Error("Job payload is too large."));
-        return;
-      }
-      chunks.push(chunk);
-    });
-    request.once("error", reject);
-    request.once("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-  });
+/* Distinct per container, and stable for the life of the process: the server
+   records it on the job, checks it on every report, and mixes it into the
+   token that scopes this worker to this attempt. */
+const workerId = `${hostname()}-${String(process.pid)}`
+  .replace(/[^A-Za-z0-9_.:-]/g, "-")
+  .slice(0, 64);
 
 const json = (
   response: ServerResponse,
@@ -233,291 +225,459 @@ const runFingerprints = async (
   return out;
 };
 
-const runJob = async (body: WorkerRequest): Promise<void> => {
-  jobs.set(body.job_id, { status: "processing" });
-  try {
-    if (body.kind === "fingerprint") {
-      const complete = {
-        job_id: body.job_id,
-        status: "complete",
-        fingerprints: await runFingerprints(body.sources ?? []),
-      };
-      jobs.set(body.job_id, {
-        status: "complete",
-        result: complete,
-        finishedAt: Date.now(),
-      });
-      return;
+/**
+ * One job, run to its answer.
+ *
+ * Returns what the server writes down, and throws what the server records as
+ * the failure. Nothing is kept afterwards: the job's state lives in the
+ * server's row, which is the whole point of the worker being disposable.
+ */
+const runJob = async (
+  body: WorkerRequest,
+): Promise<Record<string, unknown>> => {
+  if (body.kind === "fingerprint")
+    return { fingerprints: await runFingerprints(body.sources ?? []) };
+  const source = sourceFor(body);
+  // Still and watermark jobs run against an already-probed proxy; the single
+  // output lands via the same temp-name-and-rename convention as transcode
+  // renditions.
+  if (body.kind === "still" || body.kind === "watermark") {
+    if (!body.output_path) throw new Error("An output_path is required.");
+    if (body.kind === "still") {
+      if (typeof body.frame !== "number" || !Number.isInteger(body.frame))
+        throw new Error("An integer frame is required.");
+      await extractStill(
+        source,
+        body.output_path,
+        body.frame,
+        body.rate ?? { num: 24, den: 1 },
+      );
+    } else {
+      await renderWatermark(
+        source,
+        body.output_path,
+        body.spec ?? {},
+        body.tokens ?? {},
+        body.rate,
+        ffmpeg,
+        DEFAULT_WATERMARK_FONTFILE,
+        hardwareAcceleration,
+        body.timecode,
+      );
     }
-    const source = sourceFor(body);
-    // Still and watermark jobs run against an already-probed proxy; the
-    // single output lands via the same temp-name-and-rename convention as
-    // transcode renditions.
-    if (body.kind === "still" || body.kind === "watermark") {
-      if (!body.output_path) throw new Error("An output_path is required.");
-      if (body.kind === "still") {
-        if (typeof body.frame !== "number" || !Number.isInteger(body.frame))
-          throw new Error("An integer frame is required.");
-        await extractStill(
-          source,
-          body.output_path,
-          body.frame,
-          body.rate ?? { num: 24, den: 1 },
-        );
-      } else {
-        await renderWatermark(
-          source,
-          body.output_path,
-          body.spec ?? {},
-          body.tokens ?? {},
-          body.rate,
-          ffmpeg,
-          DEFAULT_WATERMARK_FONTFILE,
-          hardwareAcceleration,
-          body.timecode,
-        );
-      }
-      const meta =
-        body.kind === "still"
-          ? { frame: body.frame }
-          : playableRenditionMetadata(
-              await probeFile(body.output_path),
-              await exactWebCodecString(body.output_path),
-            );
-      const complete = {
-        job_id: body.job_id,
-        status: "complete",
-        renditions: [
-          {
-            kind: body.kind === "still" ? "still" : "watermarked",
-            key: body.output_path,
-            meta,
-          },
-        ],
-        failures: [],
-      };
-      jobs.set(body.job_id, {
-        status: "complete",
-        result: complete,
-        finishedAt: Date.now(),
-      });
-      return;
-    }
-    const mediaInfo = body.media_info ?? (await probeFile(source));
-    if (body.kind === "probe") {
-      /* A probe that arrives carrying outputs is a still: its ladder does not
-         depend on anything the probe finds, so it is rendered in this same
-         call rather than costing a second job and a second round trip. */
-      const rendered =
-        body.outputs && body.outputs.length > 0
-          ? await runOutputs(body, mediaInfo, source)
-          : null;
-      const result = {
-        job_id: body.job_id,
-        status: "complete",
-        media_info: mediaInfo,
-        ...(rendered
-          ? {
-              renditions: rendered.renditions,
-              failures: rendered.failures,
-              /* A still is probed and rendered in one call, so its identity
-                 comes back through this reply and not the transcode one. */
-              ...(rendered.fingerprint
-                ? { fingerprint: rendered.fingerprint }
-                : {}),
-            }
-          : {}),
-      };
-      jobs.set(body.job_id, {
-        status: "complete",
-        result,
-        finishedAt: Date.now(),
-      });
-      return;
-    }
-    const result = await runOutputs(body, mediaInfo, source);
-    const complete = {
-      job_id: body.job_id,
-      status: "complete",
-      renditions: result.renditions,
-      failures: result.failures,
-      ...(result.fingerprint ? { fingerprint: result.fingerprint } : {}),
+    const meta =
+      body.kind === "still"
+        ? { frame: body.frame }
+        : playableRenditionMetadata(
+            await probeFile(body.output_path),
+            await exactWebCodecString(body.output_path),
+          );
+    return {
+      renditions: [
+        {
+          kind: body.kind === "still" ? "still" : "watermarked",
+          key: body.output_path,
+          meta,
+        },
+      ],
+      failures: [],
     };
-    jobs.set(body.job_id, {
-      status: "complete",
-      result: complete,
-      finishedAt: Date.now(),
+  }
+  const mediaInfo = body.media_info ?? (await probeFile(source));
+  if (body.kind === "probe") {
+    /* A probe that arrives carrying outputs is a still: its ladder does not
+       depend on anything the probe finds, so it is rendered in this same call
+       rather than costing a second job and a second round trip. */
+    const rendered =
+      body.outputs && body.outputs.length > 0
+        ? await runOutputs(body, mediaInfo, source)
+        : null;
+    return {
+      media_info: mediaInfo,
+      ...(rendered
+        ? {
+            renditions: rendered.renditions,
+            failures: rendered.failures,
+            /* A still is probed and rendered in one call, so its identity
+               comes back through this reply and not the transcode one. */
+            ...(rendered.fingerprint
+              ? { fingerprint: rendered.fingerprint }
+              : {}),
+          }
+        : {}),
+    };
+  }
+  const result = await runOutputs(body, mediaInfo, source);
+  return {
+    renditions: result.renditions,
+    failures: result.failures,
+    ...(result.fingerprint ? { fingerprint: result.fingerprint } : {}),
+  };
+};
+
+/* The job outran the ceiling the server handed down with it. Its own type
+   because the response is drastic -- the worker stops -- and deciding that by
+   matching on the text of an error message would let an ffmpeg that happened
+   to say "ceiling" take the process down. */
+class CeilingExceeded extends Error {}
+
+/* Is the tool actually here? Spawning it is the only honest answer: a
+   configured path can name a binary the image does not carry, and an image
+   can carry one the operator never configured. A failing exit code still
+   means present -- pdftoppm with no arguments is an error, and that is fine. */
+const PROBE_TIMEOUT_MS = 5000;
+
+const toolPresent = (command: string, args: string[]): Promise<boolean> =>
+  new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: "ignore" });
+    /* Startup must not be able to hang on a tool that never exits: a worker
+       stuck probing is a worker that never claims, with nothing in the log to
+       say why. */
+    const giveUp = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve(false);
+    }, PROBE_TIMEOUT_MS);
+    child.once("error", () => {
+      clearTimeout(giveUp);
+      resolve(false);
     });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Worker job failed.";
-    const failed = { job_id: body.job_id, status: "failed", error: message };
-    jobs.set(body.job_id, {
-      status: "failed",
-      error: message,
-      result: failed,
-      finishedAt: Date.now(),
+    child.once("close", () => {
+      clearTimeout(giveUp);
+      resolve(true);
     });
+  });
+
+const ffmpegLists = async (
+  flag: string,
+  needles: string[],
+): Promise<boolean> => {
+  try {
+    const listing = await new Promise<string>((resolve, reject) => {
+      const child = spawn(ffmpeg, ["-hide_banner", flag], {
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const chunks: Buffer[] = [];
+      const giveUp = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`${ffmpeg} ${flag} did not answer.`));
+      }, PROBE_TIMEOUT_MS);
+      child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+      child.once("error", (error) => {
+        clearTimeout(giveUp);
+        reject(error);
+      });
+      child.once("close", () => {
+        clearTimeout(giveUp);
+        resolve(Buffer.concat(chunks).toString("utf8"));
+      });
+    });
+    return needles.some((needle) => listing.includes(needle));
+  } catch {
+    return false;
   }
 };
 
-const handler = async (
-  request: IncomingMessage,
-  response: ServerResponse,
-): Promise<void> => {
+/**
+ * What this worker can actually do, probed rather than declared.
+ *
+ * The claim carries these and the server filters jobs against them, so a job
+ * that needs a GPU is never handed to a box without one. Everything here is
+ * measured: the hardware backend is the one the encoder probe actually got a
+ * frame out of, and the tools are asked to run rather than assumed present
+ * because a path variable has a default.
+ */
+const probeCapabilities = async (): Promise<string[]> => {
+  const found = new Set<string>(["cpu"]);
+  if (hardwareAcceleration.backend !== "software")
+    found.add(hardwareAcceleration.backend);
+  if (
+    await ffmpegLists("-encoders", [
+      "libsvtav1",
+      "libaom-av1",
+      "av1_nvenc",
+      "av1_vaapi",
+      "av1_qsv",
+    ])
+  )
+    found.add("av1");
+  if (await ffmpegLists("-filters", ["libplacebo"])) found.add("hdr");
+  if (await toolPresent(workerConfig.DCRAW_PATH, ["-h"])) found.add("raw");
+  if (await toolPresent(workerConfig.PDFTOPPM_PATH, ["-v"])) found.add("pdf");
+  return [...found].sort();
+};
+
+let stopped = false;
+let running = 0;
+let idleDelay = CLAIM_INTERVAL_MS;
+
+/* A claim, a heartbeat or a failure is a small round trip. A completion is
+   not: the server checksums every file the job produced before it answers,
+   and a 4K proxy takes real time to hash. Timing that out would report a
+   failure for work the server was in the middle of accepting. */
+const REPORT_TIMEOUT_MS = 30_000;
+const COMPLETE_TIMEOUT_MS = 10 * 60_000;
+
+const post = async (
+  route: string,
+  body: Record<string, unknown>,
+  /* Only the claim is signed with the shared secret. Everything after it
+     presents the token that claim minted, which is authority over one attempt
+     at one job and nothing else. */
+  signed = false,
+  timeoutMs = REPORT_TIMEOUT_MS,
+): Promise<Response> => {
+  const payload = JSON.stringify(body);
+  return fetch(`${serverUrl}${route}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(signed
+        ? {
+            "x-onelight-signature": createHmac("sha256", secret)
+              .update(payload)
+              .digest("hex"),
+          }
+        : {}),
+    },
+    body: payload,
+    /* Node's fetch has no default timeout, and a server that stops answering
+       mid-request would otherwise hold a slot open forever. */
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+};
+
+/**
+ * The worker gives up on everything and stops.
+ *
+ * Reached when a job outruns its ceiling or when the lease this worker was
+ * holding has gone to somebody else. In both cases there may be an ffmpeg
+ * still writing to the output path of a job another worker is now running,
+ * and two writers on one path is corruption. Exiting is what makes that
+ * impossible: the container dies, its children die with it, and the
+ * supervisor starts a clean one. Jobs in flight lose their leases and are
+ * retried, which is the case this whole protocol is built around.
+ */
+const abandonEverything = (reason: string): void => {
+  if (stopped) return;
+  stopped = true;
+  console.error(`[onelight-worker] stopping: ${reason}`);
+  // A moment for a completion that is already in flight to land.
+  setTimeout(() => process.exit(1), 5000);
+};
+
+const runClaim = async (claim: Claim): Promise<void> => {
+  const report = (
+    route: string,
+    extra: Record<string, unknown>,
+    timeoutMs = REPORT_TIMEOUT_MS,
+  ) =>
+    post(
+      `/api/v1/worker/jobs/${claim.job_id}/${route}`,
+      {
+        worker_id: workerId,
+        attempt: claim.attempt,
+        token: claim.token,
+        ...extra,
+      },
+      false,
+      timeoutMs,
+    );
+  let lost = false;
+  /* The work is done and the answer is being posted. The heartbeat keeps
+     running through it -- the server checksums the outputs before it answers,
+     which can outlast a lease -- but from here a 409 means the server has
+     already settled this job, not that it was taken away mid-encode: nothing
+     of ours is still writing. */
+  let reporting = false;
+  const beat = setInterval(() => {
+    void (async () => {
+      try {
+        const response = await report("progress", {});
+        /* 409 means this attempt no longer holds the job: the lease expired
+           and somebody else has it. Nothing this run produces may be
+           reported, and nothing it is still writing can be trusted. */
+        if (response.status === 409 && !reporting) {
+          lost = true;
+          abandonEverything(
+            `job ${claim.job_id} was taken from this worker while it was running`,
+          );
+        }
+      } catch (error) {
+        /* A missed heartbeat is survivable; the lease has room for two. */
+        console.warn(
+          `[onelight-worker] progress for ${claim.job_id} failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    })();
+  }, heartbeatIntervalMs(claim.lease_ms));
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      runJob(claim.request),
+      new Promise<never>((unused, reject) => {
+        deadline = setTimeout(
+          () =>
+            reject(
+              new CeilingExceeded(
+                `Job exceeded its ${String(
+                  Math.round(claim.deadline_ms / 1000),
+                )}s ceiling.`,
+              ),
+            ),
+          claim.deadline_ms,
+        );
+      }),
+    ]);
+    if (lost) return;
+    reporting = true;
+    const response = await report("complete", { result }, COMPLETE_TIMEOUT_MS);
+    if (!response.ok)
+      console.warn(
+        `[onelight-worker] completion for ${claim.job_id} was refused with ${String(
+          response.status,
+        )}.`,
+      );
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Worker job failed.";
+    /* A job that outran its ceiling leaves an ffmpeg this process can no
+       longer account for, so the worker reports the failure and then stops
+       rather than carrying on beside it. */
+    const outranCeiling = error instanceof CeilingExceeded;
+    if (!lost)
+      try {
+        await report("fail", { error: message });
+      } catch (inner) {
+        console.warn(
+          `[onelight-worker] could not report failure of ${claim.job_id}: ${
+            inner instanceof Error ? inner.message : String(inner)
+          }`,
+        );
+      }
+    if (outranCeiling)
+      abandonEverything(`job ${claim.job_id} outran its ceiling`);
+  } finally {
+    clearInterval(beat);
+    if (deadline) clearTimeout(deadline);
+  }
+};
+
+const claimOne = async (): Promise<Claim | null> => {
+  const response = await post(
+    "/api/v1/worker/claim",
+    {
+      worker_id: workerId,
+      capabilities,
+      timestamp: Date.now(),
+    },
+    true,
+  );
+  if (response.status === 204) return null;
+  if (!response.ok)
+    throw new Error(`Claim was refused with ${String(response.status)}.`);
+  return (await response.json()) as Claim;
+};
+
+/* Slots, filled by pulling. Each slot claims again the moment its job
+   finishes, so a queue drains continuously rather than one job per tick, and
+   an idle worker backs off instead of asking every second forever. */
+const pump = async (): Promise<void> => {
+  while (!stopped && running < slots) {
+    running += 1;
+    let claim: Claim | null;
+    try {
+      claim = await claimOne();
+    } catch (error) {
+      running -= 1;
+      idleDelay = Math.min(IDLE_CEILING_MS, idleDelay * 2);
+      console.warn(
+        `[onelight-worker] claim failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+    if (!claim) {
+      running -= 1;
+      idleDelay = Math.min(IDLE_CEILING_MS, idleDelay + CLAIM_INTERVAL_MS);
+      return;
+    }
+    idleDelay = CLAIM_INTERVAL_MS;
+    const taken = claim;
+    void (async () => {
+      try {
+        await runClaim(taken);
+      } catch (error) {
+        console.warn(
+          `[onelight-worker] job ${taken.job_id} ended badly: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      } finally {
+        running -= 1;
+        void pump();
+      }
+    })();
+  }
+};
+
+/* Health only. The worker no longer accepts jobs over HTTP: there is nothing
+   to POST to it, which is what makes running three of them behind no load
+   balancer possible. */
+const handler = (request: IncomingMessage, response: ServerResponse): void => {
   if (request.method === "GET" && request.url === "/healthz") {
     json(response, 200, {
       status: "ok",
       worker: "onelight-worker",
+      worker_id: workerId,
       ffmpeg,
       ffprobe: workerConfig.FFPROBE_PATH,
       hardware_acceleration: hardwareAccelerationName(hardwareAcceleration),
+      capabilities,
+      slots,
     });
     return;
   }
-  if (request.method === "GET" && request.url?.startsWith("/jobs/")) {
-    // Status reads are signed over the full request path including a "ts"
-    // timestamp, so probe results and filesystem paths never leak to
-    // unauthenticated callers and a captured signed request cannot be
-    // replayed beyond the skew window (mirrors the POST /jobs body timestamp).
-    const signedPath = request.url;
-    if (!validSignature(signedPath, request.headers["x-onelight-signature"])) {
-      json(response, 401, { error: "invalid worker signature" });
-      return;
-    }
-    const url = new URL(request.url, "http://worker");
-    const ts = Number(url.searchParams.get("ts"));
-    if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > SIGNATURE_SKEW_MS) {
-      json(response, 401, { error: "stale or missing timestamp" });
-      return;
-    }
-    const id = url.pathname.slice("/jobs/".length);
-    let state = jobs.get(id);
-    if (!state) {
-      json(response, 404, { error: "job not found" });
-      return;
-    }
-    /* Long poll. Without it the caller learns a job is finished on its next
-       scheduled poll, which put a second under every job however fast the
-       work was; a still renders in well under that. `wait` is capped so the
-       connection never outlives a proxy's idle timeout, and the loop ends the
-       moment the job settles. */
-    const wait = Math.min(
-      MAX_STATUS_WAIT_MS,
-      Math.max(0, Number(url.searchParams.get("wait") ?? 0) * 1000),
-    );
-    if (wait > 0) {
-      const deadline = Date.now() + wait;
-      let closed = false;
-      request.once("close", () => {
-        closed = true;
-      });
-      while (
-        !closed &&
-        Date.now() < deadline &&
-        state !== undefined &&
-        state.status !== "complete" &&
-        state.status !== "failed"
-      ) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, STATUS_WAIT_STEP_MS),
-        );
-        state = jobs.get(id);
-      }
-      if (closed) return;
-      if (!state) {
-        json(response, 404, { error: "job not found" });
-        return;
-      }
-    }
-    json(response, 200, { job_id: id, ...state });
-    return;
-  }
-  if (request.method !== "POST" || request.url !== "/jobs") {
-    json(response, 404, { error: "not found" });
-    return;
-  }
-  try {
-    const bodyText = await readBody(request);
-    if (!validSignature(bodyText, request.headers["x-onelight-signature"])) {
-      json(response, 401, { error: "invalid worker signature" });
-      return;
-    }
-    const body = JSON.parse(bodyText) as WorkerRequest;
-    if (
-      !body.job_id ||
-      !["probe", "transcode", "still", "watermark", "fingerprint"].includes(
-        body.kind,
-      )
-    ) {
-      json(response, 400, { error: "invalid job" });
-      return;
-    }
-    // Replay protection: the signed body carries a timestamp and stale
-    // signatures are rejected beyond a five minute skew.
-    if (
-      typeof body.timestamp !== "number" ||
-      Math.abs(Date.now() - body.timestamp) > SIGNATURE_SKEW_MS
-    ) {
-      json(response, 401, { error: "stale or missing timestamp" });
-      return;
-    }
-    const existing = jobs.get(body.job_id);
-    if (existing?.status === "complete") {
-      json(response, 202, {
-        accepted: true,
-        job_id: body.job_id,
-        duplicate: true,
-      });
-      return;
-    }
-    // A re-POST while the job is queued or processing must not spawn a
-    // second concurrent ffmpeg run; only a failed job may re-run.
-    if (existing?.status === "queued" || existing?.status === "processing") {
-      json(response, 409, {
-        error: "job is already processing",
-        job_id: body.job_id,
-        status: existing.status,
-      });
-      return;
-    }
-    jobs.set(body.job_id, { status: "queued" });
-    void runJob(body);
-    json(response, 202, { accepted: true, job_id: body.job_id });
-  } catch (error) {
-    json(response, 400, {
-      error: error instanceof Error ? error.message : "invalid job",
-    });
-  }
+  json(response, 404, { error: "not found" });
 };
 
-// Completed and failed jobs are pruned from the in-memory map after an hour
-// so the map does not grow without bound.
-const pruneTimer = setInterval(() => {
-  const cutoff = Date.now() - PRUNE_AFTER_MS;
-  for (const [id, state] of jobs)
-    if (
-      (state.status === "complete" || state.status === "failed") &&
-      (state.finishedAt ?? 0) < cutoff
-    )
-      jobs.delete(id);
-}, 600_000);
-pruneTimer.unref();
-
 const server = createServer((request, response) => {
-  void handler(request, response);
+  handler(request, response);
 });
+
+let timer: ReturnType<typeof setInterval> | undefined;
 
 const start = async (): Promise<void> => {
   hardwareAcceleration = await selectHardwareAcceleration(ffmpeg);
   console.log(
     `[onelight-worker] hardware acceleration: ${hardwareAccelerationName(hardwareAcceleration)}`,
   );
+  capabilities = await probeCapabilities();
+  console.log(`[onelight-worker] capabilities: ${capabilities.join(", ")}`);
   server.listen(port, "0.0.0.0", () =>
-    console.log(`Onelight worker listening on ${port}`),
+    console.log(
+      `Onelight worker ${workerId} listening on ${String(port)}, claiming from ${serverUrl} with ${String(slots)} slot(s)`,
+    ),
   );
+  if (!secret) {
+    /* Every claim would be refused, so asking is only noise. The health
+       endpoint stays up, which is what makes the misconfiguration visible. */
+    console.warn(
+      "[onelight-worker] WORKER_SECRET is not set: this worker cannot claim any job and will not try.",
+    );
+    return;
+  }
+  /* One ticker, re-armed to the backoff the last pass settled on. A busy
+     worker never waits on it: finishing a job calls pump() directly. */
+  const tick = async (): Promise<void> => {
+    await pump();
+    if (!stopped) timer = setTimeout(() => void tick(), idleDelay);
+  };
+  await tick();
 };
-void start().catch((error) => {
+void start().catch((error: unknown) => {
   console.error(
     `[onelight-worker] startup failed: ${
       error instanceof Error ? error.message : String(error)
@@ -527,7 +687,8 @@ void start().catch((error) => {
 });
 
 const shutdown = (): void => {
-  clearInterval(pruneTimer);
+  stopped = true;
+  if (timer) clearTimeout(timer);
   server.close(() => process.exit(0));
 };
 process.once("SIGTERM", shutdown);

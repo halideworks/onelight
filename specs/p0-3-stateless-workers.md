@@ -1,6 +1,6 @@
 # P0-3: Stateless media workers
 
-Status: in progress, 2026-08-02. Audit item 3, and the foundation the Workers/D1/R2
+Status: built, 2026-08-03. Audit item 3, and the foundation the Workers/D1/R2
 target (audit item 2) is built on.
 
 ## What is actually wrong
@@ -127,6 +127,15 @@ only in unit tests: scale the worker service to three, kill one mid-transcode,
 and assert the version reaches `ready` with exactly one rendition row per kind
 and a decodable proxy.
 
+Built as the last leg of `scripts/integration-e2e.mjs`, gated on
+`ONELIGHT_E2E_WORKER_KILL=1` and run that way in `.github/workflows/
+integration.yml`. It polls `docker top` for a worker that is genuinely
+decoding, SIGKILLs that container, and then asserts the version reaches
+`ready`, that no rendition kind is registered twice, that a job for the
+version records more than one attempt (so the leg cannot pass by killing a
+worker that had already finished), and that every frame of the resulting
+proxy decodes.
+
 ## Progress
 
 - Transport isolated in `runOnWorker` (PR #2).
@@ -134,15 +143,35 @@ and a decodable proxy.
   back and then buried, in that order, so the sequence is retryable (PR #3).
 - `probe`, `transcode` and `fingerprint` split into `plan*`/`apply*` pairs,
   every apply recomputing its context from the payload and the database
-  (PR #4).
+  (PR #4), then `watermark` (PR #5), which needed its `specHash`, `shareId`
+  and `outputKey` carried in the envelope rather than recomputed -- which is
+  the right answer anyway, since the envelope is what a claiming worker is
+  handed and the key it writes to belongs in it.
+- The PDF export stopped dialling a worker for its frame stills and queues
+  them as `still` jobs instead (PR #10), which left `runOnWorker` as the only
+  place the server talked to a worker.
+- The pull protocol itself (PR #11): `/api/v1/worker/claim|progress|complete|
+  fail` in `apps/server/src/worker-routes.ts`, attempt-scoped tokens, the
+  worker's claim loop and capability probe, `WORKER_URL` retired, and the
+  three-worker kill leg in the integration workflow.
 
-**Watermark is the one left, and it is not a mechanical split.** Its apply half
-needs `specHash`, the version row, `outputPath`, `shareId` and `outputKey`, all
-derived in the plan half from a share that may since have been revoked or had
-its spec changed. The other three kinds could recompute their context from the
-payload; this one needs those values carried in the envelope, which is the
-right answer anyway: the envelope is what a claiming worker is handed, and the
-output key it must write to belongs in it. Do that first, then the routes.
+## What the protocol ended up being
+
+Beyond the shape above, three decisions worth keeping:
+
+- **Two credentials.** The claim is signed with `WORKER_SECRET` over the exact
+  body bytes, with a timestamp checked for skew. Every later report presents
+  only the token that claim minted, so a worker holding tokens cannot take new
+  work and a leaked token is authority over one attempt at one job.
+- **Policy travels in the envelope.** `WORKER_JOB_TIMEOUT_MS` stays a server
+  setting and is handed to the worker as `deadline_ms`, because the worker is
+  the only process that can stop the work it started. A worker that outruns it,
+  or that is told its lease has gone to somebody else, reports what it can and
+  then exits: there may be an ffmpeg of its own still writing to a path another
+  worker now owns, and two writers on one path is corruption. The container
+  dies, its children die with it, and the supervisor starts a clean one.
+- **`MEDIA_CONCURRENCY` moved to the worker.** It is how many jobs one worker
+  claims at a time, which is where the encodes actually run now.
 
 ## What this deliberately leaves for P0-2
 

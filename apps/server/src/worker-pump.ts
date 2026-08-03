@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { cpus } from "node:os";
 import path from "node:path";
 import {
   and,
@@ -26,7 +25,6 @@ import {
   exportText,
   exportXmeml,
   framesFromTimecode,
-  hmacSha256Hex,
   isStillSource,
   parseTimecode,
   stackKeyOf,
@@ -65,7 +63,6 @@ import {
   claimNextJob,
   completeJob,
   failJob,
-  heartbeatJob,
   buryAbandonedJob,
   findAbandonedJobs,
 } from "@onelight/db";
@@ -127,7 +124,6 @@ const DEFAULT_WORKER_JOB_TIMEOUT_MS = 6 * 60 * 60_000;
 let pacing: {
   workerJobTimeoutMs: number;
   watermarkSweepLimit: number;
-  mediaConcurrency?: number;
 } = {
   workerJobTimeoutMs: DEFAULT_WORKER_JOB_TIMEOUT_MS,
   watermarkSweepLimit: 8,
@@ -136,12 +132,13 @@ let pacing: {
 export const configurePumpPacing = (next: {
   workerJobTimeoutMs: number;
   watermarkSweepLimit: number;
-  mediaConcurrency?: number;
 }): void => {
   pacing = next;
 };
 
-const workerJobTimeoutMs = (): number => pacing.workerJobTimeoutMs;
+/** The ceiling one job may run for, which travels to the worker in its
+    envelope: the server owns the policy, the worker enforces it. */
+export const workerJobTimeoutMs = (): number => pacing.workerJobTimeoutMs;
 
 const parsePayload = (value: string): JobPayload => {
   try {
@@ -261,108 +258,6 @@ const chunked = <T>(items: T[], size: number): T[][] => {
   return groups;
 };
 
-const sendJob = async (
-  workerUrl: string,
-  workerSecret: string,
-  body: Record<string, unknown>,
-): Promise<void> => {
-  // The signed body carries a timestamp for replay protection on the worker.
-  const payload = JSON.stringify({ ...body, timestamp: Date.now() });
-  const response = await fetch(`${workerUrl.replace(/\/$/, "")}/jobs`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-onelight-signature": await hmacSha256Hex(workerSecret, payload),
-    },
-    body: payload,
-    /* Node's fetch has no default timeout. A worker that restarts mid-request
-       leaves a half-open socket that never resolves, and since the pump's
-       re-entrancy guard stays held across the hung await, ALL transcode and
-       export processing stops until the server is restarted. Bound every
-       worker call so a hang becomes a retryable failure, not a wedge. */
-    signal: AbortSignal.timeout(15_000),
-  });
-  // 409 means the worker is already running this job id; fall through to
-  // polling instead of spawning a duplicate run.
-  if (response.status === 409) return;
-  if (!response.ok)
-    throw new Error(`Worker rejected job with ${response.status}.`);
-};
-
-/* How long the worker may hold a status read open. Well inside the 60s job
-   lease, so a heartbeat still lands between polls. */
-const STATUS_WAIT_SECONDS = 20;
-const MIN_POLL_INTERVAL_MS = 250;
-
-const pollWorker = async (
-  workerUrl: string,
-  workerSecret: string,
-  jobId: string,
-  timeoutMs: number,
-  onPoll?: () => Promise<void>,
-): Promise<WorkerResponse> => {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const started = Date.now();
-    // The status GET is signed over the path plus a fresh timestamp, so a
-    // captured signed request cannot be replayed to re-read a job's
-    // media_info and filesystem paths beyond the worker's skew window. This
-    // mirrors the POST /jobs body timestamp; keep the two schemes in sync.
-    //
-    // `wait` asks the worker to hold the connection until the job settles.
-    // The lease still needs feeding, so the hold is a fraction of it rather
-    // than the worker's full ceiling: a long encode heartbeats several times
-    // over while a still answers in one round trip.
-    const requestPath = `/jobs/${jobId}?ts=${Date.now()}&wait=${String(
-      STATUS_WAIT_SECONDS,
-    )}`;
-    const response = await fetch(
-      `${workerUrl.replace(/\/$/, "")}${requestPath}`,
-      {
-        headers: {
-          "x-onelight-signature": await hmacSha256Hex(
-            workerSecret,
-            requestPath,
-          ),
-        },
-        /* Bound the status read (see sendJob): a hung status GET would never
-           re-evaluate the deadline loop and would hold the slot forever. The
-           bound allows for the long poll's hold plus a margin; a timeout
-           rejects, the caller's catch fails the job, and the next tick
-           retries. */
-        signal: AbortSignal.timeout(STATUS_WAIT_SECONDS * 1000 + 10_000),
-      },
-    );
-    if (!response.ok)
-      throw new Error(`Worker status request failed with ${response.status}.`);
-    const state = (await response.json()) as WorkerResponse;
-    if (state.status === "complete" || state.status === "failed") return state;
-    await onPoll?.();
-    /* A worker too old to understand `wait` answers at once, and without a
-       floor this loop would spin on it. A worker that held the connection has
-       already waited, and pays nothing here. */
-    const held = Date.now() - started;
-    if (held < MIN_POLL_INTERVAL_MS)
-      await new Promise<void>((resolve) =>
-        setTimeout(resolve, MIN_POLL_INTERVAL_MS - held),
-      );
-  }
-  throw new Error(`Worker job exceeded its ${timeoutMs} ms deadline.`);
-};
-
-const waitForWorker = (
-  db: AppDb,
-  workerUrl: string,
-  workerSecret: string,
-  jobId: string,
-  workerId: string,
-): Promise<WorkerResponse> =>
-  // Keep the job lease alive for the whole encode; transcodes routinely
-  // run far longer than the 60 second lease.
-  pollWorker(workerUrl, workerSecret, jobId, workerJobTimeoutMs(), () =>
-    heartbeatJob(db, jobId, workerId, Date.now()).then(() => undefined),
-  );
-
 const assetKindFor = async (
   db: AppDb,
   payload: JobPayload,
@@ -437,27 +332,6 @@ const enqueueTranscode = async (
 // idempotency key carries the spec hash, so a spec change enqueues a fresh
 // job and the superseded rendition rows and blobs are deleted on
 // registration.
-/* One media job, sent and awaited.
- *
- * Every kind used to repeat this pair: build a request, sendJob, then
- * waitForWorker with the same five arguments. Collapsing it leaves exactly one
- * place where the server talks to a worker, which is the seam the pull
- * protocol in specs/p0-3-stateless-workers.md inverts: the request becomes
- * what a claiming worker is handed, and the awaited result becomes what it
- * posts back. Keeping the transport in one function is what makes that a small
- * change rather than a scattered one. */
-const runOnWorker = async (
-  db: AppDb,
-  job: typeof jobs.$inferSelect,
-  request: Record<string, unknown>,
-  workerUrl: string,
-  workerSecret: string,
-  workerId: string,
-): Promise<WorkerResponse> => {
-  await sendJob(workerUrl, workerSecret, { job_id: job.id, ...request });
-  return waitForWorker(db, workerUrl, workerSecret, job.id, workerId);
-};
-
 /* The share this render belongs to, as the job named it.
    
    share_id, spec_hash and output_key all travel in the payload, so both halves
@@ -1415,6 +1289,32 @@ const stillFilenameFor = (kind: string): string => {
   return rung.filename;
 };
 
+/**
+ * A path the worker reported, turned into a blob key, or refused.
+ *
+ * The worker is the process that opens files nobody vetted -- every asset a
+ * stranger uploads is parsed there by ffmpeg, Poppler, LibRaw and libheif --
+ * which is why it runs sandboxed. What it says came back out of a job is
+ * therefore checked rather than believed: a key resolving outside the blob
+ * root would be stored on a rendition row and later handed to the media
+ * route, which reads it back off the server's disk.
+ *
+ * This is the same inversion audit item 2 asks for in the object-storage
+ * world, where the worker reports a size and a checksum and the server
+ * validates them. Here the thing to validate is where it wrote.
+ */
+const blobKeyWithinRoot = (blobRoot: string, reported: string): string => {
+  const root = path.resolve(blobRoot);
+  const key = path
+    .relative(root, path.resolve(root, reported))
+    .replaceAll("\\", "/");
+  if (!key || key === ".." || key.startsWith("../") || path.isAbsolute(key))
+    throw new Error(
+      `The worker reported an output outside the blob root: ${reported}.`,
+    );
+  return key;
+};
+
 const registerWorkerRenditions = async (
   db: AppDb,
   payload: JobPayload,
@@ -1450,8 +1350,9 @@ const registerWorkerRenditions = async (
       `[onelight] rendition ${failure.kind} failed for version ${version.id}: ${failure.error}`,
     );
   for (const rendition of state.result.renditions) {
-    const key = path.relative(blobRoot, rendition.key).replaceAll("\\", "/");
-    const info = await stat(rendition.key);
+    const key = blobKeyWithinRoot(blobRoot, rendition.key);
+    const renditionPath = path.join(path.resolve(blobRoot), key);
+    const info = await stat(renditionPath);
     /* A 0-byte output is not a rendition. ffmpeg can exit 0 with an empty file
        on a frameless or degenerate source (a poster/sprite of a 0-duration or
        image-as-video input); registering it would reference a broken blob the
@@ -1466,13 +1367,13 @@ const registerWorkerRenditions = async (
     const vttPath =
       typeof meta.vtt_path === "string" ? meta.vtt_path : undefined;
     if (vttPath) {
-      const vttKey = path.relative(blobRoot, vttPath).replaceAll("\\", "/");
+      const vttKey = blobKeyWithinRoot(blobRoot, vttPath);
       meta.vtt_blob_key = vttKey;
       delete meta.vtt_path;
-      const vttInfo = await stat(path.join(blobRoot, vttKey));
+      const vttInfo = await stat(path.join(path.resolve(blobRoot), vttKey));
       meta.vtt_size = vttInfo.size;
     }
-    const checksumSha256 = await sha256File(rendition.key);
+    const checksumSha256 = await sha256File(renditionPath);
     const existingRendition = (
       await db
         .select({ id: renditions.id })
@@ -1996,110 +1897,136 @@ const applyStillResult = async (
     throw new Error("The still job wrote nothing at its output key.");
 };
 
-const processJob = async (
+/* What a claiming worker is handed.
+ *
+ * The two halves of a job are now two HTTP requests: this one runs when a
+ * worker claims, and the apply half runs when it reports back, possibly on a
+ * different server process and certainly a long time later. Nothing may be
+ * carried between them in memory -- every apply recomputes its context from
+ * the payload and the database.
+ *
+ * Null means the job is moot (its share was revoked, its uploads vanished):
+ * there is nothing for a worker to do, and the caller completes it. */
+const planJob = async (
   db: AppDb,
   job: typeof jobs.$inferSelect,
-  workerUrl: string,
-  workerSecret: string,
+  payload: JobPayload,
   blobRoot: string,
-  workerId: string,
-): Promise<void> => {
-  const payload = parsePayload(job.payloadJson);
-  if (job.kind === "fingerprint") {
-    const plan = await planFingerprintJob(db, payload, blobRoot);
-    if (!plan) return;
-    const state = await runOnWorker(
-      db,
-      job,
-      plan.request,
-      workerUrl,
-      workerSecret,
-      workerId,
-    );
-    await applyFingerprintResult(db, payload, state);
-    return;
-  }
+): Promise<JobPlan> => {
+  if (job.kind === "fingerprint")
+    return planFingerprintJob(db, payload, blobRoot);
   const sourceKey = payload.blob_key;
   const versionId = payload.version_id;
   if (!sourceKey || !versionId)
     throw new Error("Job payload is missing blob_key or version_id.");
   const sourcePath = path.join(blobRoot, sourceKey);
+  if (job.kind === "probe")
+    return planProbeJob(db, payload, versionId, sourcePath, blobRoot);
+  if (job.kind === "watermark")
+    return planWatermarkJob(db, job, payload, versionId, sourcePath, blobRoot);
+  /* Always plannable, unlike the others: a still's payload is written by the
+     export waiting on it, not reconstructed from state that may have moved. */
+  if (job.kind === "still") return planStillJob(payload, sourcePath, blobRoot);
+  if (job.kind !== "transcode")
+    throw new Error(`Unsupported worker job kind: ${job.kind}.`);
+  return planTranscodeJob(db, payload, versionId, sourcePath, blobRoot);
+};
+
+/** What a worker reported, written down. Throwing fails the job. */
+export const applyWorkerJobResult = async (
+  db: AppDb,
+  job: typeof jobs.$inferSelect,
+  state: WorkerResponse,
+  blobRoot: string,
+): Promise<void> => {
+  const payload = parsePayload(job.payloadJson);
+  if (job.kind === "fingerprint") {
+    await applyFingerprintResult(db, payload, state);
+    return;
+  }
+  const versionId = payload.version_id;
+  if (!versionId) throw new Error("Job payload is missing version_id.");
   if (job.kind === "probe") {
-    const plan = await planProbeJob(
-      db,
-      payload,
-      versionId,
-      sourcePath,
-      blobRoot,
-    );
-    if (!plan) return;
-    const state = await runOnWorker(
-      db,
-      job,
-      plan.request,
-      workerUrl,
-      workerSecret,
-      workerId,
-    );
     await applyProbeResult(db, payload, versionId, state, blobRoot);
     return;
   }
   if (job.kind === "watermark") {
-    const plan = await planWatermarkJob(
-      db,
-      job,
-      payload,
-      versionId,
-      sourcePath,
-      blobRoot,
-    );
-    if (!plan) return;
-    const state = await runOnWorker(
-      db,
-      job,
-      plan.request,
-      workerUrl,
-      workerSecret,
-      workerId,
-    );
     await applyWatermarkResult(db, job, payload, versionId, state, blobRoot);
     return;
   }
   if (job.kind === "still") {
-    /* Always plannable, unlike the other kinds: the payload is written by the
-       export that is waiting on it, not reconstructed from state that may have
-       moved since. */
-    const plan = planStillJob(payload, sourcePath, blobRoot);
-    const state = await runOnWorker(
-      db,
-      job,
-      plan.request,
-      workerUrl,
-      workerSecret,
-      workerId,
-    );
     await applyStillResult(payload, state, blobRoot);
     return;
   }
   if (job.kind !== "transcode")
     throw new Error(`Unsupported worker job kind: ${job.kind}.`);
-  const plan = await planTranscodeJob(
-    db,
-    payload,
-    versionId,
-    sourcePath,
-    blobRoot,
-  );
-  if (!plan) return;
-  const state = await runOnWorker(
-    db,
-    job,
-    plan.request,
-    workerUrl,
-    workerSecret,
-    workerId,
-  );
   await applyTranscodeResult(db, payload, versionId, state, blobRoot);
+};
+
+/* How long a claim holds a job before another worker may take it, and how far
+   each progress report pushes that out. Short enough that a worker killed
+   mid-encode is noticed in under a minute, long enough that a worker under
+   load has many chances to report before it is judged gone. */
+export const WORKER_LEASE_MS = 60_000;
+
+/* How many moot jobs a single claim will retire before answering "nothing to
+   do". A queue full of revoked shares would otherwise make one claim walk the
+   whole backlog while the worker waits on the response. */
+const MOOT_JOBS_PER_CLAIM = 5;
+
+export interface ClaimedJob {
+  job: typeof jobs.$inferSelect;
+  request: Record<string, unknown>;
+}
+
+/**
+ * Hand one job to a worker that asked for work.
+ *
+ * The claim is the same race-safe conditional UPDATE the server used when it
+ * drove the jobs itself; what changed is who calls it. A job whose plan comes
+ * back null is completed here and the next candidate tried, because a worker
+ * cannot be asked to run nothing, and a job whose plan throws is failed here,
+ * because a payload the server cannot even read will not become readable on a
+ * worker.
+ */
+export const claimWorkerJob = async (
+  db: AppDb,
+  blobRoot: string,
+  workerId: string,
+  capabilities: string[],
+): Promise<ClaimedJob | null> => {
+  for (let retired = 0; retired <= MOOT_JOBS_PER_CLAIM; retired += 1) {
+    const job = await claimNextJob(
+      db,
+      Date.now(),
+      workerId,
+      capabilities,
+      WORKER_LEASE_MS,
+    );
+    if (!job) return null;
+    const payload = parsePayload(job.payloadJson);
+    let plan: JobPlan;
+    try {
+      plan = await planJob(db, job, payload, blobRoot);
+    } catch (error) {
+      await failJob(
+        db,
+        job.id,
+        workerId,
+        Date.now(),
+        error instanceof Error ? error.message : "Job could not be planned.",
+        1000,
+      );
+      await recordDeadMediaJob(db, job);
+      continue;
+    }
+    if (!plan) {
+      await completeJob(db, job.id, workerId, Date.now());
+      continue;
+    }
+    return { job, request: plan.request };
+  }
+  return null;
 };
 
 // When a probe or transcode job exhausts its attempts and goes dead, the
@@ -2173,7 +2100,7 @@ const markAbandonedVersionFailed = async (
   );
 };
 
-const recordDeadMediaJob = async (
+export const recordDeadMediaJob = async (
   db: AppDb,
   job: typeof jobs.$inferSelect,
 ): Promise<void> => {
@@ -2242,6 +2169,12 @@ interface ExportRow {
 // concurrently across however many workers exist.
 const STILL_JOB_TIMEOUT_MS = 10 * 60_000;
 const STILL_SETTLE_POLL_MS = 250;
+/* How long to wait for ANY worker to so much as pick one of these up before
+   deciding nobody is listening. Stills are queued above the media pipeline,
+   so a worker with a free slot claims one within a second; two minutes of
+   nothing means there is no worker, and the export must not hold the single
+   export slot for the full deadline waiting on a queue no one is draining. */
+const STILL_UNCLAIMED_GRACE_MS = 2 * 60_000;
 
 /* Queue a report still, or leave alone the one already queued under this key.
  *
@@ -2296,15 +2229,22 @@ const settledStillJobs = async (
   deadline: number,
 ): Promise<Set<string>> => {
   const complete = new Set<string>();
+  const startedAt = Date.now();
+  let touched = false;
   let pending = keys;
   while (pending.length) {
     const rows = await db
-      .select({ key: jobs.idempotencyKey, status: jobs.status })
+      .select({
+        key: jobs.idempotencyKey,
+        status: jobs.status,
+        attempts: jobs.attempts,
+      })
       .from(jobs)
       .where(inArray(jobs.idempotencyKey, pending))
       .all();
     const stillRunning: string[] = [];
     for (const row of rows) {
+      if (row.attempts > 0) touched = true;
       if (row.status === "complete") complete.add(row.key);
       else if (row.status !== "dead") stillRunning.push(row.key);
     }
@@ -2312,6 +2252,12 @@ const settledStillJobs = async (
        something deleted it, and nothing is going to render it now. */
     pending = stillRunning;
     if (!pending.length || Date.now() >= deadline) break;
+    if (!touched && Date.now() - startedAt >= STILL_UNCLAIMED_GRACE_MS) {
+      console.warn(
+        "[onelight] no worker has claimed a report still in two minutes; the report ships without them.",
+      );
+      break;
+    }
     await new Promise<void>((resolve) =>
       setTimeout(resolve, STILL_SETTLE_POLL_MS),
     );
@@ -2824,43 +2770,23 @@ const processExportJob = async (
     .run();
 };
 
-/* How many media jobs may run at once.
-
-   The pump used to run exactly one, awaited to completion, on a one second
-   tick, with a status poll that also ran at one second. That put a floor of
-   roughly two seconds under every version (a probe job, then a transcode
-   job), whatever the work actually cost: a still that renders in 700 ms took
-   as long as a feature. Three thousand of them could not finish in a working
-   day while three of four cores sat idle.
-
-   Concurrency is bounded rather than generous on purpose. Encodes are the
-   heaviest thing this machine does and the site shares its cores, so the
-   default leaves two of them alone; an operator with a dedicated box raises
-   it. One restores exactly the old behaviour. */
-const DEFAULT_MEDIA_CONCURRENCY = Math.max(1, cpus().length - 2);
-
-const mediaConcurrency = (): number =>
-  pacing.mediaConcurrency ?? DEFAULT_MEDIA_CONCURRENCY;
-
-/** How many media jobs this process will actually run at once. */
-export const resolvedMediaConcurrency = (): number => mediaConcurrency();
-
 export const startWorkerPump = (
   db: AppDb,
-  options: { workerUrl?: string; workerSecret?: string; blobRoot: string },
+  options: { workerSecret?: string; blobRoot: string },
 ): (() => void) => {
-  // Exports are pure DB-to-file work, so the pump runs them even without a
-  // media worker; only probe/transcode (and the PDF's frame stills) need one.
-  const mediaEnabled = Boolean(options.workerUrl && options.workerSecret);
+  /* Exports are pure DB-to-file work, so the pump runs them whether or not
+     any worker exists; media jobs are no longer run here at all. The server
+     queues them, hands them out over /api/v1/worker, and writes down what
+     comes back, so what this flag now gates is whether there is any point
+     queueing them: without a secret no worker can claim, and the jobs would
+     pile up behind a door nobody can open. */
+  const mediaEnabled = Boolean(options.workerSecret);
   if (!mediaEnabled)
     console.warn(
-      "[onelight] Media processing is disabled: WORKER_URL and WORKER_SECRET are not both set. Probe and transcode jobs will stay queued until a worker is configured; comment exports still run.",
+      "[onelight] Media processing is disabled: WORKER_SECRET is not set, so no worker can claim a job. Probe and transcode jobs will stay queued until one is configured; comment exports still run.",
     );
-  const workerId = new UlidGenerator().ulid();
-  const slots = mediaConcurrency();
   let housekeeping = false;
   let exporting = false;
-  let running = 0;
   let stopped = false;
   let lastWatermarkSweep = 0;
   let lastShuttleAudioSweep = 0;
@@ -2868,77 +2794,6 @@ export const startWorkerPump = (
   let lastStackKeySweep = 0;
   let lastFingerprintSweep = 0;
   let reclaimedOnStart = false;
-
-  /* Media jobs, up to `slots` at a time. Claiming is already race-safe: the
-     claim is a conditional UPDATE repeating every claimability predicate, so
-     two slots reaching for the same row leave exactly one winner. Each slot
-     pulls the next job itself when it finishes, so a queue of stills drains
-     continuously rather than one per tick. */
-  const pumpJobs = async (): Promise<void> => {
-    if (!mediaEnabled || stopped) return;
-    while (running < slots) {
-      /* The slot is taken BEFORE the claim, not after it. Two of these run
-         at once whenever a job finishes while the tick is also looking for
-         work, and counting after the await let both of them pass the
-         `running < slots` gate on the same free slot: the cap could be
-         overshot by one per concurrent caller, which on a four core box
-         shared with the site is exactly the thing the cap exists to stop.
-         Reserving first is atomic, because nothing yields in between. */
-      running += 1;
-      let job: Awaited<ReturnType<typeof claimNextJob>>;
-      try {
-        job = await claimNextJob(db, Date.now(), workerId, ["cpu"]);
-      } catch (error) {
-        running -= 1;
-        console.warn(
-          `[onelight] job claim failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        return;
-      }
-      if (!job) {
-        running -= 1;
-        return;
-      }
-      const claimed = job;
-      void (async () => {
-        try {
-          await processJob(
-            db,
-            claimed,
-            options.workerUrl as string,
-            options.workerSecret as string,
-            options.blobRoot,
-            workerId,
-          );
-          await completeJob(db, claimed.id, workerId, Date.now());
-        } catch (error) {
-          try {
-            await failJob(
-              db,
-              claimed.id,
-              workerId,
-              Date.now(),
-              error instanceof Error ? error.message : "Worker job failed.",
-              1000,
-            );
-            await recordDeadMediaJob(db, claimed);
-          } catch (inner) {
-            console.warn(
-              `[onelight] could not record job failure: ${
-                inner instanceof Error ? inner.message : String(inner)
-              }`,
-            );
-          }
-        } finally {
-          running -= 1;
-          /* Straight on to the next one rather than waiting for the tick. */
-          void pumpJobs();
-        }
-      })();
-    }
-  };
 
   /* Exports keep their own single slot. A long PDF report used to run inside
      the same awaited tick as media, so it head-of-line blocked every encode
@@ -3115,7 +2970,6 @@ export const startWorkerPump = (
       }
     }
     void pumpExports();
-    void pumpJobs();
   };
   const timer = setInterval(() => {
     void tick();

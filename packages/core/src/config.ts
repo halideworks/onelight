@@ -40,7 +40,6 @@ export interface AppConfig {
   COOKIE_SECURE?: boolean;
   TRUST_PROXY: boolean;
   ONELIGHT_ALLOWED_ORIGINS?: string;
-  WORKER_URL?: string;
   WORKER_SECRET?: string;
 
   cookieSecure: boolean;
@@ -52,7 +51,6 @@ export interface AppConfig {
      the call site so a malformed value fails at startup instead of quietly
      becoming the default six hours later. */
   workerJobTimeoutMs: number;
-  mediaConcurrency?: number;
   watermarkSweepLimit: number;
 
   /* Retention and cleanup. */
@@ -161,11 +159,9 @@ export const loadConfig = (
   const oidcIssuer = stringOf(values, "OIDC_ISSUER");
   const oidcClientId = stringOf(values, "OIDC_CLIENT_ID");
   const oidcClientSecret = stringOf(values, "OIDC_CLIENT_SECRET");
-  const workerUrl = stringOf(values, "WORKER_URL");
   const workerSecret = stringOf(values, "WORKER_SECRET");
   const backupDir = stringOf(values, "BACKUP_DIR");
   const allowedOriginsRaw = env.ONELIGHT_ALLOWED_ORIGINS;
-  const mediaConcurrency = values.MEDIA_CONCURRENCY;
 
   return {
     PUBLIC_URL: publicUrl,
@@ -198,7 +194,6 @@ export const loadConfig = (
     ...(allowedOriginsRaw !== undefined
       ? { ONELIGHT_ALLOWED_ORIGINS: allowedOriginsRaw }
       : {}),
-    ...(workerUrl !== undefined ? { WORKER_URL: workerUrl } : {}),
     ...(workerSecret !== undefined ? { WORKER_SECRET: workerSecret } : {}),
 
     cookieSecure:
@@ -218,7 +213,6 @@ export const loadConfig = (
       "WORKER_JOB_TIMEOUT_MS",
       Number(defaultOf("WORKER_JOB_TIMEOUT_MS")),
     ),
-    ...(typeof mediaConcurrency === "number" ? { mediaConcurrency } : {}),
     watermarkSweepLimit: numberOf(
       values,
       "WATERMARK_SWEEP_LIMIT",
@@ -264,7 +258,10 @@ export const serverEffectiveConfig = (
 
 export interface WorkerConfig {
   PORT: number;
+  ONELIGHT_SERVER_URL: string;
   WORKER_SECRET?: string;
+  /** How many jobs this worker claims at once. */
+  mediaConcurrency?: number;
   WORK_ROOT: string;
   ONELIGHT_HWACCEL: string;
   ONELIGHT_VAAPI_DEVICE?: string;
@@ -294,9 +291,14 @@ export const loadWorkerConfig = (input: RawEnv): WorkerConfig => {
   const workerSecret = stringOf(values, "WORKER_SECRET");
   const path = (name: string): string =>
     stringOf(values, name) ?? defaultOf(name, "worker");
+  const mediaConcurrency = values.MEDIA_CONCURRENCY;
   return {
     PORT: numberOf(values, "PORT", Number(defaultOf("PORT", "worker"))),
+    /* Required in the manifest, so parseScope has already refused a worker
+       without one: there is nowhere to claim from and nothing to report to. */
+    ONELIGHT_SERVER_URL: values.ONELIGHT_SERVER_URL as string,
     ...(workerSecret !== undefined ? { WORKER_SECRET: workerSecret } : {}),
+    ...(typeof mediaConcurrency === "number" ? { mediaConcurrency } : {}),
     WORK_ROOT: path("WORK_ROOT"),
     ONELIGHT_HWACCEL:
       stringOf(values, "ONELIGHT_HWACCEL") ??

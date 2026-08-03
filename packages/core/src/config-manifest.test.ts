@@ -90,7 +90,8 @@ describe("strict parsing", () => {
       value: "nvenc",
     });
     expect(
-      loadWorkerConfig({ ONELIGHT_HWACCEL: "VAAPI" }).ONELIGHT_HWACCEL,
+      loadWorkerConfig({ ...workerBase, ONELIGHT_HWACCEL: "VAAPI" })
+        .ONELIGHT_HWACCEL,
     ).toBe("vaapi");
   });
 
@@ -99,13 +100,13 @@ describe("strict parsing", () => {
   it("keeps the worker's no and off spellings working", () => {
     for (const value of ["no", "off", "NO", "Off"])
       expect(
-        loadWorkerConfig({ ONELIGHT_VAAPI_LOW_POWER: value })
+        loadWorkerConfig({ ...workerBase, ONELIGHT_VAAPI_LOW_POWER: value })
           .ONELIGHT_VAAPI_LOW_POWER,
         value,
       ).toBe(false);
     for (const value of ["yes", "on"])
       expect(
-        loadWorkerConfig({ ONELIGHT_VAAPI_LOW_POWER: value })
+        loadWorkerConfig({ ...workerBase, ONELIGHT_VAAPI_LOW_POWER: value })
           .ONELIGHT_VAAPI_LOW_POWER,
         value,
       ).toBe(true);
@@ -128,6 +129,14 @@ describe("strict parsing", () => {
   });
 });
 
+/* Every worker parses against the same required pair; these tests are about
+   one variable at a time, so they start from a worker that is otherwise
+   completely configured. */
+const workerBase = {
+  ONELIGHT_SERVER_URL: "http://onelight:3000",
+  WORKER_SECRET: "worker-secret",
+};
+
 describe("mutually dependent settings", () => {
   it("fails startup when a group is half set", () => {
     expect(() =>
@@ -136,8 +145,11 @@ describe("mutually dependent settings", () => {
     expect(() =>
       loadConfig({ ...base, ONELIGHT_ADMIN_EMAIL: "a@example.com" }),
     ).toThrow(/must be set together/);
+    /* The worker pair is judged in worker scope now: the server holds only
+       the secret, and it is the worker that needs a server URL to go with
+       it. */
     expect(() =>
-      loadConfig({ ...base, WORKER_URL: "http://worker:8080" }),
+      loadWorkerConfig({ ONELIGHT_SERVER_URL: "http://onelight:3000" }),
     ).toThrow(/must be set together/);
   });
 
@@ -155,7 +167,6 @@ describe("mutually dependent settings", () => {
       OIDC_CLIENT_SECRET: "shh",
       BACKUP_DIR: "/data/backups",
       BACKUP_KEEP: "7",
-      WORKER_URL: "http://worker:8080",
       WORKER_SECRET: "worker-secret",
     });
     expect(config.OIDC_ISSUER).toBe("https://id.test");
@@ -330,13 +341,14 @@ describe("the worker parses the same manifest", () => {
   it("reads a boolean by its declared type, not by one magic string", () => {
     /* "false" used to leave the software AV1 encode ON, because the old reader
        only recognised the exact string "0". */
-    expect(loadWorkerConfig({}).ONELIGHT_SOFTWARE_AV1).toBe(true);
+    expect(loadWorkerConfig(workerBase).ONELIGHT_SOFTWARE_AV1).toBe(true);
     expect(
-      loadWorkerConfig({ ONELIGHT_SOFTWARE_AV1: "false" })
+      loadWorkerConfig({ ...workerBase, ONELIGHT_SOFTWARE_AV1: "false" })
         .ONELIGHT_SOFTWARE_AV1,
     ).toBe(false);
     expect(
-      loadWorkerConfig({ ONELIGHT_SOFTWARE_AV1: "0" }).ONELIGHT_SOFTWARE_AV1,
+      loadWorkerConfig({ ...workerBase, ONELIGHT_SOFTWARE_AV1: "0" })
+        .ONELIGHT_SOFTWARE_AV1,
     ).toBe(false);
   });
 
@@ -344,21 +356,23 @@ describe("the worker parses the same manifest", () => {
     /* This one silently read as ON before: anything outside a deny list was
        treated as true. */
     expect(() =>
-      loadWorkerConfig({ ONELIGHT_VAAPI_LOW_POWER: "garbage" }),
+      loadWorkerConfig({ ...workerBase, ONELIGHT_VAAPI_LOW_POWER: "garbage" }),
     ).toThrow(/ONELIGHT_VAAPI_LOW_POWER/);
-    expect(() => loadWorkerConfig({ ONELIGHT_HWACCEL: "quicksync" })).toThrow(
-      /ONELIGHT_HWACCEL/,
-    );
+    expect(() =>
+      loadWorkerConfig({ ...workerBase, ONELIGHT_HWACCEL: "quicksync" }),
+    ).toThrow(/ONELIGHT_HWACCEL/);
   });
 
-  /* The stock compose stack gives the worker WORKER_SECRET and no WORKER_URL,
-     because only the server dials the worker. Judging that pair in worker
-     scope made every default deployment fail to start. */
+  /* Workers pull, so the pair the worker needs is its server URL and the
+     secret it signs a claim with. The stock compose stack passes both, and
+     empty strings for everything the operator left alone. */
   it("starts on exactly what the stock compose stack passes it", () => {
     expect(() =>
       loadWorkerConfig({
         PORT: "8080",
+        ONELIGHT_SERVER_URL: "http://onelight:3000",
         WORKER_SECRET: "worker-secret",
+        MEDIA_CONCURRENCY: "",
         ONELIGHT_HWACCEL: "",
         ONELIGHT_VAAPI_DEVICE: "",
         ONELIGHT_VAAPI_LOW_POWER: "",
@@ -371,12 +385,13 @@ describe("the worker parses the same manifest", () => {
   /* A worker configured this way months ago must keep starting. */
   it("still accepts none as the software alias", () => {
     expect(
-      loadWorkerConfig({ ONELIGHT_HWACCEL: "none" }).ONELIGHT_HWACCEL,
+      loadWorkerConfig({ ...workerBase, ONELIGHT_HWACCEL: "none" })
+        .ONELIGHT_HWACCEL,
     ).toBe("none");
   });
 
   it("applies the documented defaults", () => {
-    const config = loadWorkerConfig({});
+    const config = loadWorkerConfig(workerBase);
     /* The worker's own default, not the server's: one name, two containers. */
     expect(config.PORT).toBe(8080);
     expect(config.WORK_ROOT).toBe("/data/work");
