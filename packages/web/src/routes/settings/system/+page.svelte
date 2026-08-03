@@ -287,7 +287,8 @@
       </section>
     {/if}
 
-    <p class="hint footer">Refreshes every 15 seconds. Restore steps live in docs/BACKUPS.md.</p>
+    <p class="hint footer">Refreshes every 15 seconds. To restore, stop the server and copy a snapshot
+      back over the database file.</p>
   {:else}
     <GhostRows rows={5} />
   {/if}

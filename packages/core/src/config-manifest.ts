@@ -485,7 +485,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     kind: "path",
     summary:
       "Where periodic database snapshots are written. Backups are off when unset.",
-    doc: "A filesystem copy of a live SQLite file can catch a write mid-flight; the engine's online backup API cannot. Each snapshot carries a manifest of the blob keys it references, which is also what stops the blob GC deleting a blob a retained snapshot still needs. See docs/BACKUPS.md for restore.",
+    doc: "A filesystem copy of a live SQLite file can catch a write mid-flight; the engine's online backup API cannot. Each snapshot carries a manifest of the blob keys it references, which is also what stops the blob GC deleting a blob a retained snapshot still needs. Restore is a file copy back into place with the server stopped.",
     example: "/data/backups",
     commented: true,
     compose: "interpolate",

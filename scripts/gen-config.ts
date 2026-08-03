@@ -88,7 +88,8 @@ const renderEnvExample = (): string => {
     "# set, because there are no insecure defaults for either.",
     "#",
     "# Every setting compose passes is here. A few the code reads are absent on",
-    "# purpose, because compose pins them to the container: docs/CONFIGURATION.md",
+    "# purpose, because compose pins them to the container. Every setting is",
+    "# declared in packages/core/src/config-manifest.ts, which generates this",
     "# lists those with the reason.",
   ];
 
@@ -278,10 +279,15 @@ const targets = (): Array<{ file: string; next: string }> => {
   const composeTargets: Array<{ file: string; scopes: ConfigScope[] }> = [
     { file: "deploy/docker-compose.yml", scopes: ["server", "worker"] },
   ];
-  const out = [
-    { file: ".env.example", next: renderEnvExample() },
-    { file: "docs/CONFIGURATION.md", next: renderDocs() },
-  ];
+  const out = [{ file: ".env.example", next: renderEnvExample() }];
+  /* The configuration reference is generated the same way as the rest, but it
+     lives in docs/, which is not tracked (see .gitignore: the internal writing
+     stays local). A checkout without that directory is normal, and neither
+     generating nor checking may depend on it -- .env.example and the compose
+     environment lists are the artifacts that decide whether a setting reaches
+     a container, and those are what CI gates. */
+  if (existsSync(path.join(repo, "docs")))
+    out.push({ file: "docs/CONFIGURATION.md", next: renderDocs() });
   for (const target of composeTargets) {
     const full = path.join(repo, target.file);
     out.push({
