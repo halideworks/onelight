@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SELF } from "cloudflare:test";
 import * as cloudflareTest from "cloudflare:test";
 import { createWorkerRoutes } from "@onelight/job-protocol";
 import { applyD1Migrations, createD1Db } from "@onelight/db/cf";
@@ -84,5 +85,30 @@ describe("the job protocol, mounted on the Workers target", () => {
       body,
     });
     expect(response.status).toBe(204);
+  });
+
+  /* Mounted on the Worker itself, not just constructible from its parts.
+     Reached through SELF, so what answers is the deployed fetch handler with
+     its asset fallback and its API routing in front -- a route that exists in
+     a test but is shadowed on the way in would pass every check above and
+     still be unreachable in production.
+
+     503 rather than 401 because this deployment has no WORKER_SECRET: nothing
+     can claim, which is the same thing the node target says when media is
+     unconfigured. What matters is that it is not a 404. */
+  it("is reachable through the deployed handler", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/api/v1/worker/claim",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ worker_id: "w-1", timestamp: Date.now() }),
+      },
+    );
+    expect(response.status).not.toBe(404);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "media processing is disabled",
+    });
   });
 });

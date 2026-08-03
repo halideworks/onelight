@@ -12,5 +12,10 @@ export interface Env {
   OIDC_AUTO_PROVISION?: string;
   OIDC_ALLOWED_DOMAINS?: string;
   ONELIGHT_ALLOWED_ORIGINS?: string;
+  /* The shared secret a media worker signs its claims with. Unset means no
+     worker can claim, so media jobs stay queued -- the same meaning it has on
+     the node target. A deployment that wants renditions sets it with
+     `wrangler secret put WORKER_SECRET` and points a docker worker here. */
+  WORKER_SECRET?: string;
   ASSETS?: Fetcher;
 }

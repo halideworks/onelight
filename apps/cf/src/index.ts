@@ -3,6 +3,7 @@ import {
   createApp,
   deliverDueWebhookDeliveries,
 } from "@onelight/api";
+import { createWorkerRoutes } from "@onelight/job-protocol";
 import {
   loadConfig,
   Pbkdf2PasswordHasher,
@@ -14,13 +15,19 @@ import { R2BlobStore } from "./r2-store.js";
 
 // Deployment model for the Workers target: this Worker serves the SPA, the
 // REST API, uploads to R2, review serving, comments, shares, and webhook
-// delivery (via the cron trigger in wrangler.jsonc). ffmpeg cannot run on
-// Workers, so transcode is out of scope here: renditions require the Docker
-// media worker (apps/worker) pointed at the same storage, and that worker
-// currently speaks only the local filesystem protocol. Until an R2-speaking
-// pump exists (reading sources and writing renditions through signed R2
-// URLs), versions uploaded through this target keep transcode_status
-// "pending".
+// delivery (via the cron trigger in wrangler.jsonc).
+//
+// ffmpeg still cannot run on Workers, and never will. What changed is that it
+// no longer has to: a media worker claims its jobs over /api/v1/worker,
+// downloads each source through a signed URL, encodes on its own machine and
+// PUTs what it produced back. So this target mounts the same job protocol the
+// node server does -- one implementation, two deployments -- and the only
+// difference is that a job here names its storage by key alone, because there
+// is no filesystem to name.
+//
+// Renditions therefore need a docker worker (apps/worker) pointed at this
+// Worker with a matching WORKER_SECRET. Without one, nothing can claim, and
+// versions keep transcode_status "pending" exactly as before.
 
 // Build the app once per isolate instead of per request. The D1 binding is
 // stable for the isolate's lifetime, so it doubles as the cache key, the
@@ -52,6 +59,17 @@ const getApp = (env: Env): ReturnType<typeof createApp> => {
     version: "0.1.0-cf",
     blobStore: new R2BlobStore(env.BLOBS),
   });
+  /* The worker-facing surface, mounted beside the user-facing one. No blob
+     root: storage here is R2, so the envelope carries keys and signed URLs and
+     never a path. */
+  app.route(
+    "/",
+    createWorkerRoutes({
+      db: createD1Db(env.DB),
+      store: new R2BlobStore(env.BLOBS),
+      ...(env.WORKER_SECRET ? { workerSecret: env.WORKER_SECRET } : {}),
+    }),
+  );
   apps.set(env.DB, app);
   return app;
 };
