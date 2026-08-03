@@ -134,6 +134,19 @@ jobs:
             sleep 5
           done
           test "$code" = "200" || { echo "the deployment never became healthy"; exit 1; }
+          # A 200 is not proof the Worker ran. The assets layer serves
+          # index.html for unmatched GETs under single-page-application
+          # not_found_handling, which is also a 200 and would mean the script
+          # never sees a request. So check what came back, not just that
+          # something did.
+          health=$(curl -s "$CI_URL/healthz" || true)
+          echo "healthz body: ${health}"
+          case "$health" in
+            *"<html"*|*"<!DOCTYPE"*|*"<!doctype"*)
+              echo "the assets layer answered /healthz, so the Worker is not being invoked"
+              exit 1
+              ;;
+          esac
           claim=$(curl -s -w '\n%{http_code}' -X POST "$CI_URL/api/v1/worker/claim" \
             -H 'content-type: application/json' \
             -H "x-onelight-signature: $(printf '0%.0s' $(seq 1 64))" \
@@ -149,12 +162,35 @@ jobs:
           test "$code" != "404" || { echo "the worker routes are not mounted on the deployment"; exit 1; }
           test "$code" = "401" || { echo "expected 401 from an unsigned claim, got ${code}"; exit 1; }
 
-      # What the Worker itself logged. Deployment logs are the only place an
-      # exception inside an isolate is visible, and this Worker does not
-      # outlive the job, so they are pulled while it still exists.
-      - name: Deployment logs
+      # What the Worker itself logged, for the request that failed.
+      #
+      # `wrangler tail` only reports invocations that happen while it is
+      # connected, so tailing after the fact showed a successful connection and
+      # then nothing at all. The request has to be made again with the tail
+      # already listening.
+      #
+      # Silence here is itself the answer: if a claim returns an error and the
+      # Worker logs no invocation for it, the request never reached our code
+      # and the problem is edge routing rather than anything in the handler.
+      - name: Deployment logs for a repeated claim
         if: failure()
-        run: timeout 20 pnpm exec wrangler tail "$CI_NAME" --format pretty || true
+        run: |
+          pnpm exec wrangler tail "$CI_NAME" --format json > tail.log 2>&1 &
+          tail_pid=$!
+          sleep 8
+          echo "--- healthz (known good) ---"
+          curl -s -o /dev/null -w '%{http_code}\n' "$CI_URL/healthz" || true
+          echo "--- claim (the failing one) ---"
+          curl -s -w '\n%{http_code}\n' -X POST "$CI_URL/api/v1/worker/claim" \
+            -H 'content-type: application/json' \
+            -H "x-onelight-signature: $(printf '0%.0s' $(seq 1 64))" \
+            -d '{"worker_id":"probe","capabilities":["cpu"],"timestamp":0}' || true
+          sleep 8
+          kill $tail_pid 2>/dev/null || true
+          echo "--- what the Worker logged ---"
+          cat tail.log || true
+          echo "--- invocations seen ---"
+          grep -c outcome tail.log || echo 0
 
       # Three workers, no volume between them and nothing local to claim from:
       # the only way any byte moves is over the signed URLs the deployment
