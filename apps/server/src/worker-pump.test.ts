@@ -1,4 +1,7 @@
 import { createServer } from "node:http";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
@@ -15,6 +18,7 @@ import {
   users,
   workspaces,
 } from "@onelight/db";
+import { comments, exportJobs } from "@onelight/db/schema";
 import { CLIP_HASH_POSITIONS } from "@onelight/worker";
 import {
   judgesTheVersion,
@@ -1180,6 +1184,259 @@ describe("fingerprint jobs, against a stand-in worker", () => {
       sqlite.close();
     }
   }, 20_000);
+});
+
+// 64x36 solid grey PNG, the same one the report builder's own tests embed.
+const STILL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAkCAIAAAC2bqvFAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAUUlEQVRYhdXOQREAAAyDMOTgX+FE9LEjCoJxGIdxGIdxGIdxGIdxGIdxGIdxGIdxGIdxGIdxGIdxGIdxGIdxGIdxGIdxGIdxGIdxGIdxfAdWB2YROD3n3s4mAAAAAElFTkSuQmCC",
+  "base64",
+);
+
+describe("a comment report's frames", () => {
+  /* The report used to dial the configured worker itself, one blocking round
+     trip per comment, which is the one place left that assumed a single
+     reachable worker. Frames are jobs now, so this drives the whole path: the
+     export queues them, the pump claims them, a worker renders them, and the
+     picture has to come back inside the PDF. */
+  it("renders its stills through the job queue and embeds them", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    const blobRoot = await mkdtemp(path.join(tmpdir(), "onelight-export-"));
+    const stillRequests: Array<{ frame?: number; output_path?: string }> = [];
+    const jobResults = new Map<string, unknown>();
+    const server = createServer((request, response) => {
+      if (request.method === "POST") {
+        let body = "";
+        request.on("data", (chunk: Buffer) => (body += chunk.toString()));
+        request.on("end", () => {
+          void (async () => {
+            const parsed = JSON.parse(body) as {
+              job_id: string;
+              kind: string;
+              frame?: number;
+              output_path?: string;
+              rate?: { num: number; den: number };
+            };
+            if (parsed.kind === "still" && parsed.output_path) {
+              stillRequests.push(parsed);
+              await mkdir(path.dirname(parsed.output_path), {
+                recursive: true,
+              });
+              await writeFile(parsed.output_path, STILL_PNG);
+              jobResults.set(parsed.job_id, {
+                job_id: parsed.job_id,
+                status: "complete",
+                result: {
+                  renditions: [
+                    {
+                      kind: "still",
+                      key: parsed.output_path,
+                      meta: { frame: parsed.frame },
+                    },
+                  ],
+                  failures: [],
+                },
+              });
+            } else {
+              jobResults.set(parsed.job_id, {
+                job_id: parsed.job_id,
+                status: "failed",
+                error: `unexpected job kind ${parsed.kind}`,
+              });
+            }
+            response.writeHead(202, { "content-type": "application/json" });
+            response.end(JSON.stringify({ accepted: true }));
+          })();
+        });
+        return;
+      }
+      const id = (request.url ?? "").split("?")[0]?.split("/").pop() ?? "";
+      const result = jobResults.get(id);
+      response.writeHead(result ? 200 : 404, {
+        "content-type": "application/json",
+      });
+      response.end(JSON.stringify(result ?? { error: "not found" }));
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const port = (server.address() as { port: number }).port;
+    let stop: (() => void) | undefined;
+    try {
+      await db
+        .insert(workspaces)
+        .values({ id: "ws-1", name: "Studio", createdAt: 1 })
+        .run();
+      await db
+        .insert(users)
+        .values({
+          id: "user-1",
+          workspaceId: "ws-1",
+          email: "owner@example.com",
+          name: "Owner",
+          role: "admin",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      await db
+        .insert(projects)
+        .values({
+          id: "project-1",
+          workspaceId: "ws-1",
+          name: "Film",
+          palette: "kuro",
+          createdBy: "user-1",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      await db
+        .insert(uploadSessions)
+        .values({
+          id: "upload-1",
+          workspaceId: "ws-1",
+          projectId: "project-1",
+          createdBy: "user-1",
+          clientFilename: "picture.mov",
+          relativePath: "",
+          size: 100,
+          blobKey: "originals/picture.mov",
+          status: "completed",
+          createdAt: 1,
+          completedAt: 1,
+        })
+        .run();
+      await db
+        .insert(assets)
+        .values({
+          id: "asset-1",
+          projectId: "project-1",
+          name: "Picture",
+          kind: "video",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      await db
+        .insert(assetVersions)
+        .values({
+          id: "version-1",
+          assetId: "asset-1",
+          uploadSessionId: "upload-1",
+          versionNo: 1,
+          originalBlobKey: "originals/picture.mov",
+          originalFilename: "picture.mov",
+          size: 100,
+          checksumCrc32c: "",
+          uploadedBy: "user-1",
+          frameRateNum: 24,
+          frameRateDen: 1,
+          transcodeStatus: "ready",
+          createdAt: 1,
+        })
+        .run();
+      await db
+        .insert(renditions)
+        .values({
+          id: "proxy-1",
+          versionId: "version-1",
+          kind: "proxy_1080",
+          blobKey: "renditions/version-1/proxy_1080.mp4",
+          metaJson: "{}",
+          createdAt: 2,
+        })
+        .run();
+      await db
+        .insert(comments)
+        .values({
+          id: "comment-1",
+          versionId: "version-1",
+          authorUserId: "user-1",
+          authorName: "Owner",
+          frameIn: 120,
+          bodyText: "Push the grade warmer here.",
+          createdAt: 3,
+        })
+        .run();
+      await db
+        .insert(exportJobs)
+        .values({
+          id: "export-1",
+          workspaceId: "ws-1",
+          requestedBy: "user-1",
+          projectId: "project-1",
+          format: "pdf",
+          filtersJson: "{}",
+          timecodeBase: "source",
+          status: "queued",
+          createdAt: 4,
+        })
+        .run();
+
+      stop = startWorkerPump(db, {
+        workerUrl: `http://127.0.0.1:${String(port)}`,
+        workerSecret: "test-secret",
+        blobRoot,
+      });
+
+      const deadline = Date.now() + 20_000;
+      let finished:
+        | { status: string; resultBlobKey: string | null; error: string | null }
+        | undefined;
+      while (Date.now() < deadline) {
+        finished = (
+          await db
+            .select()
+            .from(exportJobs)
+            .where(eq(exportJobs.id, "export-1"))
+            .all()
+        )[0];
+        if (finished && finished.status !== "queued") {
+          if (finished.status !== "processing") break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(finished?.error).toBeNull();
+      expect(finished?.status).toBe("complete");
+
+      // The frame the comment is on, asked for as a job, not as a call.
+      expect(stillRequests).toHaveLength(1);
+      expect(stillRequests[0]?.frame).toBe(120);
+      expect(stillRequests[0]?.output_path).toBe(
+        path.join(blobRoot, "exports", ".stills-export-1", "comment-1.png"),
+      );
+
+      /* The picture, in the report. An image XObject carrying this still's own
+         dimensions is the only thing that proves the frame survived the queue,
+         the file read and the embed; a report that fell back to a text-only
+         block has no /Image in it at all. */
+      const pdf = await readFile(
+        path.join(blobRoot, finished?.resultBlobKey as string),
+      );
+      const raw = pdf.toString("latin1");
+      expect(raw.startsWith("%PDF")).toBe(true);
+      expect(raw).toContain("/Image");
+      expect(raw).toContain("/Width 64");
+      expect(raw).toContain("/Height 36");
+
+      // The scratch is gone, and so are the jobs that made it: an export that
+      // is retried has to ask for its frames again rather than find them
+      // complete and their files deleted.
+      const leftover = await db.select().from(jobs).all();
+      expect(leftover.filter((row) => row.kind === "still")).toHaveLength(0);
+      await expect(
+        readFile(
+          path.join(blobRoot, "exports", ".stills-export-1", "comment-1.png"),
+        ),
+      ).rejects.toThrow();
+    } finally {
+      stop?.();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      sqlite.close();
+      await rm(blobRoot, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 describe("which dead jobs condemn their version", () => {
