@@ -86,9 +86,22 @@ The lease is the only thing that decides a worker is gone. A claim sets
 job: a completion whose token is for an older attempt is rejected, because by
 then another worker legitimately owns the job.
 
-A reaper requeues jobs whose lease expired while `processing`, incrementing
-nothing itself (the next claim does that) and stopping at `max_attempts`, which
-is the existing dead-letter path.
+Expired leases need no separate reaper: `claimNextJob` already treats a
+`processing` job whose `lease_expires_at` has passed as claimable, and
+increments `attempts` as it takes it.
+
+**But it never checks `attempts` against `max_attempts`.** Today that is masked,
+because a job only reaches its attempt ceiling through `failJob`, which the pump
+calls when the worker call throws, and which does the dead-lettering. A job
+whose worker *vanishes* never goes through `failJob` at all: the lease simply
+expires and the next claim picks it up, forever.
+
+That is exactly the scenario this phase's acceptance criterion creates, so the
+gap becomes live the moment workers pull. `claimNextJob` must refuse a candidate
+whose `attempts` have reached `max_attempts`, and something must move those rows
+to `dead` so `recordDeadMediaJob` still marks the version failed. Both belong in
+this phase, with a test that kills a worker `max_attempts` times and asserts the
+job dead-letters instead of cycling.
 
 This is what makes the acceptance criterion pass: kill a worker mid-encode and
 its lease simply stops being renewed, so the job returns to the queue and any

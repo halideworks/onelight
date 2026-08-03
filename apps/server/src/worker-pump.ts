@@ -61,7 +61,14 @@ import {
   shares,
   uploadSessions,
 } from "@onelight/db/schema";
-import { claimNextJob, completeJob, failJob, heartbeatJob } from "@onelight/db";
+import {
+  claimNextJob,
+  completeJob,
+  failJob,
+  heartbeatJob,
+  buryAbandonedJob,
+  findAbandonedJobs,
+} from "@onelight/db";
 import type { AppDb } from "@onelight/db";
 
 interface WorkerResponse {
@@ -1879,6 +1886,74 @@ const processJob = async (
 // When a probe or transcode job exhausts its attempts and goes dead, the
 // version is marked failed (the API materializes transcode.failed
 // notifications from that state) and a failed transcode event is emitted.
+/**
+ * Whether a dead media job says anything about whether its version is usable.
+ *
+ * Only the primary pipeline does. A job carrying `only` was asked for one named
+ * rendition -- the full-size still rendered on demand the first time somebody
+ * zooms, or a ladder rung backfilled long afterwards -- and a version that has
+ * been ready for months must not be marked failed because an optional zoom
+ * rung could not be built. `secondary_only` says the same thing for the
+ * shuttle-audio pass.
+ */
+export const judgesTheVersion = (payload: JobPayload): boolean => {
+  if (payload.secondary_only) return false;
+  if (Array.isArray(payload.only) && payload.only.length > 0) return false;
+  return true;
+};
+
+/**
+ * Mark the version behind an abandoned media job failed.
+ *
+ * Runs while the job is still `processing`, before it is buried, so a failure
+ * anywhere leaves the row where the next sweep will find it. Errors propagate
+ * for the same reason: swallowing one here would bury a job whose version was
+ * never written back, and nothing would ever look at it again.
+ *
+ * Idempotent, because a burial that fails after this succeeded means the next
+ * sweep runs it a second time: a version already failed is left alone rather
+ * than stamped and announced twice.
+ */
+const markAbandonedVersionFailed = async (
+  db: AppDb,
+  job: typeof jobs.$inferSelect,
+): Promise<void> => {
+  if (job.kind !== "probe" && job.kind !== "transcode") return;
+  const payload = parsePayload(job.payloadJson);
+  if (!judgesTheVersion(payload)) return;
+  const versionId = payload.version_id;
+  if (!versionId) return;
+  const version = (
+    await db
+      .select({ status: assetVersions.transcodeStatus })
+      .from(assetVersions)
+      .where(eq(assetVersions.id, versionId))
+      .limit(1)
+      .all()
+  )[0];
+  /* Already failed: nothing to say twice. Already ready: it has its
+     renditions, and a later job dying does not take them away. */
+  if (!version || version.status === "failed" || version.status === "ready")
+    return;
+  await db
+    .update(assetVersions)
+    .set({
+      transcodeStatus: "failed",
+      transcodeError: failureReason(
+        "The worker holding this job stopped reporting and its attempts are spent.",
+      ),
+    })
+    .where(eq(assetVersions.id, versionId))
+    .run();
+  await insertVersionEvent(
+    db,
+    payload,
+    versionId,
+    "version.transcode",
+    "failed",
+  );
+};
+
 const recordDeadMediaJob = async (
   db: AppDb,
   job: typeof jobs.$inferSelect,
@@ -1897,9 +1972,18 @@ const recordDeadMediaJob = async (
     )[0];
     if (state?.status !== "dead") return;
     const payload = parsePayload(job.payloadJson);
-    if (payload.secondary_only) return;
+    if (!judgesTheVersion(payload)) return;
     const versionId = payload.version_id;
     if (!versionId) return;
+    const current = (
+      await db
+        .select({ status: assetVersions.transcodeStatus })
+        .from(assetVersions)
+        .where(eq(assetVersions.id, versionId))
+        .limit(1)
+        .all()
+    )[0];
+    if (current?.status === "ready") return;
     await db
       .update(assetVersions)
       .set({
@@ -2608,6 +2692,30 @@ export const startWorkerPump = (
           await reclaimStuckExports(db, now);
         } else {
           await reclaimStuckExports(db, now - EXPORT_RECLAIM_STALE_MS);
+        }
+        /* Media jobs whose worker vanished for good. Claiming already refuses
+           them once their attempts are spent, so without this they would sit
+           in `processing` forever and the version would never read as failed:
+           nothing else fails a job nobody is holding. */
+        for (const abandoned of await findAbandonedJobs(db, now)) {
+          try {
+            /* Write back first, bury second. The other order loses the
+               version: once the job is `dead` no sweep selects it again, so a
+               writeback that failed after burial would never be retried and
+               the version would stay pending forever. */
+            await markAbandonedVersionFailed(db, abandoned);
+            await buryAbandonedJob(db, abandoned.id, now);
+            console.warn(
+              `[onelight] job ${abandoned.id} (${abandoned.kind}) was abandoned by its worker after ${String(abandoned.attempts)} attempts.`,
+            );
+          } catch (error) {
+            /* Left `processing` on purpose: the next sweep picks it up. */
+            console.warn(
+              `[onelight] could not retire abandoned job ${abandoned.id}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
         }
         // Reconcile missing renditions on a throttle rather than every poll;
         // each sweep is bounded per pass.

@@ -9,6 +9,8 @@ import {
   completeJob,
   failJob,
   heartbeatJob,
+  buryAbandonedJob,
+  findAbandonedJobs,
 } from "./index.js";
 import type { AppDb } from "./index.js";
 
@@ -163,6 +165,82 @@ describe("job leases", () => {
     expect(await claimNextJob(db, 10, "worker-a")).toBeUndefined();
     const claimed = await claimNextJob(db, 10, "worker-a", ["ffmpeg"]);
     expect(claimed?.status).toBe("processing");
+    sqlite.close();
+  });
+});
+
+describe("a worker that vanishes", () => {
+  /* Nothing fails a job whose worker disappeared: the lease expires and that
+     is all that happens. Claiming has to be what stops it, or the job is
+     handed out forever with attempts climbing past the ceiling. */
+  it("stops being claimable once its attempts are spent", async () => {
+    const { db, sqlite } = openDb();
+    const id = await seedJob(db, { maxAttempts: 3 });
+    // Each round starts after the previous lease has expired, which is the
+    // only way an abandoned job becomes claimable again.
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const claimed = await claimNextJob(db, 100_000 * attempt, `w${attempt}`);
+      expect(claimed?.id, `attempt ${attempt}`).toBe(id);
+      expect(claimed?.attempts).toBe(attempt);
+      // The worker vanishes: no completion, no failure, just an expired lease.
+    }
+    const beyond = await claimNextJob(db, 10_000_000, "w4");
+    expect(beyond).toBeUndefined();
+    const row = (
+      await db.select().from(jobs).where(eq(jobs.id, id)).limit(1).all()
+    )[0];
+    expect(row?.attempts).toBe(3);
+    sqlite.close();
+  });
+
+  it("is buried rather than left processing forever", async () => {
+    const { db, sqlite } = openDb();
+    const id = await seedJob(db, { maxAttempts: 1 });
+    await claimNextJob(db, 1_000, "gone");
+    // Before the lease expires there is nothing to retire.
+    expect(await findAbandonedJobs(db, 1_100)).toEqual([]);
+    const found = await findAbandonedJobs(db, 10_000_000);
+    expect(found.map((job: typeof jobs.$inferSelect) => job.id)).toEqual([id]);
+    await buryAbandonedJob(db, id, 10_000_000);
+    const row = (
+      await db.select().from(jobs).where(eq(jobs.id, id)).limit(1).all()
+    )[0];
+    expect(row?.status).toBe("dead");
+    expect(row?.finishedAt).toBe(10_000_000);
+    expect(row?.error).toMatch(/stopped reporting/);
+    sqlite.close();
+  });
+
+  /* Burying last is what makes the sequence retryable: until it happens the
+     job is still `processing`, which is the only state a sweep can find. */
+  it("stays findable until it is actually buried", async () => {
+    const { db, sqlite } = openDb();
+    const id = await seedJob(db, { maxAttempts: 1 });
+    await claimNextJob(db, 1_000, "gone");
+    expect(
+      (await findAbandonedJobs(db, 10_000_000)).map(
+        (job: typeof jobs.$inferSelect) => job.id,
+      ),
+    ).toEqual([id]);
+    // A caller that failed its writeback simply does not bury, and the next
+    // sweep sees the job again.
+    expect(
+      (await findAbandonedJobs(db, 10_000_001)).map(
+        (job: typeof jobs.$inferSelect) => job.id,
+      ),
+    ).toEqual([id]);
+    await buryAbandonedJob(db, id, 10_000_002);
+    expect(await findAbandonedJobs(db, 10_000_003)).toEqual([]);
+    sqlite.close();
+  });
+
+  /* A job still inside its lease belongs to whoever holds it. */
+  it("leaves a live claim alone", async () => {
+    const { db, sqlite } = openDb();
+    await seedJob(db, { maxAttempts: 1 });
+    await claimNextJob(db, 1_000, "working");
+    expect(await findAbandonedJobs(db, 1_500)).toEqual([]);
+    expect(await claimNextJob(db, 1_500, "other")).toBeUndefined();
     sqlite.close();
   });
 });

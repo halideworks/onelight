@@ -33,6 +33,13 @@ export const claimNextJob = async (
     .where(
       and(
         lte(jobs.runAfter, now),
+        /* A job at its attempt ceiling is not claimable, however its last
+           attempt ended. Without this an abandoned job is reclaimed forever:
+           the ceiling is only ever enforced by failJob, and a worker that
+           vanishes never calls it -- the lease simply expires and the next
+           claim takes the job again, incrementing attempts past max_attempts
+           with nothing to stop it. */
+        sql`${jobs.attempts} < ${jobs.maxAttempts}`,
         or(
           eq(jobs.status, "queued"),
           and(eq(jobs.status, "processing"), lt(jobs.leaseExpiresAt, now)),
@@ -64,6 +71,7 @@ export const claimNextJob = async (
         and(
           eq(jobs.id, candidate.id),
           lte(jobs.runAfter, now),
+          sql`${jobs.attempts} < ${jobs.maxAttempts}`,
           or(
             eq(jobs.status, "queued"),
             and(eq(jobs.status, "processing"), lt(jobs.leaseExpiresAt, now)),
@@ -182,6 +190,64 @@ export const failJob = async (
         eq(jobs.id, jobId),
         eq(jobs.workerId, workerId),
         eq(jobs.status, "processing"),
+      ),
+    )
+    .run();
+};
+
+/**
+ * Jobs whose worker vanished for good: the lease expired and the attempts are
+ * spent, so no one will ever finish them and claiming will not hand them out
+ * again.
+ *
+ * Finding and burying are separate on purpose. The caller has a writeback to
+ * do (the version has to read as failed) and that writeback must happen while
+ * the job is still `processing`, because `processing` is the only state a
+ * later sweep can find. Burying last makes the whole sequence retryable: a
+ * failure anywhere leaves the row exactly where the next sweep will pick it up.
+ */
+export const findAbandonedJobs = async (
+  db: AppDb,
+  now: number,
+): Promise<Array<typeof jobs.$inferSelect>> =>
+  db
+    .select()
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.status, "processing"),
+        lt(jobs.leaseExpiresAt, now),
+        sql`${jobs.attempts} >= ${jobs.maxAttempts}`,
+      ),
+    )
+    .limit(100)
+    .all();
+
+/**
+ * The last step, once everything that had to be recorded has been. The guard
+ * repeats the claimability predicates so a job someone else has since taken is
+ * left alone.
+ */
+export const buryAbandonedJob = async (
+  db: AppDb,
+  jobId: string,
+  now: number,
+): Promise<void> => {
+  await db
+    .update(jobs)
+    .set({
+      status: "dead",
+      finishedAt: now,
+      heartbeatAt: null,
+      leaseExpiresAt: null,
+      error:
+        "The worker holding this job stopped reporting and its attempts are spent.",
+    })
+    .where(
+      and(
+        eq(jobs.id, jobId),
+        eq(jobs.status, "processing"),
+        lt(jobs.leaseExpiresAt, now),
       ),
     )
     .run();
