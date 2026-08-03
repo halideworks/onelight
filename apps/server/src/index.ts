@@ -42,11 +42,8 @@ import { NodePasswordHasher } from "./password.js";
 import { spriteFrameMatcher } from "./reanchor.js";
 import { isShareLandingPath } from "./share-shell.js";
 import { pinnedWebhookFetch } from "./webhook-fetch.js";
-import {
-  configurePumpPacing,
-  resolvedMediaConcurrency,
-  startWorkerPump,
-} from "./worker-pump.js";
+import { configurePumpPacing, startWorkerPump } from "./worker-pump.js";
+import { createWorkerRoutes } from "./worker-routes.js";
 
 const config = loadConfig(process.env);
 fs.mkdirSync(path.dirname(config.DATABASE_PATH), { recursive: true });
@@ -317,7 +314,6 @@ const start = async (): Promise<void> => {
       serverEffectiveConfig(process.env, {
         COOKIE_SECURE: String(config.cookieSecure),
         BLOB_ROOT: blobRoot,
-        MEDIA_CONCURRENCY: String(resolvedMediaConcurrency()),
         /* Implicit TLS follows the port when SMTP_SECURE is unset, so port 465
            is a deployment using it without having asked for it. Ask the same
            parser the transport is built from rather than restating the rule. */
@@ -422,6 +418,17 @@ const start = async (): Promise<void> => {
     }
     await next();
   });
+  /* Before the public app, and outside it: the worker protocol is internal,
+     carries no session, and must not pick up the API's cookie handling or
+     appear in its contract. */
+  app.route(
+    "/",
+    createWorkerRoutes({
+      db,
+      blobRoot,
+      ...(config.WORKER_SECRET ? { workerSecret: config.WORKER_SECRET } : {}),
+    }),
+  );
   app.route("/", api);
   /* SvelteKit fingerprints everything under _app/immutable/, so its bytes can
      never change under a given URL: serve them with a year-long immutable
@@ -444,12 +451,8 @@ const start = async (): Promise<void> => {
   configurePumpPacing({
     workerJobTimeoutMs: config.workerJobTimeoutMs,
     watermarkSweepLimit: config.watermarkSweepLimit,
-    ...(config.mediaConcurrency !== undefined
-      ? { mediaConcurrency: config.mediaConcurrency }
-      : {}),
   });
   const stopWorkerPump = startWorkerPump(db, {
-    ...(config.WORKER_URL ? { workerUrl: config.WORKER_URL } : {}),
     ...(config.WORKER_SECRET ? { workerSecret: config.WORKER_SECRET } : {}),
     blobRoot,
   });

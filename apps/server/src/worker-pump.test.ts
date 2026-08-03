@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createHmac } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -19,6 +19,7 @@ import {
   workspaces,
 } from "@onelight/db";
 import { comments, exportJobs } from "@onelight/db/schema";
+import { createWorkerRoutes } from "./worker-routes.js";
 import { CLIP_HASH_POSITIONS } from "@onelight/worker";
 import {
   judgesTheVersion,
@@ -1024,59 +1025,99 @@ describe("re-kinding files that have become stills", () => {
   });
 });
 
+const WORKER_SECRET = "test-secret";
+
+interface StandInClaim {
+  job_id: string;
+  kind: string;
+  attempt: number;
+  token: string;
+  lease_ms: number;
+  deadline_ms: number;
+  request: Record<string, unknown>;
+}
+
+/**
+ * A worker, in the shape the protocol actually expects.
+ *
+ * It claims, runs what it was handed, and reports back, so a test that uses
+ * it exercises the real routes, the real plan/apply halves, and the real
+ * lease -- rather than a stub of any of them. Everything it knows about a job
+ * arrives in the envelope, which is the property the protocol depends on.
+ */
+const standInWorker = (
+  db: ReturnType<typeof createNodeDb>["db"],
+  blobRoot: string,
+  run: (request: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  workerId = "stand-in-1",
+): { seen: string[]; stop: () => Promise<void> } => {
+  const app = createWorkerRoutes({ db, blobRoot, workerSecret: WORKER_SECRET });
+  const seen: string[] = [];
+  let stopped = false;
+  const loop = (async () => {
+    while (!stopped) {
+      const payload = JSON.stringify({
+        worker_id: workerId,
+        capabilities: ["cpu"],
+        timestamp: Date.now(),
+      });
+      const claimed = await app.request("/api/v1/worker/claim", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-onelight-signature": createHmac("sha256", WORKER_SECRET)
+            .update(payload)
+            .digest("hex"),
+        },
+        body: payload,
+      });
+      if (claimed.status === 204) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        continue;
+      }
+      const claim = (await claimed.json()) as StandInClaim;
+      seen.push(claim.kind);
+      let result: Record<string, unknown> | null = null;
+      let failure: string | null = null;
+      try {
+        result = await run(claim.request);
+      } catch (error) {
+        failure = error instanceof Error ? error.message : String(error);
+      }
+      await app.request(
+        `/api/v1/worker/jobs/${claim.job_id}/${failure ? "fail" : "complete"}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            worker_id: workerId,
+            attempt: claim.attempt,
+            token: claim.token,
+            ...(failure ? { error: failure } : { result }),
+          }),
+        },
+      );
+    }
+  })();
+  return {
+    seen,
+    stop: async () => {
+      stopped = true;
+      await loop;
+    },
+  };
+};
+
 describe("fingerprint jobs, against a stand-in worker", () => {
   /* The pump and the worker agree on an envelope: everything the worker
      returns is nested under `result`, as media_info and renditions are.
      Reading fingerprints from the top level instead typechecked on both
      sides and killed every job three times over, so the contract is tested
-     where it actually lives: over HTTP, through the real pump. */
+     where it actually lives: through the claim, the routes and the pump. */
   it("writes what the worker answers onto the upload and the version", async () => {
     const { db, sqlite } = createNodeDb(":memory:");
     applyNodeMigrations(sqlite);
-    const answered: string[] = [];
-    const server = createServer((request, response) => {
-      if (request.method === "POST") {
-        let body = "";
-        request.on("data", (chunk: Buffer) => (body += chunk.toString()));
-        request.on("end", () => {
-          const parsed = JSON.parse(body) as {
-            job_id: string;
-            kind: string;
-            sources?: Array<{ id: string }>;
-          };
-          answered.push(parsed.kind);
-          jobResults.set(parsed.job_id, {
-            job_id: parsed.job_id,
-            status: "complete",
-            /* Exactly the shape apps/worker sends. */
-            result: {
-              fingerprints: (parsed.sources ?? []).map((source) => ({
-                id: source.id,
-                content_hash: "0f1e2d3c4b5a6978",
-                capture_key: "2026:07:29 14:03:11.470|nikon z 9|",
-                audio_hash: "cd95422f42931325",
-                state: "ready" as const,
-              })),
-            },
-          });
-          response.writeHead(202, { "content-type": "application/json" });
-          response.end(JSON.stringify({ accepted: true }));
-        });
-        return;
-      }
-      const id = (request.url ?? "").split("?")[0]?.split("/").pop() ?? "";
-      const result = jobResults.get(id);
-      response.writeHead(result ? 200 : 404, {
-        "content-type": "application/json",
-      });
-      response.end(JSON.stringify(result ?? { error: "not found" }));
-    });
-    const jobResults = new Map<string, unknown>();
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve),
-    );
-    const port = (server.address() as { port: number }).port;
-    let stop: (() => void) | undefined;
+    let worker: ReturnType<typeof standInWorker> | undefined;
     try {
       await db
         .insert(workspaces)
@@ -1144,11 +1185,20 @@ describe("fingerprint jobs, against a stand-in worker", () => {
         })
         .run();
 
-      stop = startWorkerPump(db, {
-        workerUrl: `http://127.0.0.1:${String(port)}`,
-        workerSecret: "test-secret",
-        blobRoot: "/tmp",
-      });
+      worker = standInWorker(db, "/tmp", (request) =>
+        Promise.resolve({
+          /* Exactly the shape apps/worker sends. */
+          fingerprints: (
+            (request.sources as Array<{ id: string }> | undefined) ?? []
+          ).map((source) => ({
+            id: source.id,
+            content_hash: "0f1e2d3c4b5a6978",
+            capture_key: "2026:07:29 14:03:11.470|nikon z 9|",
+            audio_hash: "cd95422f42931325",
+            state: "ready" as const,
+          })),
+        }),
+      );
 
       const deadline = Date.now() + 15_000;
       let row: { contentHash: string | null } | undefined;
@@ -1161,9 +1211,9 @@ describe("fingerprint jobs, against a stand-in worker", () => {
             .all()
         )[0];
         if (row?.contentHash) break;
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      expect(answered).toContain("fingerprint");
+      expect(worker.seen).toContain("fingerprint");
       expect(row?.contentHash).toBe("0f1e2d3c4b5a6978");
       const finished = (
         await db
@@ -1178,9 +1228,13 @@ describe("fingerprint jobs, against a stand-in worker", () => {
          every job died silently. */
       expect(finished?.audioHash).toBe("cd95422f42931325");
       expect(finished?.fingerprintState).toBe("ready");
+      // And the job is settled, not left leased on a worker that finished it.
+      const settled = (
+        await db.select().from(jobs).where(eq(jobs.id, "job-print")).all()
+      )[0];
+      expect(settled?.status).toBe("complete");
     } finally {
-      stop?.();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await worker?.stop();
       sqlite.close();
     }
   }, 20_000);
@@ -1202,65 +1256,23 @@ describe("a comment report's frames", () => {
     const { db, sqlite } = createNodeDb(":memory:");
     applyNodeMigrations(sqlite);
     const blobRoot = await mkdtemp(path.join(tmpdir(), "onelight-export-"));
-    const stillRequests: Array<{ frame?: number; output_path?: string }> = [];
-    const jobResults = new Map<string, unknown>();
-    const server = createServer((request, response) => {
-      if (request.method === "POST") {
-        let body = "";
-        request.on("data", (chunk: Buffer) => (body += chunk.toString()));
-        request.on("end", () => {
-          void (async () => {
-            const parsed = JSON.parse(body) as {
-              job_id: string;
-              kind: string;
-              frame?: number;
-              output_path?: string;
-              rate?: { num: number; den: number };
-            };
-            if (parsed.kind === "still" && parsed.output_path) {
-              stillRequests.push(parsed);
-              await mkdir(path.dirname(parsed.output_path), {
-                recursive: true,
-              });
-              await writeFile(parsed.output_path, STILL_PNG);
-              jobResults.set(parsed.job_id, {
-                job_id: parsed.job_id,
-                status: "complete",
-                result: {
-                  renditions: [
-                    {
-                      kind: "still",
-                      key: parsed.output_path,
-                      meta: { frame: parsed.frame },
-                    },
-                  ],
-                  failures: [],
-                },
-              });
-            } else {
-              jobResults.set(parsed.job_id, {
-                job_id: parsed.job_id,
-                status: "failed",
-                error: `unexpected job kind ${parsed.kind}`,
-              });
-            }
-            response.writeHead(202, { "content-type": "application/json" });
-            response.end(JSON.stringify({ accepted: true }));
-          })();
-        });
-        return;
-      }
-      const id = (request.url ?? "").split("?")[0]?.split("/").pop() ?? "";
-      const result = jobResults.get(id);
-      response.writeHead(result ? 200 : 404, {
-        "content-type": "application/json",
-      });
-      response.end(JSON.stringify(result ?? { error: "not found" }));
+    const stillRequests: Array<{ frame: unknown; output_path: string }> = [];
+    /* A worker that renders the frame it was handed, wherever the envelope
+       says to put it: the only thing this stand-in fakes is the decoder. */
+    const worker = standInWorker(db, blobRoot, async (request) => {
+      const outputPath = request.output_path as string | undefined;
+      if (request.kind !== "still" || !outputPath)
+        throw new Error(`unexpected job kind ${String(request.kind)}`);
+      stillRequests.push({ frame: request.frame, output_path: outputPath });
+      await mkdir(path.dirname(outputPath), { recursive: true });
+      await writeFile(outputPath, STILL_PNG);
+      return {
+        renditions: [
+          { kind: "still", key: outputPath, meta: { frame: request.frame } },
+        ],
+        failures: [],
+      };
     });
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve),
-    );
-    const port = (server.address() as { port: number }).port;
     let stop: (() => void) | undefined;
     try {
       await db
@@ -1375,8 +1387,7 @@ describe("a comment report's frames", () => {
         .run();
 
       stop = startWorkerPump(db, {
-        workerUrl: `http://127.0.0.1:${String(port)}`,
-        workerSecret: "test-secret",
+        workerSecret: WORKER_SECRET,
         blobRoot,
       });
 
@@ -1432,7 +1443,7 @@ describe("a comment report's frames", () => {
       ).rejects.toThrow();
     } finally {
       stop?.();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await worker.stop();
       sqlite.close();
       await rm(blobRoot, { recursive: true, force: true });
     }

@@ -60,21 +60,21 @@ Startup fails: OIDC_ISSUER, OIDC_CLIENT_ID, and OIDC_CLIENT_SECRET must be set t
 
 ## Media worker
 
-Startup fails: WORKER_URL and WORKER_SECRET must be set together, or media processing stays disabled and probe/transcode jobs sit queued.
+Startup fails: ONELIGHT_SERVER_URL and WORKER_SECRET must be set together, or the worker has nowhere to claim jobs from and nothing to sign a claim with.
 
 | Variable | Container | Default | Notes |
 |---|---|---|---|
-| `WORKER_URL` | server | unset, which disables media processing | Where the media worker listens. This and WORKER_SECRET must both be set or media processing is disabled and probe/transcode jobs stay queued. |
-| `WORKER_SECRET` | server, worker | unset | Signs the job protocol in both directions. Credential: never shown in the admin view. |
-| `WORKER_JOB_TIMEOUT_MS` | server | `21600000` | Ceiling for one worker job (probe or transcode). The pump heartbeats the job lease while it waits, so long encodes do not expire mid-run. |
+| `WORKER_SECRET` | server, worker | unset | Signs a worker's claim, and mints the token that scopes it. Set it on the server to enable media processing, and on every worker that may claim from it. Credential: never shown in the admin view. |
+| `WORKER_JOB_TIMEOUT_MS` | server | `21600000` | Ceiling for one worker job (probe or transcode). Policy, so it is set on the server and travels to the worker inside the job it hands out: a worker that runs past the ceiling gives the job up and it is retried, rather than holding a lease forever on a job nobody is watching. The worker heartbeats the lease while it works, so a long encode does not expire mid-run. |
+| `ONELIGHT_SERVER_URL` | worker | required | Where the worker claims jobs and reports results. Workers pull: the server no longer dials them, so this is the only address in the protocol and it is configuration, never something a job payload can name. Use the internal address of the server container, not PUBLIC_URL. |
 | `WORK_ROOT` | worker | `/data/work` | Scratch directory for in-flight jobs. Not passed by compose: the image pins its own scratch directory; P0-5 moves this to a bounded tmpfs. |
 
 ## Media queue
 
 | Variable | Container | Default | Notes |
 |---|---|---|---|
-| `MEDIA_CONCURRENCY` | server | the CPU count minus 2, at least 1 | How many media jobs the pump runs at once. Encodes are the heaviest thing the box does and the site shares its cores, so the default leaves two alone. A dedicated worker box can raise it; 1 restores serial behaviour. |
 | `WATERMARK_SWEEP_LIMIT` | server | `8` | Burned-watermark jobs enqueued per reconciliation sweep. The pump scans every 30 seconds for shares whose watermark spec lacks a rendition. The sweep is bounded so a large backlog drains across passes instead of stalling the queue. |
+| `MEDIA_CONCURRENCY` | worker | the CPU count minus 2, at least 1 | How many jobs one worker claims at a time. Read by the worker, which is what runs the encodes: it claims up to this many jobs at once and no more. Encodes are the heaviest thing a box does, and a worker sharing a host with the site should leave cores alone, which is what the default does. A dedicated worker box can raise it; 1 restores serial behaviour. |
 
 ## Hardware encoding
 

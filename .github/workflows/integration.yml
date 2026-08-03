@@ -1,5 +1,5 @@
-# Full-stack integration: build the real compose stack (server + media
-# worker), then drive it end to end with scripts/integration-e2e.mjs from
+# Full-stack integration: build the real compose stack (server + three media
+# workers), then drive it end to end with scripts/integration-e2e.mjs from
 # the runner: setup, multipart upload with CRC32C, probe and transcode,
 # proxy colorimetry and tmcd assertions via ffprobe, Range serving, the
 # watermarked share flow (202 while pending, burned rendition differs from
@@ -9,8 +9,10 @@
 # the project and transcoded assets that exercise left behind, reaching the
 # stack on the runner's LAN address so it is a distinct, non-localhost
 # origin (admitted via ONELIGHT_ALLOWED_ORIGINS, which this exercises too).
-# Finishes by asserting the server shuts down gracefully within 15 seconds
-# of SIGTERM.
+# One leg kills a worker mid-encode and asserts the job is claimed and
+# finished by another, with no duplicate rendition rows and a proxy whose
+# every frame decodes. Finishes by asserting the server shuts down gracefully
+# within 15 seconds of SIGTERM.
 name: Integration
 
 on:
@@ -48,12 +50,18 @@ jobs:
           runner_ip=$(hostname -I | awk '{print $1}')
           echo "RUNNER_IP=${runner_ip}" >> "$GITHUB_ENV"
           echo "ONELIGHT_ALLOWED_ORIGINS=http://${runner_ip}:3000" >> "$GITHUB_ENV"
-      - name: Build and start the stack (waits on both healthchecks)
-        run: docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
+      # Three workers, not one. They pull, so there is no address to balance
+      # and no configuration difference between them; the exercise's last leg
+      # kills one mid-encode and asserts another finishes the job.
+      - name: Build and start the stack (waits on every healthcheck)
+        run: |
+          docker compose -f deploy/docker-compose.yml up -d --build \
+            --scale onelight-worker=3 --wait --wait-timeout 300
       - name: Run the end-to-end exercise
         run: node scripts/integration-e2e.mjs
         env:
           ONELIGHT_E2E_STATE_FILE: ${{ runner.temp }}/e2e-state.json
+          ONELIGHT_E2E_WORKER_KILL: "1"
       # The browser suite (Firefox: the bundled Playwright Chromium has no
       # H.264) drives the share room, presentation room, annotations,
       # attachments, and settings surfaces against the project the exercise
@@ -95,7 +103,7 @@ jobs:
           WORKER_JOB_TIMEOUT_MS=900000
           EOF
           docker compose -f deploy/docker-compose.yml --env-file ci-config.env \
-            up -d --wait --wait-timeout 180
+            up -d --scale onelight-worker=3 --wait --wait-timeout 180
           node scripts/integration-config.mjs
         env:
           BASE_URL: http://localhost:3000
