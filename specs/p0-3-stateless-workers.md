@@ -127,6 +127,23 @@ only in unit tests: scale the worker service to three, kill one mid-transcode,
 and assert the version reaches `ready` with exactly one rendition row per kind
 and a decodable proxy.
 
+## Progress
+
+- Transport isolated in `runOnWorker` (PR #2).
+- Claiming refuses a job at its attempt ceiling, and abandoned jobs are written
+  back and then buried, in that order, so the sequence is retryable (PR #3).
+- `probe`, `transcode` and `fingerprint` split into `plan*`/`apply*` pairs,
+  every apply recomputing its context from the payload and the database
+  (PR #4).
+
+**Watermark is the one left, and it is not a mechanical split.** Its apply half
+needs `specHash`, the version row, `outputPath`, `shareId` and `outputKey`, all
+derived in the plan half from a share that may since have been revoked or had
+its spec changed. The other three kinds could recompute their context from the
+payload; this one needs those values carried in the envelope, which is the
+right answer anyway: the envelope is what a claiming worker is handed, and the
+output key it must write to belongs in it. Do that first, then the routes.
+
 ## What this deliberately leaves for P0-2
 
 The envelope is designed so the source and output locations can be presigned
