@@ -18,6 +18,16 @@ qa/debug.log
 *.db
 *.db-shm
 *.db-wal
+# Internal writing stays local, for the same reason as the agent files below:
+# roadmaps, audits, competitive research, operational runbooks and per-phase
+# build specs describe hosts, timelines, what is broken this week and what was
+# decided and why. Useful to us, and none of a public clone's business. Removed
+# from tracking rather than deleted -- they are still on disk, and still the
+# working record.
+docs/
+specs/
+onelight_design_doc.md
+
 # Agent instructions and agent tooling stay local. They accumulate internal
 # detail -- host names, paths, infrastructure, what is broken this week -- and
 # none of it belongs in a repo that gets cloned, shared or published.

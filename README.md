@@ -15,9 +15,9 @@ Onelight is part of halideworks, a set of open tools that replace rent-extractin
 
 ## Status
 
-This is a v1 in active development, covering the first four phases of the design (foundations, ingest and media pipeline, player and comments, sharing and exports). The full plan and current state are in `docs/ROADMAP.md`; the architecture and every locked decision are in `onelight_design_doc.md`.
+This is a v1 in active development, covering the first four phases of the design: foundations, ingest and media pipeline, player and comments, sharing and exports.
 
-The automated test suite is extensive: an API contract suite that runs on both SQLite (Node) and D1 (Cloudflare Workers), timecode property tests, byte-exact golden fixtures for every NLE export format, a WebCodecs frame-accuracy harness, golden-frame color QC, and a full-stack integration run. Some final acceptance steps require a Linux host with ffmpeg and real NLE applications; those are enumerated in the roadmap.
+The automated test suite is extensive: an API contract suite that runs on both SQLite (Node) and D1 (Cloudflare Workers), timecode property tests, byte-exact golden fixtures for every NLE export format, a WebCodecs frame-accuracy harness, golden-frame color QC, and a full-stack integration run that scales the media worker to three, kills one mid-encode, and asserts another finishes the job. Some final acceptance steps require a Linux host with ffmpeg and real NLE applications.
 
 ## Quick start with Docker
 
@@ -29,7 +29,7 @@ docker compose -f deploy/docker-compose.yml up --build
 
 Browse to the configured `PUBLIC_URL`, complete first-run setup, create a project, and invite a member. `deploy/Caddyfile.example` shows a TLS-terminating reverse proxy. Production deployments must set an explicit `SECRET_KEY`; compose refuses to start without it.
 
-Every setting is listed in `docs/CONFIGURATION.md` with its default and which container reads it. Both that file and `.env.example` are generated from `packages/core/src/config-manifest.ts`, and CI fails if a documented setting is not actually passed to the container. Administrators can see what the running server resolved, subsystem by subsystem, on the admin system page.
+Every setting is declared once in `packages/core/src/config-manifest.ts`, with its type, default and which container reads it; `.env.example` and the environment lists in `deploy/docker-compose.yml` are generated from it, and CI fails if a declared setting is not actually passed to the container. `.env.example` is therefore the settings reference, and it is never hand-edited. Administrators can see what the running server resolved, subsystem by subsystem, on the admin system page.
 
 GPU encoding is opt-in through a Compose override. Intel integrated graphics
 and Intel Arc use Quick Sync through VAAPI:
