@@ -619,14 +619,31 @@ const workerContainerIds = async () => {
 /* Which worker is actually decoding right now. `docker top` is the honest
    answer: the server knows which worker holds the lease, but the point of
    this leg is to kill a process that is mid-encode, and only the host can
-   see that. */
+   see that.
+
+   The ps arguments must include a PID field or the daemon refuses the whole
+   call ("Couldn't find PID field in ps output"), which is exactly how the
+   first version of this failed: every call errored, the error was swallowed,
+   and the leg waited two minutes to report that nothing was decoding. So the
+   first failure is reported rather than absorbed. */
+let topFailureReported = false;
+
 const workerRunningFfmpeg = async (ids) => {
   for (const id of ids) {
     try {
-      const { stdout } = await run("docker", ["top", id, "-eo", "comm"]);
+      const { stdout } = await run("docker", ["top", id, "-eo", "pid,comm"]);
       if (/\bffmpeg\b/.test(stdout)) return id;
-    } catch {
-      /* A container that has just been killed cannot be inspected. */
+    } catch (error) {
+      /* A container that has just been killed cannot be inspected, which is
+         normal here. Anything else is worth saying out loud once. */
+      if (!topFailureReported) {
+        topFailureReported = true;
+        log(
+          `docker top ${id.slice(0, 12)} failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
   }
   return undefined;
