@@ -66,6 +66,9 @@ importers:
       '@onelight/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@onelight/job-protocol':
+        specifier: workspace:*
+        version: link:../../packages/job-protocol
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^4.20250110.0
@@ -88,6 +91,9 @@ importers:
       '@onelight/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@onelight/job-protocol':
+        specifier: workspace:*
+        version: link:../../packages/job-protocol
       '@onelight/worker':
         specifier: workspace:*
         version: link:../../packages/worker
@@ -172,6 +178,21 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^4.20250110.0
         version: 4.20260702.1
+
+  packages/job-protocol:
+    dependencies:
+      '@onelight/core':
+        specifier: workspace:*
+        version: link:../core
+      '@onelight/db':
+        specifier: workspace:*
+        version: link:../db
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260702.1)(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)(gel@2.2.0)
+      hono:
+        specifier: ^4.12.31
+        version: 4.12.31
 
   packages/player:
     dependencies:

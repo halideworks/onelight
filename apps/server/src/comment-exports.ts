@@ -31,8 +31,8 @@ import {
   shareAssets,
 } from "@onelight/db/schema";
 import type { AppDb } from "@onelight/db";
-import { parseObject } from "./json.js";
-import type { JobPayload } from "./worker-pump.js";
+import { parseObject } from "@onelight/job-protocol";
+import type { JobPayload } from "@onelight/job-protocol";
 
 /* A comment report, and the marker files an edit suite reads.
  *

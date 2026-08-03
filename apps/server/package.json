@@ -17,6 +17,7 @@
     "@onelight/api": "workspace:*",
     "@onelight/core": "workspace:*",
     "@onelight/db": "workspace:*",
+    "@onelight/job-protocol": "workspace:*",
     "@onelight/worker": "workspace:*",
     "better-sqlite3": "^12.11.1",
     "drizzle-orm": "^0.45.2",

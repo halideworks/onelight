@@ -20,6 +20,7 @@ COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
 COPY packages/worker/package.json packages/worker/
 COPY packages/api/package.json packages/api/
+COPY packages/job-protocol/package.json packages/job-protocol/
 COPY packages/player/package.json packages/player/
 COPY packages/web/package.json packages/web/
 COPY apps/server/package.json apps/server/
