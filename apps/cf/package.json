@@ -12,7 +12,8 @@
   "dependencies": {
     "@onelight/api": "workspace:*",
     "@onelight/core": "workspace:*",
-    "@onelight/db": "workspace:*"
+    "@onelight/db": "workspace:*",
+    "@onelight/job-protocol": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250110.0"

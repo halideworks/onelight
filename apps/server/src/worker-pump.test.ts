@@ -19,17 +19,17 @@ import {
   workspaces,
 } from "@onelight/db";
 import { comments, exportJobs } from "@onelight/db/schema";
-import { createWorkerRoutes } from "./worker-routes.js";
+import { createWorkerRoutes } from "@onelight/job-protocol";
 import { CLIP_HASH_POSITIONS, LocalBlobStore } from "@onelight/worker";
 import {
   judgesTheVersion,
-  startWorkerPump,
   sweepFingerprints,
   sweepReKindStills,
   sweepShuttleAudioJobs,
   sweepStillLadderJobs,
   sweepWatermarkJobs,
-} from "./worker-pump.js";
+} from "@onelight/job-protocol";
+import { startWorkerPump } from "./pump-loop.js";
 
 describe("shuttle audio reconciliation", () => {
   it("queues one low-priority backfill for a ready version with audio", async () => {

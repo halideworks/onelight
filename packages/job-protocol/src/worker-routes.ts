@@ -166,7 +166,10 @@ const asRecord = (value: string): Record<string, unknown> | null => {
  */
 export const createWorkerRoutes = (options: {
   db: AppDb;
-  blobRoot: string;
+  /* Omitted where storage is not a filesystem this process has mounted: the
+     envelope then names keys and URLs alone, and the worker downloads what it
+     cannot open. */
+  blobRoot?: string | undefined;
   store: WorkerBlobStore;
   workerSecret?: string | undefined;
 }): Hono => {

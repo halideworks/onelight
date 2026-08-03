@@ -42,8 +42,9 @@ import { NodePasswordHasher } from "./password.js";
 import { spriteFrameMatcher } from "./reanchor.js";
 import { isShareLandingPath } from "./share-shell.js";
 import { pinnedWebhookFetch } from "./webhook-fetch.js";
-import { configurePumpPacing, startWorkerPump } from "./worker-pump.js";
-import { createWorkerRoutes } from "./worker-routes.js";
+import { configurePumpPacing } from "@onelight/job-protocol";
+import { startWorkerPump } from "./pump-loop.js";
+import { createWorkerRoutes } from "@onelight/job-protocol";
 
 const config = loadConfig(process.env);
 fs.mkdirSync(path.dirname(config.DATABASE_PATH), { recursive: true });

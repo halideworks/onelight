@@ -28,7 +28,6 @@ import type { MediaInfo, PlannedRendition } from "@onelight/core";
 import {
   assetVersions,
   assets,
-  exportJobs,
   jobs,
   projectEvents,
   projects,
@@ -37,19 +36,8 @@ import {
   shares,
   uploadSessions,
 } from "@onelight/db/schema";
-import {
-  claimNextJob,
-  completeJob,
-  failJob,
-  buryAbandonedJob,
-  findAbandonedJobs,
-} from "@onelight/db";
+import { claimNextJob, completeJob, failJob } from "@onelight/db";
 import type { AppDb } from "@onelight/db";
-import {
-  EXPORT_RECLAIM_STALE_MS,
-  processExportJob,
-  reclaimStuckExports,
-} from "./comment-exports.js";
 import { parseObject } from "./json.js";
 
 /**
@@ -631,7 +619,7 @@ const applyWatermarkResult = async (
 // get a job enqueued. The sweep is bounded per pass and throttled in the
 // poll loop, so a large backlog drains across sweeps instead of stalling the
 // queue.
-const WATERMARK_SWEEP_INTERVAL_MS = 30_000;
+export const WATERMARK_SWEEP_INTERVAL_MS = 30_000;
 const watermarkSweepLimit = (): number => pacing.watermarkSweepLimit;
 
 export const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
@@ -800,7 +788,7 @@ export const sweepWatermarkJobs = async (db: AppDb): Promise<void> => {
    two new sidecars without an operator re-uploading or manually reprocessing
    them. A low-priority, bounded reconciliation job reuses every finished
    output already on disk, so ffmpeg only writes the missing audio files. */
-const SHUTTLE_AUDIO_SWEEP_INTERVAL_MS = 30_000;
+export const SHUTTLE_AUDIO_SWEEP_INTERVAL_MS = 30_000;
 const SHUTTLE_AUDIO_SWEEP_LIMIT = 4;
 const SHUTTLE_AUDIO_SCAN_BATCH = 100;
 const PLAYABLE_VIDEO_KINDS: Array<typeof renditions.$inferSelect.kind> = [
@@ -825,7 +813,7 @@ const PLAYABLE_VIDEO_KINDS: Array<typeof renditions.$inferSelect.kind> = [
    exactly the rungs that are missing. Bounded per pass and throttled in the
    poll loop, like the sweeps above, so a library of 3000 stills drains in the
    background instead of monopolizing the pump. */
-const STILL_LADDER_SWEEP_INTERVAL_MS = 30_000;
+export const STILL_LADDER_SWEEP_INTERVAL_MS = 30_000;
 const STILL_LADDER_SWEEP_LIMIT = 8;
 const STILL_LADDER_SCAN_BATCH = 200;
 
@@ -1004,8 +992,8 @@ export const sweepStillLadderJobs = async (db: AppDb): Promise<number> => {
    a numbered shoot stacks on top of itself), so the migration adds an empty
    column and this fills it. Bounded per pass like every other sweep, and it
    stops costing anything once the library is done. */
-const STACK_KEY_SWEEP_INTERVAL_MS = 30_000;
-const STACK_KEY_SWEEP_BATCH = 2000;
+export const STACK_KEY_SWEEP_INTERVAL_MS = 30_000;
+export const STACK_KEY_SWEEP_BATCH = 2000;
 
 export const sweepStackKeys = async (db: AppDb): Promise<number> => {
   const rows = await db
@@ -1042,7 +1030,7 @@ export const sweepStackKeys = async (db: AppDb): Promise<number> => {
    separators in the hash is the honest test of which scheme signed it, and it
    settles: a re-signed clip has the current count and drops out whether or
    not it turned out to have any audio. */
-const FINGERPRINT_SWEEP_INTERVAL_MS = 60_000;
+export const FINGERPRINT_SWEEP_INTERVAL_MS = 60_000;
 /* Below this a clip cannot land sixteen seeks on sixteen different frames, so
    it is signed at fewer points by design. Matches the sampler's own rule in
    packages/worker/src/fingerprint-media.ts. */
@@ -2215,7 +2203,7 @@ export const judgesTheVersion = (payload: JobPayload): boolean => {
  * sweep runs it a second time: a version already failed is left alone rather
  * than stamped and announced twice.
  */
-const markAbandonedVersionFailed = async (
+export const markAbandonedVersionFailed = async (
   db: AppDb,
   job: typeof jobs.$inferSelect,
 ): Promise<void> => {
@@ -2310,215 +2298,4 @@ export const recordDeadMediaJob = async (
       }`,
     );
   }
-};
-
-export const startWorkerPump = (
-  db: AppDb,
-  options: { workerSecret?: string; blobRoot: string },
-): (() => void) => {
-  /* Exports are pure DB-to-file work, so the pump runs them whether or not
-     any worker exists; media jobs are no longer run here at all. The server
-     queues them, hands them out over /api/v1/worker, and writes down what
-     comes back, so what this flag now gates is whether there is any point
-     queueing them: without a secret no worker can claim, and the jobs would
-     pile up behind a door nobody can open. */
-  const mediaEnabled = Boolean(options.workerSecret);
-  if (!mediaEnabled)
-    console.warn(
-      "[onelight] Media processing is disabled: WORKER_SECRET is not set, so no worker can claim a job. Probe and transcode jobs will stay queued until one is configured; comment exports still run.",
-    );
-  let housekeeping = false;
-  let exporting = false;
-  let stopped = false;
-  let lastWatermarkSweep = 0;
-  let lastShuttleAudioSweep = 0;
-  let lastStillLadderSweep = 0;
-  let lastStackKeySweep = 0;
-  let lastFingerprintSweep = 0;
-  let reclaimedOnStart = false;
-
-  /* Exports keep their own single slot. A long PDF report used to run inside
-     the same awaited tick as media, so it head-of-line blocked every encode
-     behind it for its whole duration; now it blocks only the next export. */
-  const pumpExports = async (): Promise<void> => {
-    if (exporting || stopped) return;
-    exporting = true;
-    try {
-      const pendingExport = (
-        await db
-          .select()
-          .from(exportJobs)
-          .where(eq(exportJobs.status, "queued"))
-          .orderBy(asc(exportJobs.createdAt))
-          .limit(1)
-          .all()
-      )[0];
-      if (!pendingExport) return;
-      try {
-        await db
-          .update(exportJobs)
-          .set({ status: "processing" })
-          .where(
-            and(
-              eq(exportJobs.id, pendingExport.id),
-              eq(exportJobs.status, "queued"),
-            ),
-          )
-          .run();
-        await processExportJob(
-          db,
-          pendingExport,
-          options.blobRoot,
-          mediaEnabled,
-        );
-      } catch (error) {
-        await db
-          .update(exportJobs)
-          .set({
-            status: "failed",
-            error: error instanceof Error ? error.message : "Export failed.",
-            finishedAt: Date.now(),
-          })
-          .where(eq(exportJobs.id, pendingExport.id))
-          .run();
-      }
-    } catch (error) {
-      console.warn(
-        `[onelight] export pump failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    } finally {
-      exporting = false;
-    }
-  };
-
-  const sweep = async (
-    name: string,
-    run: () => Promise<unknown>,
-  ): Promise<void> => {
-    try {
-      await run();
-    } catch (error) {
-      console.warn(
-        `[onelight] ${name} sweep failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  };
-
-  /* Reclaims and sweeps. Their own re-entrancy guard, separate from the job
-     slots, so a slow sweep never stops work being claimed. */
-  const tick = async () => {
-    if (!housekeeping) {
-      housekeeping = true;
-      try {
-        const now = Date.now();
-        // On the first tick, reclaim every export still in 'processing': the
-        // pump processes exports one at a time, so such a row can only be an
-        // orphan from a crashed previous process. Afterwards, reclaim only
-        // rows older than the stale threshold, catching a mid-flight crash
-        // without disturbing an export this pump is actively running.
-        if (!reclaimedOnStart) {
-          reclaimedOnStart = true;
-          await reclaimStuckExports(db, now);
-        } else {
-          await reclaimStuckExports(db, now - EXPORT_RECLAIM_STALE_MS);
-        }
-        /* Media jobs whose worker vanished for good. Claiming already refuses
-           them once their attempts are spent, so without this they would sit
-           in `processing` forever and the version would never read as failed:
-           nothing else fails a job nobody is holding. */
-        for (const abandoned of await findAbandonedJobs(db, now)) {
-          try {
-            /* Write back first, bury second. The other order loses the
-               version: once the job is `dead` no sweep selects it again, so a
-               writeback that failed after burial would never be retried and
-               the version would stay pending forever. */
-            await markAbandonedVersionFailed(db, abandoned);
-            await buryAbandonedJob(db, abandoned.id, now);
-            console.warn(
-              `[onelight] job ${abandoned.id} (${abandoned.kind}) was abandoned by its worker after ${String(abandoned.attempts)} attempts.`,
-            );
-          } catch (error) {
-            /* Left `processing` on purpose: the next sweep picks it up. */
-            console.warn(
-              `[onelight] could not retire abandoned job ${abandoned.id}: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-          }
-        }
-        // Reconcile missing renditions on a throttle rather than every poll;
-        // each sweep is bounded per pass.
-        if (
-          mediaEnabled &&
-          now - lastWatermarkSweep >= WATERMARK_SWEEP_INTERVAL_MS
-        ) {
-          lastWatermarkSweep = now;
-          await sweep("watermark", () => sweepWatermarkJobs(db));
-        }
-        if (now - lastStackKeySweep >= STACK_KEY_SWEEP_INTERVAL_MS) {
-          lastStackKeySweep = now;
-          /* A full batch means there is more, and there is a reason to hurry:
-             batch versioning matches against this column, so an upload
-             arriving before the backfill reaches its asset silently matches
-             nothing and lands as a new asset instead. Draining at a batch per
-             tick clears a large library in under a minute rather than over an
-             hour; a short batch means it is done and the throttle resumes. */
-          const filled = await sweepStackKeys(db).catch((error: unknown) => {
-            console.warn(
-              `[onelight] stack key sweep failed: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-            return 0;
-          });
-          if (filled >= STACK_KEY_SWEEP_BATCH) lastStackKeySweep = 0;
-        }
-        if (
-          mediaEnabled &&
-          now - lastStillLadderSweep >= STILL_LADDER_SWEEP_INTERVAL_MS
-        ) {
-          lastStillLadderSweep = now;
-          await sweep("still re-kind", () => sweepReKindStills(db));
-          await sweep("still ladder", () => sweepStillLadderJobs(db));
-        }
-        if (
-          mediaEnabled &&
-          now - lastFingerprintSweep >= FINGERPRINT_SWEEP_INTERVAL_MS
-        ) {
-          lastFingerprintSweep = now;
-          await sweep("fingerprint", () => sweepFingerprints(db));
-        }
-        if (
-          mediaEnabled &&
-          now - lastShuttleAudioSweep >= SHUTTLE_AUDIO_SWEEP_INTERVAL_MS
-        ) {
-          lastShuttleAudioSweep = now;
-          await sweep("shuttle audio", () => sweepShuttleAudioJobs(db));
-        }
-      } catch (error) {
-        // A transient failure here must not wedge the pump: log it and let
-        // the finally clear the guard for the next tick.
-        console.warn(
-          `[onelight] worker pump housekeeping failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      } finally {
-        housekeeping = false;
-      }
-    }
-    void pumpExports();
-  };
-  const timer = setInterval(() => {
-    void tick();
-  }, 1000);
-  void tick();
-  return () => {
-    stopped = true;
-    clearInterval(timer);
-  };
 };

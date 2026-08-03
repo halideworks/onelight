@@ -7,6 +7,7 @@
     { "path": "packages/player" },
     { "path": "apps/worker" },
     { "path": "packages/api" },
+    { "path": "packages/job-protocol" },
     { "path": "apps/server" },
     { "path": "apps/cf" }
   ]
