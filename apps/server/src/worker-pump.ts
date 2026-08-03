@@ -1535,84 +1535,72 @@ const registerWorkerRenditions = async (
   );
 };
 
-const processJob = async (
+/* What the worker is asked for, or null when the job needs no worker at all.
+   Building the request and folding the result back in are separate on purpose:
+   under the pull protocol they happen in two different requests, so the second
+   half may not depend on anything the first half computed. Each apply
+   recomputes what it needs from the payload and the database. */
+type JobPlan = { request: Record<string, unknown> } | null;
+
+const stringIds = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+
+/* A batch of uploads, identified so the matcher can offer them as new versions
+   of something. Nothing here touches an asset: an upload is not a version yet,
+   and may never become one. The same job identifies existing versions, for a
+   library that predates fingerprinting: same decoder, same arithmetic, a
+   different row to write it on. */
+const planFingerprintJob = async (
   db: AppDb,
-  job: typeof jobs.$inferSelect,
-  workerUrl: string,
-  workerSecret: string,
+  payload: JobPayload,
   blobRoot: string,
-  workerId: string,
+): Promise<JobPlan> => {
+  const ids = stringIds(payload.upload_ids);
+  const versionIds = stringIds(payload.version_ids);
+  if (!ids.length && !versionIds.length) return null;
+  const rows = ids.length
+    ? await db
+        .select()
+        .from(uploadSessions)
+        .where(inArray(uploadSessions.id, ids))
+        .all()
+    : [];
+  const versionRows = versionIds.length
+    ? await db
+        .select()
+        .from(assetVersions)
+        .where(inArray(assetVersions.id, versionIds))
+        .all()
+    : [];
+  const sources = [
+    ...rows
+      .filter((row) => row.status === "completed")
+      .map((row) => ({ id: row.id, path: path.join(blobRoot, row.blobKey) })),
+    ...versionRows.map((row) => ({
+      id: row.id,
+      path: path.join(blobRoot, row.originalBlobKey),
+    })),
+  ];
+  if (!sources.length) return null;
+  return { request: { kind: "fingerprint", sources } };
+};
+
+const applyFingerprintResult = async (
+  db: AppDb,
+  payload: JobPayload,
+  state: WorkerResponse,
 ): Promise<void> => {
-  const payload = parsePayload(job.payloadJson);
-  if (job.kind === "fingerprint") {
-    /* A batch of uploads, identified so the matcher can offer them as new
-       versions of something. Nothing here touches an asset: an upload is not
-       a version yet, and may never become one. */
-    const stringIds = (value: unknown): string[] =>
-      Array.isArray(value)
-        ? value.filter((entry): entry is string => typeof entry === "string")
-        : [];
-    const ids = stringIds(payload.upload_ids);
-    /* The same job identifies existing versions, for a library that predates
-       fingerprinting: same decoder, same arithmetic, a different row to
-       write it on. */
-    const versionIds = stringIds(payload.version_ids);
-    if (!ids.length && !versionIds.length) return;
-    const rows = ids.length
-      ? await db
-          .select()
-          .from(uploadSessions)
-          .where(inArray(uploadSessions.id, ids))
-          .all()
-      : [];
-    const versionRows = versionIds.length
-      ? await db
-          .select()
-          .from(assetVersions)
-          .where(inArray(assetVersions.id, versionIds))
-          .all()
-      : [];
-    const sources = [
-      ...rows
-        .filter((row) => row.status === "completed")
-        .map((row) => ({ id: row.id, path: path.join(blobRoot, row.blobKey) })),
-      ...versionRows.map((row) => ({
-        id: row.id,
-        path: path.join(blobRoot, row.originalBlobKey),
-      })),
-    ];
-    if (!sources.length) return;
-    const state = await runOnWorker(
-      db,
-      job,
-      { kind: "fingerprint", sources },
-      workerUrl,
-      workerSecret,
-      workerId,
-    );
-    if (state.status !== "complete" || !state.result?.fingerprints)
-      throw new Error(state.error ?? "Fingerprinting failed.");
-    const isVersion = new Set(versionRows.map((row) => row.id));
-    for (const print of state.result.fingerprints) {
-      if (isVersion.has(print.id)) {
-        await db
-          .update(assetVersions)
-          .set({
-            contentHash: print.content_hash,
-            captureKey: print.capture_key,
-            ...(print.audio_hash === undefined
-              ? {}
-              : { audioHash: print.audio_hash }),
-            ...(print.motion_hash === undefined
-              ? {}
-              : { motionHash: print.motion_hash }),
-          })
-          .where(eq(assetVersions.id, print.id))
-          .run();
-        continue;
-      }
+  if (state.status !== "complete" || !state.result?.fingerprints)
+    throw new Error(state.error ?? "Fingerprinting failed.");
+  const ids = stringIds(payload.upload_ids);
+  const versionIds = stringIds(payload.version_ids);
+  const isVersion = new Set(versionIds);
+  for (const print of state.result.fingerprints) {
+    if (isVersion.has(print.id)) {
       await db
-        .update(uploadSessions)
+        .update(assetVersions)
         .set({
           contentHash: print.content_hash,
           captureKey: print.capture_key,
@@ -1622,192 +1610,54 @@ const processJob = async (
           ...(print.motion_hash === undefined
             ? {}
             : { motionHash: print.motion_hash }),
-          fingerprintState: print.state,
         })
-        .where(eq(uploadSessions.id, print.id))
+        .where(eq(assetVersions.id, print.id))
         .run();
-    }
-    /* Anything the worker did not answer for is marked so the matcher stops
-       waiting on it. */
-    const answered = new Set(
-      state.result.fingerprints.map((print) => print.id),
-    );
-    for (const row of rows)
-      if (!answered.has(row.id))
-        await db
-          .update(uploadSessions)
-          .set({ fingerprintState: "skipped" })
-          .where(eq(uploadSessions.id, row.id))
-          .run();
-    return;
-  }
-  const sourceKey = payload.blob_key;
-  const versionId = payload.version_id;
-  if (!sourceKey || !versionId)
-    throw new Error("Job payload is missing blob_key or version_id.");
-  const sourcePath = path.join(blobRoot, sourceKey);
-  if (job.kind === "probe") {
-    const assetKind = await assetKindFor(db, payload, versionId);
-    if (assetKind === "pdf" || assetKind === "file") {
-      // ffprobe cannot parse these kinds, so the worker probe is skipped.
-      // PDFs still get a transcode (pdftoppm page rasters); plain files
-      // have nothing to derive and are marked skipped.
-      await db
-        .update(assetVersions)
-        .set({
-          mediaInfoJson: "{}",
-          colorJson: "{}",
-          transcodeStatus: assetKind === "pdf" ? "processing" : "skipped",
-        })
-        .where(eq(assetVersions.id, versionId))
-        .run();
-      await insertVersionEvent(
-        db,
-        payload,
-        versionId,
-        "version.transcode",
-        assetKind === "pdf" ? "processing" : "skipped",
-      );
-      if (assetKind === "pdf") await enqueueTranscode(db, payload, versionId);
-      return;
-    }
-    /* A still's ladder does not depend on what the probe finds, so it is sent
-       with the probe and rendered in the same call. That halves the jobs and
-       the round trips for a delivery of photographs, which is the difference
-       between an afternoon and a coffee. Everything else is probed first,
-       because the plan is derived from the probe. */
-    const stillOutputs =
-      assetKind === "image"
-        ? planRenditions("image", {
-            format: {},
-            streams: [],
-            variableFrameRate: false,
-            colorAssumed: true,
-          }).map((entry) => ({
-            kind: entry.kind,
-            path: path.join(blobRoot, "renditions", versionId, entry.filename),
-          }))
-        : [];
-    const state = await runOnWorker(
-      db,
-      job,
-      {
-        kind: "probe",
-        source_path: sourcePath,
-        ...(stillOutputs.length ? { outputs: stillOutputs } : {}),
-      },
-      workerUrl,
-      workerSecret,
-      workerId,
-    );
-    if (state.status !== "complete" || !state.result?.media_info)
-      throw new Error(state.error ?? "Probe failed.");
-    const mediaInfo = state.result.media_info;
-    const num =
-      typeof mediaInfo.frameRateNum === "number"
-        ? mediaInfo.frameRateNum
-        : undefined;
-    const den =
-      typeof mediaInfo.frameRateDen === "number"
-        ? mediaInfo.frameRateDen
-        : undefined;
-    const timecode =
-      typeof mediaInfo.sourceTimecodeStart === "string"
-        ? mediaInfo.sourceTimecodeStart
-        : undefined;
-    // Drop-frame timecode is defined only for the 29.97 (30000/1001) and
-    // 59.94 (60000/1001) NTSC rates. A ";" separator on any other (commonly
-    // mistagged 24/25/30) source is not drop-frame; honoring it corrupts
-    // frame math and breaks exports, so the flag is gated on the exact rate
-    // as well as the separator. The worker's normalizeProbe applies the same
-    // guard; this is the write-back source of truth.
-    const dropFrame =
-      (timecode?.includes(";") ?? false) &&
-      den === 1001 &&
-      (num === 30000 || num === 60000);
-    let sourceStartFrame: number | null = null;
-    if (timecode && num && den) {
-      try {
-        const rate = { num, den };
-        sourceStartFrame = framesFromTimecode(
-          parseTimecode(timecode, rate),
-          rate,
-        );
-      } catch {
-        sourceStartFrame = null;
-      }
+      continue;
     }
     await db
-      .update(assetVersions)
+      .update(uploadSessions)
       .set({
-        mediaInfoJson: JSON.stringify(mediaInfo),
-        sourceTimecodeStart: timecode ?? null,
-        sourceStartFrame,
-        dropFrame,
-        frameRateNum: num ?? null,
-        frameRateDen: den ?? null,
-        durationFrames:
-          typeof mediaInfo.durationFrames === "number"
-            ? mediaInfo.durationFrames
-            : null,
-        colorJson: JSON.stringify(
-          mediaInfo.sourceColor ?? {
-            assumed: mediaInfo.colorAssumed === true,
-          },
-        ),
-        transcodeStatus: "processing",
+        contentHash: print.content_hash,
+        captureKey: print.capture_key,
+        ...(print.audio_hash === undefined
+          ? {}
+          : { audioHash: print.audio_hash }),
+        ...(print.motion_hash === undefined
+          ? {}
+          : { motionHash: print.motion_hash }),
+        fingerprintState: print.state,
       })
-      .where(eq(assetVersions.id, versionId))
+      .where(eq(uploadSessions.id, print.id))
       .run();
-    await insertVersionEvent(db, payload, versionId, "version.probed");
-    await insertVersionEvent(
-      db,
-      payload,
-      versionId,
-      "version.transcode",
-      "processing",
-    );
-    /* A still came back rendered: register it here and it is done. Anything
-       else needs a transcode planned from what the probe just found. */
-    if (stillOutputs.length && state.result.renditions) {
-      const version = (
-        await db
-          .select()
-          .from(assetVersions)
-          .where(eq(assetVersions.id, versionId))
-          .limit(1)
-          .all()
-      )[0] as typeof assetVersions.$inferSelect | undefined;
-      if (!version) throw new Error("Version was not found.");
-      await registerWorkerRenditions(
-        db,
-        payload,
-        version,
-        assetKind,
-        state,
-        blobRoot,
-      );
-      return;
-    }
-    await enqueueTranscode(db, payload, versionId);
-    return;
   }
-  if (job.kind === "watermark") {
-    await processWatermarkJob(
-      db,
-      job,
-      payload,
-      versionId,
-      sourcePath,
-      workerUrl,
-      workerSecret,
-      blobRoot,
-      workerId,
-    );
-    return;
-  }
-  if (job.kind !== "transcode")
-    throw new Error(`Unsupported worker job kind: ${job.kind}.`);
+  /* Anything the worker did not answer for is marked so the matcher stops
+     waiting on it. */
+  const answered = new Set(state.result.fingerprints.map((print) => print.id));
+  for (const id of ids)
+    if (!answered.has(id))
+      await db
+        .update(uploadSessions)
+        .set({ fingerprintState: "skipped" })
+        .where(eq(uploadSessions.id, id))
+        .run();
+};
+
+/* A transcode asked for one named rendition renders only that. The stills
+   full-size rung arrives this way: it is made on demand, the first time
+   someone zooms past the review still on a source no browser can decode. */
+const targetedKinds = (payload: JobPayload): string[] =>
+  Array.isArray(payload.only)
+    ? payload.only.filter((kind): kind is string => typeof kind === "string")
+    : [];
+
+const planTranscodeJob = async (
+  db: AppDb,
+  payload: JobPayload,
+  versionId: string,
+  sourcePath: string,
+  blobRoot: string,
+): Promise<JobPlan> => {
   const version = (
     await db
       .select()
@@ -1825,12 +1675,7 @@ const processJob = async (
     colorAssumed: true,
     ...(parseObject(version.mediaInfoJson) as Partial<MediaInfo>),
   };
-  /* A transcode asked for one named rendition renders only that. The stills
-     full-size rung arrives this way: it is made on demand, the first time
-     someone zooms past the review still on a source no browser can decode. */
-  const onlyKinds = Array.isArray(payload.only)
-    ? payload.only.filter((kind): kind is string => typeof kind === "string")
-    : [];
+  const onlyKinds = targetedKinds(payload);
   const planned: PlannedRendition[] = onlyKinds.length
     ? onlyKinds.map((kind) => ({
         kind,
@@ -1850,28 +1695,42 @@ const processJob = async (
       "version.transcode",
       "skipped",
     );
-    return;
+    return null;
   }
   const outputs = planned.map((entry) => ({
     kind: entry.kind,
     path: path.join(blobRoot, "renditions", version.id, entry.filename),
     ...(entry.height === undefined ? {} : { height: entry.height }),
   }));
-  const state = await runOnWorker(
-    db,
-    job,
-    {
+  return {
+    request: {
       kind: "transcode",
       source_path: sourcePath,
       media_info: mediaInfo,
       outputs,
     },
-    workerUrl,
-    workerSecret,
-    workerId,
-  );
+  };
+};
+
+const applyTranscodeResult = async (
+  db: AppDb,
+  payload: JobPayload,
+  versionId: string,
+  state: WorkerResponse,
+  blobRoot: string,
+): Promise<void> => {
   if (state.status !== "complete" || !state.result?.renditions)
     throw new Error(state.error ?? "Transcode failed.");
+  const version = (
+    await db
+      .select()
+      .from(assetVersions)
+      .where(eq(assetVersions.id, versionId))
+      .limit(1)
+      .all()
+  )[0] as typeof assetVersions.$inferSelect | undefined;
+  if (!version) throw new Error("Version was not found.");
+  const assetKind = await assetKindFor(db, payload, versionId);
   await registerWorkerRenditions(
     db,
     payload,
@@ -1879,8 +1738,253 @@ const processJob = async (
     assetKind,
     state,
     blobRoot,
-    { targeted: onlyKinds.length > 0 },
+    { targeted: targetedKinds(payload).length > 0 },
   );
+};
+
+const planProbeJob = async (
+  db: AppDb,
+  payload: JobPayload,
+  versionId: string,
+  sourcePath: string,
+  blobRoot: string,
+): Promise<JobPlan> => {
+  const assetKind = await assetKindFor(db, payload, versionId);
+  if (assetKind === "pdf" || assetKind === "file") {
+    // ffprobe cannot parse these kinds, so the worker probe is skipped.
+    // PDFs still get a transcode (pdftoppm page rasters); plain files
+    // have nothing to derive and are marked skipped.
+    await db
+      .update(assetVersions)
+      .set({
+        mediaInfoJson: "{}",
+        colorJson: "{}",
+        transcodeStatus: assetKind === "pdf" ? "processing" : "skipped",
+      })
+      .where(eq(assetVersions.id, versionId))
+      .run();
+    await insertVersionEvent(
+      db,
+      payload,
+      versionId,
+      "version.transcode",
+      assetKind === "pdf" ? "processing" : "skipped",
+    );
+    if (assetKind === "pdf") await enqueueTranscode(db, payload, versionId);
+    /* Nothing for a worker to do: ffprobe cannot parse either kind. */
+    return null;
+  }
+  /* A still's ladder does not depend on what the probe finds, so it is sent
+     with the probe and rendered in the same call. That halves the jobs and
+     the round trips for a delivery of photographs, which is the difference
+     between an afternoon and a coffee. Everything else is probed first,
+     because the plan is derived from the probe. */
+  const stillOutputs =
+    assetKind === "image"
+      ? planRenditions("image", {
+          format: {},
+          streams: [],
+          variableFrameRate: false,
+          colorAssumed: true,
+        }).map((entry) => ({
+          kind: entry.kind,
+          path: path.join(blobRoot, "renditions", versionId, entry.filename),
+        }))
+      : [];
+  return {
+    request: {
+      kind: "probe",
+      source_path: sourcePath,
+      ...(stillOutputs.length ? { outputs: stillOutputs } : {}),
+    },
+  };
+};
+
+const applyProbeResult = async (
+  db: AppDb,
+  payload: JobPayload,
+  versionId: string,
+  state: WorkerResponse,
+  blobRoot: string,
+): Promise<void> => {
+  const assetKind = await assetKindFor(db, payload, versionId);
+  if (state.status !== "complete" || !state.result?.media_info)
+    throw new Error(state.error ?? "Probe failed.");
+  const mediaInfo = state.result.media_info;
+  const num =
+    typeof mediaInfo.frameRateNum === "number"
+      ? mediaInfo.frameRateNum
+      : undefined;
+  const den =
+    typeof mediaInfo.frameRateDen === "number"
+      ? mediaInfo.frameRateDen
+      : undefined;
+  const timecode =
+    typeof mediaInfo.sourceTimecodeStart === "string"
+      ? mediaInfo.sourceTimecodeStart
+      : undefined;
+  // Drop-frame timecode is defined only for the 29.97 (30000/1001) and
+  // 59.94 (60000/1001) NTSC rates. A ";" separator on any other (commonly
+  // mistagged 24/25/30) source is not drop-frame; honoring it corrupts
+  // frame math and breaks exports, so the flag is gated on the exact rate
+  // as well as the separator. The worker's normalizeProbe applies the same
+  // guard; this is the write-back source of truth.
+  const dropFrame =
+    (timecode?.includes(";") ?? false) &&
+    den === 1001 &&
+    (num === 30000 || num === 60000);
+  let sourceStartFrame: number | null = null;
+  if (timecode && num && den) {
+    try {
+      const rate = { num, den };
+      sourceStartFrame = framesFromTimecode(
+        parseTimecode(timecode, rate),
+        rate,
+      );
+    } catch {
+      sourceStartFrame = null;
+    }
+  }
+  await db
+    .update(assetVersions)
+    .set({
+      mediaInfoJson: JSON.stringify(mediaInfo),
+      sourceTimecodeStart: timecode ?? null,
+      sourceStartFrame,
+      dropFrame,
+      frameRateNum: num ?? null,
+      frameRateDen: den ?? null,
+      durationFrames:
+        typeof mediaInfo.durationFrames === "number"
+          ? mediaInfo.durationFrames
+          : null,
+      colorJson: JSON.stringify(
+        mediaInfo.sourceColor ?? {
+          assumed: mediaInfo.colorAssumed === true,
+        },
+      ),
+      transcodeStatus: "processing",
+    })
+    .where(eq(assetVersions.id, versionId))
+    .run();
+  await insertVersionEvent(db, payload, versionId, "version.probed");
+  await insertVersionEvent(
+    db,
+    payload,
+    versionId,
+    "version.transcode",
+    "processing",
+  );
+  /* A still came back rendered: register it here and it is done. Anything
+     else needs a transcode planned from what the probe just found.
+
+     Recomputed rather than carried over from the plan: a still's ladder is
+     requested exactly when the asset is an image, which the row still says. */
+  if (assetKind === "image" && state.result.renditions) {
+    const version = (
+      await db
+        .select()
+        .from(assetVersions)
+        .where(eq(assetVersions.id, versionId))
+        .limit(1)
+        .all()
+    )[0] as typeof assetVersions.$inferSelect | undefined;
+    if (!version) throw new Error("Version was not found.");
+    await registerWorkerRenditions(
+      db,
+      payload,
+      version,
+      assetKind,
+      state,
+      blobRoot,
+    );
+    return;
+  }
+  await enqueueTranscode(db, payload, versionId);
+  return;
+};
+
+const processJob = async (
+  db: AppDb,
+  job: typeof jobs.$inferSelect,
+  workerUrl: string,
+  workerSecret: string,
+  blobRoot: string,
+  workerId: string,
+): Promise<void> => {
+  const payload = parsePayload(job.payloadJson);
+  if (job.kind === "fingerprint") {
+    const plan = await planFingerprintJob(db, payload, blobRoot);
+    if (!plan) return;
+    const state = await runOnWorker(
+      db,
+      job,
+      plan.request,
+      workerUrl,
+      workerSecret,
+      workerId,
+    );
+    await applyFingerprintResult(db, payload, state);
+    return;
+  }
+  const sourceKey = payload.blob_key;
+  const versionId = payload.version_id;
+  if (!sourceKey || !versionId)
+    throw new Error("Job payload is missing blob_key or version_id.");
+  const sourcePath = path.join(blobRoot, sourceKey);
+  if (job.kind === "probe") {
+    const plan = await planProbeJob(
+      db,
+      payload,
+      versionId,
+      sourcePath,
+      blobRoot,
+    );
+    if (!plan) return;
+    const state = await runOnWorker(
+      db,
+      job,
+      plan.request,
+      workerUrl,
+      workerSecret,
+      workerId,
+    );
+    await applyProbeResult(db, payload, versionId, state, blobRoot);
+    return;
+  }
+  if (job.kind === "watermark") {
+    await processWatermarkJob(
+      db,
+      job,
+      payload,
+      versionId,
+      sourcePath,
+      workerUrl,
+      workerSecret,
+      blobRoot,
+      workerId,
+    );
+    return;
+  }
+  if (job.kind !== "transcode")
+    throw new Error(`Unsupported worker job kind: ${job.kind}.`);
+  const plan = await planTranscodeJob(
+    db,
+    payload,
+    versionId,
+    sourcePath,
+    blobRoot,
+  );
+  if (!plan) return;
+  const state = await runOnWorker(
+    db,
+    job,
+    plan.request,
+    workerUrl,
+    workerSecret,
+    workerId,
+  );
+  await applyTranscodeResult(db, payload, versionId, state, blobRoot);
 };
 
 // When a probe or transcode job exhausts its attempts and goes dead, the
