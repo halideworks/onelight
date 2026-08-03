@@ -143,6 +143,26 @@ const storeOf = (objects: Record<string, number> = {}) => ({
       }),
     );
   },
+  putStream: async (
+    key: string,
+    stream: ReadableStream,
+    meta: { size?: number },
+  ): Promise<void> => {
+    /* Drained rather than kept: what a test asks of a stored object is its
+       length, and the length is what the completion is checked against. */
+    let size = 0;
+    const reader = stream.getReader();
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += (chunk.value as Uint8Array).byteLength;
+    }
+    if (meta.size !== undefined && meta.size !== size)
+      throw new Error(
+        `Declared ${String(meta.size)}, received ${String(size)}.`,
+      );
+    objects[key] = size;
+  },
   delete: (key: string): Promise<void> => {
     delete objects[key];
     return Promise.resolve();
@@ -372,6 +392,40 @@ describe("the source a claim hands out", () => {
         .where(eq(jobs.id, "job-probe"))
         .run();
       expect((await app.request(url)).status).toBe(409);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("cannot be used to write over the original", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueProbe(db);
+      const app = routes(db, storeOf({ [SOURCE_KEY]: 1024 }));
+      const claimed = await claimJob(app, "w-1");
+      /* A read URL is not a write request at all: it carries no scope. */
+      const asIs = await app.request(claimed.request.source_url as string, {
+        method: "PUT",
+        body: "not the original",
+        headers: { "content-length": "16" },
+      });
+      expect(asIs.status).toBe(400);
+      /* And given the shape of one, the token still does not fit: the
+         direction is part of what is signed, so a capability to read the
+         original cannot be turned into one to overwrite it. */
+      const read = new URL(
+        claimed.request.source_url as string,
+        "http://server",
+      );
+      read.searchParams.set("scope", SOURCE_KEY);
+      const forged = await app.request(`${read.pathname}${read.search}`, {
+        method: "PUT",
+        body: "not the original",
+        headers: { "content-length": "16" },
+      });
+      expect(forged.status).toBe(401);
     } finally {
       sqlite.close();
     }
@@ -765,6 +819,145 @@ const complete = async (
       result: { renditions: reported, failures: [] },
     }),
   });
+
+/* The other half of the same idea: a worker that cannot write where the job
+   said to sends what it produced instead, and the completion that follows is
+   checked against what actually landed. */
+describe("where a worker puts what it produced", () => {
+  const put = async (
+    app: ReturnType<typeof createWorkerRoutes>,
+    template: string,
+    key: string,
+    body: string,
+  ): Promise<Response> =>
+    app.request(template.replace("{key}", key), {
+      method: "PUT",
+      body,
+      headers: { "content-length": String(Buffer.byteLength(body)) },
+    });
+
+  it("stores an output and then accepts the completion that describes it", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const app = routes(db, storeOf());
+      const claimed = await claimJob(app, "w-1");
+      const template = claimed.request.upload_url as string;
+      expect(template).toContain("{key}");
+      const body = "a proxy, as far as this test is concerned";
+      const stored = await put(app, template, PROXY_KEY, body);
+      expect(stored.status).toBe(200);
+      /* And now the completion: the store holds what the worker says it
+         wrote, so the length it reports is the length that landed. */
+      const accepted = await complete(app, claimed, [
+        {
+          kind: "proxy_1080",
+          key: PROXY_KEY,
+          size: Buffer.byteLength(body),
+          sha256: DIGEST,
+          meta: {},
+        },
+      ]);
+      expect(accepted.status).toBe(200);
+      const [row] = await db.select().from(renditions).all();
+      expect(row).toMatchObject({
+        blobKey: PROXY_KEY,
+        size: Buffer.byteLength(body),
+      });
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("refuses a key outside the namespace it was signed for", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const app = routes(db, storeOf());
+      const claimed = await claimJob(app, "w-1");
+      const template = claimed.request.upload_url as string;
+      /* One capability covers everything this job writes, including files
+         nobody planned, so what bounds it is the namespace. */
+      const elsewhere = await put(
+        app,
+        template,
+        "renditions/version-2/proxy_1080.mp4",
+        "not mine",
+      );
+      expect(elsewhere.status).toBe(403);
+      const original = await put(app, template, "originals/picture.mov", "no");
+      expect(original.status).toBe(403);
+      expect(await db.select().from(renditions).all()).toHaveLength(0);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("takes the sidecars a job discovers, inside the same namespace", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const app = routes(db, storeOf());
+      const claimed = await claimJob(app, "w-1");
+      const template = claimed.request.upload_url as string;
+      /* The sprite's cue sheet and a PDF's page rasters are named by the job,
+         not by the plan, which is why the capability is a namespace. */
+      expect(
+        (await put(app, template, "renditions/version-1/sprite.vtt", "WEBVTT"))
+          .status,
+      ).toBe(200);
+      expect(
+        (
+          await put(
+            app,
+            template,
+            "renditions/version-1/pages/page-01.png",
+            "png",
+          )
+        ).status,
+      ).toBe(200);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("requires a length, because storage does", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const app = routes(db, storeOf());
+      const claimed = await claimJob(app, "w-1");
+      const template = claimed.request.upload_url as string;
+      const lengthless = await app.request(
+        template.replace("{key}", PROXY_KEY),
+        {
+          method: "PUT",
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("streamed"));
+              controller.close();
+            },
+          }),
+          /* Hono's test request does not set one for a stream, which is
+             exactly the case the route has to refuse: R2 will not take a
+             body whose length it does not know. */
+          duplex: "half",
+        } as RequestInit,
+      );
+      expect(lengthless.status).toBe(411);
+    } finally {
+      sqlite.close();
+    }
+  });
+});
 
 /* The inversion audit item 2 asks for, tested from both sides: the worker is
    the process that saw the bytes, so it reports the length and the checksum,

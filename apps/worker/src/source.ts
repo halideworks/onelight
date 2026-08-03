@@ -1,5 +1,6 @@
 import { createWriteStream } from "node:fs";
-import { mkdir, rm, stat } from "node:fs/promises";
+import { access, mkdir, rm, stat } from "node:fs/promises";
+import { constants, openAsBlob } from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -94,4 +95,65 @@ export const fetchSource = async (
     throw error;
   }
   return { path: target, discard };
+};
+
+/**
+ * Whether this process can write into a directory the envelope named.
+ *
+ * How a worker decides where its outputs go. A worker sharing a volume with
+ * the server writes the rendition straight into place, which is a rename away
+ * from being served; a worker that mounts nothing cannot, and encodes into its
+ * own scratch to upload afterwards. Asked rather than configured, because the
+ * two halves of a deployment should not need to be told about each other.
+ */
+export const canWriteInto = async (directory: string): Promise<boolean> => {
+  try {
+    await mkdir(directory, { recursive: true });
+    await access(directory, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * A file this job produced, put where the server said outputs go.
+ *
+ * The URL is a template because a job writes files nobody planned: the
+ * sprite's cue sheet, a PDF's page rasters. The key goes where {key} is, and
+ * the server checks it against the namespace the capability was signed for.
+ *
+ * Sent as a Blob rather than a stream so the request carries a length: R2 will
+ * not take a body without one, and a store writing to a file wants to know
+ * when what it was promised did not all arrive.
+ */
+export const uploadBlob = async (
+  template: string,
+  key: string,
+  file: string,
+  options: {
+    serverUrl: string;
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+  },
+): Promise<void> => {
+  const encoded = key
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  const target = new URL(
+    template.replace("{key}", encoded),
+    `${options.serverUrl.replace(/\/$/, "")}/`,
+  );
+  const response = await (options.fetchImpl ?? fetch)(target, {
+    method: "PUT",
+    body: await openAsBlob(file),
+    signal: AbortSignal.timeout(options.timeoutMs ?? SOURCE_TIMEOUT_MS),
+  });
+  if (!response.ok)
+    throw new Error(
+      `${key} could not be stored: ${String(response.status)} ${await response
+        .text()
+        .catch(() => "")}`.trim(),
+    );
 };

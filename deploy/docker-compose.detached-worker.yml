@@ -1,0 +1,64 @@
+# A media worker with no shared volume.
+#
+# The base stack mounts one volume into the server and into every worker, so a
+# job's source is a path both processes can open and a rendition is written
+# straight into place. That is the fast arrangement and it stays the default.
+#
+# It is not the only one. A worker on another machine cannot mount that volume,
+# and the Cloudflare Workers target has no volume at all: there, the source
+# arrives over the signed URL the claim hands out and each output is sent back
+# through the server, which stores it wherever its storage actually is. This
+# file is that arrangement, run against the same code, so the path is exercised
+# by the integration job rather than only on a deployment nobody watches.
+#
+# Used as an overlay:
+#
+#   docker compose -f deploy/docker-compose.yml \
+#     -f deploy/docker-compose.detached-worker.yml \
+#     up -d --build --wait onelight onelight-worker-detached
+#
+# Naming the services explicitly leaves the volume-mounted worker out, so the
+# only thing that can do the work is the one that has to move the bytes.
+services:
+  onelight-worker-detached:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      ONELIGHT_SERVER_URL: ${ONELIGHT_SERVER_URL:-http://onelight:3000}
+      WORKER_SECRET: ${WORKER_SECRET:?WORKER_SECRET is required}
+      MEDIA_CONCURRENCY: ${MEDIA_CONCURRENCY:-}
+      # There is no /data here, so the scratch every job needs has to be
+      # somewhere a read-only container can write: the tmpfs below. Sources
+      # land there, renditions are encoded there, and both are removed when
+      # the job ends.
+      WORK_ROOT: /tmp/onelight-work
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      # Larger than the base stack's, because this worker holds a whole source
+      # and its renditions here rather than on a volume. Bounded all the same:
+      # a crafted file cannot fill the host, it fills this and the job fails.
+      - /tmp:size=2g,mode=1777
+    mem_limit: ${ONELIGHT_WORKER_MEMORY:-6g}
+    pids_limit: ${ONELIGHT_WORKER_PIDS:-512}
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+      core: 0
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

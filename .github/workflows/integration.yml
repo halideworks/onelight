@@ -121,3 +121,46 @@ jobs:
       - name: Dump service logs
         if: failure()
         run: docker compose -f deploy/docker-compose.yml logs --no-color
+
+  # The same exercise, against a worker that mounts nothing.
+  #
+  # The stack above shares one volume between the server and its workers, so a
+  # job's source is a path both can open and a rendition is written straight
+  # into place. That is the fast arrangement and it is the default, but it is
+  # not the only one: a worker on another machine has no such volume, and the
+  # Cloudflare Workers target has no filesystem to share at all. There the
+  # source arrives over the signed URL the claim hands out and every output is
+  # sent back to be stored.
+  #
+  # Only the detached worker is started, so nothing else can do the work: if
+  # the bytes cannot move over HTTP, nothing reaches ready and this job fails.
+  detached-worker:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: integration-only-secret-key-0123456789abcdefghij
+      WORKER_SECRET: integration-only-worker-secret-0123456789
+      PUBLIC_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+      - run: pnpm install --frozen-lockfile
+      - name: Build and start the server and one detached worker
+        run: |
+          docker compose -f deploy/docker-compose.yml \
+            -f deploy/docker-compose.detached-worker.yml \
+            up -d --build --wait --wait-timeout 300 \
+            onelight onelight-worker-detached
+      - name: Run the end-to-end exercise
+        run: node scripts/integration-e2e.mjs
+        env:
+          ONELIGHT_E2E_STATE_FILE: ${{ runner.temp }}/e2e-state.json
+      - name: Dump service logs
+        if: failure()
+        run: |
+          docker compose -f deploy/docker-compose.yml \
+            -f deploy/docker-compose.detached-worker.yml logs --no-color

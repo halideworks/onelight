@@ -6,7 +6,7 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { cpus } from "node:os";
 import path from "node:path";
@@ -38,7 +38,7 @@ import type {
   WatermarkSpec,
   WatermarkTokens,
 } from "@onelight/worker";
-import { fetchSource } from "./source.js";
+import { canWriteInto, fetchSource, uploadBlob } from "./source.js";
 import type { Fetched, SourceRef } from "./source.js";
 
 interface WorkerOutput {
@@ -66,6 +66,7 @@ interface WorkerRequest {
   source_url?: string;
   media_info?: MediaInfo;
   outputs?: WorkerOutput[];
+  upload_url?: string;
   output_key?: string;
   output_path?: string;
   frame?: number;
@@ -140,6 +141,52 @@ const sourceFile = (reference: SourceRef, label: string): Promise<Fetched> =>
   fetchSource(reference, { workRoot, serverUrl, label });
 
 /**
+ * Where this worker will write what it produces, and whether it has to send it.
+ *
+ * The envelope names a place on the shared volume. If this process can write
+ * there, that is where the rendition goes and nothing has to move afterwards.
+ * If it cannot -- another machine, or the Workers target, where there is no
+ * volume at all -- it encodes into its own scratch and uploads each output
+ * when it is finished.
+ */
+const destinationsFor = async (
+  body: WorkerRequest,
+): Promise<{ outputs: WorkerOutput[]; sending: boolean }> => {
+  const outputs = body.outputs ?? [];
+  /* A probe of a video asks for nothing to be written, so there is nothing to
+     place and nothing to send. Deciding otherwise would demand an upload URL
+     for a job that produces no bytes. */
+  if (outputs.length === 0) return { outputs, sending: false };
+  if (await canWriteInto(path.dirname(outputs[0]?.path ?? "")))
+    return { outputs, sending: false };
+  /* Scratch that mirrors the key, so a PDF's pages/ nesting and the sprite's
+     cue sheet still land beside the output they belong to, and the key each
+     file maps back to is unchanged. */
+  return {
+    outputs: outputs.map((output) => ({
+      ...output,
+      path: path.join(workRoot, body.job_id, output.key),
+    })),
+    sending: true,
+  };
+};
+
+/* Sending a single output where the envelope said outputs go, or nothing at
+   all when the file is already in place on a shared volume. */
+const senderFor = (
+  body: WorkerRequest,
+  sending: boolean,
+): ((key: string, file: string) => Promise<void>) | null => {
+  if (!sending) return null;
+  const template = body.upload_url;
+  if (!template)
+    throw new Error(
+      "This worker cannot write where the job said to, and was given no upload URL.",
+    );
+  return (key, file) => uploadBlob(template, key, file, { serverUrl });
+};
+
+/**
  * What a file the job produced is: its length and its sha256, measured here.
  *
  * Measured by the process that wrote the bytes, which is the only one that can
@@ -203,6 +250,7 @@ const keyForPath = (outputs: WorkerOutput[], file: string): string => {
 const describeRenditions = async (
   outputs: WorkerOutput[],
   produced: Array<{ kind: string; key: string; meta: Record<string, unknown> }>,
+  send: ((key: string, file: string) => Promise<void>) | null,
 ): Promise<
   Array<{
     kind: string;
@@ -219,27 +267,40 @@ const describeRenditions = async (
     const meta = { ...rendition.meta };
     if (typeof meta.vtt_path === "string") {
       const vtt = await describeFile(meta.vtt_path);
-      meta.vtt_key = keyForPath(outputs, meta.vtt_path);
+      const vttKey = keyForPath(outputs, meta.vtt_path);
+      if (send) await send(vttKey, meta.vtt_path);
+      meta.vtt_key = vttKey;
       meta.vtt_size = vtt.size;
       delete meta.vtt_path;
     }
-    described.push({
-      kind: rendition.kind,
-      key: keyForPath(outputs, written),
-      ...(await describeFile(written)),
-      meta,
-    });
+    const key = keyForPath(outputs, written);
+    /* Measured before it is sent, and reported after: what the server checks
+       is that the store ended up holding the length this worker measured. */
+    const measured = await describeFile(written);
+    if (send) await send(key, written);
+    /* A rasterised PDF is one rendition and many files: the row points at the
+       first page and its meta lists the rest, which the reader asks for by
+       name. Sending only the one the row names would leave a document whose
+       first page is the whole of it. */
+    if (send && Array.isArray(meta.pages)) {
+      const from = path.dirname(written);
+      const under = key.split("/").slice(0, -1).join("/");
+      for (const page of meta.pages)
+        if (typeof page === "string" && page !== path.basename(written))
+          await send(`${under}/${page}`, path.join(from, page));
+    }
+    described.push({ kind: rendition.kind, key, ...measured, meta });
   }
   return described;
 };
 
 const runOutputs = async (
   body: WorkerRequest,
+  outputs: WorkerOutput[],
   mediaInfo: MediaInfo,
   source: string,
 ) => {
   await mkdir(workRoot, { recursive: true });
-  const outputs = body.outputs ?? [];
   const transcodeJob: TranscodeJob = {
     id: body.job_id,
     sourceKey: source,
@@ -362,6 +423,13 @@ const runJob = async (
     return await runJobAgainst(body, fetched.path);
   } finally {
     await fetched.discard();
+    /* Anything this job encoded into its own scratch has been sent by now, or
+       the job failed and nobody wants it. Either way it does not survive the
+       job: a worker that keeps them fills its disk and then fails everything. */
+    await rm(path.join(workRoot, body.job_id), {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
   }
 };
 
@@ -374,21 +442,28 @@ const runJobAgainst = async (
   // output lands via the same temp-name-and-rename convention as transcode
   // renditions.
   if (body.kind === "still" || body.kind === "watermark") {
-    if (!body.output_path) throw new Error("An output_path is required.");
     if (!body.output_key) throw new Error("An output_key is required.");
+    /* One output, chosen the same way the ladder's are: the shared path when
+       this process can write it, and its own scratch when it cannot. */
+    const shared =
+      body.output_path && (await canWriteInto(path.dirname(body.output_path)));
+    const outputPath = shared
+      ? (body.output_path as string)
+      : path.join(workRoot, body.job_id, body.output_key);
+    await mkdir(path.dirname(outputPath), { recursive: true });
     if (body.kind === "still") {
       if (typeof body.frame !== "number" || !Number.isInteger(body.frame))
         throw new Error("An integer frame is required.");
       await extractStill(
         source,
-        body.output_path,
+        outputPath,
         body.frame,
         body.rate ?? { num: 24, den: 1 },
       );
     } else {
       await renderWatermark(
         source,
-        body.output_path,
+        outputPath,
         body.spec ?? {},
         body.tokens ?? {},
         body.rate,
@@ -402,15 +477,18 @@ const runJobAgainst = async (
       body.kind === "still"
         ? { frame: body.frame }
         : playableRenditionMetadata(
-            await probeFile(body.output_path),
-            await exactWebCodecString(body.output_path),
+            await probeFile(outputPath),
+            await exactWebCodecString(outputPath),
           );
+    const measured = await describeFile(outputPath);
+    const send = senderFor(body, !shared);
+    if (send) await send(body.output_key, outputPath);
     return {
       renditions: [
         {
           kind: body.kind === "still" ? "still" : "watermarked",
           key: body.output_key,
-          ...(await describeFile(body.output_path)),
+          ...measured,
           meta,
         },
       ],
@@ -418,21 +496,24 @@ const runJobAgainst = async (
     };
   }
   const mediaInfo = body.media_info ?? (await probeFile(source));
+  const { outputs, sending } = await destinationsFor(body);
+  const send = senderFor(body, sending);
   if (body.kind === "probe") {
     /* A probe that arrives carrying outputs is a still: its ladder does not
        depend on anything the probe finds, so it is rendered in this same call
        rather than costing a second job and a second round trip. */
     const rendered =
-      body.outputs && body.outputs.length > 0
-        ? await runOutputs(body, mediaInfo, source)
+      outputs.length > 0
+        ? await runOutputs(body, outputs, mediaInfo, source)
         : null;
     return {
       media_info: mediaInfo,
       ...(rendered
         ? {
             renditions: await describeRenditions(
-              body.outputs ?? [],
+              outputs,
               rendered.renditions,
+              send,
             ),
             failures: rendered.failures,
             /* A still is probed and rendered in one call, so its identity
@@ -444,9 +525,9 @@ const runJobAgainst = async (
         : {}),
     };
   }
-  const result = await runOutputs(body, mediaInfo, source);
+  const result = await runOutputs(body, outputs, mediaInfo, source);
   return {
-    renditions: await describeRenditions(body.outputs ?? [], result.renditions),
+    renditions: await describeRenditions(outputs, result.renditions, send),
     failures: result.failures,
     ...(result.fingerprint ? { fingerprint: result.fingerprint } : {}),
   };
