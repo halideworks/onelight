@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { fetchSource } from "./source.js";
+import { canWriteInto, fetchSource, uploadBlob } from "./source.js";
 
 const bytes = Buffer.from("a source file, as far as anything here knows");
 
@@ -115,5 +115,63 @@ describe("the source a job reads", () => {
         { workRoot: work, serverUrl: "http://server", label: "job-1-source" },
       ),
     ).rejects.toThrow(/neither a readable path nor a URL/);
+  });
+});
+
+describe("where a worker writes what it produces", () => {
+  it("uses the shared directory when it can write there", async () => {
+    expect(await canWriteInto(path.join(root, "renditions", "v1"))).toBe(true);
+  });
+
+  it("says so when it cannot", async () => {
+    /* The case this exists for: a worker with no volume mounted, where the
+       directory the envelope named cannot even be created. */
+    await writeFile(path.join(root, "not-a-directory"), "x");
+    expect(
+      await canWriteInto(path.join(root, "not-a-directory", "renditions")),
+    ).toBe(false);
+  });
+
+  it("sends an output with its length, where the template says", async () => {
+    const file = path.join(root, "proxy_1080.mp4");
+    await writeFile(file, bytes);
+    let seen: { url: string; method?: string; length: number } | null = null;
+    await uploadBlob(
+      "/api/v1/worker/blobs/{key}?job=job-1&scope=renditions%2Fv1%2F",
+      "renditions/v1/proxy_1080.mp4",
+      file,
+      {
+        serverUrl: "http://server",
+        fetchImpl: ((input: string | URL, init?: RequestInit) => {
+          const body = init?.body as Blob;
+          seen = {
+            url: String(input),
+            ...(init?.method ? { method: init.method } : {}),
+            length: body.size,
+          };
+          return Promise.resolve(new Response("{}", { status: 200 }));
+        }) as unknown as typeof fetch,
+      },
+    );
+    expect(seen).toMatchObject({
+      url: "http://server/api/v1/worker/blobs/renditions/v1/proxy_1080.mp4?job=job-1&scope=renditions%2Fv1%2F",
+      method: "PUT",
+      /* A length, because R2 will not take a body without one. */
+      length: bytes.byteLength,
+    });
+  });
+
+  it("raises when the server refuses the output", async () => {
+    const file = path.join(root, "proxy_1080.mp4");
+    await writeFile(file, bytes);
+    await expect(
+      uploadBlob("/api/v1/worker/blobs/{key}", "renditions/v1/p.mp4", file, {
+        serverUrl: "http://server",
+        fetchImpl: () =>
+          Promise.resolve(
+            new Response("outside this job's scope", { status: 403 }),
+          ),
+      }),
+    ).rejects.toThrow(/403/);
   });
 });

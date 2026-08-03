@@ -80,18 +80,24 @@ export interface PumpBlobStore {
 }
 
 /**
- * How a claim turns a blob key into something a worker can fetch.
+ * How a claim turns a blob key into something a worker can reach.
  *
- * The server hands out the URL because it is the only side that knows how its
- * storage is reached: a path on a shared volume today, a route on this server
- * for a worker that mounts nothing, a presigned R2 URL where credentials for
- * one exist. The worker fetches the string it was given and asks no questions.
+ * The server hands out these URLs because it is the only side that knows how
+ * its storage is reached: a path on a shared volume today, a route on this
+ * server for a worker that mounts nothing, a presigned storage URL where
+ * credentials for one exist. The worker uses the string it was given and asks
+ * no questions.
+ *
+ * `write` is a template rather than one URL per output, because a job produces
+ * files nobody planned: the sprite's cue sheet is written beside the sprite,
+ * and a PDF's page count is not known until pdftoppm has run. So the capability
+ * covers the namespace the job is allowed to write, and the worker puts the key
+ * into it.
  */
-export type SignBlobUrl = (
-  key: string,
-  jobId: string,
-  attempts: number,
-) => string;
+export interface BlobUrls {
+  read(key: string, jobId: string, attempts: number): string;
+  write(scope: string, jobId: string, attempts: number): string;
+}
 
 interface WorkerResponse {
   status: "queued" | "processing" | "complete" | "failed";
@@ -516,6 +522,7 @@ const planWatermarkJob = async (
   return {
     request: {
       kind: "watermark",
+      upload_scope: outputKey,
       source_path: sourcePath,
       output_key: outputKey,
       output_path: outputPath,
@@ -1769,6 +1776,7 @@ const planTranscodeJob = async (
   return {
     request: {
       kind: "transcode",
+      upload_scope: renditionPrefix(version.id),
       source_path: sourcePath,
       media_info: mediaInfo,
       outputs,
@@ -1859,6 +1867,9 @@ const planProbeJob = async (
   return {
     request: {
       kind: "probe",
+      ...(stillOutputs.length
+        ? { upload_scope: renditionPrefix(versionId) }
+        : {}),
       source_path: sourcePath,
       ...(stillOutputs.length ? { outputs: stillOutputs } : {}),
     },
@@ -1996,6 +2007,7 @@ const planStillJob = (
   return {
     request: {
       kind: "still",
+      upload_scope: outputKey,
       source_path: sourcePath,
       output_key: outputKey,
       output_path: path.join(blobRoot, outputKey),
@@ -2137,14 +2149,16 @@ export interface ClaimedJob {
  * how a worker reaches those bytes is a property of the claim, which is the
  * only place that knows the attempt the URL is being issued for.
  */
-const withSourceUrls = (
+const withBlobUrls = (
   request: Record<string, unknown>,
   job: typeof jobs.$inferSelect,
-  sign: SignBlobUrl,
+  urls: BlobUrls,
 ): Record<string, unknown> => {
   const signed = { ...request };
   if (typeof signed.source_key === "string")
-    signed.source_url = sign(signed.source_key, job.id, job.attempts);
+    signed.source_url = urls.read(signed.source_key, job.id, job.attempts);
+  if (typeof signed.upload_scope === "string")
+    signed.upload_url = urls.write(signed.upload_scope, job.id, job.attempts);
   if (Array.isArray(signed.sources))
     signed.sources = signed.sources.map((source) =>
       source &&
@@ -2152,7 +2166,11 @@ const withSourceUrls = (
       typeof (source as { key?: unknown }).key === "string"
         ? {
             ...source,
-            url: sign((source as { key: string }).key, job.id, job.attempts),
+            url: urls.read(
+              (source as { key: string }).key,
+              job.id,
+              job.attempts,
+            ),
           }
         : source,
     );
@@ -2164,7 +2182,7 @@ export const claimWorkerJob = async (
   blobRoot: string,
   workerId: string,
   capabilities: string[],
-  signBlobUrl?: SignBlobUrl,
+  urls?: BlobUrls,
 ): Promise<ClaimedJob | null> => {
   for (let retired = 0; retired <= MOOT_JOBS_PER_CLAIM; retired += 1) {
     const job = await claimNextJob(
@@ -2197,9 +2215,7 @@ export const claimWorkerJob = async (
     }
     return {
       job,
-      request: signBlobUrl
-        ? withSourceUrls(plan.request, job, signBlobUrl)
-        : plan.request,
+      request: urls ? withBlobUrls(plan.request, job, urls) : plan.request,
     };
   }
   return null;
