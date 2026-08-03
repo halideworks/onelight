@@ -712,6 +712,23 @@ const amfVideoArgs = (limits: StreamingLimits): string[] => [
   "true",
 ];
 
+/* veryfast, not medium.
+ *
+ * Measured 2026-08-03 at the settings below on 3 vCPU: veryfast encodes 2.1x
+ * faster than medium on a grainy 1080p source and 2.3x faster on a clean one,
+ * so the ratio holds across very different material. A proxy is a review copy
+ * that has to scrub accurately, not a deliverable, and doubling the throughput
+ * of every software encode is worth more here than the last few percent of
+ * compression efficiency.
+ *
+ * SSIM scored the two the same, which is NOT the reason for this: medium
+ * spends more bits and scores slightly lower because psy-rd, adaptive
+ * quantisation and trellis preserve grain that SSIM counts as error. That
+ * comparison needs VMAF on real footage to mean anything, and it is not what
+ * this change rests on. It rests on the speed, which is unambiguous.
+ *
+ * Hardware encoders have their own presets and are untouched, as are the HDR
+ * renditions: those are reference pictures with a different quality bar. */
 const softwareVideoArgs = (
   quality: string,
   limits: StreamingLimits,
@@ -719,7 +736,7 @@ const softwareVideoArgs = (
   "-c:v",
   "libx264",
   "-preset",
-  "medium",
+  "veryfast",
   "-crf",
   quality,
   ...rateLimitArgs(limits),
