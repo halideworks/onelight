@@ -98,10 +98,19 @@ if (!Array.isArray(config.r2_buckets) || !config.r2_buckets[0])
 config.r2_buckets[0].bucket_name = arg("--bucket");
 delete config.triggers;
 
-/* The development SECRET_KEY must not be deployed even briefly. A secret of
-   the same name would shadow it, but the acceptance run sets its own, so the
-   var is simply removed and the secret is the only source. */
+/* Both of these are set after the deploy instead.
+ *
+ * SECRET_KEY because the development one must not be deployed even briefly.
+ * PUBLIC_URL because it cannot be known any earlier: it is the URL the deploy
+ * prints, and this file is written before that exists.
+ *
+ * They have to leave `vars` rather than merely be overridden, because wrangler
+ * refuses a secret whose name is already a var binding -- "Binding name
+ * 'PUBLIC_URL' already in use" -- rather than shadowing it. A secret binding
+ * is just a string the Worker reads through env, so using one for a URL that
+ * is not secret costs nothing and saves a second deploy. */
 delete config.vars?.SECRET_KEY;
+delete config.vars?.PUBLIC_URL;
 
 /* The asset and migration directories are relative to the real config's
    directory, and this one is written elsewhere, so they are resolved here. */
