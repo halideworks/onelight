@@ -426,6 +426,7 @@ const start = async (): Promise<void> => {
     createWorkerRoutes({
       db,
       blobRoot,
+      store: blobStore,
       ...(config.WORKER_SECRET ? { workerSecret: config.WORKER_SECRET } : {}),
     }),
   );

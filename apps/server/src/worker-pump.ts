@@ -1,6 +1,4 @@
-import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   and,
@@ -68,13 +66,31 @@ import {
 } from "@onelight/db";
 import type { AppDb } from "@onelight/db";
 
+/**
+ * What the pump needs from storage, which is not a filesystem.
+ *
+ * Narrow on purpose: where a key lives is the store's business. The pump used
+ * to stat() and hash the worker's output files directly, which only works
+ * while both processes mount one volume. Everything it still needs to know
+ * about a blob it asks the store, so the same code runs against R2.
+ */
+export interface PumpBlobStore {
+  head(key: string): Promise<{ size: number }>;
+  delete(key: string): Promise<void>;
+}
+
 interface WorkerResponse {
   status: "queued" | "processing" | "complete" | "failed";
   result?: {
     media_info?: Record<string, unknown>;
+    /* size and sha256 are what the worker says it wrote. Typed as unknown
+       because they arrive as JSON from another process: every one of them is
+       validated before it reaches a row. */
     renditions?: Array<{
       kind: string;
-      key: string;
+      key: unknown;
+      size?: unknown;
+      sha256?: unknown;
       meta: Record<string, unknown>;
     }>;
     failures?: Array<{ kind: string; error: string }>;
@@ -242,14 +258,90 @@ const insertVersionEvent = async (
   }
 };
 
-const sha256File = (file: string): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const hash = createHash("sha256");
-    const stream = createReadStream(file);
-    stream.on("error", reject);
-    stream.on("data", (chunk) => hash.update(chunk));
-    stream.on("end", () => resolve(hash.digest("hex")));
+/* A blob key as it may appear on a rendition row: relative, forward slashes,
+   no traversal, and bounded. The store refuses an escaping key as well, but a
+   key that never becomes one is better than a key caught on the way out. */
+const BLOB_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9._-]+)*$/;
+
+/**
+ * A key the worker reported, or an error.
+ *
+ * The worker is the process that opens files nobody vetted -- every asset a
+ * stranger uploads is parsed there by ffmpeg, Poppler, LibRaw and libheif --
+ * so where it says it wrote is checked rather than believed. `prefix` is the
+ * namespace this job was given: a job for one version cannot report a key
+ * belonging to another version, and cannot climb out of the blob root.
+ */
+const reportedKey = (prefix: string, reported: unknown): string => {
+  if (
+    typeof reported !== "string" ||
+    reported.length > 512 ||
+    reported.includes("..") ||
+    !BLOB_KEY.test(reported) ||
+    !reported.startsWith(prefix)
+  )
+    throw new Error(
+      `The worker reported an output outside ${prefix}: ${String(reported)}.`,
+    );
+  return reported;
+};
+
+/* Bytes, as reported. A negative or fractional size is a malformed report, and
+   a size that disagrees with the stored object is caught by validateWritten. */
+const reportedSize = (kind: string, reported: unknown): number => {
+  if (
+    typeof reported !== "number" ||
+    !Number.isSafeInteger(reported) ||
+    reported < 0
+  )
+    throw new Error(
+      `The worker reported no usable size for ${kind}: ${String(reported)}.`,
+    );
+  return reported;
+};
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+const reportedDigest = (kind: string, reported: unknown): string => {
+  if (typeof reported !== "string" || !SHA256_HEX.test(reported))
+    throw new Error(
+      `The worker reported no usable sha256 for ${kind}: ${String(reported)}.`,
+    );
+  return reported;
+};
+
+/**
+ * The worker says it wrote this many bytes at this key; the store is asked.
+ *
+ * This is audit item 2's inversion in one function. The pump no longer opens
+ * the worker's output: it takes the size and the checksum from the process
+ * that produced the bytes, and binds that report to the object the store
+ * actually holds. A worker that reports a rendition it never wrote, or lies
+ * about its length, fails the job here and it is retried.
+ *
+ * The checksum is the worker's own assertion. Nothing on this side can verify
+ * it without reading the whole object back, which is exactly the cost this
+ * removes; under R2 the checksum is given to the store at upload time and the
+ * store rejects a body that does not match it.
+ */
+const validateWritten = async (
+  store: PumpBlobStore,
+  kind: string,
+  key: string,
+  size: number,
+): Promise<void> => {
+  const stored = await store.head(key).catch((error: unknown) => {
+    throw new Error(
+      `The worker reported ${kind} at ${key}, which the store does not hold: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   });
+  if (stored.size !== size)
+    throw new Error(
+      `The worker reported ${String(size)} bytes for ${kind} at ${key}, but the store holds ${String(stored.size)}.`,
+    );
+};
 
 const chunked = <T>(items: T[], size: number): T[][] => {
   const groups: T[][] = [];
@@ -411,6 +503,7 @@ const planWatermarkJob = async (
     request: {
       kind: "watermark",
       source_path: sourcePath,
+      output_key: outputKey,
       output_path: outputPath,
       spec,
       // The burned path is per share, not per viewer, so the identity tokens
@@ -434,7 +527,7 @@ const applyWatermarkResult = async (
   payload: JobPayload,
   versionId: string,
   state: WorkerResponse,
-  blobRoot: string,
+  store: PumpBlobStore,
 ): Promise<void> => {
   /* Checked again, not carried over. A share revoked WHILE the render ran
      used to have its burned rendition registered anyway, because the only
@@ -442,7 +535,6 @@ const applyWatermarkResult = async (
   const target = await watermarkTarget(db, job, payload);
   if (!target) return;
   const { specHash, outputKey, shareId } = target;
-  const outputPath = path.join(blobRoot, outputKey);
   const version = (
     await db
       .select()
@@ -453,14 +545,26 @@ const applyWatermarkResult = async (
   )[0];
   if (state.status !== "complete")
     throw new Error(state.error ?? "Watermark render failed.");
-  const renderedMeta =
+  const rendered =
     state.result?.renditions?.find(
       (rendition) => rendition.kind === "watermarked",
-    )?.meta ?? null;
+    ) ?? null;
+  const renderedMeta = rendered?.meta ?? null;
   if (!renderedMeta || !completePlayableRenditionMeta(renderedMeta))
     throw new Error(
       "Watermark worker did not return a complete playable rendition contract.",
     );
+  /* The burned render goes exactly where the job said, so the reported key is
+     compared against that one key rather than a namespace. */
+  if (rendered?.key !== outputKey)
+    throw new Error(
+      `The watermark job wrote ${String(rendered?.key)} instead of ${outputKey}.`,
+    );
+  const renderedSize = reportedSize("watermarked", rendered.size);
+  if (renderedSize === 0)
+    throw new Error("The watermark job wrote an empty rendition.");
+  const renderedDigest = reportedDigest("watermarked", rendered.sha256);
+  await validateWritten(store, "watermarked", outputKey, renderedSize);
   const sourceRendition = (
     await db
       .select({ metaJson: renditions.metaJson })
@@ -504,8 +608,6 @@ const applyWatermarkResult = async (
     versionMediaInfo.sourceColor !== undefined
   )
     registeredMeta.source_color = versionMediaInfo.sourceColor;
-  const info = await stat(outputPath);
-  const checksum = await sha256File(outputPath);
   const superseded = await db
     .select()
     .from(renditions)
@@ -523,7 +625,7 @@ const applyWatermarkResult = async (
     await db.delete(renditions).where(eq(renditions.id, old.id)).run();
     if (old.blobKey === outputKey) continue;
     try {
-      await unlink(path.join(blobRoot, old.blobKey));
+      await store.delete(old.blobKey);
     } catch (error) {
       console.warn(
         `[onelight] superseded watermark blob ${old.blobKey} was not deleted: ${
@@ -540,8 +642,8 @@ const applyWatermarkResult = async (
       kind: "watermarked",
       blobKey: outputKey,
       metaJson: JSON.stringify(registeredMeta),
-      size: info.size,
-      checksumSha256: checksum,
+      size: renderedSize,
+      checksumSha256: renderedDigest,
       shareId,
       createdAt: Date.now(),
     })
@@ -1289,31 +1391,10 @@ const stillFilenameFor = (kind: string): string => {
   return rung.filename;
 };
 
-/**
- * A path the worker reported, turned into a blob key, or refused.
- *
- * The worker is the process that opens files nobody vetted -- every asset a
- * stranger uploads is parsed there by ffmpeg, Poppler, LibRaw and libheif --
- * which is why it runs sandboxed. What it says came back out of a job is
- * therefore checked rather than believed: a key resolving outside the blob
- * root would be stored on a rendition row and later handed to the media
- * route, which reads it back off the server's disk.
- *
- * This is the same inversion audit item 2 asks for in the object-storage
- * world, where the worker reports a size and a checksum and the server
- * validates them. Here the thing to validate is where it wrote.
- */
-const blobKeyWithinRoot = (blobRoot: string, reported: string): string => {
-  const root = path.resolve(blobRoot);
-  const key = path
-    .relative(root, path.resolve(root, reported))
-    .replaceAll("\\", "/");
-  if (!key || key === ".." || key.startsWith("../") || path.isAbsolute(key))
-    throw new Error(
-      `The worker reported an output outside the blob root: ${reported}.`,
-    );
-  return key;
-};
+/* Where a version's renditions live, and the only namespace a job for that
+   version may report having written into. */
+const renditionPrefix = (versionId: string): string =>
+  `renditions/${versionId}/`;
 
 const registerWorkerRenditions = async (
   db: AppDb,
@@ -1321,7 +1402,7 @@ const registerWorkerRenditions = async (
   version: typeof assetVersions.$inferSelect,
   assetKind: string,
   state: WorkerResponse,
-  blobRoot: string,
+  store: PumpBlobStore,
   options: { targeted?: boolean } = {},
 ): Promise<void> => {
   if (!state.result?.renditions)
@@ -1349,31 +1430,51 @@ const registerWorkerRenditions = async (
     console.warn(
       `[onelight] rendition ${failure.kind} failed for version ${version.id}: ${failure.error}`,
     );
+  const prefix = renditionPrefix(version.id);
   for (const rendition of state.result.renditions) {
-    const key = blobKeyWithinRoot(blobRoot, rendition.key);
-    const renditionPath = path.join(path.resolve(blobRoot), key);
-    const info = await stat(renditionPath);
+    const key = reportedKey(prefix, rendition.key);
+    const size = reportedSize(rendition.kind, rendition.size);
     /* A 0-byte output is not a rendition. ffmpeg can exit 0 with an empty file
        on a frameless or degenerate source (a poster/sprite of a 0-duration or
        image-as-video input); registering it would reference a broken blob the
        GC then keeps forever and the player draws as a broken frame. Skip it. */
-    if (info.size === 0) {
+    if (size === 0) {
       console.warn(
         `[onelight] rendition ${rendition.kind} for version ${version.id} was 0 bytes; skipping.`,
       );
       continue;
     }
+    const checksumSha256 = reportedDigest(rendition.kind, rendition.sha256);
+    await validateWritten(store, rendition.kind, key, size);
     const meta = { ...rendition.meta };
-    const vttPath =
-      typeof meta.vtt_path === "string" ? meta.vtt_path : undefined;
-    if (vttPath) {
-      const vttKey = blobKeyWithinRoot(blobRoot, vttPath);
+    /* A worker old enough to report where it wrote by path cannot be answered
+       here, and must not be answered by dropping the cue sheet: hover scrub
+       would silently stop working on every sprite that worker produced. The
+       job fails instead, and is retried on a worker of this version. */
+    if (meta.vtt_path !== undefined)
+      throw new Error(
+        `The worker reported ${rendition.kind} with a vtt_path; this server expects vtt_key and vtt_size.`,
+      );
+    /* The sprite's cue sheet is written beside it and registered on its meta,
+       so it is reported and checked exactly like the rendition it belongs to.
+       Its size is what the sprite row says the VTT is, and the player reads
+       it from there. */
+    if (meta.vtt_key !== undefined || meta.vtt_size !== undefined) {
+      const vttKey = reportedKey(prefix, meta.vtt_key);
+      const vttSize = reportedSize(
+        `${rendition.kind} cue sheet`,
+        meta.vtt_size,
+      );
+      await validateWritten(
+        store,
+        `${rendition.kind} cue sheet`,
+        vttKey,
+        vttSize,
+      );
+      delete meta.vtt_key;
       meta.vtt_blob_key = vttKey;
-      delete meta.vtt_path;
-      const vttInfo = await stat(path.join(path.resolve(blobRoot), vttKey));
-      meta.vtt_size = vttInfo.size;
+      meta.vtt_size = vttSize;
     }
-    const checksumSha256 = await sha256File(renditionPath);
     const existingRendition = (
       await db
         .select({ id: renditions.id })
@@ -1397,7 +1498,7 @@ const registerWorkerRenditions = async (
         .set({
           blobKey: key,
           metaJson: JSON.stringify(meta),
-          size: info.size,
+          size,
           checksumSha256,
         })
         .where(eq(renditions.id, existingRendition.id))
@@ -1411,7 +1512,7 @@ const registerWorkerRenditions = async (
           kind: rendition.kind as typeof renditions.$inferInsert.kind,
           blobKey: key,
           metaJson: JSON.stringify(meta),
-          size: info.size,
+          size,
           checksumSha256,
           shareId: null,
           createdAt: Date.now(),
@@ -1639,6 +1740,10 @@ const planTranscodeJob = async (
   }
   const outputs = planned.map((entry) => ({
     kind: entry.kind,
+    /* Both, for now. The key is what the worker reports and what lands on the
+       rendition row; the path is how it reaches the bytes today. P0-2 replaces
+       the path with a presigned destination and the key stays as it is. */
+    key: `${renditionPrefix(version.id)}${entry.filename}`,
     path: path.join(blobRoot, "renditions", version.id, entry.filename),
     ...(entry.height === undefined ? {} : { height: entry.height }),
   }));
@@ -1657,7 +1762,7 @@ const applyTranscodeResult = async (
   payload: JobPayload,
   versionId: string,
   state: WorkerResponse,
-  blobRoot: string,
+  store: PumpBlobStore,
 ): Promise<void> => {
   if (state.status !== "complete" || !state.result?.renditions)
     throw new Error(state.error ?? "Transcode failed.");
@@ -1677,7 +1782,7 @@ const applyTranscodeResult = async (
     version,
     assetKind,
     state,
-    blobRoot,
+    store,
     { targeted: targetedKinds(payload).length > 0 },
   );
 };
@@ -1728,6 +1833,7 @@ const planProbeJob = async (
           colorAssumed: true,
         }).map((entry) => ({
           kind: entry.kind,
+          key: `${renditionPrefix(versionId)}${entry.filename}`,
           path: path.join(blobRoot, "renditions", versionId, entry.filename),
         }))
       : [];
@@ -1745,7 +1851,7 @@ const applyProbeResult = async (
   payload: JobPayload,
   versionId: string,
   state: WorkerResponse,
-  blobRoot: string,
+  store: PumpBlobStore,
 ): Promise<void> => {
   /* The failure is reported before anything else is read, so a probe that
      failed surfaces as the probe's own error rather than as whatever the next
@@ -1839,7 +1945,7 @@ const applyProbeResult = async (
       version,
       assetKind,
       state,
-      blobRoot,
+      store,
     );
     return;
   }
@@ -1872,6 +1978,7 @@ const planStillJob = (
     request: {
       kind: "still",
       source_path: sourcePath,
+      output_key: outputKey,
       output_path: path.join(blobRoot, outputKey),
       frame,
       ...(usableRate ? { rate: usableRate } : {}),
@@ -1882,7 +1989,7 @@ const planStillJob = (
 const applyStillResult = async (
   payload: JobPayload,
   state: WorkerResponse,
-  blobRoot: string,
+  store: PumpBlobStore,
 ): Promise<void> => {
   if (state.status !== "complete")
     throw new Error(state.error ?? "Still extraction failed.");
@@ -1891,8 +1998,10 @@ const applyStillResult = async (
   if (!outputKey) throw new Error("Still payload is missing output_key.");
   /* The frame is proven here rather than where it is read: a zero byte PNG
      would otherwise reach the report as a corrupt image block instead of as
-     the text-only fallback that a failed still is meant to produce. */
-  const written = await stat(path.join(blobRoot, outputKey)).catch(() => null);
+     the text-only fallback that a failed still is meant to produce. Asked of
+     the store rather than of the reported size alone, so a still that was
+     reported but never landed fails the job instead of the report. */
+  const written = await store.head(outputKey).catch(() => null);
   if (!written?.size)
     throw new Error("The still job wrote nothing at its output key.");
 };
@@ -1937,7 +2046,7 @@ export const applyWorkerJobResult = async (
   db: AppDb,
   job: typeof jobs.$inferSelect,
   state: WorkerResponse,
-  blobRoot: string,
+  store: PumpBlobStore,
 ): Promise<void> => {
   const payload = parsePayload(job.payloadJson);
   if (job.kind === "fingerprint") {
@@ -1947,20 +2056,20 @@ export const applyWorkerJobResult = async (
   const versionId = payload.version_id;
   if (!versionId) throw new Error("Job payload is missing version_id.");
   if (job.kind === "probe") {
-    await applyProbeResult(db, payload, versionId, state, blobRoot);
+    await applyProbeResult(db, payload, versionId, state, store);
     return;
   }
   if (job.kind === "watermark") {
-    await applyWatermarkResult(db, job, payload, versionId, state, blobRoot);
+    await applyWatermarkResult(db, job, payload, versionId, state, store);
     return;
   }
   if (job.kind === "still") {
-    await applyStillResult(payload, state, blobRoot);
+    await applyStillResult(payload, state, store);
     return;
   }
   if (job.kind !== "transcode")
     throw new Error(`Unsupported worker job kind: ${job.kind}.`);
-  await applyTranscodeResult(db, payload, versionId, state, blobRoot);
+  await applyTranscodeResult(db, payload, versionId, state, store);
 };
 
 /* How long a claim holds a job before another worker may take it, and how far
