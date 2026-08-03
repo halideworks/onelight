@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   canWriteInto,
   fetchSource,
+  MULTIPART_THRESHOLD,
   placeOutputs,
   uploadBlob,
 } from "./source.js";
@@ -222,6 +223,93 @@ describe("where a worker writes what it produces", () => {
       /* A length, because R2 will not take a body without one. */
       length: bytes.byteLength,
     });
+  });
+
+  /* An output too large for one request body. The threshold is overridden
+     rather than met, because writing 64 MB to prove an arithmetic branch is a
+     waste of a test suite's time; what is under test is the chunking, and the
+     real threshold is asserted separately. */
+  it("sends a large output in parts, in order, and names them", async () => {
+    const file = path.join(root, "proxy_2160.mp4");
+    const content = Buffer.from("0123456789abcdefghij");
+    await writeFile(file, content);
+    const seen: Array<{ url: string; method: string; body?: string }> = [];
+    await uploadBlob("/single/{key}", "renditions/v1/proxy_2160.mp4", file, {
+      serverUrl: "http://server",
+      multipartTemplate: "/api/v1/worker/multipart/{action}/{key}?job=job-1",
+      threshold: 8,
+      fetchImpl: ((input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        seen.push({
+          url,
+          method: init?.method ?? "GET",
+          ...(typeof init?.body === "string" ? { body: init.body } : {}),
+        });
+        if (url.includes("/create/"))
+          return Promise.resolve(
+            new Response(JSON.stringify({ upload_id: "u-1", part_size: 8 }), {
+              status: 200,
+            }),
+          );
+        if (url.includes("/part/")) {
+          const part = new URL(url).searchParams.get("part");
+          return Promise.resolve(
+            new Response(JSON.stringify({ etag: `etag-${part ?? "?"}` }), {
+              status: 200,
+            }),
+          );
+        }
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }) as unknown as typeof fetch,
+    });
+
+    /* Never the single-PUT URL: a file over the threshold must not be sent
+       as one body at all, which is the whole point. */
+    expect(seen.some((call) => call.url.includes("/single/"))).toBe(false);
+    const parts = seen.filter((call) => call.url.includes("/part/"));
+    /* 20 bytes in 8-byte parts is three, the last one short. */
+    expect(parts).toHaveLength(3);
+    expect(
+      parts.map((call) => new URL(call.url).searchParams.get("part")),
+    ).toEqual(["1", "2", "3"]);
+    expect(parts.every((call) => call.method === "PUT")).toBe(true);
+    const completion = seen.at(-1);
+    expect(completion?.url).toContain("/complete/");
+    expect(JSON.parse(completion?.body ?? "{}")).toEqual({
+      parts: [
+        { part: 1, etag: "etag-1" },
+        { part: 2, etag: "etag-2" },
+        { part: 3, etag: "etag-3" },
+      ],
+    });
+  });
+
+  it("still sends a small output as one body", async () => {
+    const file = path.join(root, "poster.png");
+    await writeFile(file, bytes);
+    const seen: string[] = [];
+    await uploadBlob(
+      "/api/v1/worker/blobs/{key}",
+      "renditions/v1/poster.png",
+      file,
+      {
+        serverUrl: "http://server",
+        multipartTemplate: "/api/v1/worker/multipart/{action}/{key}",
+        fetchImpl: ((input: string | URL) => {
+          seen.push(String(input));
+          return Promise.resolve(new Response("{}", { status: 200 }));
+        }) as unknown as typeof fetch,
+      },
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("/blobs/");
+  });
+
+  it("keeps the threshold under what a Workers request body allows", () => {
+    /* The runtime refuses a body much past 100 MB. This is the assertion that
+       the constant means what its comment says; the test above overrides it. */
+    expect(MULTIPART_THRESHOLD).toBeLessThan(100 * 1024 * 1024);
+    expect(MULTIPART_THRESHOLD).toBeGreaterThan(8 * 1024 * 1024);
   });
 
   it("raises when the server refuses the output", async () => {

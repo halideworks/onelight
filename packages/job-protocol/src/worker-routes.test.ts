@@ -123,52 +123,98 @@ const queueProbe = async (
 /* What storage holds, as far as a test is concerned. The pump asks the store
    for the length of every output a worker reports, so a completion here
    declares what landed instead of writing files to a real disk. */
-const storeOf = (objects: Record<string, number> = {}) => ({
-  head: (key: string): Promise<{ size: number }> =>
-    key in objects
-      ? Promise.resolve({ size: objects[key] as number })
-      : Promise.reject(new Error(`No object at ${key}.`)),
-  /* Contents nothing here reads, at the length the object is declared to be:
+const storeOf = (objects: Record<string, number> = {}) => {
+  const uploads: Record<string, Record<number, Uint8Array>> = {};
+  return {
+    head: (key: string): Promise<{ size: number }> =>
+      key in objects
+        ? Promise.resolve({ size: objects[key] as number })
+        : Promise.reject(new Error(`No object at ${key}.`)),
+    /* Contents nothing here reads, at the length the object is declared to be:
      what the blob route is asked to prove is that it serves the right object,
      entirely, to the right caller. */
-  getStream: (key: string): Promise<ReadableStream> => {
-    if (!(key in objects))
-      return Promise.reject(new Error(`No object at ${key}.`));
-    const bytes = new Uint8Array(objects[key] as number).fill(7);
-    return Promise.resolve(
-      new ReadableStream({
-        start(controller) {
-          controller.enqueue(bytes);
-          controller.close();
-        },
-      }),
-    );
-  },
-  putStream: async (
-    key: string,
-    stream: ReadableStream,
-    meta: { size?: number },
-  ): Promise<void> => {
-    /* Drained rather than kept: what a test asks of a stored object is its
-       length, and the length is what the completion is checked against. */
-    let size = 0;
-    const reader = stream.getReader();
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      size += (chunk.value as Uint8Array).byteLength;
-    }
-    if (meta.size !== undefined && meta.size !== size)
-      throw new Error(
-        `Declared ${String(meta.size)}, received ${String(size)}.`,
+    getStream: (key: string): Promise<ReadableStream> => {
+      if (!(key in objects))
+        return Promise.reject(new Error(`No object at ${key}.`));
+      const bytes = new Uint8Array(objects[key] as number).fill(7);
+      return Promise.resolve(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        }),
       );
-    objects[key] = size;
-  },
-  delete: (key: string): Promise<void> => {
-    delete objects[key];
-    return Promise.resolve();
-  },
-});
+    },
+    putStream: async (
+      key: string,
+      stream: ReadableStream,
+      meta: { size?: number },
+    ): Promise<void> => {
+      /* Drained rather than kept: what a test asks of a stored object is its
+       length, and the length is what the completion is checked against. */
+      let size = 0;
+      const reader = stream.getReader();
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        size += (chunk.value as Uint8Array).byteLength;
+      }
+      if (meta.size !== undefined && meta.size !== size)
+        throw new Error(
+          `Declared ${String(meta.size)}, received ${String(size)}.`,
+        );
+      objects[key] = size;
+    },
+    delete: (key: string): Promise<void> => {
+      delete objects[key];
+      return Promise.resolve();
+    },
+    /* Multipart, kept honestly rather than stubbed: parts are held until the
+     completion names them, and the object's length is the sum of the parts
+     that were actually listed. A completion that omits a part therefore
+     produces a shorter object, which is what makes the ordering and
+     completeness assertions below mean anything. */
+    createMultipart: (
+      key: string,
+    ): Promise<{ uploadId: string; partSize: number }> => {
+      const uploadId = `upload-${key}`;
+      uploads[uploadId] = {};
+      return Promise.resolve({ uploadId, partSize: 8 });
+    },
+    putPart: async (
+      uploadId: string,
+      partNo: number,
+      stream: ReadableStream,
+    ): Promise<{ etag: string; size: number }> => {
+      const held = uploads[uploadId];
+      if (!held) throw new Error(`No such upload ${uploadId}.`);
+      const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+      held[partNo] = bytes;
+      return { etag: `etag-${String(partNo)}`, size: bytes.byteLength };
+    },
+    completeMultipart: (
+      key: string,
+      uploadId: string,
+      parts: Array<{ partNo: number; etag: string }>,
+    ): Promise<void> => {
+      const held = uploads[uploadId];
+      if (!held) throw new Error(`No such upload ${uploadId}.`);
+      let size = 0;
+      for (const part of parts) {
+        const bytes = held[part.partNo];
+        if (!bytes)
+          throw new Error(`Part ${String(part.partNo)} was never sent.`);
+        if (part.etag !== `etag-${String(part.partNo)}`)
+          throw new Error(`Part ${String(part.partNo)} has the wrong etag.`);
+        size += bytes.byteLength;
+      }
+      objects[key] = size;
+      delete uploads[uploadId];
+      return Promise.resolve();
+    },
+  };
+};
 
 const routes = (
   db: ReturnType<typeof createNodeDb>["db"],
@@ -991,6 +1037,151 @@ describe("where a worker puts what it produced", () => {
       body,
       headers: { "content-length": String(Buffer.byteLength(body)) },
     });
+
+  /* The Workers runtime caps a request body near 100 MB and a 4K proxy is
+     routinely larger, so the single PUT cannot be the only way home. These
+     drive the three steps through the same capability the single PUT uses. */
+  const multipart = (
+    template: string,
+    action: "create" | "part" | "complete",
+    key: string,
+  ): string => template.replace("{action}", action).replace("{key}", key);
+
+  it("assembles a large output from its parts", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const objects: Record<string, number> = {};
+      const app = routes(db, storeOf(objects));
+      const claimed = await claimJob(app, "w-1");
+      const template = claimed.request.multipart_url as string;
+      expect(template).toContain("{action}");
+      expect(template).toContain("{key}");
+
+      const created = await app.request(
+        multipart(template, "create", PROXY_KEY),
+        { method: "POST" },
+      );
+      expect(created.status).toBe(200);
+      const upload = (await created.json()) as {
+        upload_id: string;
+        part_size: number;
+      };
+      expect(upload.upload_id).toBeTruthy();
+      /* The store decides the part size, not the worker and not this route. */
+      expect(upload.part_size).toBe(8);
+
+      const chunks = ["01234567", "89abcdef", "ghi"];
+      const parts = [];
+      for (const [index, chunk] of chunks.entries()) {
+        const response = await app.request(
+          `${multipart(template, "part", PROXY_KEY)}&upload=${encodeURIComponent(
+            upload.upload_id,
+          )}&part=${String(index + 1)}`,
+          {
+            method: "PUT",
+            body: chunk,
+            headers: { "content-length": String(chunk.length) },
+          },
+        );
+        expect(response.status).toBe(200);
+        const stored = (await response.json()) as {
+          part: number;
+          etag: string;
+        };
+        parts.push({ part: stored.part, etag: stored.etag });
+      }
+
+      const done = await app.request(
+        `${multipart(template, "complete", PROXY_KEY)}&upload=${encodeURIComponent(
+          upload.upload_id,
+        )}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ parts }),
+        },
+      );
+      expect(done.status).toBe(200);
+      /* Every part, in order, and nothing else: the object is exactly as long
+         as what was sent, which a completion that dropped one would not be. */
+      expect(objects[PROXY_KEY]).toBe(19);
+
+      /* And the completion still checks it the same way it checks a single
+         PUT -- there is one rule for what counts as a rendition. */
+      const accepted = await complete(app, claimed, [
+        {
+          kind: "proxy_1080",
+          key: PROXY_KEY,
+          size: 19,
+          sha256: DIGEST,
+          meta: {},
+        },
+      ]);
+      expect(accepted.status).toBe(200);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("will not let an upload id widen what a job may write", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const app = routes(db, storeOf());
+      const claimed = await claimJob(app, "w-1");
+      const template = claimed.request.multipart_url as string;
+      /* The scope is re-checked at every step rather than only when the
+         upload is created, so holding an id is not authority over a key. */
+      for (const action of ["create", "part", "complete"] as const) {
+        const response = await app.request(
+          `${multipart(template, action, "originals/picture.mov")}&upload=x&part=1`,
+          {
+            method: action === "part" ? "PUT" : "POST",
+            body: action === "part" ? "no" : JSON.stringify({ parts: [] }),
+            headers: { "content-length": "2" },
+          },
+        );
+        expect(response.status).toBe(403);
+      }
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("refuses a part that does not say how long it is", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const app = routes(db, storeOf());
+      const claimed = await claimJob(app, "w-1");
+      const template = claimed.request.multipart_url as string;
+      const response = await app.request(
+        `${multipart(template, "part", PROXY_KEY)}&upload=u&part=1`,
+        {
+          method: "PUT",
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("streamed"));
+              controller.close();
+            },
+          }),
+          /* Same as the single PUT: Hono's test request sets no length for a
+             stream, which is the case the route must refuse. */
+          duplex: "half",
+        } as RequestInit,
+      );
+      expect(response.status).toBe(411);
+    } finally {
+      sqlite.close();
+    }
+  });
 
   it("stores an output and then accepts the completion that describes it", async () => {
     const { db, sqlite } = createNodeDb(":memory:");

@@ -71,6 +71,11 @@ export interface PumpBlobStore {
 export interface BlobUrls {
   read(key: string, jobId: string, attempts: number): string;
   write(scope: string, jobId: string, attempts: number): string;
+  /* The same write capability, for an object too large to send as one body.
+     A template in two placeholders: `{action}` is create, part or complete,
+     and `{key}` is what the worker produced. One URL rather than three,
+     because they are one capability and differ only in which step they are. */
+  multipart(scope: string, jobId: string, attempts: number): string;
 }
 
 interface WorkerResponse {
@@ -2068,8 +2073,14 @@ const withBlobUrls = (
   const signed = { ...request };
   if (typeof signed.source_key === "string")
     signed.source_url = urls.read(signed.source_key, job.id, job.attempts);
-  if (typeof signed.upload_scope === "string")
+  if (typeof signed.upload_scope === "string") {
     signed.upload_url = urls.write(signed.upload_scope, job.id, job.attempts);
+    signed.multipart_url = urls.multipart(
+      signed.upload_scope,
+      job.id,
+      job.attempts,
+    );
+  }
   if (Array.isArray(signed.sources))
     signed.sources = signed.sources.map((source) =>
       source &&

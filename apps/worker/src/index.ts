@@ -66,6 +66,7 @@ interface WorkerRequest {
   media_info?: MediaInfo;
   outputs?: PlannedOutput[];
   upload_url?: string;
+  multipart_url?: string;
   output_key?: string;
   output_path?: string;
   frame?: number;
@@ -151,7 +152,13 @@ const senderFor = (
     throw new Error(
       "This worker cannot write where the job said to, and was given no upload URL.",
     );
-  return (key, file) => uploadBlob(template, key, file, { serverUrl });
+  return (key, file) =>
+    uploadBlob(template, key, file, {
+      serverUrl,
+      /* Handed through so an output too large for one request body goes up in
+         parts instead of being refused by the runtime that caps it. */
+      ...(body.multipart_url ? { multipartTemplate: body.multipart_url } : {}),
+    });
 };
 
 /**
