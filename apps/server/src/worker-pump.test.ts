@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -20,7 +20,7 @@ import {
 } from "@onelight/db";
 import { comments, exportJobs } from "@onelight/db/schema";
 import { createWorkerRoutes } from "./worker-routes.js";
-import { CLIP_HASH_POSITIONS } from "@onelight/worker";
+import { CLIP_HASH_POSITIONS, LocalBlobStore } from "@onelight/worker";
 import {
   judgesTheVersion,
   startWorkerPump,
@@ -1051,7 +1051,15 @@ const standInWorker = (
   run: (request: Record<string, unknown>) => Promise<Record<string, unknown>>,
   workerId = "stand-in-1",
 ): { seen: string[]; stop: () => Promise<void> } => {
-  const app = createWorkerRoutes({ db, blobRoot, workerSecret: WORKER_SECRET });
+  const app = createWorkerRoutes({
+    db,
+    blobRoot,
+    /* The real store over the same directory the stand-in writes to: a
+       completion is only accepted if the bytes it describes are really
+       there, and that check is half of what these tests are for. */
+    store: new LocalBlobStore(blobRoot),
+    workerSecret: WORKER_SECRET,
+  });
   const seen: string[] = [];
   let stopped = false;
   const loop = (async () => {
@@ -1268,7 +1276,15 @@ describe("a comment report's frames", () => {
       await writeFile(outputPath, STILL_PNG);
       return {
         renditions: [
-          { kind: "still", key: outputPath, meta: { frame: request.frame } },
+          {
+            kind: "still",
+            /* The key the envelope handed it, not the path it wrote to:
+               what a worker reports is where the object belongs in storage. */
+            key: request.output_key,
+            size: STILL_PNG.byteLength,
+            sha256: createHash("sha256").update(STILL_PNG).digest("hex"),
+            meta: { frame: request.frame },
+          },
         ],
         failures: [],
       };

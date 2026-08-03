@@ -39,6 +39,7 @@ import {
   WORKER_LEASE_MS,
   workerJobTimeoutMs,
 } from "./worker-pump.js";
+import type { PumpBlobStore } from "./worker-pump.js";
 
 /* Mirrors the skew the old push protocol allowed, and exists for the same
    reason: a captured signed claim cannot be replayed tomorrow. */
@@ -118,17 +119,19 @@ const asRecord = (value: string): Record<string, unknown> | null => {
 /**
  * The worker-facing routes, mounted by the server process.
  *
- * `blobRoot` is here because planning a job resolves source and output paths
- * against it. When P0-2 replaces those with presigned URLs, this is the seam
- * that changes and the protocol above it does not.
+ * `blobRoot` is here because planning a job still resolves source and output
+ * paths against it; `store` is how the result is checked, because a completion
+ * is checked against stored objects and not against the server's own disk.
+ * When P0-2 replaces the paths with presigned URLs, blobRoot is what leaves.
  */
 export const createWorkerRoutes = (options: {
   db: AppDb;
   blobRoot: string;
+  store: PumpBlobStore;
   workerSecret?: string | undefined;
 }): Hono => {
   const app = new Hono();
-  const { db, blobRoot } = options;
+  const { db, blobRoot, store } = options;
   const secret = options.workerSecret;
 
   /* A body has to be read before it can be authenticated -- the claim's
@@ -276,7 +279,7 @@ export const createWorkerRoutes = (options: {
         db,
         job,
         { status: "complete", result },
-        blobRoot,
+        store,
       );
     } catch (error) {
       /* The worker did its half; the server could not write the answer down.

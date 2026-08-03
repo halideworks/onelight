@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
+import { createReadStream } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
@@ -40,6 +41,12 @@ import type {
 
 interface WorkerOutput {
   kind: string;
+  /* Where this output belongs in storage, and where it is written today. The
+     key is what the worker reports back and what lands on a rendition row; the
+     path is how it reaches the bytes while server and worker share a volume.
+     P0-2 replaces the path with a presigned destination; the key does not
+     change, because it never described a filesystem. */
+  key: string;
   path: string;
   height?: number;
 }
@@ -54,6 +61,7 @@ interface WorkerRequest {
   source_url?: string;
   media_info?: MediaInfo;
   outputs?: WorkerOutput[];
+  output_key?: string;
   output_path?: string;
   frame?: number;
   rate?: { num: number; den: number };
@@ -125,6 +133,100 @@ const sourceFor = (body: WorkerRequest): string => {
   const source = body.source_path ?? body.source_url;
   if (!source) throw new Error("A source_path or source_url is required.");
   return source;
+};
+
+/**
+ * What a file the job produced is: its length and its sha256, measured here.
+ *
+ * Measured by the process that wrote the bytes, which is the only one that can
+ * still see them once storage is an object store the server does not mount.
+ * The server compares the length against what the store holds and records the
+ * checksum, so this is read once, while the file is warm, instead of read
+ * again on the server during the completion request.
+ */
+const describeFile = async (
+  file: string,
+): Promise<{ size: number; sha256: string }> => {
+  const hash = createHash("sha256");
+  let size = 0;
+  for await (const chunk of createReadStream(file)) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+    hash.update(bytes);
+    size += bytes.byteLength;
+  }
+  return { size, sha256: hash.digest("hex") };
+};
+
+/**
+ * The blob key for a file the media library reported by path.
+ *
+ * Every output the job was given carries both, so the mapping is the one the
+ * server sent rather than anything derived from the shape of the filesystem.
+ * A file written beside a planned output -- the sprite's cue sheet, a PDF's
+ * page rasters -- maps through its directory, so those keep the key namespace
+ * of the output they belong to. A path that matches nothing planned is not
+ * something the server asked for, and is refused rather than guessed at.
+ */
+const keyForPath = (outputs: WorkerOutput[], file: string): string => {
+  const resolved = path.resolve(file);
+  const exact = outputs.find(
+    (output) => path.resolve(output.path) === resolved,
+  );
+  if (exact) return exact.key;
+  const nested = outputs
+    .map((output) => ({
+      dir: path.dirname(path.resolve(output.path)),
+      keyDir: output.key.split("/").slice(0, -1).join("/"),
+    }))
+    .filter((entry) => resolved.startsWith(`${entry.dir}${path.sep}`))
+    /* Longest directory first: a PDF's pages/ sits under the version's own
+       directory, and the nearer of the two is the one that describes it. */
+    .sort((left, right) => right.dir.length - left.dir.length)[0];
+  if (!nested) throw new Error(`Nothing the job planned accounts for ${file}.`);
+  const relative = path
+    .relative(nested.dir, resolved)
+    .split(path.sep)
+    .join("/");
+  return nested.keyDir ? `${nested.keyDir}/${relative}` : relative;
+};
+
+/**
+ * What the worker says it wrote: a key, a length and a checksum per output.
+ *
+ * The server used to open each of these files itself to answer the same
+ * question, which is only possible while the two processes share a volume.
+ */
+const describeRenditions = async (
+  outputs: WorkerOutput[],
+  produced: Array<{ kind: string; key: string; meta: Record<string, unknown> }>,
+): Promise<
+  Array<{
+    kind: string;
+    key: string;
+    size: number;
+    sha256: string;
+    meta: Record<string, unknown>;
+  }>
+> => {
+  const described = [];
+  for (const rendition of produced) {
+    /* The media library reports where it wrote, by path. */
+    const written = rendition.key;
+    const meta = { ...rendition.meta };
+    if (typeof meta.vtt_path === "string") {
+      const vtt = await describeFile(meta.vtt_path);
+      meta.vtt_key = keyForPath(outputs, meta.vtt_path);
+      meta.vtt_size = vtt.size;
+      delete meta.vtt_path;
+    }
+    described.push({
+      kind: rendition.kind,
+      key: keyForPath(outputs, written),
+      ...(await describeFile(written)),
+      meta,
+    });
+  }
+  return described;
 };
 
 const runOutputs = async (
@@ -243,6 +345,7 @@ const runJob = async (
   // renditions.
   if (body.kind === "still" || body.kind === "watermark") {
     if (!body.output_path) throw new Error("An output_path is required.");
+    if (!body.output_key) throw new Error("An output_key is required.");
     if (body.kind === "still") {
       if (typeof body.frame !== "number" || !Number.isInteger(body.frame))
         throw new Error("An integer frame is required.");
@@ -276,7 +379,8 @@ const runJob = async (
       renditions: [
         {
           kind: body.kind === "still" ? "still" : "watermarked",
-          key: body.output_path,
+          key: body.output_key,
+          ...(await describeFile(body.output_path)),
           meta,
         },
       ],
@@ -296,7 +400,10 @@ const runJob = async (
       media_info: mediaInfo,
       ...(rendered
         ? {
-            renditions: rendered.renditions,
+            renditions: await describeRenditions(
+              body.outputs ?? [],
+              rendered.renditions,
+            ),
             failures: rendered.failures,
             /* A still is probed and rendered in one call, so its identity
                comes back through this reply and not the transcode one. */
@@ -309,7 +416,7 @@ const runJob = async (
   }
   const result = await runOutputs(body, mediaInfo, source);
   return {
-    renditions: result.renditions,
+    renditions: await describeRenditions(body.outputs ?? [], result.renditions),
     failures: result.failures,
     ...(result.fingerprint ? { fingerprint: result.fingerprint } : {}),
   };
@@ -411,9 +518,11 @@ let running = 0;
 let idleDelay = CLAIM_INTERVAL_MS;
 
 /* A claim, a heartbeat or a failure is a small round trip. A completion is
-   not: the server checksums every file the job produced before it answers,
-   and a 4K proxy takes real time to hash. Timing that out would report a
-   failure for work the server was in the middle of accepting. */
+   the one report the server does real work behind: it asks storage about
+   every object the job says it wrote, and writes the rows. It no longer reads
+   those objects back -- the checksums arrive with the report -- but the
+   allowance stays generous, because timing a completion out reports a failure
+   for work the server was in the middle of accepting. */
 const REPORT_TIMEOUT_MS = 30_000;
 const COMPLETE_TIMEOUT_MS = 10 * 60_000;
 
@@ -484,10 +593,10 @@ const runClaim = async (claim: Claim): Promise<void> => {
     );
   let lost = false;
   /* The work is done and the answer is being posted. The heartbeat keeps
-     running through it -- the server checksums the outputs before it answers,
-     which can outlast a lease -- but from here a 409 means the server has
-     already settled this job, not that it was taken away mid-encode: nothing
-     of ours is still writing. */
+     running through it -- the server checks every object the report describes
+     before it answers, which can outlast a lease -- but from here a 409 means
+     the server has already settled this job, not that it was taken away
+     mid-encode: nothing of ours is still writing. */
   let reporting = false;
   const beat = setInterval(() => {
     void (async () => {
