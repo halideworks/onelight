@@ -1807,9 +1807,12 @@ const applyProbeResult = async (
   state: WorkerResponse,
   blobRoot: string,
 ): Promise<void> => {
-  const assetKind = await assetKindFor(db, payload, versionId);
+  /* The failure is reported before anything else is read, so a probe that
+     failed surfaces as the probe's own error rather than as whatever the next
+     query happened to hit. */
   if (state.status !== "complete" || !state.result?.media_info)
     throw new Error(state.error ?? "Probe failed.");
+  const assetKind = await assetKindFor(db, payload, versionId);
   const mediaInfo = state.result.media_info;
   const num =
     typeof mediaInfo.frameRateNum === "number"
