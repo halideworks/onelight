@@ -11,10 +11,9 @@
 # So this deploys, uploads through the deployment, kills the worker that is
 # mid-encode, and asserts another finishes the job and the rendition decodes.
 #
-# It is deliberately NOT on pull_request. Every run creates and destroys real
-# resources in a real account, and a run per push would both cost churn and
-# race other runs for names. Manual dispatch, plus main, which is where a
-# claim about the deployed target is worth making.
+# It is deliberately NOT on pull_request or push. Every run creates and
+# destroys real resources in a real account. Weekly, plus manual dispatch when
+# a change actually touches this path.
 #
 # Everything it creates is named onelight-ci-<run id>, and the teardown is
 # `if: always()`. Nothing already in the account is read, written, or named.
@@ -22,8 +21,13 @@ name: Cloudflare acceptance
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
+  # Weekly rather than per-merge. Every run deploys to a real account, and a
+  # run per push meant a campaign of merges queued several at once for the
+  # concurrency group to cancel each other -- churn that proved nothing. A
+  # standing weekly run still keeps the claim from rotting silently, and the
+  # dispatch is there for the merge that actually changes this path.
+  schedule:
+    - cron: "17 6 * * 1"
 
 # One at a time: two runs would deploy different Workers fine, but the account
 # is shared with real deployments and there is no reason to have several
@@ -93,9 +97,6 @@ jobs:
             --out wrangler.ci.json
           cat wrangler.ci.json
 
-      - name: Apply the schema
-        run: pnpm exec wrangler d1 migrations apply "$CI_NAME" -c wrangler.ci.json --remote
-
       - name: Deploy
         run: |
           pnpm exec wrangler deploy -c wrangler.ci.json 2>&1 | tee deploy.log
@@ -112,6 +113,13 @@ jobs:
           printf '%s' "$SECRET_KEY" | pnpm exec wrangler secret put SECRET_KEY --name "$CI_NAME"
           printf '%s' "$WORKER_SECRET" | pnpm exec wrangler secret put WORKER_SECRET --name "$CI_NAME"
           printf '%s' "$CI_URL" | pnpm exec wrangler secret put PUBLIC_URL --name "$CI_NAME"
+
+      # No schema step: the Worker applies its own migrations on the first
+      # request, memoized per binding, and that is how every real deployment
+      # gets its schema. `wrangler d1 migrations apply` is a different code
+      # path that cannot parse these files -- it answered "incomplete input:
+      # SQLITE_ERROR 7500" -- and using it here would have tested a path
+      # production does not take.
 
       # Before any media: prove the deployment is up and that the worker
       # surface is mounted on it. A 401 means the route ran and refused the
