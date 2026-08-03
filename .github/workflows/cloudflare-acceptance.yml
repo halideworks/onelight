@@ -1,0 +1,173 @@
+# The acceptance criterion for P0-2, and the only job that touches a real
+# Cloudflare account.
+#
+# Everything provable without one is proved without one: the workers-pool suite
+# runs the job protocol under miniflare on every push, with no credentials and
+# no cost. What that cannot tell us is whether the deployed thing works, and
+# that gap is the whole point of the item -- the Workers target was claimed to
+# serve the app for a year while being unable to produce a single rendition,
+# and nothing in CI noticed, because nothing in CI had ever deployed it.
+#
+# So this deploys, uploads through the deployment, kills the worker that is
+# mid-encode, and asserts another finishes the job and the rendition decodes.
+#
+# It is deliberately NOT on pull_request. Every run creates and destroys real
+# resources in a real account, and a run per push would both cost churn and
+# race other runs for names. Manual dispatch, plus main, which is where a
+# claim about the deployed target is worth making.
+#
+# Everything it creates is named onelight-ci-<run id>, and the teardown is
+# `if: always()`. Nothing already in the account is read, written, or named.
+name: Cloudflare acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+# One at a time: two runs would deploy different Workers fine, but the account
+# is shared with real deployments and there is no reason to have several
+# throwaway ones alive at once.
+concurrency:
+  group: cloudflare-acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    # Long enough for a deploy, three worker images, and a 1080p encode that
+    # gets killed and redone, and short enough that a hang cannot leave
+    # resources alive for hours.
+    timeout-minutes: 45
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WORKER_SECRET: acceptance-only-worker-secret-0123456789
+      SECRET_KEY: acceptance-only-secret-key-0123456789abcdefghij
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+      - run: pnpm install --frozen-lockfile
+
+      # Refuse to start rather than half-create resources with no credentials.
+      - name: Require credentials
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_API_TOKEN is not set"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "CLOUDFLARE_ACCOUNT_ID is not set"; exit 1; }
+
+      - name: Name this run's resources
+        run: echo "CI_NAME=onelight-ci-${{ github.run_id }}" >> "$GITHUB_ENV"
+
+      # The Worker serves the SPA from this directory, so it has to exist
+      # before the deploy even though no browser drives it here.
+      - run: pnpm --filter @onelight/web build
+
+      # Created before the deploy because the config needs the database's id.
+      # From here on the teardown step is what removes them, and it runs even
+      # if any of the following fails.
+      - name: Create the D1 database and the R2 bucket
+        run: |
+          pnpm exec wrangler d1 create "$CI_NAME"
+          pnpm exec wrangler r2 bucket create "$CI_NAME"
+          database_id=$(pnpm exec wrangler d1 info "$CI_NAME" --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s.slice(s.indexOf("{")));const id=j.uuid??j.database_id;if(!id)throw new Error("no uuid in d1 info output");process.stdout.write(id)})')
+          test -n "$database_id" || { echo "could not read the database id"; exit 1; }
+          echo "CI_DATABASE_ID=${database_id}" >> "$GITHUB_ENV"
+
+      - name: Write the deployment config
+        run: |
+          node scripts/cloudflare-acceptance-config.mjs \
+            --name "$CI_NAME" \
+            --database-id "$CI_DATABASE_ID" \
+            --bucket "$CI_NAME" \
+            --out wrangler.ci.json
+          cat wrangler.ci.json
+
+      - name: Apply the schema
+        run: pnpm exec wrangler d1 migrations apply "$CI_NAME" -c wrangler.ci.json --remote
+
+      - name: Deploy
+        run: |
+          pnpm exec wrangler deploy -c wrangler.ci.json 2>&1 | tee deploy.log
+          url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          test -n "$url" || { echo "the deploy printed no workers.dev URL; is the subdomain enabled on this account?"; exit 1; }
+          echo "CI_URL=${url}" >> "$GITHUB_ENV"
+          echo "deployed to ${url}"
+
+      # Secrets rather than vars: a var is in the config file, and the config
+      # file is an artifact of the run. PUBLIC_URL can only be set now, because
+      # the URL did not exist until the deploy printed it.
+      - name: Configure the deployment
+        run: |
+          printf '%s' "$SECRET_KEY" | pnpm exec wrangler secret put SECRET_KEY --name "$CI_NAME"
+          printf '%s' "$WORKER_SECRET" | pnpm exec wrangler secret put WORKER_SECRET --name "$CI_NAME"
+          printf '%s' "$CI_URL" | pnpm exec wrangler secret put PUBLIC_URL --name "$CI_NAME"
+
+      # Before any media: prove the deployment is up and that the worker
+      # surface is mounted on it. A 401 means the route ran and refused the
+      # signature; a 404 would mean the protocol never reached this target,
+      # which is the failure this whole phase exists to make impossible.
+      - name: The deployment answers, and speaks the worker protocol
+        run: |
+          for attempt in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$CI_URL/healthz" || true)
+            [ "$code" = "200" ] && break
+            echo "healthz: ${code} (attempt ${attempt})"
+            sleep 5
+          done
+          test "$code" = "200" || { echo "the deployment never became healthy"; exit 1; }
+          claim=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CI_URL/api/v1/worker/claim" \
+            -H 'content-type: application/json' \
+            -H "x-onelight-signature: $(printf '0%.0s' $(seq 1 64))" \
+            -d '{"worker_id":"probe","capabilities":["cpu"],"timestamp":0}')
+          echo "unsigned claim: ${claim}"
+          test "$claim" != "404" || { echo "the worker routes are not mounted on the deployment"; exit 1; }
+          test "$claim" = "401" || { echo "expected 401 from an unsigned claim, got ${claim}"; exit 1; }
+
+      # Three workers, no volume between them and nothing local to claim from:
+      # the only way any byte moves is over the signed URLs the deployment
+      # hands out.
+      - name: Start three media workers against the deployment
+        env:
+          ONELIGHT_SERVER_URL: ${{ env.CI_URL }}
+        run: |
+          docker compose -f deploy/docker-compose.cf-workers.yml up -d --build \
+            --scale onelight-worker-cf=3 --wait --wait-timeout 300
+
+      - name: Upload, kill a worker mid-encode, and play what comes back
+        env:
+          ONELIGHT_E2E_URL: ${{ env.CI_URL }}
+          ONELIGHT_E2E_WORKER_KILL: "1"
+          ONELIGHT_E2E_COMPOSE_FILE: deploy/docker-compose.cf-workers.yml
+        run: node scripts/integration-e2e.mjs
+
+      - name: Worker logs
+        if: failure()
+        run: docker compose -f deploy/docker-compose.cf-workers.yml logs --tail 200
+
+      # Always, including on cancellation: what this created must not outlive
+      # the run. Each delete tolerates the resource being absent, so a failure
+      # before creation does not turn the teardown itself into the error.
+      - name: Delete everything this run created
+        if: always()
+        run: |
+          docker compose -f deploy/docker-compose.cf-workers.yml down -v || true
+          if [ -n "${CI_NAME:-}" ]; then
+            pnpm exec wrangler delete --name "$CI_NAME" --force || true
+            pnpm exec wrangler d1 delete "$CI_NAME" -y || true
+            pnpm exec wrangler r2 bucket delete "$CI_NAME" || true
+            echo "removed ${CI_NAME}"
+          fi
+
+      - name: Confirm nothing was left behind
+        if: always()
+        run: |
+          if [ -n "${CI_NAME:-}" ]; then
+            pnpm exec wrangler d1 list --json | grep -q "\"$CI_NAME\"" \
+              && { echo "the D1 database ${CI_NAME} still exists"; exit 1; } || true
+            echo "no ${CI_NAME} resources remain"
+          fi
