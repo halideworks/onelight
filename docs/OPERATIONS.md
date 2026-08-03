@@ -187,3 +187,20 @@ Two of those are worth knowing about before something surprises you:
 
 `/data` stays writable: it is a volume, and the renditions the server reads are
 written there. Only the image itself is read-only.
+
+### GPU encoding under the sandbox
+
+A read-only root filesystem is the part most likely to bother a GPU driver,
+because Mesa keeps a shader cache. Intel VAAPI was tested against a real render
+node with the whole sandbox applied, in the strict mode that refuses to start
+unless a genuine one-frame hardware encode succeeds. It reported
+`vaapi:/dev/dri/renderD128:QVBR:low-power`, so hardware encoding works with the
+image read-only, every capability dropped, and no new privileges. Device access
+comes from `group_add`, which is a group membership rather than a capability,
+so dropping capabilities does not touch it.
+
+NVIDIA has NOT been tested this way: there is no NVIDIA hardware on the machine
+these changes were made on. The nvenc path has no reason to need capabilities
+either, but if `ONELIGHT_HWACCEL=nvenc` refuses to start after an upgrade,
+`read_only: true` on the worker is the first thing to try removing, and please
+report it.
