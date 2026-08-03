@@ -41,6 +41,7 @@ import { backupConfigFromConfig, backupOnce, startBackups } from "./backup.js";
 import { NodePasswordHasher } from "./password.js";
 import { spriteFrameMatcher } from "./reanchor.js";
 import { isShareLandingPath } from "./share-shell.js";
+import { pinnedWebhookFetch } from "./webhook-fetch.js";
 import {
   configurePumpPacing,
   resolvedMediaConcurrency,
@@ -494,7 +495,14 @@ const start = async (): Promise<void> => {
   const webhookTimer = setInterval(() => {
     if (webhookSweeping) return;
     webhookSweeping = true;
-    void deliverDueWebhookDeliveries(db, Date.now()).finally(() => {
+    void deliverDueWebhookDeliveries(
+      db,
+      Date.now(),
+      undefined,
+      /* Resolved and pinned just before connecting, so a public name that
+         answers with a private address cannot be delivered to. */
+      pinnedWebhookFetch,
+    ).finally(() => {
       webhookSweeping = false;
     });
   }, 5_000);

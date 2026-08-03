@@ -32,7 +32,7 @@ const responsePreview = async (response: Response): Promise<string> => {
   }
 };
 
-const privateIpv4 = (host: string): boolean => {
+export const privateIpv4 = (host: string): boolean => {
   const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (!match) return false;
   const octets = match.slice(1, 5).map(Number);
@@ -48,7 +48,7 @@ const privateIpv4 = (host: string): boolean => {
   );
 };
 
-const privateIpv6 = (host: string): boolean => {
+export const privateIpv6 = (host: string): boolean => {
   const value = host.toLowerCase();
   if (value === "::1" || value === "::") return true;
   // fc00::/7 (unique local) and fe80::/10 (link local).
@@ -70,11 +70,24 @@ const privateIpv6 = (host: string): boolean => {
   return false;
 };
 
+/**
+ * Whether an IP literal is one a webhook may never reach.
+ *
+ * The delivery path resolves a hostname and checks every answer through this,
+ * so the rule that applies to a literal in the URL is the same rule that
+ * applies to whatever DNS hands back a moment before connecting.
+ */
+export const privateAddress = (address: string): boolean =>
+  privateIpv4(address) || privateIpv6(address);
+
 // SSRF guard for webhook targets, applied at creation and again at delivery
 // time. It rejects literal loopback, private, link-local, and ULA addresses
-// plus localhost/.local/.internal names. DNS rebinding (a public name that
-// resolves to a private address, or changes between checks) is out of scope
-// for self-hosted v1; only literal hosts are validated here.
+// plus localhost/.local/.internal names.
+//
+// A public NAME that resolves to a private address is not caught here, because
+// nothing in a URL string can catch it: only the resolver knows. That check
+// lives at delivery time, where the address is resolved and pinned just before
+// the connection is made (see the deliver hook in apps/server).
 export const webhookUrlProblem = (raw: string): string | undefined => {
   let url: URL;
   try {
@@ -146,10 +159,24 @@ export const scheduleWebhookDeliveries = async (
   }
 };
 
+/**
+ * How a delivery actually reaches the network.
+ *
+ * Injected because the defence differs by platform. The Node server resolves
+ * the hostname and pins the connection to a validated address, which needs a
+ * resolver and a socket-level hook it is the only one to have. Workers cannot
+ * reach an operator's private network in the first place and passes nothing.
+ */
+export type WebhookFetch = (
+  url: string,
+  init: RequestInit,
+) => Promise<Response>;
+
 export const deliverDueWebhookDeliveries = async (
   db: AppDb,
   now: number,
   limit = 10,
+  deliverFetch: WebhookFetch = fetch,
 ): Promise<number> => {
   const rows = await db
     .select({ delivery: webhookDeliveries, webhook: webhooks })
@@ -202,7 +229,7 @@ export const deliverDueWebhookDeliveries = async (
       const timeout = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
       try {
         const timestamp = String(Math.floor(now / 1000));
-        const response = await fetch(row.webhook.url, {
+        const response = await deliverFetch(row.webhook.url, {
           method: "POST",
           headers: {
             "content-type": "application/json",
