@@ -166,3 +166,24 @@ present and verified, so an interrupted offload resumes. Add
 On the Workers deployment the equivalent is rclone against the R2 bucket;
 the database maps blob keys to filenames, but bulk archive from R2 is a
 bucket-level concern and rclone owns it well.
+
+## The media worker's sandbox
+
+The worker opens files nobody vetted: every asset an outside reviewer uploads
+is parsed by ffmpeg, Poppler, LibRaw and libheif. The base compose file runs it
+with a read-only root filesystem, every Linux capability dropped,
+`no-new-privileges`, a bounded tmpfs for scratch, and caps on memory, processes
+and open files. Core dumps are disabled, so a crash on a stranger's file cannot
+write that file's decoded contents to disk.
+
+Two of those are worth knowing about before something surprises you:
+
+- `mem_limit` (default 6g, override `ONELIGHT_WORKER_MEMORY`). An encode that
+  exceeds it is killed and the job fails; the host is unaffected. Large HDR or
+  4K work is the case that may need it raised.
+- `pids_limit` (default 512, override `ONELIGHT_WORKER_PIDS`). ffmpeg is
+  thread-hungry, and a very high `MEDIA_CONCURRENCY` on a large box can
+  approach it.
+
+`/data` stays writable: it is a volume, and the renditions the server reads are
+written there. Only the image itself is read-only.
