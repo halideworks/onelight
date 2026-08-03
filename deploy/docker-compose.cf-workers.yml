@@ -1,0 +1,55 @@
+# Media workers with no server beside them.
+#
+# The other compose files bring up a server and workers together. This one is
+# only the workers: the thing they claim from is a deployed Cloudflare Worker,
+# reachable over the internet at whatever URL the acceptance run just created.
+# There is no volume, no local server, and no path in any envelope -- the whole
+# arrangement the object-storage protocol was built for, run against a real
+# deployment rather than an emulation of one.
+#
+#   ONELIGHT_SERVER_URL=https://onelight-ci-123.example.workers.dev \
+#   WORKER_SECRET=... \
+#   docker compose -f deploy/docker-compose.cf-workers.yml up -d --build \
+#     --scale onelight-worker-cf=3 --wait
+#
+# Three of them, because the acceptance criterion includes killing the one that
+# is mid-encode and asserting another finishes the job. They pull, so there is
+# no address to balance and nothing to configure differently between them.
+services:
+  onelight-worker-cf:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      ONELIGHT_SERVER_URL: ${ONELIGHT_SERVER_URL:?ONELIGHT_SERVER_URL is required}
+      WORKER_SECRET: ${WORKER_SECRET:?WORKER_SECRET is required}
+      MEDIA_CONCURRENCY: ${MEDIA_CONCURRENCY:-1}
+      # Everything a job touches lives here and is removed when it ends: the
+      # source it downloaded, the renditions it encoded, and nothing else.
+      WORK_ROOT: /tmp/onelight-work
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=2g,mode=1777
+    mem_limit: ${ONELIGHT_WORKER_MEMORY:-6g}
+    pids_limit: ${ONELIGHT_WORKER_PIDS:-512}
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+      core: 0
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
