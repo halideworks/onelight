@@ -9,7 +9,8 @@ import {
   completeJob,
   failJob,
   heartbeatJob,
-  reapAbandonedJobs,
+  buryAbandonedJob,
+  findAbandonedJobs,
 } from "./index.js";
 import type { AppDb } from "./index.js";
 
@@ -196,10 +197,11 @@ describe("a worker that vanishes", () => {
     const { db, sqlite } = openDb();
     const id = await seedJob(db, { maxAttempts: 1 });
     await claimNextJob(db, 1_000, "gone");
-    // Before the lease expires there is nothing to bury.
-    expect(await reapAbandonedJobs(db, 1_100)).toEqual([]);
-    const buried = await reapAbandonedJobs(db, 10_000_000);
-    expect(buried.map((job) => job.id)).toEqual([id]);
+    // Before the lease expires there is nothing to retire.
+    expect(await findAbandonedJobs(db, 1_100)).toEqual([]);
+    const found = await findAbandonedJobs(db, 10_000_000);
+    expect(found.map((job: typeof jobs.$inferSelect) => job.id)).toEqual([id]);
+    await buryAbandonedJob(db, id, 10_000_000);
     const row = (
       await db.select().from(jobs).where(eq(jobs.id, id)).limit(1).all()
     )[0];
@@ -209,41 +211,26 @@ describe("a worker that vanishes", () => {
     sqlite.close();
   });
 
-  /* If a later burial throws, the ones already buried are `dead`, so a sweep
-     selecting `processing` can never see them again. Losing them here means
-     their versions stay pending forever. */
-  it("still reports what it buried when a later one fails", async () => {
+  /* Burying last is what makes the sequence retryable: until it happens the
+     job is still `processing`, which is the only state a sweep can find. */
+  it("stays findable until it is actually buried", async () => {
     const { db, sqlite } = openDb();
-    const first = await seedJob(db, {
-      id: "01J0000000000000000000000A",
-      maxAttempts: 1,
-    });
-    await seedJob(db, { id: "01J0000000000000000000000B", maxAttempts: 1 });
-    await claimNextJob(db, 1_000, "gone-1");
-    await claimNextJob(db, 1_100, "gone-2");
-
-    // Fail every update after the first one.
-    const realUpdate = db.update.bind(db);
-    let updates = 0;
-    (db as unknown as { update: typeof db.update }).update = ((
-      table: Parameters<typeof db.update>[0],
-    ) => {
-      updates += 1;
-      if (updates > 1) throw new Error("database went away");
-      return realUpdate(table);
-    }) as typeof db.update;
-
-    const buried = await reapAbandonedJobs(db, 10_000_000);
-    (db as unknown as { update: typeof db.update }).update = realUpdate;
-
-    // The one that landed is reported, so its version can be marked failed.
-    expect(buried.map((job) => job.id)).toEqual([first]);
-    // And the one that did not is still processing, so the next sweep retries.
-    const rows = await db.select().from(jobs).all();
-    expect(rows.find((row) => row.id === first)?.status).toBe("dead");
+    const id = await seedJob(db, { maxAttempts: 1 });
+    await claimNextJob(db, 1_000, "gone");
     expect(
-      rows.find((row) => row.id === "01J0000000000000000000000B")?.status,
-    ).toBe("processing");
+      (await findAbandonedJobs(db, 10_000_000)).map(
+        (job: typeof jobs.$inferSelect) => job.id,
+      ),
+    ).toEqual([id]);
+    // A caller that failed its writeback simply does not bury, and the next
+    // sweep sees the job again.
+    expect(
+      (await findAbandonedJobs(db, 10_000_001)).map(
+        (job: typeof jobs.$inferSelect) => job.id,
+      ),
+    ).toEqual([id]);
+    await buryAbandonedJob(db, id, 10_000_002);
+    expect(await findAbandonedJobs(db, 10_000_003)).toEqual([]);
     sqlite.close();
   });
 
@@ -252,7 +239,7 @@ describe("a worker that vanishes", () => {
     const { db, sqlite } = openDb();
     await seedJob(db, { maxAttempts: 1 });
     await claimNextJob(db, 1_000, "working");
-    expect(await reapAbandonedJobs(db, 1_500)).toEqual([]);
+    expect(await findAbandonedJobs(db, 1_500)).toEqual([]);
     expect(await claimNextJob(db, 1_500, "other")).toBeUndefined();
     sqlite.close();
   });

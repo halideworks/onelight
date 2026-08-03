@@ -196,21 +196,21 @@ export const failJob = async (
 };
 
 /**
- * Move abandoned jobs to the dead letter.
+ * Jobs whose worker vanished for good: the lease expired and the attempts are
+ * spent, so no one will ever finish them and claiming will not hand them out
+ * again.
  *
- * A job whose worker vanished is never failed by anyone: the lease expires and
- * that is all that happens. Claiming refuses it once its attempts are spent,
- * which stops the endless cycle, but something still has to record the outcome
- * or the row sits in `processing` forever and the version it belongs to never
- * reads as failed. This is that something.
- *
- * Returns the ids it buried, so the caller can mark their versions failed.
+ * Finding and burying are separate on purpose. The caller has a writeback to
+ * do (the version has to read as failed) and that writeback must happen while
+ * the job is still `processing`, because `processing` is the only state a
+ * later sweep can find. Burying last makes the whole sequence retryable: a
+ * failure anywhere leaves the row exactly where the next sweep will pick it up.
  */
-export const reapAbandonedJobs = async (
+export const findAbandonedJobs = async (
   db: AppDb,
   now: number,
-): Promise<Array<typeof jobs.$inferSelect>> => {
-  const abandoned = await db
+): Promise<Array<typeof jobs.$inferSelect>> =>
+  db
     .select()
     .from(jobs)
     .where(
@@ -222,42 +222,33 @@ export const reapAbandonedJobs = async (
     )
     .limit(100)
     .all();
-  /* Reported one at a time, as each one lands.
-     
-     Returning the whole selection at the end would lose everything already
-     buried if a later update threw: those rows are `dead` by then, so the next
-     sweep, which selects `processing`, can never see them again, and the
-     versions behind them would stay pending forever. A row that fails here is
-     still `processing` and comes back on the next sweep. */
-  const buried: Array<typeof jobs.$inferSelect> = [];
-  for (const job of abandoned) {
-    try {
-      await db
-        .update(jobs)
-        .set({
-          status: "dead",
-          finishedAt: now,
-          heartbeatAt: null,
-          leaseExpiresAt: null,
-          error:
-            "The worker holding this job stopped reporting and its attempts are spent.",
-        })
-        .where(
-          and(
-            eq(jobs.id, job.id),
-            eq(jobs.status, "processing"),
-            lt(jobs.leaseExpiresAt, now),
-          ),
-        )
-        .run();
-      buried.push(job);
-    } catch (error) {
-      console.warn(
-        `[onelight] could not bury abandoned job ${job.id}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  }
-  return buried;
+
+/**
+ * The last step, once everything that had to be recorded has been. The guard
+ * repeats the claimability predicates so a job someone else has since taken is
+ * left alone.
+ */
+export const buryAbandonedJob = async (
+  db: AppDb,
+  jobId: string,
+  now: number,
+): Promise<void> => {
+  await db
+    .update(jobs)
+    .set({
+      status: "dead",
+      finishedAt: now,
+      heartbeatAt: null,
+      leaseExpiresAt: null,
+      error:
+        "The worker holding this job stopped reporting and its attempts are spent.",
+    })
+    .where(
+      and(
+        eq(jobs.id, jobId),
+        eq(jobs.status, "processing"),
+        lt(jobs.leaseExpiresAt, now),
+      ),
+    )
+    .run();
 };
