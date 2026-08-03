@@ -38,6 +38,8 @@ import type {
   WatermarkSpec,
   WatermarkTokens,
 } from "@onelight/worker";
+import { fetchSource } from "./source.js";
+import type { Fetched, SourceRef } from "./source.js";
 
 interface WorkerOutput {
   kind: string;
@@ -52,11 +54,14 @@ interface WorkerOutput {
 }
 interface FingerprintSource {
   id: string;
-  path: string;
+  key?: string;
+  path?: string;
+  url?: string;
 }
 interface WorkerRequest {
   job_id: string;
   kind: "probe" | "transcode" | "still" | "watermark" | "fingerprint";
+  source_key?: string;
   source_path?: string;
   source_url?: string;
   media_info?: MediaInfo;
@@ -129,11 +134,10 @@ const json = (
   response.end(JSON.stringify(body));
 };
 
-const sourceFor = (body: WorkerRequest): string => {
-  const source = body.source_path ?? body.source_url;
-  if (!source) throw new Error("A source_path or source_url is required.");
-  return source;
-};
+/* Everything a job reads arrives through here: the file on the shared volume
+   when there is one, and otherwise the URL the claim signed. */
+const sourceFile = (reference: SourceRef, label: string): Promise<Fetched> =>
+  fetchSource(reference, { workRoot, serverUrl, label });
 
 /**
  * What a file the job produced is: its length and its sha256, measured here.
@@ -261,6 +265,7 @@ const runOutputs = async (
    are computed here because both need a decoder, and a batch of them is one
    job so a delivery costs a handful rather than one per file. */
 const runFingerprints = async (
+  jobId: string,
   sources: FingerprintSource[],
 ): Promise<
   Array<{
@@ -275,9 +280,15 @@ const runFingerprints = async (
   await mkdir(workRoot, { recursive: true });
   const out = [];
   for (const entry of sources) {
+    /* One at a time, and discarded before the next: a delivery of a hundred
+       camera masters is one job, and holding all of them at once would fill
+       any scratch disk this worker has. */
+    let fetched: Fetched | null = null;
     try {
-      if (isStillSource(entry.path)) {
-        const print = await fingerprintStillSource(entry.path, { ffmpeg });
+      fetched = await sourceFile(entry, `${jobId}-${entry.id}`);
+      const file = fetched.path;
+      if (isStillSource(file)) {
+        const print = await fingerprintStillSource(file, { ffmpeg });
         out.push({
           id: entry.id,
           content_hash: print.contentHash,
@@ -286,12 +297,12 @@ const runFingerprints = async (
         });
         continue;
       }
-      const info = await probeFile(entry.path);
+      const info = await probeFile(file);
       const duration = Number(info.format.duration ?? 0);
       /* One decode for the picture, the cut and the sound, on the GPU where
          the codec allows it: the same numbers the seek path produces, for a
          third of the time. */
-      const signatures = await fingerprintClipSignatures(entry.path, {
+      const signatures = await fingerprintClipSignatures(file, {
         durationSeconds: duration,
         frameIntervalSeconds: frameIntervalSeconds(info),
         workDirectory: workRoot,
@@ -322,6 +333,8 @@ const runFingerprints = async (
         capture_key: null,
         state: "failed" as const,
       });
+    } finally {
+      if (fetched) await fetched.discard();
     }
   }
   return out;
@@ -338,8 +351,25 @@ const runJob = async (
   body: WorkerRequest,
 ): Promise<Record<string, unknown>> => {
   if (body.kind === "fingerprint")
-    return { fingerprints: await runFingerprints(body.sources ?? []) };
-  const source = sourceFor(body);
+    return {
+      fingerprints: await runFingerprints(body.job_id, body.sources ?? []),
+    };
+  const fetched = await sourceFile(
+    { key: body.source_key, path: body.source_path, url: body.source_url },
+    `${body.job_id}-source`,
+  );
+  try {
+    return await runJobAgainst(body, fetched.path);
+  } finally {
+    await fetched.discard();
+  }
+};
+
+/** The job itself, once its source is a file this process can open. */
+const runJobAgainst = async (
+  body: WorkerRequest,
+  source: string,
+): Promise<Record<string, unknown>> => {
   // Still and watermark jobs run against an already-probed proxy; the single
   // output lands via the same temp-name-and-rename convention as transcode
   // renditions.

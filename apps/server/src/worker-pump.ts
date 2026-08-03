@@ -79,6 +79,20 @@ export interface PumpBlobStore {
   delete(key: string): Promise<void>;
 }
 
+/**
+ * How a claim turns a blob key into something a worker can fetch.
+ *
+ * The server hands out the URL because it is the only side that knows how its
+ * storage is reached: a path on a shared volume today, a route on this server
+ * for a worker that mounts nothing, a presigned R2 URL where credentials for
+ * one exist. The worker fetches the string it was given and asks no questions.
+ */
+export type SignBlobUrl = (
+  key: string,
+  jobId: string,
+  attempts: number,
+) => string;
+
 interface WorkerResponse {
   status: "queued" | "processing" | "complete" | "failed";
   result?: {
@@ -1618,9 +1632,14 @@ const planFingerprintJob = async (
   const sources = [
     ...rows
       .filter((row) => row.status === "completed")
-      .map((row) => ({ id: row.id, path: path.join(blobRoot, row.blobKey) })),
+      .map((row) => ({
+        id: row.id,
+        key: row.blobKey,
+        path: path.join(blobRoot, row.blobKey),
+      })),
     ...versionRows.map((row) => ({
       id: row.id,
+      key: row.originalBlobKey,
       path: path.join(blobRoot, row.originalBlobKey),
     })),
   ];
@@ -2029,16 +2048,29 @@ const planJob = async (
   if (!sourceKey || !versionId)
     throw new Error("Job payload is missing blob_key or version_id.");
   const sourcePath = path.join(blobRoot, sourceKey);
+  /* Every job of these kinds reads one source, so the key is stamped on the
+     envelope here rather than in each plan: the claim turns it into something
+     the worker can fetch, and a worker that cannot see the volume has no other
+     way to reach the bytes. */
+  const withSource = (plan: JobPlan): JobPlan =>
+    plan && { request: { source_key: sourceKey, ...plan.request } };
   if (job.kind === "probe")
-    return planProbeJob(db, payload, versionId, sourcePath, blobRoot);
+    return withSource(
+      await planProbeJob(db, payload, versionId, sourcePath, blobRoot),
+    );
   if (job.kind === "watermark")
-    return planWatermarkJob(db, job, payload, versionId, sourcePath, blobRoot);
+    return withSource(
+      await planWatermarkJob(db, job, payload, versionId, sourcePath, blobRoot),
+    );
   /* Always plannable, unlike the others: a still's payload is written by the
      export waiting on it, not reconstructed from state that may have moved. */
-  if (job.kind === "still") return planStillJob(payload, sourcePath, blobRoot);
+  if (job.kind === "still")
+    return withSource(planStillJob(payload, sourcePath, blobRoot));
   if (job.kind !== "transcode")
     throw new Error(`Unsupported worker job kind: ${job.kind}.`);
-  return planTranscodeJob(db, payload, versionId, sourcePath, blobRoot);
+  return withSource(
+    await planTranscodeJob(db, payload, versionId, sourcePath, blobRoot),
+  );
 };
 
 /** What a worker reported, written down. Throwing fails the job. */
@@ -2098,11 +2130,41 @@ export interface ClaimedJob {
  * because a payload the server cannot even read will not become readable on a
  * worker.
  */
+/**
+ * Every source in an envelope, given a URL beside its key.
+ *
+ * Done once here rather than in each plan: the plans say what a job reads, and
+ * how a worker reaches those bytes is a property of the claim, which is the
+ * only place that knows the attempt the URL is being issued for.
+ */
+const withSourceUrls = (
+  request: Record<string, unknown>,
+  job: typeof jobs.$inferSelect,
+  sign: SignBlobUrl,
+): Record<string, unknown> => {
+  const signed = { ...request };
+  if (typeof signed.source_key === "string")
+    signed.source_url = sign(signed.source_key, job.id, job.attempts);
+  if (Array.isArray(signed.sources))
+    signed.sources = signed.sources.map((source) =>
+      source &&
+      typeof source === "object" &&
+      typeof (source as { key?: unknown }).key === "string"
+        ? {
+            ...source,
+            url: sign((source as { key: string }).key, job.id, job.attempts),
+          }
+        : source,
+    );
+  return signed;
+};
+
 export const claimWorkerJob = async (
   db: AppDb,
   blobRoot: string,
   workerId: string,
   capabilities: string[],
+  signBlobUrl?: SignBlobUrl,
 ): Promise<ClaimedJob | null> => {
   for (let retired = 0; retired <= MOOT_JOBS_PER_CLAIM; retired += 1) {
     const job = await claimNextJob(
@@ -2133,7 +2195,12 @@ export const claimWorkerJob = async (
       await completeJob(db, job.id, workerId, Date.now());
       continue;
     }
-    return { job, request: plan.request };
+    return {
+      job,
+      request: signBlobUrl
+        ? withSourceUrls(plan.request, job, signBlobUrl)
+        : plan.request,
+    };
   }
   return null;
 };
