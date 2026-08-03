@@ -19,6 +19,26 @@ This is a v1 in active development, covering the first four phases of the design
 
 The automated test suite is extensive: an API contract suite that runs on both SQLite (Node) and D1 (Cloudflare Workers), timecode property tests, byte-exact golden fixtures for every NLE export format, a WebCodecs frame-accuracy harness, golden-frame color QC, and a full-stack integration run that scales the media worker to three, kills one mid-encode, and asserts another finishes the job. Some final acceptance steps require a Linux host with ffmpeg and real NLE applications.
 
+## What it costs, and how fast it is
+
+Onelight runs two ways from one build: a Docker stack on a machine you own, or
+entirely serverless on Cloudflare Workers, D1 and R2.
+
+- [Pricing](https://github.com/halideworks/onelight/wiki/Pricing) works the
+  serverless bill out from Cloudflare's published rates. The short version is
+  that R2 charges nothing for egress, which for a tool whose whole job is
+  sending video to people is the line that would otherwise dominate: 1 TB
+  stored costs about $15 a month and serving all of it costs nothing.
+- [Benchmarks](https://github.com/halideworks/onelight/wiki/Benchmarks) covers
+  encoding throughput and what the workers need to keep up. The methodology is
+  written down; the measurements are not taken yet, and the page says so
+  rather than offering a number nobody checked.
+
+Encoding is the one part that is never serverless: ffmpeg needs a machine, so
+a media worker is a container you run. It claims jobs over HTTP, encodes,
+uploads, and keeps nothing, so it can be a spare desktop or a spot instance
+that dies without consequence.
+
 ## Quick start with Docker
 
 ```sh
