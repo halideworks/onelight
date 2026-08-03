@@ -70,7 +70,16 @@ export type WorkerBlobStore = PumpBlobStore & {
     uploadId: string,
     parts: Array<{ partNo: number; etag: string }>,
   ): Promise<void>;
+  /* Optional, and only some stores can. A store backed by object storage can
+     mint a URL the worker reads directly; one backed by a filesystem cannot,
+     and answers null so the claim falls back to a URL on this server. */
+  presignGet?(key: string, expiresIn: number): Promise<string | null>;
 };
+
+/* How long a presigned source URL is good for. A transcode of a long master
+   can run for hours, and the URL has to outlive the job that is using it
+   without becoming a standing grant on the object. */
+const PRESIGNED_SOURCE_SECONDS = 12 * 60 * 60;
 
 /* Mirrors the skew the old push protocol allowed, and exists for the same
    reason: a captured signed claim cannot be replayed tomorrow. */
@@ -212,7 +221,17 @@ export const createWorkerRoutes = (options: {
       .join("/");
 
   const urls: BlobUrls = {
-    read: (key, jobId, attempts) => {
+    read: async (key, jobId, attempts) => {
+      /* Straight from storage when storage can say so. A worker decoding a
+         40 GB master must not pull those bytes through this server: it is the
+         slowest path, it spends CPU and requests in proportion to the file,
+         and on the Workers target it is simply not possible. A presigned GET
+         is an ordinary GET, so the worker can seek inside it.
+
+         Bounded by the attempt, not by the object: long enough for the job to
+         run, short enough that a leaked URL is not a standing grant. */
+      const direct = await store.presignGet?.(key, PRESIGNED_SOURCE_SECONDS);
+      if (direct) return direct;
       const query = new URLSearchParams({
         job: jobId,
         attempt: String(attempts),

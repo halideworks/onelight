@@ -69,7 +69,8 @@ export interface PumpBlobStore {
  * into it.
  */
 export interface BlobUrls {
-  read(key: string, jobId: string, attempts: number): string;
+  /* Async because some stores mint this by signing, which is a promise. */
+  read(key: string, jobId: string, attempts: number): Promise<string>;
   write(scope: string, jobId: string, attempts: number): string;
   /* The same write capability, for an object too large to send as one body.
      A template in two placeholders: `{action}` is create, part or complete,
@@ -2065,14 +2066,18 @@ export interface ClaimedJob {
  * how a worker reaches those bytes is a property of the claim, which is the
  * only place that knows the attempt the URL is being issued for.
  */
-const withBlobUrls = (
+const withBlobUrls = async (
   request: Record<string, unknown>,
   job: typeof jobs.$inferSelect,
   urls: BlobUrls,
-): Record<string, unknown> => {
+): Promise<Record<string, unknown>> => {
   const signed = { ...request };
   if (typeof signed.source_key === "string")
-    signed.source_url = urls.read(signed.source_key, job.id, job.attempts);
+    signed.source_url = await urls.read(
+      signed.source_key,
+      job.id,
+      job.attempts,
+    );
   if (typeof signed.upload_scope === "string") {
     signed.upload_url = urls.write(signed.upload_scope, job.id, job.attempts);
     signed.multipart_url = urls.multipart(
@@ -2082,19 +2087,21 @@ const withBlobUrls = (
     );
   }
   if (Array.isArray(signed.sources))
-    signed.sources = signed.sources.map((source) =>
-      source &&
-      typeof source === "object" &&
-      typeof (source as { key?: unknown }).key === "string"
-        ? {
-            ...source,
-            url: urls.read(
-              (source as { key: string }).key,
-              job.id,
-              job.attempts,
-            ),
-          }
-        : source,
+    signed.sources = await Promise.all(
+      signed.sources.map(async (source) =>
+        source &&
+        typeof source === "object" &&
+        typeof (source as { key?: unknown }).key === "string"
+          ? {
+              ...source,
+              url: await urls.read(
+                (source as { key: string }).key,
+                job.id,
+                job.attempts,
+              ),
+            }
+          : source,
+      ),
     );
   return signed;
 };
@@ -2177,7 +2184,7 @@ export const claimWorkerJob = async (
       : plan.request;
     return {
       job,
-      request: urls ? withBlobUrls(reachable, job, urls) : reachable,
+      request: urls ? await withBlobUrls(reachable, job, urls) : reachable,
     };
   }
   return null;

@@ -375,6 +375,83 @@ const claimAll = async (
   }
 };
 
+describe("where a worker reads a source from", () => {
+  /* A worker decoding a 40 GB master must not pull those bytes through this
+     server. On the Workers target it cannot: an isolate has neither the disk
+     nor the CPU budget. So when the store can mint a URL against storage
+     itself, the claim hands that over instead. */
+  it("sends the worker straight to storage when the store can sign", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const signing = {
+        ...storeOf(),
+        presignGet: (key: string, expiresIn: number): Promise<string | null> =>
+          Promise.resolve(
+            `https://bucket.example.com/${key}?X-Amz-Expires=${String(expiresIn)}&X-Amz-Signature=abc`,
+          ),
+      };
+      const app = routes(db, signing);
+      const claimed = await claimJob(app, "w-1");
+      const source = claimed.request.source_url as string;
+      expect(source).toBe(
+        "https://bucket.example.com/originals/picture.mov?X-Amz-Expires=43200&X-Amz-Signature=abc",
+      );
+      /* And not through here, which is the whole point. */
+      expect(source).not.toContain("/api/v1/worker/blobs");
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("falls back to this server when the store cannot sign", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      /* A filesystem-backed store has no URL to give, which is the normal
+         case for a self-hosted deployment. */
+      const app = routes(db, storeOf());
+      const claimed = await claimJob(app, "w-1");
+      expect(claimed.request.source_url as string).toContain(
+        "/api/v1/worker/blobs/originals/picture.mov",
+      );
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("keeps playback on the API, where permissions are enforced", async () => {
+    /* Presigned URLs answer to whoever holds them. A share's permission can be
+       revoked; a signed URL cannot. So this capability is deliberately only
+       reachable from the job protocol, and `signGetUrl` -- what playback uses
+       -- is a different method that still returns an app path. */
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      const signing = {
+        ...storeOf(),
+        presignGet: (): Promise<string | null> =>
+          Promise.resolve("https://bucket.example.com/leaked"),
+      };
+      const app = routes(db, signing);
+      const claimed = await claimJob(app, "w-1");
+      /* The upload side is still a URL on this server: writes are checked
+         against the job's namespace, which storage cannot do for us. */
+      expect(claimed.request.upload_url as string).toContain(
+        "/api/v1/worker/blobs/",
+      );
+    } finally {
+      sqlite.close();
+    }
+  });
+});
+
 describe("the files a claim names", () => {
   /* The plans describe storage and nothing else, so the paths are the claim's
      addition, made where the deployment is known. Asserted here because a
