@@ -564,7 +564,7 @@ export const CONFIG_VARS: readonly ConfigVar[] = [
     summary: "Scratch directory for in-flight jobs.",
     compose: "omit",
     composeNote:
-      "the image pins its own scratch directory; P0-5 moves this to a bounded tmpfs",
+      "the image pins its own scratch directory; a worker with no shared volume overrides it to a disk-backed scratch volume, because it downloads whole sources and tmpfs is memory",
   },
   {
     name: "ONELIGHT_HWACCEL",
