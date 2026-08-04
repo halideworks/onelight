@@ -297,9 +297,14 @@ jobs:
       # Best effort: this also runs when the failure happened before any stack
       # existed, and an empty `docker compose logs` must not add a second
       # failure to a run that already has one.
+      # ONELIGHT_SERVER_URL is required by the compose file's interpolation, so
+      # without it here `docker compose logs` refuses to read its own file and
+      # the media workers stay silent exactly when they are the thing to ask.
       - name: Worker logs
         if: failure()
-        run: docker compose -f deploy/docker-compose.cf-workers.yml logs --tail 200 || true
+        env:
+          ONELIGHT_SERVER_URL: ${{ env.CI_URL }}
+        run: docker compose -f deploy/docker-compose.cf-workers.yml logs --tail 400 || true
 
       # Always, including on cancellation: what this created must not outlive
       # the run. Each delete tolerates the resource being absent, so a failure
@@ -307,7 +312,8 @@ jobs:
       - name: Delete everything this run created
         if: always()
         run: |
-          docker compose -f deploy/docker-compose.cf-workers.yml down -v || true
+          ONELIGHT_SERVER_URL="${CI_URL:-http://unused}" \
+            docker compose -f deploy/docker-compose.cf-workers.yml down -v || true
           if [ -n "${CI_NAME:-}" ]; then
             pnpm exec wrangler delete --name "$CI_NAME" --force || true
             pnpm exec wrangler d1 delete "$CI_NAME" -y || true
