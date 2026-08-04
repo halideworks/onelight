@@ -3,7 +3,7 @@ import {
   createApp,
   deliverDueWebhookDeliveries,
 } from "@onelight/api";
-import { createWorkerRoutes } from "@onelight/job-protocol";
+import { createWorkerRoutes, sweepUnclaimedWork } from "@onelight/job-protocol";
 import {
   loadConfig,
   Pbkdf2PasswordHasher,
@@ -122,9 +122,20 @@ export default {
     return app.fetch(request);
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    // The cron trigger is the delivery loop for queued and retried webhook
-    // deliveries; the Node target runs the same function on a timer.
+    // The cron trigger is this target's equivalent of the node pump's timer.
+    //
+    // It used to deliver webhooks and nothing else, which left every sweep
+    // unrun: nothing pulls the work that has to be *queued*. A watermark is
+    // only rendered because a sweep noticed a share wanting one, and an
+    // abandoned job is only retried because something noticed its lease had
+    // expired. So a share sat at "202, pending" forever on a deployment where
+    // uploads, transcodes and playback all worked.
     await applyD1Migrations(env.DB);
-    await deliverDueWebhookDeliveries(createD1Db(env.DB), Date.now());
+    const db = createD1Db(env.DB);
+    const now = Date.now();
+    await deliverDueWebhookDeliveries(db, now);
+    await sweepUnclaimedWork(db, now, {
+      mediaEnabled: Boolean(env.WORKER_SECRET),
+    });
   },
 };

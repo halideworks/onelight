@@ -15,7 +15,7 @@ import {
 } from "@onelight/db";
 import { renditions } from "@onelight/db/schema";
 import { createWorkerRoutes } from "./worker-routes.js";
-import { claimWorkerJob } from "./worker-pump.js";
+import { claimWorkerJob, sweepUnclaimedWork } from "./worker-pump.js";
 
 const SECRET = "worker-secret-for-tests";
 
@@ -446,6 +446,62 @@ describe("where a worker reads a source from", () => {
       expect(claimed.request.upload_url as string).toContain(
         "/api/v1/worker/blobs/",
       );
+    } finally {
+      sqlite.close();
+    }
+  });
+});
+
+describe("the work nobody claims", () => {
+  /* The protocol is pull-based, so nothing pulls the work that has to be
+     queued in the first place. On the Workers target the cron delivered
+     webhooks and ran no sweeps at all, so a watermark was never queued and a
+     share sat at "202, pending" forever on a deployment where uploads,
+     transcodes and playback all worked. */
+  it("buries a job whose worker vanished", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      /* One attempt allowed, so a single vanished worker exhausts it. A job
+         with attempts left is not abandoned -- it is reclaimed by the next
+         worker to ask, which is the retry the protocol is built on. */
+      await db
+        .update(jobs)
+        .set({ maxAttempts: 1 })
+        .where(eq(jobs.id, "job-transcode"))
+        .run();
+      const app = routes(db, storeOf());
+      const claimed = await claimJob(app, "w-1");
+      expect(claimed.job_id).toBe("job-transcode");
+
+      /* Nothing reports back and the lease runs out, which is what a worker
+         being killed looks like from here. */
+      const wellPast = Date.now() + 60 * 60_000;
+      await sweepUnclaimedWork(db, wellPast, { mediaEnabled: true });
+
+      const row = (
+        await db.select().from(jobs).where(eq(jobs.id, "job-transcode")).all()
+      )[0];
+      expect(row?.status).toBe("dead");
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("keeps sweeping when one of them fails", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueTranscode(db);
+      /* A sweep that throws is a sweep that did not happen, not a reason to
+         skip the rest: on a cron there is no operator watching, and one bad
+         row must not stop watermarks being queued for everybody else. */
+      await expect(
+        sweepUnclaimedWork(db, Date.now(), { mediaEnabled: true }),
+      ).resolves.toBeUndefined();
     } finally {
       sqlite.close();
     }
