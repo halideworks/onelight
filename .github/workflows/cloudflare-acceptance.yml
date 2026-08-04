@@ -109,6 +109,13 @@ jobs:
           url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
           test -n "$url" || { echo "the deploy printed no workers.dev URL; is the subdomain enabled on this account?"; exit 1; }
           echo "CI_URL=${url}" >> "$GITHUB_ENV"
+          # Also as ONELIGHT_SERVER_URL, which the workers compose file
+          # interpolates. Setting it per-step has now been forgotten three
+          # times -- the logs step, the teardown, and the exercise itself,
+          # where the kill leg shells out to docker compose and died on a
+          # missing variable after everything it was testing had passed.
+          # Exported once here, every later step has it.
+          echo "ONELIGHT_SERVER_URL=${url}" >> "$GITHUB_ENV"
           echo "deployed to ${url}"
 
       # Secrets rather than vars: a var is in the config file, and the config
@@ -247,8 +254,6 @@ jobs:
       # the only way any byte moves is over the signed URLs the deployment
       # hands out.
       - name: Start three media workers against the deployment
-        env:
-          ONELIGHT_SERVER_URL: ${{ env.CI_URL }}
         run: |
           docker compose -f deploy/docker-compose.cf-workers.yml up -d --build \
             --scale onelight-worker-cf=3 --wait --wait-timeout 300
@@ -309,8 +314,6 @@ jobs:
       # the media workers stay silent exactly when they are the thing to ask.
       - name: Worker logs
         if: failure()
-        env:
-          ONELIGHT_SERVER_URL: ${{ env.CI_URL }}
         run: docker compose -f deploy/docker-compose.cf-workers.yml logs --tail 400 || true
 
       # Always, including on cancellation: what this created must not outlive
@@ -319,8 +322,7 @@ jobs:
       - name: Delete everything this run created
         if: always()
         run: |
-          ONELIGHT_SERVER_URL="${CI_URL:-http://unused}" \
-            docker compose -f deploy/docker-compose.cf-workers.yml down -v || true
+          docker compose -f deploy/docker-compose.cf-workers.yml down -v || true
           if [ -n "${CI_NAME:-}" ]; then
             pnpm exec wrangler delete --name "$CI_NAME" --force || true
             pnpm exec wrangler d1 delete "$CI_NAME" -y || true
