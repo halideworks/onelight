@@ -10,6 +10,22 @@
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
   },
+  // Without this the Worker never runs for these paths at all.
+  //
+  // Static assets are served before the script by default, and
+  // not_found_handling "single-page-application" means every unmatched GET is
+  // answered with index.html -- still without executing the Worker. So every
+  // API GET returned the SPA shell with a 200, and every API POST returned a
+  // 404 from the edge, and the script sat there uninvoked. The acceptance run
+  // is what caught it; nothing local can, because the assets layer is what
+  // does this and it lives in front of the isolate.
+  //
+  // Listed rather than `true` so ordinary asset requests are still served
+  // without an invocation, which is both faster and cheaper. src/index.ts
+  // consults env.ASSETS itself for anything that is not an API path, which is
+  // code that only makes sense if the Worker runs first -- it always assumed
+  // this setting existed.
+  "run_worker_first": ["/api/*", "/healthz", "/s/*"],
   "d1_databases": [
     {
       "binding": "DB",
