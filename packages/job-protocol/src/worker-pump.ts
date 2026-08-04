@@ -36,7 +36,13 @@ import {
   shares,
   uploadSessions,
 } from "@onelight/db/schema";
-import { claimNextJob, completeJob, failJob } from "@onelight/db";
+import {
+  buryAbandonedJob,
+  claimNextJob,
+  completeJob,
+  failJob,
+  findAbandonedJobs,
+} from "@onelight/db";
 import type { AppDb } from "@onelight/db";
 import { parseObject } from "./json.js";
 
@@ -2139,6 +2145,75 @@ const withLocalPaths = (
   if (Array.isArray(local.outputs)) local.outputs = local.outputs.map(placed);
   if (Array.isArray(local.sources)) local.sources = local.sources.map(placed);
   return local;
+};
+
+/**
+ * Everything a deployment has to do that nobody claims.
+ *
+ * The job protocol is pull-based: a worker asks for work and the server hands
+ * it over. Nothing pulls the work that has to be *queued* in the first place.
+ * A watermark is only rendered because a sweep noticed a share wanting one; a
+ * still ladder is backfilled because a sweep noticed it missing; an abandoned
+ * job is retried because something noticed its lease expired.
+ *
+ * On the node target `startWorkerPump` does this on a timer. The Workers
+ * target had a cron trigger that only delivered webhooks, so none of it ran:
+ * watermark jobs were never queued, and a worker that vanished held its job
+ * forever. That is why a share could sit at "202, pending" indefinitely on a
+ * deployment where everything else worked.
+ *
+ * The node pump still runs these on its own timer, because it paces them
+ * individually and drains the stack-key backfill a batch per tick. This is the
+ * unpaced version for a cron that already fires once a minute. The two lists
+ * have to be kept together by hand until that pacing is worth moving here,
+ * which is a real risk of drift and is written down rather than papered over.
+ *
+ * Every sweep is independent and each is allowed to fail on its own without
+ * stopping the rest: a sweep that throws is a sweep that did not happen, not a
+ * reason to skip the others.
+ */
+export const sweepUnclaimedWork = async (
+  db: AppDb,
+  now: number,
+  options: { mediaEnabled: boolean },
+): Promise<void> => {
+  const attempt = async (name: string, run: () => Promise<unknown>) => {
+    try {
+      await run();
+    } catch (error) {
+      console.warn(
+        `[onelight] ${name} sweep failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  };
+
+  /* A job whose worker vanished is written back and then buried, in that
+     order, so the sequence is retryable if it is interrupted. */
+  await attempt("abandoned jobs", async () => {
+    for (const abandoned of await findAbandonedJobs(db, now)) {
+      try {
+        await markAbandonedVersionFailed(db, abandoned);
+      } catch (error) {
+        console.warn(
+          `[onelight] abandoned job ${abandoned.id} was not written back: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        continue;
+      }
+      await buryAbandonedJob(db, abandoned.id, now);
+    }
+  });
+
+  if (options.mediaEnabled)
+    await attempt("watermark", () => sweepWatermarkJobs(db));
+  await attempt("stack key", () => sweepStackKeys(db));
+  await attempt("still re-kind", () => sweepReKindStills(db));
+  await attempt("still ladder", () => sweepStillLadderJobs(db));
+  await attempt("fingerprint", () => sweepFingerprints(db));
+  await attempt("shuttle audio", () => sweepShuttleAudioJobs(db));
 };
 
 export const claimWorkerJob = async (
