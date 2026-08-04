@@ -148,6 +148,30 @@ jobs:
           done
           test "$good" -ge 3 || { echo "the deployment never answered consistently"; exit 1; }
           echo "healthz settled after ${attempt} attempts"
+
+          # And settle on the path this actually uses. /healthz being stable
+          # does not mean /api/* is: run 7 answered an unsigned claim with 401
+          # while run 9, on the same code, answered 404 minutes after healthz
+          # had settled three times over. The worker-first routes propagate on
+          # their own schedule, so the endpoint under test is the one to wait
+          # for.
+          claimed=0
+          for attempt in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CI_URL/api/v1/worker/claim" \
+              -H 'content-type: application/json' \
+              -H "x-onelight-signature: $(printf '0%.0s' $(seq 1 64))" \
+              -d '{"worker_id":"probe","capabilities":["cpu"],"timestamp":0}' || true)
+            if [ "$code" = "401" ]; then
+              claimed=$((claimed + 1))
+            else
+              claimed=0
+            fi
+            [ "$claimed" -ge 3 ] && break
+            echo "claim not settled yet (attempt ${attempt}, consecutive 401s ${claimed}): ${code}"
+            sleep 5
+          done
+          test "$claimed" -ge 3 || { echo "the worker protocol never answered consistently"; exit 1; }
+          echo "claim settled after ${attempt} attempts"
           # And what came back, not just that something did: the assets layer
           # can answer a GET with index.html, which is also a 200.
           health=$(curl -s "$CI_URL/healthz" || true)
@@ -158,6 +182,7 @@ jobs:
               exit 1
               ;;
           esac
+          # One more, for the body and the explicit 404 message.
           claim=$(curl -s -w '\n%{http_code}' -X POST "$CI_URL/api/v1/worker/claim" \
             -H 'content-type: application/json' \
             -H "x-onelight-signature: $(printf '0%.0s' $(seq 1 64))" \
