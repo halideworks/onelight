@@ -137,5 +137,12 @@ export default {
     await sweepUnclaimedWork(db, now, {
       mediaEnabled: Boolean(env.WORKER_SECRET),
     });
+    /* Exports are NOT run here yet. They no longer need a filesystem -- the
+       result goes to storage by key -- but they still import the PDF report
+       builder and the SVG compositor from @onelight/worker, whose index
+       reaches media.ts and therefore node:child_process. Mounting them here
+       means lifting those two out of that graph first, exactly as the
+       rendition planner was lifted. Until then a comment report requested on
+       this target stays queued. */
   },
 };

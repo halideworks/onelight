@@ -456,7 +456,7 @@ const start = async (): Promise<void> => {
   });
   const stopWorkerPump = startWorkerPump(db, {
     ...(config.WORKER_SECRET ? { workerSecret: config.WORKER_SECRET } : {}),
-    blobRoot,
+    store: blobStore,
   });
   const stopBackups = backupConfig
     ? startBackups(sqlite, db, backupConfig)

@@ -1404,7 +1404,7 @@ describe("a comment report's frames", () => {
 
       stop = startWorkerPump(db, {
         workerSecret: WORKER_SECRET,
-        blobRoot,
+        store: new LocalBlobStore(blobRoot),
       });
 
       const deadline = Date.now() + 20_000;
