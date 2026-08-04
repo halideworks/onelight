@@ -27,6 +27,8 @@
  *                          skips when it does not find them
  *   ONELIGHT_E2E_SKIP_EXPORTS  when "1", skips the marker-export leg, for a
  *                          target that cannot run exports (the Workers one)
+ *   ONELIGHT_E2E_WORKER_SERVICE  compose service the media workers run under
+ *                          (default onelight-worker)
  *   ONELIGHT_E2E_COMPOSE_FILE  compose file the kill leg drives (default
  *                          deploy/docker-compose.yml)
  *   ONELIGHT_E2E_STATE_FILE  when set, a JSON summary of what the run
@@ -603,6 +605,14 @@ export const killFixtureArgs = (outputPath, fontFile) => [
   outputPath,
 ];
 
+/* The compose service the media workers run under. The base stack calls it
+   onelight-worker; the Cloudflare acceptance stack calls it
+   onelight-worker-cf, because it is a different file with different bindings.
+   Hardcoding one meant the kill leg asked for a service that did not exist and
+   failed after everything it was there to set up had worked. */
+const WORKER_SERVICE =
+  process.env.ONELIGHT_E2E_WORKER_SERVICE ?? "onelight-worker";
+
 const workerContainerIds = async () => {
   const { stdout } = await run("docker", [
     "compose",
@@ -610,7 +620,7 @@ const workerContainerIds = async () => {
     COMPOSE_FILE,
     "ps",
     "-q",
-    "onelight-worker",
+    WORKER_SERVICE,
   ]);
   return stdout
     .split("\n")
