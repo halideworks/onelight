@@ -232,12 +232,18 @@ jobs:
           sleep 4
           kill $tail_pid 2>/dev/null || true
           if [ "$status" -ne 0 ]; then
-            echo "--- exceptions the Worker reported ---"
-            grep -oE '"exceptions":\[[^]]*\]' exercise-tail.log | grep -v '\[\]' | head -20 || echo "(none logged)"
-            echo "--- console output from the Worker ---"
-            grep -oE '"logs":\[[^]]*\]' exercise-tail.log | grep -v '\[\]' | head -20 || echo "(none logged)"
+            # wrangler tail --format json pretty-prints across lines, so
+            # patterns written for compact JSON match nothing and look exactly
+            # like a Worker that logged nothing. Print the log and let it
+            # speak.
+            echo "--- tail log size ---"
+            wc -c exercise-tail.log || true
             echo "--- outcomes ---"
-            grep -oE '"outcome":"[a-z]*"' exercise-tail.log | sort | uniq -c || true
+            grep -oE '"outcome":[[:space:]]*"[a-zA-Z]*"' exercise-tail.log | sort | uniq -c || true
+            echo "--- exceptions ---"
+            grep -A 6 '"exceptions"' exercise-tail.log | head -40 || true
+            echo "--- whole tail ---"
+            head -c 20000 exercise-tail.log || true
           fi
           exit $status
 
