@@ -233,6 +233,22 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const mapped = mapError(error);
     const requestId = c.get("requestId") ?? env.ids.ulid();
     c.header("x-request-id", requestId);
+    /* An expected refusal -- a validation failure, a missing row, a rate limit
+       -- is already described by the envelope it turns into. An unexpected one
+       is not: the caller is told "an internal error occurred" and given a
+       request id, and until now nothing anywhere said what actually happened.
+       An operator reading their own logs had a request id and no error.
+
+       So the exception is logged exactly once, where it is caught, with the id
+       the envelope carries. */
+    if (mapped.code === "internal")
+      console.error(
+        `[onelight] ${c.req.method} ${redactBearerPath(c.req.path)} failed req=${requestId}: ${
+          error instanceof Error
+            ? `${error.name}: ${error.message}\n${error.stack ?? ""}`
+            : String(error)
+        }`,
+      );
     if (mapped.code === "rate_limited") {
       const retryAfter = Number(
         (mapped.details as { retry_after?: number } | undefined)?.retry_after ??
