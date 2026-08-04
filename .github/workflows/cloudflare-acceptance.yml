@@ -266,6 +266,7 @@ jobs:
           ONELIGHT_E2E_URL: ${{ env.CI_URL }}
           ONELIGHT_E2E_WORKER_KILL: "1"
           ONELIGHT_E2E_COMPOSE_FILE: deploy/docker-compose.cf-workers.yml
+          ONELIGHT_E2E_WORKER_SERVICE: onelight-worker-cf
           # Exports do not run on this target: the PDF report reads its font
           # with node:fs and the annotation compositor is sharp, a native
           # module, so the export module cannot even be loaded in an isolate.
