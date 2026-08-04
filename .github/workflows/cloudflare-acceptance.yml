@@ -84,6 +84,12 @@ jobs:
         run: |
           pnpm exec wrangler d1 create "$CI_NAME"
           pnpm exec wrangler r2 bucket create "$CI_NAME"
+          # R2 refuses to delete a bucket that still holds objects, and this
+          # run puts renditions in it. A one-day expiry means a bucket empties
+          # itself even if the job is killed before the teardown runs, so a
+          # sweep can remove it afterwards.
+          pnpm exec wrangler r2 bucket lifecycle add "$CI_NAME" \
+            --name expire-ci-objects --expire-days 1 --abort-multipart-days 1 -y || true
           database_id=$(pnpm exec wrangler d1 info "$CI_NAME" --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s.slice(s.indexOf("{")));const id=j.uuid??j.database_id;if(!id)throw new Error("no uuid in d1 info output");process.stdout.write(id)})')
           test -n "$database_id" || { echo "could not read the database id"; exit 1; }
           echo "CI_DATABASE_ID=${database_id}" >> "$GITHUB_ENV"
@@ -308,6 +314,20 @@ jobs:
             pnpm exec wrangler r2 bucket delete "$CI_NAME" || true
             echo "removed ${CI_NAME}"
           fi
+          # Sweep anything an earlier run could not remove. A bucket holding
+          # objects cannot be deleted, and run 30869917850 was the first to get
+          # far enough to store renditions, so it was left behind while every
+          # run before it had emptied trivially. Each stale bucket gets the
+          # expiry rule and a delete attempt; once expiry has emptied it, a
+          # later sweep finishes the job.
+          for stale in $(pnpm exec wrangler r2 bucket list 2>/dev/null \
+            | grep -oE 'onelight-ci-[0-9]+' | sort -u); do
+            [ "$stale" = "${CI_NAME:-}" ] && continue
+            echo "sweeping ${stale}"
+            pnpm exec wrangler r2 bucket lifecycle add "$stale" \
+              --name expire-ci-objects --expire-days 1 --abort-multipart-days 1 -y || true
+            pnpm exec wrangler r2 bucket delete "$stale" || echo "  ${stale} still has objects; expiry will empty it"
+          done
 
       - name: Confirm nothing was left behind
         if: always()
@@ -315,5 +335,11 @@ jobs:
           if [ -n "${CI_NAME:-}" ]; then
             pnpm exec wrangler d1 list --json | grep -q "\"$CI_NAME\"" \
               && { echo "the D1 database ${CI_NAME} still exists"; exit 1; } || true
-            echo "no ${CI_NAME} resources remain"
+            echo "no ${CI_NAME} D1 database remains"
           fi
+          # Report every CI bucket still present rather than only this run's,
+          # so a leak is visible in the run that caused it instead of being
+          # found weeks later by looking at the account.
+          echo "--- onelight-ci buckets still in the account ---"
+          pnpm exec wrangler r2 bucket list 2>/dev/null \
+            | grep -oE 'onelight-ci-[0-9]+' | sort -u || echo "(none)"
