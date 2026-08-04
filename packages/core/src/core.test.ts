@@ -20,10 +20,22 @@ describe("core contracts", () => {
     expect(() => loadConfig({ PUBLIC_URL: "http://localhost:3000" })).toThrow();
   });
 
+  /* A real single-call 600,000-iteration hash of "long-password-value",
+   generated with node's WebCrypto. This is the shape every deployment made
+   before chaining existed, so it is a fixture rather than something computed
+   here: the point is that a stored string from before the change still
+   verifies. */
+  const encoded600k = {
+    salt: "BwcHBwcHBwcHBwcHBwcHBw",
+    hash: "DTJ6Tn7OfURn1Mjz757F1WBAihdbDQSMOR2BHzQ_3wk",
+  };
+
   it("creates and verifies the portable PBKDF2 password format", async () => {
     const hasher = new Pbkdf2PasswordHasher();
     const encoded = await hasher.hash("long-password-value");
-    expect(encoded).toMatch(/^\$pbkdf2-sha256\$i=600000\$/);
+    /* Chained, because Workers refuses more than 100,000 iterations in one
+       deriveBits call and this app's floor is 600,000. */
+    expect(encoded).toMatch(/^\$pbkdf2-sha256-c\$i=600000\$/);
     await expect(hasher.verify("long-password-value", encoded)).resolves.toBe(
       true,
     );
@@ -32,6 +44,31 @@ describe("core contracts", () => {
     );
     // A hash at the current floor does not want re-hashing.
     expect(hasher.needsRehash(encoded)).toBe(false);
+  });
+
+  it("still verifies a hash written before chaining, and asks to replace it", async () => {
+    const hasher = new Pbkdf2PasswordHasher();
+    /* What every existing deployment has: 600,000 iterations in one call.
+       Node can still compute it, so nobody is locked out by the change. */
+    const legacy =
+      "$pbkdf2-sha256$i=600000$" + encoded600k.salt + "$" + encoded600k.hash;
+    await expect(hasher.verify("long-password-value", legacy)).resolves.toBe(
+      true,
+    );
+    /* But it is the form a Workers isolate cannot compute, so a successful
+       login replaces it. That is what lets a node deployment move to the
+       Workers target without resetting anybody's password. */
+    expect(hasher.needsRehash(legacy)).toBe(true);
+  });
+
+  it("does not confuse the two schemes", async () => {
+    const hasher = new Pbkdf2PasswordHasher();
+    const chained = await hasher.hash("long-password-value");
+    const legacy =
+      "$pbkdf2-sha256$i=600000$" + encoded600k.salt + "$" + encoded600k.hash;
+    /* Same password, same count, different function. If the stored string did
+       not record which, verifying would silently reject a correct password. */
+    expect(chained.split("$")[3]).not.toBe(legacy.split("$")[3]);
   });
 
   it("still verifies legacy 100k-iteration hashes and flags them for rehash", async () => {
