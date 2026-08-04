@@ -256,15 +256,22 @@ jobs:
           ONELIGHT_E2E_WORKER_KILL: "1"
           ONELIGHT_E2E_COMPOSE_FILE: deploy/docker-compose.cf-workers.yml
         run: |
-          pnpm exec wrangler tail "$CI_NAME" --format json > exercise-tail.log 2>&1 &
-          tail_pid=$!
-          sleep 6
+          # The tail runs in the FOREGROUND under `timeout`, and the exercise
+          # runs behind it. The other way round produced a zero-byte log:
+          # wrangler buffers when stdout is not a terminal, and SIGTERM
+          # discards what it has not flushed. A process that exits on its own
+          # flushes; one that is killed does not.
           set +e
-          node scripts/integration-e2e.mjs
-          status=$?
-          set -e
+          ( sleep 6; node scripts/integration-e2e.mjs; echo $? > e2e-status ) &
+          exercise_pid=$!
+          stdbuf -oL -eL timeout 900 pnpm exec wrangler tail "$CI_NAME" --format json > exercise-tail.log 2>&1 &
+          tail_pid=$!
+          wait $exercise_pid
           sleep 4
-          kill $tail_pid 2>/dev/null || true
+          kill -INT $tail_pid 2>/dev/null || true
+          wait $tail_pid 2>/dev/null
+          status=$(cat e2e-status 2>/dev/null || echo 1)
+          set -e
           if [ "$status" -ne 0 ]; then
             # wrangler tail --format json pretty-prints across lines, so
             # patterns written for compact JSON match nothing and look exactly
