@@ -25,6 +25,8 @@
  *                          another one; needs docker and a stack scaled to
  *                          at least three workers, and FAILS rather than
  *                          skips when it does not find them
+ *   ONELIGHT_E2E_SKIP_EXPORTS  when "1", skips the marker-export leg, for a
+ *                          target that cannot run exports (the Workers one)
  *   ONELIGHT_E2E_COMPOSE_FILE  compose file the kill leg drives (default
  *                          deploy/docker-compose.yml)
  *   ONELIGHT_E2E_STATE_FILE  when set, a JSON summary of what the run
@@ -1162,7 +1164,15 @@ const main = async () => {
       proxyBytes,
       workDir,
     );
-    await edlExportLeg(client, share, commentBody);
+    /* Exports are node-only today: the PDF report reads its font with
+       node:fs and the annotation compositor is sharp, a native module, so the
+       module cannot be loaded on the Workers target at all. Skipping the leg
+       there lets the run reach the thing it exists to prove -- a worker killed
+       mid-encode and the job finished by another -- instead of stopping at a
+       feature that deployment does not claim to have. */
+    if (process.env.ONELIGHT_E2E_SKIP_EXPORTS === "1")
+      log("skipping the export leg: unsupported on this target");
+    else await edlExportLeg(client, share, commentBody);
     await hdrLeg(client, project.id, workDir);
     if (process.env.ONELIGHT_E2E_WORKER_KILL === "1")
       await workerKillLeg(client, project.id, workDir, fontFile);
