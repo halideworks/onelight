@@ -11,9 +11,8 @@
  *   name          a per-run name, so two runs cannot collide and so nothing
  *                 in the account can be mistaken for a real deployment
  *   d1 / r2       the ids and names of the resources this run just created
- *   triggers      dropped: a `* * * * *` cron on a worker nobody is watching
- *                 keeps firing until the delete lands, and this deployment has
- *                 no webhooks to deliver anyway
+ *   (the cron is kept: it is what runs the sweeps, so a deployment without it
+ *    cannot queue a watermark or bury an abandoned job)
  *
  * Usage:
  *   node scripts/cloudflare-acceptance-config.mjs \
@@ -96,7 +95,17 @@ config.d1_databases[0].database_id = arg("--database-id");
 if (!Array.isArray(config.r2_buckets) || !config.r2_buckets[0])
   throw new Error("The real config declares no R2 binding to patch.");
 config.r2_buckets[0].bucket_name = arg("--bucket");
-delete config.triggers;
+/* The cron stays.
+ *
+ * It was deleted here to stop a throwaway Worker firing every minute until the
+ * delete landed. That was wrong: the scheduled handler is what runs the
+ * sweeps, and the sweeps are what queue a watermark, backfill a still ladder
+ * and bury an abandoned job. Removing it made the acceptance run test a
+ * deployment that could never do any of that -- and then a share sat at "202,
+ * pending" for four minutes and the run failed for a reason the deployment
+ * would not have had.
+ *
+ * A run lives about fifteen minutes, so this costs about fifteen invocations. */
 
 /* Both of these are set after the deploy instead.
  *
