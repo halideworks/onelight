@@ -166,11 +166,11 @@ jobs:
             else
               claimed=0
             fi
-            [ "$claimed" -ge 3 ] && break
-            echo "claim not settled yet (attempt ${attempt}, consecutive 401s ${claimed}): ${code}"
-            sleep 5
+            [ "$claimed" -ge 20 ] && break
+            [ $((attempt % 5)) -eq 0 ] && echo "claim not settled yet (attempt ${attempt}, consecutive 401s ${claimed}): ${code}"
+            sleep 3
           done
-          test "$claimed" -ge 3 || { echo "the worker protocol never answered consistently"; exit 1; }
+          test "$claimed" -ge 20 || { echo "the worker protocol never answered consistently"; exit 1; }
           echo "claim settled after ${attempt} attempts"
           # And what came back, not just that something did: the assets layer
           # can answer a GET with index.html, which is also a 200.
@@ -182,13 +182,22 @@ jobs:
               exit 1
               ;;
           esac
-          # One more, for the body and the explicit 404 message.
-          claim=$(curl -s -w '\n%{http_code}' -X POST "$CI_URL/api/v1/worker/claim" \
-            -H 'content-type: application/json' \
-            -H "x-onelight-signature: $(printf '0%.0s' $(seq 1 64))" \
-            -d '{"worker_id":"probe","capabilities":["cpu"],"timestamp":0}')
-          body=$(echo "$claim" | head -n -1)
-          code=$(echo "$claim" | tail -1)
+          # One more, for the body. Retried, because the edge answers this as a
+          # lottery rather than a settling window: run 10 got three consecutive
+          # 401s and then a 1042 milliseconds later. Individual colos learn the
+          # workers.dev route independently, so any single request can miss
+          # regardless of how many before it hit.
+          for attempt in $(seq 1 10); do
+            claim=$(curl -s -w '\n%{http_code}' -X POST "$CI_URL/api/v1/worker/claim" \
+              -H 'content-type: application/json' \
+              -H "x-onelight-signature: $(printf '0%.0s' $(seq 1 64))" \
+              -d '{"worker_id":"probe","capabilities":["cpu"],"timestamp":0}')
+            body=$(echo "$claim" | head -n -1)
+            code=$(echo "$claim" | tail -1)
+            case "$body" in *1042*) ;; *) break ;; esac
+            echo "edge missed the route (attempt ${attempt}); retrying"
+            sleep 5
+          done
           # The body, not just the status. A 500 here says only that something
           # threw; what it says is the difference between one more run and a
           # guess, and the Worker is deleted at the end of this job so there is
