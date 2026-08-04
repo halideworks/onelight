@@ -1,5 +1,3 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { and, asc, eq, inArray, isNull, lt } from "drizzle-orm";
 import {
   exportAvidText,
@@ -31,19 +29,60 @@ import {
   shareAssets,
 } from "@onelight/db/schema";
 import type { AppDb } from "@onelight/db";
+
+/**
+ * Storage, as an export needs it.
+ *
+ * Exports used to open the filesystem directly: the finished document went to
+ * `blobRoot/exports/...` with writeFile, and a PDF read its stills back off
+ * disk. That is the last thing in the job pipeline that assumed a mounted
+ * volume, and it is why exports were the one kind of work the Workers target
+ * could not do at all -- there is no disk there to write to.
+ *
+ * Every path involved was already a key. The still a report waits on is
+ * requested at a key the export chooses, and the result is stored at a key the
+ * job row records, so nothing here needed a filesystem in the first place.
+ */
+export interface ExportBlobStore {
+  putStream(
+    key: string,
+    stream: ReadableStream,
+    meta: { contentType?: string; size?: number },
+  ): Promise<void>;
+  getStream(key: string): Promise<ReadableStream>;
+  delete(key: string): Promise<void>;
+}
+
+const bytesOf = async (stream: ReadableStream): Promise<Uint8Array> =>
+  new Uint8Array(await new Response(stream).arrayBuffer());
+
+const streamOf = (value: Uint8Array | string): ReadableStream => {
+  /* Through the buffer rather than the view: a Uint8Array is not BodyInit,
+     and handing Response the underlying ArrayBuffer is what every other
+     stream in this codebase does. */
+  const body = new Response(
+    typeof value === "string" ? value : (value.buffer as ArrayBuffer),
+  ).body;
+  if (!body) throw new Error("Could not stream the export.");
+  return body;
+};
 import { parseObject } from "@onelight/job-protocol";
 import type { JobPayload } from "@onelight/job-protocol";
 
 /* A comment report, and the marker files an edit suite reads.
  *
- * Split out of the pump because this is the only part of it that still needs a
- * filesystem: a PDF is assembled from stills the workers wrote to the blob
- * root, and the finished document is written back there as a file. The job
- * protocol beside it names storage and nothing else, which is what lets it be
- * mounted on a deployment that has no disk to speak of.
+ * This was split out of the pump as the one part that still needed a
+ * filesystem. It no longer does: the finished document goes to storage by key
+ * and a PDF reads its stills back the same way, so there is no `node:fs` here
+ * at all. Every path involved was already a key -- the still a report waits on
+ * is requested at a key the export chooses, and the result is stored at a key
+ * the job row records.
  *
- * The pump still drives all of this: it owns the single export slot and the
- * reclaim pass, and calls in here for the work itself. */
+ * That is what lets the Workers target run exports, which it previously could
+ * not do at any speed: there is no disk there to write to.
+ *
+ * Whoever drives it owns the single export slot and the reclaim pass, and
+ * calls in here for the work itself. */
 
 interface ExportFilter {
   version_id?: string;
@@ -208,7 +247,7 @@ const summarizeFilter = (filter: ExportFilter): string => {
 const buildPdfExport = async (
   db: AppDb,
   job: typeof exportJobs.$inferSelect,
-  blobRoot: string,
+  store: ExportBlobStore,
   mediaEnabled: boolean,
   allRows: ExportRow[],
   selected: ExportRow[],
@@ -251,7 +290,10 @@ const buildPdfExport = async (
     console.warn(
       `[onelight] pdf export ${job.id}: media processing is not configured; the report falls back to text-only blocks.`,
     );
-  const stillsDir = path.join(blobRoot, "exports", `.stills-${job.id}`);
+  /* The namespace the report's stills are written into, as a key prefix. The
+     still jobs are handed exactly these keys, so reading them back is asking
+     storage for what it was told to store. */
+  const stillsPrefix = `exports/.stills-${job.id}/`;
   const proxyByVersion = new Map<string, string | undefined>();
   const proxyFor = async (versionId: string): Promise<string | undefined> => {
     if (proxyByVersion.has(versionId)) return proxyByVersion.get(versionId);
@@ -292,11 +334,7 @@ const buildPdfExport = async (
         await enqueueExportStill(db, key, {
           version_id: version.id,
           blob_key: proxyKey,
-          output_key: path.posix.join(
-            "exports",
-            `.stills-${job.id}`,
-            `${comment.id}.png`,
-          ),
+          output_key: `${stillsPrefix}${comment.id}.png`,
           frame: comment.frameIn,
           rate:
             version.frameRateNum && version.frameRateDen
@@ -325,8 +363,8 @@ const buildPdfExport = async (
       let stillPng: Uint8Array | undefined;
       if (renderedStills.has(stillKeyFor(comment.id))) {
         try {
-          stillPng = new Uint8Array(
-            await readFile(path.join(stillsDir, `${comment.id}.png`)),
+          stillPng = await bytesOf(
+            await store.getStream(`${stillsPrefix}${comment.id}.png`),
           );
         } catch (error) {
           stillPng = undefined;
@@ -393,7 +431,12 @@ const buildPdfExport = async (
       comments: reportComments,
     });
   } finally {
-    await rm(stillsDir, { recursive: true, force: true });
+    /* Scratch the report read and no longer needs. Deleted by key, one per
+       comment that had one, because storage has no directories to remove. */
+    for (const key of stillKeys.map(
+      (key) => `${stillsPrefix}${key.split(":").pop() ?? ""}.png`,
+    ))
+      await store.delete(key).catch(() => undefined);
     await discardExportStillJobs(db, stillKeys);
   }
 };
@@ -474,10 +517,59 @@ const zipTextFiles = async (
   return new Uint8Array(await new Response(zipStream(entries)).arrayBuffer());
 };
 
+/**
+ * Take one queued export and run it, or do nothing.
+ *
+ * One per call, deliberately: a long PDF report must not hold the caller open
+ * behind it, and both drivers -- the node pump's own slot and the Workers cron
+ * -- want the same "make some progress and return" shape rather than a loop.
+ *
+ * Claims by conditional update, so two drivers racing cannot both run the same
+ * export. A failure is written onto the row rather than thrown, because the
+ * caller is a timer with nobody watching it.
+ */
+export const runDueExport = async (
+  db: AppDb,
+  store: ExportBlobStore,
+  options: { mediaEnabled: boolean; now: number },
+): Promise<boolean> => {
+  const pending = (
+    await db
+      .select()
+      .from(exportJobs)
+      .where(eq(exportJobs.status, "queued"))
+      .orderBy(asc(exportJobs.createdAt))
+      .limit(1)
+      .all()
+  )[0];
+  if (!pending) return false;
+  const claimed = await db
+    .update(exportJobs)
+    .set({ status: "processing" })
+    .where(and(eq(exportJobs.id, pending.id), eq(exportJobs.status, "queued")))
+    .run();
+  /* Somebody else took it between the read and the write. */
+  if ((claimed as { changes?: number }).changes === 0) return false;
+  try {
+    await processExportJob(db, pending, store, options.mediaEnabled);
+  } catch (error) {
+    await db
+      .update(exportJobs)
+      .set({
+        status: "failed",
+        error: error instanceof Error ? error.message : "Export failed.",
+        finishedAt: options.now,
+      })
+      .where(eq(exportJobs.id, pending.id))
+      .run();
+  }
+  return true;
+};
+
 export const processExportJob = async (
   db: AppDb,
   job: typeof exportJobs.$inferSelect,
-  blobRoot: string,
+  store: ExportBlobStore,
   mediaEnabled: boolean,
 ): Promise<void> => {
   const filter = parseObject(job.filtersJson) as ExportFilter;
@@ -633,14 +725,7 @@ export const processExportJob = async (
   let output: string | Uint8Array;
   let outputName: string;
   if (job.format === "pdf") {
-    output = await buildPdfExport(
-      db,
-      job,
-      blobRoot,
-      mediaEnabled,
-      rows,
-      selected,
-    );
+    output = await buildPdfExport(db, job, store, mediaEnabled, rows, selected);
     outputName = "onelight-comment-report.pdf";
   } else {
     const extension = exportExtension(job.format);
@@ -661,9 +746,12 @@ export const processExportJob = async (
     }
   }
   const key = `exports/${job.id}/${outputName}`;
-  const directory = path.dirname(path.join(blobRoot, key));
-  await mkdir(directory, { recursive: true });
-  await writeFile(path.join(blobRoot, key), output);
+  await store.putStream(key, streamOf(output), {
+    size:
+      typeof output === "string"
+        ? new TextEncoder().encode(output).byteLength
+        : output.byteLength,
+  });
   await db
     .update(exportJobs)
     .set({

@@ -1,12 +1,11 @@
-import { and, asc, eq } from "drizzle-orm";
-import { exportJobs } from "@onelight/db/schema";
 import { buryAbandonedJob, findAbandonedJobs } from "@onelight/db";
 import type { AppDb } from "@onelight/db";
 import {
   EXPORT_RECLAIM_STALE_MS,
-  processExportJob,
   reclaimStuckExports,
+  runDueExport,
 } from "./comment-exports.js";
+import type { ExportBlobStore } from "./comment-exports.js";
 import {
   FINGERPRINT_SWEEP_INTERVAL_MS,
   markAbandonedVersionFailed,
@@ -37,7 +36,9 @@ import {
 
 export const startWorkerPump = (
   db: AppDb,
-  options: { workerSecret?: string; blobRoot: string },
+  /* The store rather than a path: exports write their result through storage
+     now, so this loop no longer needs to know where storage happens to be. */
+  options: { workerSecret?: string; store: ExportBlobStore },
 ): (() => void) => {
   /* Exports are pure DB-to-file work, so the pump runs them whether or not
      any worker exists; media jobs are no longer run here at all. The server
@@ -67,44 +68,7 @@ export const startWorkerPump = (
     if (exporting || stopped) return;
     exporting = true;
     try {
-      const pendingExport = (
-        await db
-          .select()
-          .from(exportJobs)
-          .where(eq(exportJobs.status, "queued"))
-          .orderBy(asc(exportJobs.createdAt))
-          .limit(1)
-          .all()
-      )[0];
-      if (!pendingExport) return;
-      try {
-        await db
-          .update(exportJobs)
-          .set({ status: "processing" })
-          .where(
-            and(
-              eq(exportJobs.id, pendingExport.id),
-              eq(exportJobs.status, "queued"),
-            ),
-          )
-          .run();
-        await processExportJob(
-          db,
-          pendingExport,
-          options.blobRoot,
-          mediaEnabled,
-        );
-      } catch (error) {
-        await db
-          .update(exportJobs)
-          .set({
-            status: "failed",
-            error: error instanceof Error ? error.message : "Export failed.",
-            finishedAt: Date.now(),
-          })
-          .where(eq(exportJobs.id, pendingExport.id))
-          .run();
-      }
+      await runDueExport(db, options.store, { mediaEnabled, now: Date.now() });
     } catch (error) {
       console.warn(
         `[onelight] export pump failed: ${
