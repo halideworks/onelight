@@ -213,12 +213,33 @@ jobs:
           docker compose -f deploy/docker-compose.cf-workers.yml up -d --build \
             --scale onelight-worker-cf=3 --wait --wait-timeout 300
 
+      # Tailed throughout, because the Worker's own exception is the only thing
+      # that explains a 500 from the API, and the Worker is deleted when this
+      # job ends. Guessing from status codes has cost several runs already.
       - name: Upload, kill a worker mid-encode, and play what comes back
         env:
           ONELIGHT_E2E_URL: ${{ env.CI_URL }}
           ONELIGHT_E2E_WORKER_KILL: "1"
           ONELIGHT_E2E_COMPOSE_FILE: deploy/docker-compose.cf-workers.yml
-        run: node scripts/integration-e2e.mjs
+        run: |
+          pnpm exec wrangler tail "$CI_NAME" --format json > exercise-tail.log 2>&1 &
+          tail_pid=$!
+          sleep 6
+          set +e
+          node scripts/integration-e2e.mjs
+          status=$?
+          set -e
+          sleep 4
+          kill $tail_pid 2>/dev/null || true
+          if [ "$status" -ne 0 ]; then
+            echo "--- exceptions the Worker reported ---"
+            grep -oE '"exceptions":\[[^]]*\]' exercise-tail.log | grep -v '\[\]' | head -20 || echo "(none logged)"
+            echo "--- console output from the Worker ---"
+            grep -oE '"logs":\[[^]]*\]' exercise-tail.log | grep -v '\[\]' | head -20 || echo "(none logged)"
+            echo "--- outcomes ---"
+            grep -oE '"outcome":"[a-z]*"' exercise-tail.log | sort | uniq -c || true
+          fi
+          exit $status
 
       # Best effort: this also runs when the failure happened before any stack
       # existed, and an empty `docker compose logs` must not add a second
