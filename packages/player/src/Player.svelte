@@ -1507,7 +1507,7 @@
     seekFrame(at);
     if (!wasPlaying || !video) {
       forwardSpeed = 0;
-      onplaystate?.(false);
+      reportPlayState(false);
       return;
     }
     const speed: PicturePlaybackRate =
@@ -2241,6 +2241,22 @@
   const wmOpacity = $derived(Math.min(0.8, Math.max(0.05, watermark?.opacity ?? 0.28)));
   const wmText = $derived(wmLines.join('  '));
 
+  /* The player owns frame-rate state. While fullscreen playback is live the
+     page behind the top layer has nothing useful to repaint, so keep that
+     frame internal instead of invalidating the entire host route 24 or 30
+     times a second. Pauses and fullscreen exit publish the exact held frame. */
+  let lastReportedFrame: number | null = null;
+  const reportFrame = (next: number, force = false): void => {
+    if (!force && fullscreen && playing) return;
+    if (lastReportedFrame === next) return;
+    lastReportedFrame = next;
+    onframechange?.(next);
+  };
+  const reportPlayState = (next: boolean): void => {
+    if (!next) reportFrame(frame, true);
+    onplaystate?.(next);
+  };
+
   /* What loop means right now. A marked range is what someone marked it for;
      with nothing marked, looping the whole thing is what a client watching a
      cut expects, and it is the only thing the presentation chrome can mean
@@ -2258,7 +2274,7 @@
   const setFrame = (next: number): void => {
     if (next !== frame) {
       frame = next;
-      onframechange?.(next);
+      reportFrame(next);
     }
     /* Only forward playback wraps. Seeking onto the last frame by hand, or
        shuttling backwards over it, is not the end of a pass. */
@@ -2595,7 +2611,7 @@
     referenceClockTarget = at;
     backend.play(at, speed);
     if (!sourceHasAudio) {
-      onplaystate?.(true);
+      reportPlayState(true);
       referenceClockRaf = requestAnimationFrame(referenceClockTick);
       return;
     }
@@ -2609,7 +2625,7 @@
           track.pause();
           return;
         }
-        onplaystate?.(true);
+        reportPlayState(true);
         referenceClockRaf = requestAnimationFrame(referenceClockTick);
         const startedAt = track.currentTime;
         referenceClockHealthTimer = setTimeout(() => {
@@ -2638,7 +2654,7 @@
           forwardSpeed = 0;
           backend.pause();
           playRefused = true;
-          onplaystate?.(false);
+          reportPlayState(false);
           console.warn(
             'onelight player: reference audio play() was refused',
             reason
@@ -2884,7 +2900,9 @@
   };
   $effect(() => {
     const sync = (): void => {
-      fullscreen = document.fullscreenElement === stage;
+      const active = document.fullscreenElement === stage;
+      fullscreen = active;
+      if (!active) reportFrame(frame, true);
     };
     document.addEventListener('fullscreenchange', sync);
     return () => document.removeEventListener('fullscreenchange', sync);
@@ -2900,7 +2918,7 @@
       stopReferenceClock();
       referenceBackend?.pause();
       syncReferenceClock(1, frame);
-      onplaystate?.(false);
+      reportPlayState(false);
     }
     video?.pause();
     restoreRate();
@@ -3248,8 +3266,8 @@
           onloadstart={() => { loadError = false; }}
           onloadeddata={() => { pictureIn = true; loadError = false; }}
           onerror={noteMediaError}
-          onplay={() => { playRefused = false; onplaystate?.(true); }}
-          onpause={() => onplaystate?.(false)}
+          onplay={() => { playRefused = false; reportPlayState(true); }}
+          onpause={() => reportPlayState(false)}
           onended={handleEnded}
         ></audio>
         <WaveformStage
@@ -3289,8 +3307,8 @@
         onstalled={noteStall}
         oncanplay={clearStall}
         onplaying={clearStall}
-        onplay={() => { playRefused = false; onplaystate?.(true); }}
-        onpause={() => { clearStall(); onplaystate?.(false); }}
+        onplay={() => { playRefused = false; reportPlayState(true); }}
+        onpause={() => { clearStall(); reportPlayState(false); }}
         onended={handleEnded}
       >
         <track
@@ -3361,7 +3379,7 @@
           } else {
             forwardSpeed = 0;
             referenceBackend?.pause();
-            onplaystate?.(false);
+            reportPlayState(false);
           }
         }}
       ></audio>
@@ -3485,7 +3503,7 @@
           onpointerenter={() => { overlayHot = true; wakeOverlay(); }}
           onpointerleave={() => { overlayHot = false; wakeOverlay(); }}
         >
-          {@render deck()}
+          {#if overlayAwake || !playing}{@render deck()}{/if}
         </div>
       {/if}
       {#if wmLines.length}
@@ -3731,8 +3749,9 @@
     </div>
   {/if}
 
+  {#if !fullscreen}
   <div class="transport">
-    {#if !fullscreen}{@render deck()}{/if}
+    {@render deck()}
     <!-- The settings row is the full instrument's. Simple chrome hosts its
          draw controls in the page (the notes rail), so the row never shows. -->
     {#if chrome === 'full'}
@@ -4238,6 +4257,7 @@
       {/if}
     {/if}
   </div>
+  {/if}
 </section>
 
 <style>
