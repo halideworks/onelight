@@ -10,6 +10,7 @@ import {
   rangeIsSet,
   seeksLocked,
   shouldPreviewAudioScrub,
+  scrubPreservesPlayback,
 } from "./transport-state.js";
 
 describe("draw-mode seek lock", () => {
@@ -121,6 +122,15 @@ describe("media playback-rate mode", () => {
     const media = { playbackRate: 4, preservesPitch: false };
     configurePlaybackRate(media, 1, true);
     expect(media).toEqual({ playbackRate: 1, preservesPitch: true });
+  });
+});
+
+describe("pointer scrub playback", () => {
+  it("preserves only live normal-speed playback", () => {
+    expect(scrubPreservesPlayback(1, 0, false)).toBe(true);
+    expect(scrubPreservesPlayback(1, 0, true)).toBe(false);
+    expect(scrubPreservesPlayback(2, 0, false)).toBe(false);
+    expect(scrubPreservesPlayback(0, 1, false)).toBe(false);
   });
 });
 

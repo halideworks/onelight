@@ -48,6 +48,7 @@
     rangeFromDrag,
     rangeIsSet,
     seeksLocked,
+    scrubPreservesPlayback,
     shouldPreviewAudioScrub
   } from './transport-state.js';
   import { ANNOTATION_INKS, annotationInkName } from './annotations.js';
@@ -499,8 +500,8 @@
 
   let muted = $state(false);
   let volume = $state(1);
-  let audioScrubActive = $state(false);
-  const audioOutputVolume = $derived(audioScrubActive ? volume * 0.25 : volume);
+  let mediaScrubActive = $state(false);
+  const audioOutputVolume = $derived(mediaScrubActive ? volume * 0.25 : volume);
   /* At accelerated forward rates the picture and sound use separate elements.
      The sidecar itself is already time-compressed and therefore plays at 1x,
      outside the browser pitch-preserving playback-rate path that can go silent
@@ -1058,24 +1059,30 @@
     pictureScrubBackend?.endScrub();
     pictureScrubBackend = null;
   };
-  let audioScrubWasPlaying = false;
+  let mediaScrubWasPlaying = false;
   let audioScrubPreviewing = false;
-  let audioScrubLastTarget: number | null = null;
-  let audioScrubDistinctSeekCount = 0;
-  let audioScrubGeneration = 0;
+  let mediaScrubLastTarget: number | null = null;
+  let mediaScrubDistinctSeekCount = 0;
+  let mediaScrubGeneration = 0;
 
-  const beginAudioScrub = (): void => {
-    if (!isAudio || !video) return;
-    const keepsPlaying =
-      forwardSpeed === 1 && reverseSpeed === 0 && !video.paused;
+  const beginPlaybackScrub = (): void => {
+    if (!referenceActive && !video) return;
+    const mediaPaused = referenceActive
+      ? sourceHasAudio && (referenceClock?.paused ?? true)
+      : (video?.paused ?? true);
+    const keepsPlaying = scrubPreservesPlayback(
+      forwardSpeed,
+      reverseSpeed,
+      mediaPaused
+    );
     if (!keepsPlaying && (forwardSpeed > 0 || reverseSpeed > 0))
       pausePlayback();
-    audioScrubWasPlaying = keepsPlaying;
+    mediaScrubWasPlaying = keepsPlaying;
     audioScrubPreviewing = false;
-    audioScrubLastTarget = null;
-    audioScrubDistinctSeekCount = 0;
-    audioScrubGeneration += 1;
-    audioScrubActive = true;
+    mediaScrubLastTarget = null;
+    mediaScrubDistinctSeekCount = 0;
+    mediaScrubGeneration += 1;
+    mediaScrubActive = true;
   };
 
   const startAudioScrubPreview = (): void => {
@@ -1084,14 +1091,14 @@
     audioScrubPreviewing = true;
     forwardSpeed = 1;
     restoreRate();
-    const generation = audioScrubGeneration;
+    const generation = mediaScrubGeneration;
     void track.play().then(
       () => {
-        if (generation !== audioScrubGeneration || !audioScrubActive)
+        if (generation !== mediaScrubGeneration || !mediaScrubActive)
           track.pause();
       },
       () => {
-        if (generation !== audioScrubGeneration || !audioScrubActive) return;
+        if (generation !== mediaScrubGeneration || !mediaScrubActive) return;
         audioScrubPreviewing = false;
         forwardSpeed = 0;
         playRefused = true;
@@ -1100,43 +1107,50 @@
   };
 
   const seekFromScrub = (target: number): void => {
-    if (!isAudio || !audioScrubActive) {
+    if (!mediaScrubActive) {
       jumpTo(target);
       return;
     }
-    if (target !== audioScrubLastTarget) {
-      audioScrubLastTarget = target;
-      audioScrubDistinctSeekCount += 1;
+    if (target !== mediaScrubLastTarget) {
+      mediaScrubLastTarget = target;
+      mediaScrubDistinctSeekCount += 1;
     }
     seekFrame(target);
     if (
+      isAudio &&
       shouldPreviewAudioScrub(
-        audioScrubWasPlaying,
-        audioScrubDistinctSeekCount
+        mediaScrubWasPlaying,
+        mediaScrubDistinctSeekCount
       )
     )
       startAudioScrubPreview();
   };
 
-  const endAudioScrub = (): void => {
-    if (!audioScrubActive) return;
-    const resume = audioScrubWasPlaying;
+  const endPlaybackScrub = (): void => {
+    if (!mediaScrubActive) return;
+    const resume = mediaScrubWasPlaying;
     const stopPreview = audioScrubPreviewing;
     const track = video;
-    audioScrubActive = false;
-    audioScrubWasPlaying = false;
+    const target = mediaScrubLastTarget ?? frame;
+    mediaScrubActive = false;
+    mediaScrubWasPlaying = false;
     audioScrubPreviewing = false;
-    audioScrubLastTarget = null;
-    audioScrubDistinctSeekCount = 0;
-    audioScrubGeneration += 1;
+    mediaScrubLastTarget = null;
+    mediaScrubDistinctSeekCount = 0;
+    mediaScrubGeneration += 1;
+    if (resume && referenceActive) {
+      forwardSpeed = 1;
+      referenceBackend?.play(target, 1);
+      return;
+    }
     if (!track) return;
     if (resume) {
       forwardSpeed = 1;
       restoreRate();
       if (track.paused) {
-        const generation = audioScrubGeneration;
+        const generation = mediaScrubGeneration;
         void track.play().catch(() => {
-          if (generation !== audioScrubGeneration) return;
+          if (generation !== mediaScrubGeneration) return;
           forwardSpeed = 0;
           playRefused = true;
         });
@@ -1152,11 +1166,11 @@
 
   const beginMediaScrub = (): void => {
     beginPictureScrub();
-    beginAudioScrub();
+    beginPlaybackScrub();
   };
   const endMediaScrub = (): void => {
     endPictureScrub();
-    endAudioScrub();
+    endPlaybackScrub();
   };
   const scrubSeek = (event: PointerEvent): void => {
     if (!scrubEl || !durationFrames || durationFrames < 2) return;

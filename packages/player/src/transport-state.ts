@@ -83,6 +83,15 @@ export function shouldPreviewAudioScrub(
   return !wasPlaying && distinctSeekCount > 1;
 }
 
+/* Pointer seeking stays continuous only during ordinary 1x playback. */
+export function scrubPreservesPlayback(
+  forwardSpeed: number,
+  reverseSpeed: number,
+  mediaPaused: boolean,
+): boolean {
+  return forwardSpeed === 1 && reverseSpeed === 0 && !mediaPaused;
+}
+
 /* ---- keys the operating system must not press for you ----
 
    Holding a key makes the OS repeat it, tens of times a second, at a rate the
