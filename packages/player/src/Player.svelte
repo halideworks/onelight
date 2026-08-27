@@ -3503,7 +3503,50 @@
           onpointerenter={() => { overlayHot = true; wakeOverlay(); }}
           onpointerleave={() => { overlayHot = false; wakeOverlay(); }}
         >
-          {#if overlayAwake || !playing}{@render deck()}{/if}
+          {#if overlayAwake || !playing}
+            {#if durationFrames !== null && durationFrames !== undefined && durationFrames > 0}
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+              <div
+                class="fs-scrub"
+                class:scrubbing
+                bind:this={scrubEl}
+                class:arming={rangeArmed}
+                role="slider"
+                aria-label={rangeArmed ? 'Mark the stretch this note covers' : 'Position'}
+                aria-valuemin="0"
+                aria-valuemax={durationFrames - 1}
+                aria-valuenow={frame}
+                aria-valuetext={timecode ?? `frame ${String(frame)}`}
+                tabindex="0"
+                onpointerdown={onScrubDown}
+                onpointermove={onScrubMove}
+                onpointerup={onScrubUp}
+                onpointercancel={onScrubUp}
+                onkeydown={onScrubKeydown}
+              >
+                <div class="fs-scrub-track">
+                  <div class="fs-scrub-played" style={`transform: scaleX(${scrubPct});`}></div>
+                  {#if durationFrames > 1 && inFrame !== null}
+                    {#if outFrame !== null && outFrame > inFrame}
+                      <div
+                        class="fs-scrub-range"
+                        style={`left: ${((inFrame / (durationFrames - 1)) * 100).toFixed(3)}%; width: ${(((outFrame - inFrame) / (durationFrames - 1)) * 100).toFixed(3)}%;`}
+                      ></div>
+                    {:else}
+                      <div
+                        class="fs-scrub-range open"
+                        style={`left: ${((inFrame / (durationFrames - 1)) * 100).toFixed(3)}%;`}
+                      ></div>
+                    {/if}
+                  {/if}
+                  <div class="fs-scrub-carrier" style={`transform: translateX(${(scrubPct * scrubWidth).toFixed(2)}px);`}>
+                    <div class="fs-scrub-handle"></div>
+                  </div>
+                </div>
+              </div>
+            {/if}
+            {@render deck()}
+          {/if}
         </div>
       {/if}
       {#if wmLines.length}
@@ -4584,8 +4627,19 @@
   .fs-controls .icon.play:hover { background: #ffffff; }
   .fs-controls .linky { background: none; color: rgba(255, 255, 255, 0.8); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
   .fs-controls .linky:hover { background: none; color: #ffffff; }
+  .fs-scrub { padding: 5px 0 12px; cursor: pointer; touch-action: none; outline: none; }
+  .fs-scrub.arming { cursor: crosshair; }
+  .fs-scrub-track { position: relative; height: 2px; border-radius: 1px; background: rgba(255, 255, 255, 0.28); }
+  .fs-scrub:focus-visible { outline: 1px solid rgba(255, 255, 255, 0.8); outline-offset: 4px; border-radius: 2px; }
+  .fs-scrub-played { position: absolute; inset: 0; width: 100%; border-radius: 1px; background: #ffffff; transform-origin: left center; }
+  .fs-scrub-range { position: absolute; top: -2px; bottom: -2px; border-radius: 1px; background: rgba(255, 255, 255, 0.45); }
+  .fs-scrub-range.open { width: 2px; margin-left: -1px; }
+  .fs-scrub-carrier { position: absolute; top: 0; bottom: 0; left: 0; width: 0; will-change: transform; }
+  .fs-scrub-handle { position: absolute; top: 50%; left: 0; width: 7px; height: 7px; border: 1px solid rgba(10, 10, 10, 0.7); border-radius: 50%; background: #ffffff; transform: translate(-50%, -50%); transition: transform 120ms ease; }
+  .fs-scrub:hover .fs-scrub-handle, .fs-scrub.scrubbing .fs-scrub-handle, .fs-scrub:focus-visible .fs-scrub-handle { transform: translate(-50%, -50%) scale(1.35); }
   @media (prefers-reduced-motion: reduce) {
     .fs-controls { transition: none; }
+    .fs-scrub-handle { transition: none; }
   }
   /* Icon buttons: square, quiet, and the same value step as everything else in
      the room. No accent colour -- this chrome sits next to the frame. */
