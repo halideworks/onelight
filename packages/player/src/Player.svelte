@@ -1111,10 +1111,9 @@
       jumpTo(target);
       return;
     }
-    if (target !== mediaScrubLastTarget) {
-      mediaScrubLastTarget = target;
-      mediaScrubDistinctSeekCount += 1;
-    }
+    if (target === mediaScrubLastTarget) return;
+    mediaScrubLastTarget = target;
+    mediaScrubDistinctSeekCount += 1;
     seekFrame(target);
     if (
       isAudio &&
@@ -2559,6 +2558,7 @@
   const seekFrame = (targetFrame: number): void => {
     if (referenceActive && referenceBackend) {
       const next = boundedFrame(targetFrame);
+      referenceClockTarget = next;
       referenceBackend.seek(next, true);
       syncReferenceClock(
         forwardSpeed === 2 || forwardSpeed === 4 ? forwardSpeed : 1,
@@ -2683,6 +2683,12 @@
       (sourceHasAudio && (!track || track.paused))
     )
       return;
+    /* The pointer owns picture position during a scrub. The clock stays alive
+       for sound and resumes picture advancement from the release frame. */
+    if (mediaScrubActive) {
+      referenceClockRaf = requestAnimationFrame(referenceClockTick);
+      return;
+    }
     let target = boundedFrame(
       sourceHasAudio && track
         ? frameAtReferenceAudioTime(track.currentTime, referenceClockRate, rate)
