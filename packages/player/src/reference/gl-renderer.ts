@@ -842,12 +842,6 @@ export class ReferenceGlRenderer {
     gl.uniform1f(this.uniforms.peakNits, this.peakNits);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     this.activeTextureBank = textureBank;
-
-    const error = gl.getError();
-    if (error !== gl.NO_ERROR)
-      throw new UnsupportedReferenceRendererError(
-        `Reference renderer WebGL2 error ${String(error)}.`,
-      );
   }
 
   close(): void {

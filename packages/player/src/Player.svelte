@@ -292,6 +292,7 @@
   let referenceWallStartedAt = 0;
   let referenceWallStartFrame = 0;
   let referenceClockRaf: number | null = null;
+  let referenceClockTarget: number | null = null;
   let referenceClockHealthTimer: ReturnType<typeof setTimeout> | null = null;
   let referenceGeneration = 0;
   let blockedReferenceSource = $state('');
@@ -686,7 +687,9 @@
      spins while a draw could not land yet (mid-seek), and stops the moment
      it does. */
   $effect(() => {
-    if (!scopesOn) return;
+    /* Fullscreen hides the scopes, so do not keep reading the reference
+       canvas back to the CPU and rebuilding a trace nobody can see. */
+    if (!scopesOn || fullscreen) return;
     void frame;
     void scopeMode;
     void scopeCanvas;
@@ -1130,20 +1133,20 @@
     else if (event.key === 'End') { take(); jumpTo(last); }
   };
 
-  /* Auto heuristic: the highest rung whose height does not exceed the stage
-     in device pixels. The stage can never be taller than the viewport, so
-     the bound is innerHeight x devicePixelRatio; below the lowest rung the
-     lowest is used. Evaluated when the ladder or the selection changes, not
-     continuously on resize, so playback does not flap between rungs while a
-     window is dragged. */
+  /* Auto uses the CSS pixels the picture can actually occupy, not the whole
+     viewport or its device-pixel multiplier. Reference playback copies and
+     uploads every decoded pixel, so choosing 4K for a 1080-high Retina stage
+     multiplies the hot path fourfold. A reviewer can still request 4K
+     explicitly; Auto spends that bandwidth on smooth playback instead. */
   const autoRung = (): PlayerRendition | null => {
     const first = ladder[0];
     if (!first) return null;
-    const ratio = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
-    const bound = (typeof innerHeight === 'number' ? innerHeight : 1080) * ratio;
+    const cssHeight =
+      boxSize.height ||
+      (typeof innerHeight === 'number' ? innerHeight : 1080);
     let choice = first;
     for (const rung of ladder) {
-      if ((RUNG_HEIGHTS[rung.kind] ?? Infinity) <= bound) choice = rung;
+      if ((RUNG_HEIGHTS[rung.kind] ?? Infinity) <= cssHeight) choice = rung;
     }
     return choice;
   };
@@ -2563,7 +2566,13 @@
       wrapped = true;
       syncReferenceClock(referenceClockRate, target);
     }
-    backend.seek(target, wrapped);
+    /* rAF commonly runs twice or three times per media frame. Re-seeking the
+       same integer frame repeated cache sorting and prefetch bookkeeping with
+       no possible picture change. */
+    if (wrapped || target !== referenceClockTarget) {
+      referenceClockTarget = target;
+      backend.seek(target, wrapped);
+    }
     referenceClockRaf = requestAnimationFrame(referenceClockTick);
   };
 
@@ -2583,6 +2592,7 @@
       return;
     }
     stopReferenceClock();
+    referenceClockTarget = at;
     backend.play(at, speed);
     if (!sourceHasAudio) {
       onplaystate?.(true);
