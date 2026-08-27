@@ -47,7 +47,8 @@
     rangeFromClick,
     rangeFromDrag,
     rangeIsSet,
-    seeksLocked
+    seeksLocked,
+    shouldPreviewAudioScrub
   } from './transport-state.js';
   import { ANNOTATION_INKS, annotationInkName } from './annotations.js';
   import type { AnnotationPoint, AnnotationStroke, FrameAnnotation, PendingDrawing } from './annotations.js';
@@ -498,6 +499,8 @@
 
   let muted = $state(false);
   let volume = $state(1);
+  let audioScrubActive = $state(false);
+  const audioOutputVolume = $derived(audioScrubActive ? volume * 0.25 : volume);
   /* At accelerated forward rates the picture and sound use separate elements.
      The sidecar itself is already time-compressed and therefore plays at 1x,
      outside the browser pitch-preserving playback-rate path that can go silent
@@ -1043,7 +1046,7 @@
     if (scrubTargetFrame !== null) {
       const target = scrubTargetFrame;
       scrubTargetFrame = null;
-      jumpTo(target);
+      seekFromScrub(target);
     }
   };
   let pictureScrubBackend: ReferencePictureBackend | null = null;
@@ -1054,6 +1057,106 @@
   const endPictureScrub = (): void => {
     pictureScrubBackend?.endScrub();
     pictureScrubBackend = null;
+  };
+  let audioScrubWasPlaying = false;
+  let audioScrubPreviewing = false;
+  let audioScrubLastTarget: number | null = null;
+  let audioScrubDistinctSeekCount = 0;
+  let audioScrubGeneration = 0;
+
+  const beginAudioScrub = (): void => {
+    if (!isAudio || !video) return;
+    const keepsPlaying =
+      forwardSpeed === 1 && reverseSpeed === 0 && !video.paused;
+    if (!keepsPlaying && (forwardSpeed > 0 || reverseSpeed > 0))
+      pausePlayback();
+    audioScrubWasPlaying = keepsPlaying;
+    audioScrubPreviewing = false;
+    audioScrubLastTarget = null;
+    audioScrubDistinctSeekCount = 0;
+    audioScrubGeneration += 1;
+    audioScrubActive = true;
+  };
+
+  const startAudioScrubPreview = (): void => {
+    const track = video;
+    if (!track || audioScrubPreviewing) return;
+    audioScrubPreviewing = true;
+    forwardSpeed = 1;
+    restoreRate();
+    const generation = audioScrubGeneration;
+    void track.play().then(
+      () => {
+        if (generation !== audioScrubGeneration || !audioScrubActive)
+          track.pause();
+      },
+      () => {
+        if (generation !== audioScrubGeneration || !audioScrubActive) return;
+        audioScrubPreviewing = false;
+        forwardSpeed = 0;
+        playRefused = true;
+      }
+    );
+  };
+
+  const seekFromScrub = (target: number): void => {
+    if (!isAudio || !audioScrubActive) {
+      jumpTo(target);
+      return;
+    }
+    if (target !== audioScrubLastTarget) {
+      audioScrubLastTarget = target;
+      audioScrubDistinctSeekCount += 1;
+    }
+    seekFrame(target);
+    if (
+      shouldPreviewAudioScrub(
+        audioScrubWasPlaying,
+        audioScrubDistinctSeekCount
+      )
+    )
+      startAudioScrubPreview();
+  };
+
+  const endAudioScrub = (): void => {
+    if (!audioScrubActive) return;
+    const resume = audioScrubWasPlaying;
+    const stopPreview = audioScrubPreviewing;
+    const track = video;
+    audioScrubActive = false;
+    audioScrubWasPlaying = false;
+    audioScrubPreviewing = false;
+    audioScrubLastTarget = null;
+    audioScrubDistinctSeekCount = 0;
+    audioScrubGeneration += 1;
+    if (!track) return;
+    if (resume) {
+      forwardSpeed = 1;
+      restoreRate();
+      if (track.paused) {
+        const generation = audioScrubGeneration;
+        void track.play().catch(() => {
+          if (generation !== audioScrubGeneration) return;
+          forwardSpeed = 0;
+          playRefused = true;
+        });
+      }
+      return;
+    }
+    if (stopPreview) {
+      forwardSpeed = 0;
+      track.pause();
+      restoreRate();
+    }
+  };
+
+  const beginMediaScrub = (): void => {
+    beginPictureScrub();
+    beginAudioScrub();
+  };
+  const endMediaScrub = (): void => {
+    endPictureScrub();
+    endAudioScrub();
   };
   const scrubSeek = (event: PointerEvent): void => {
     if (!scrubEl || !durationFrames || durationFrames < 2) return;
@@ -1085,7 +1188,7 @@
       return;
     }
     scrubbing = true;
-    beginPictureScrub();
+    beginMediaScrub();
     scrubSeek(event);
   };
   const onScrubMove = (event: PointerEvent): void => {
@@ -1117,7 +1220,7 @@
     if (scrubRaf !== null) cancelAnimationFrame(scrubRaf);
     scrubRaf = null;
     scrubApply();
-    endPictureScrub();
+    endMediaScrub();
   };
   const onScrubKeydown = (event: KeyboardEvent): void => {
     if (seekLocked) return;
@@ -3259,7 +3362,7 @@
           bind:this={video}
           src={currentSrc || src}
           muted={muted || shuttleAudioActive}
-          bind:volume
+          volume={audioOutputVolume}
           ontimeupdate={handleTimeUpdate}
           onloadedmetadata={handleLoadedMetadata}
           onseeked={handleSeeked}
@@ -3281,7 +3384,9 @@
           view={audioView}
           washed={chrome === 'simple'}
           timecodeAt={rateSupported ? tcAt : undefined}
-          onseek={jumpTo}
+          onseek={seekFromScrub}
+          onscrubstart={beginMediaScrub}
+          onscrubend={endMediaScrub}
         />
       {:else}
       <video
@@ -4289,9 +4394,9 @@
           waveformUrl={isAudio || !showWaveLane ? null : waveformUrl}
           disabled={seekLocked}
           {rangeArmed}
-          onseek={jumpTo}
-          onscrubstart={beginPictureScrub}
-          onscrubend={endPictureScrub}
+          onseek={seekFromScrub}
+          onscrubstart={beginMediaScrub}
+          onscrubend={endMediaScrub}
           onmarkerselect={handleMarkerSelect}
           onrangeclick={rangeClicked}
           onrangedrag={rangeDragged}

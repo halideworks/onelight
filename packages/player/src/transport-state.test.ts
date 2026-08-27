@@ -9,6 +9,7 @@ import {
   rangeFromDrag,
   rangeIsSet,
   seeksLocked,
+  shouldPreviewAudioScrub,
 } from "./transport-state.js";
 
 describe("draw-mode seek lock", () => {
@@ -120,6 +121,20 @@ describe("media playback-rate mode", () => {
     const media = { playbackRate: 4, preservesPitch: false };
     configurePlaybackRate(media, 1, true);
     expect(media).toEqual({ playbackRate: 1, preservesPitch: true });
+  });
+});
+
+describe("audio scrub preview", () => {
+  it("does not make a paused click blip", () => {
+    expect(shouldPreviewAudioScrub(false, 1)).toBe(false);
+  });
+
+  it("previews once a paused scrub actually moves", () => {
+    expect(shouldPreviewAudioScrub(false, 2)).toBe(true);
+  });
+
+  it("does not start a second playback path for already-playing audio", () => {
+    expect(shouldPreviewAudioScrub(true, 2)).toBe(false);
   });
 });
 

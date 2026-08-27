@@ -72,6 +72,17 @@ export function configurePlaybackRate(
   media.playbackRate = rate;
 }
 
+/* A press seeks silently; actual travel auditions paused audio. This keeps a
+   click from producing a stray blip while still giving a drag quiet live
+   feedback. Audio that was already playing needs no preview start because its
+   media clock stays live through the seek. */
+export function shouldPreviewAudioScrub(
+  wasPlaying: boolean,
+  distinctSeekCount: number,
+): boolean {
+  return !wasPlaying && distinctSeekCount > 1;
+}
+
 /* ---- keys the operating system must not press for you ----
 
    Holding a key makes the OS repeat it, tens of times a second, at a rate the

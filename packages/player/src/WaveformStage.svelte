@@ -41,7 +41,9 @@
     view = 'both',
     washed = false,
     timecodeAt = undefined,
-    onseek = undefined
+    onseek = undefined,
+    onscrubstart = undefined,
+    onscrubend = undefined
   }: {
     /** Peak data sidecar (waveform_data). The preferred source. */
     peaksUrl?: string | null;
@@ -60,6 +62,8 @@
     /** Formats a frame as timecode for the hover readout. */
     timecodeAt?: ((frame: number) => string) | undefined;
     onseek?: ((frame: number) => void) | undefined;
+    onscrubstart?: (() => void) | undefined;
+    onscrubend?: (() => void) | undefined;
   } = $props();
 
   /* Ink. The waveform carries the palette's straw and the spectrogram ramps
@@ -262,21 +266,24 @@
       /* An inactive pointer id cannot be captured; the click still seeks. */
     }
     scrubbing = true;
+    onscrubstart?.();
     seekFromEvent(event);
+  };
+
+  const finishScrub = (): void => {
+    if (!scrubbing) return;
+    scrubbing = false;
+    onscrubend?.();
   };
 
   const handleMove = (event: PointerEvent): void => {
     if (host) hoverX = event.clientX - host.getBoundingClientRect().left;
     if (!scrubbing) return;
     if (event.buttons === 0) {
-      scrubbing = false;
+      finishScrub();
       return;
     }
     seekFromEvent(event);
-  };
-
-  const endScrub = (): void => {
-    scrubbing = false;
   };
 
   const hoverFrame = $derived(
@@ -300,11 +307,11 @@
   bind:this={host}
   onpointerdown={handleDown}
   onpointermove={handleMove}
-  onpointerup={endScrub}
-  onpointercancel={endScrub}
+  onpointerup={finishScrub}
+  onpointercancel={finishScrub}
   onpointerleave={() => {
     hoverX = null;
-    endScrub();
+    finishScrub();
   }}
   style:grid-template-rows={view === 'both' && spectrogramUrl ? '1.15fr 1fr' : '1fr'}
 >
