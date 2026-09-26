@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { readFile, stat, statfs } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,7 +60,7 @@ const backupConfig = backupConfigFromConfig(config);
 const pending = pendingMigrations(sqlite);
 if (backupConfig && pending.length > 0 && fs.existsSync(config.DATABASE_PATH)) {
   try {
-    const snapshot = await backupOnce(sqlite, db, backupConfig, new Date(), {
+    const snapshot = await backupOnce(sqlite, backupConfig, new Date(), {
       label: "premigrate",
       keep: 10,
     });
@@ -67,9 +68,9 @@ if (backupConfig && pending.length > 0 && fs.existsSync(config.DATABASE_PATH)) {
       `[onelight] pre-migration snapshot for ${String(pending.length)} pending migration(s): ${snapshot}`,
     );
   } catch (error) {
-    console.warn(
-      `[onelight] pre-migration snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    throw new Error("Pre-migration backup failed; schema left unchanged.", {
+      cause: error,
+    });
   }
 }
 applyNodeMigrations(sqlite);
@@ -334,10 +335,19 @@ const start = async (): Promise<void> => {
   // The built shell is read once; share requests get OG meta tags injected
   // before </head> so link unfurls describe the share.
   let shellHtml: string | null | undefined;
+  let scriptSources = "'self'";
   const loadShellHtml = async (): Promise<string | null> => {
     if (shellHtml !== undefined) return shellHtml;
     try {
       shellHtml = await readFile(path.join(webRoot, "index.html"), "utf8");
+      const hashes = Array.from(
+        shellHtml.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi),
+        (match) =>
+          `'sha256-${createHash("sha256")
+            .update(match[1] ?? "")
+            .digest("base64")}'`,
+      );
+      scriptSources = ["'self'", ...hashes].join(" ");
     } catch {
       shellHtml = null;
     }
@@ -355,32 +365,38 @@ const start = async (): Promise<void> => {
      and fonts; data:/blob: pictures and media (posters, lightbox, the player);
      same-origin XHR/SSE. object-src none kills plugin embeds, frame-ancestors
      self replaces X-Frame-Options for modern browsers, base-uri self stops a
-     tag rewriting relative URLs. SvelteKit's bootstrap is inline, so
-     script/style keep 'unsafe-inline' -- the frontend carries no {@html} or
-     other injection sink, so this is defence in depth, not the only line.
+     tag rewriting relative URLs. Only the static shell's exact bootstrap
+     scripts are allowed inline, using hashes computed once when it is read.
+     Styles remain inline because the player uses dynamic style attributes.
      Applied to HTML documents only; API JSON and the sandboxed media/logo
      routes keep their own response headers. */
-  const documentCsp = [
-    "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
-    "media-src 'self' blob:",
-    "font-src 'self'",
-    "connect-src 'self'",
-    "object-src 'none'",
-    "base-uri 'self'",
-    "form-action 'self'",
-    "frame-ancestors 'self'",
-  ].join("; ");
+  const documentCsp = () =>
+    [
+      "default-src 'self'",
+      `script-src ${scriptSources}`,
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:",
+      "media-src 'self' blob:",
+      "font-src 'self'",
+      "connect-src 'self'",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'self'",
+    ].join("; ");
   app.use("*", async (c, next) => {
     await next();
     c.header("x-content-type-options", "nosniff");
     c.header("referrer-policy", "same-origin");
     c.header("x-frame-options", "SAMEORIGIN");
     if (hstsValue) c.header("strict-transport-security", hstsValue);
-    if ((c.res.headers.get("content-type") ?? "").includes("text/html"))
-      c.header("content-security-policy", documentCsp);
+    if (
+      (c.res.headers.get("content-type") ?? "").includes("text/html") &&
+      !c.res.headers.has("content-security-policy")
+    ) {
+      await loadShellHtml();
+      c.header("content-security-policy", documentCsp());
+    }
   });
   /* Compress the compressible: JSON list payloads, the HTML shell, the JS/CSS
      bundles. The default filter is a content-type allowlist, so already-packed
@@ -458,9 +474,7 @@ const start = async (): Promise<void> => {
     ...(config.WORKER_SECRET ? { workerSecret: config.WORKER_SECRET } : {}),
     store: blobStore,
   });
-  const stopBackups = backupConfig
-    ? startBackups(sqlite, db, backupConfig)
-    : null;
+  const stopBackups = backupConfig ? startBackups(sqlite, backupConfig) : null;
   if (!backupConfig)
     console.warn(
       "[onelight] Backups are disabled: set BACKUP_DIR to write periodic database snapshots.",

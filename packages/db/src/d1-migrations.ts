@@ -690,6 +690,18 @@ export const d1Migrations: D1Migration[] = [
       "ALTER TABLE notification_preferences_new RENAME TO notification_preferences",
     ],
   },
+  {
+    name: "0038_media_lookup_indexes.sql",
+    applied: async (binding) =>
+      (await indexExists(binding, "renditions_blob_key_idx")) &&
+      (await indexExists(binding, "comment_attachments_blob_key_idx")) &&
+      (await indexExists(binding, "comment_attachments_comment_idx")),
+    statements: [
+      "CREATE INDEX renditions_blob_key_idx ON renditions(blob_key)",
+      "CREATE INDEX comment_attachments_blob_key_idx ON comment_attachments(blob_key)",
+      "CREATE INDEX comment_attachments_comment_idx ON comment_attachments(comment_id)",
+    ],
+  },
 ];
 
 const migrate = async (binding: D1Database): Promise<void> => {

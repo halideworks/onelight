@@ -163,16 +163,22 @@ export const requireOrigin =
   async (c, next) => {
     if (!["POST", "PUT", "PATCH", "DELETE"].includes(c.req.method))
       return next();
-    if (c.req.header("authorization")) return next();
-    // Cookie-carried credentials are CSRF-able: check the session cookie and
-    // every share viewer cookie (ol_share_<id>), not just the session.
     const cookies = getCookie(c);
+    const carriesPublicCredential = Object.keys(cookies).some(
+      (name) => name.startsWith("ol_share_") || name.startsWith("ol_transfer_"),
+    );
+    // A header alone is not authentication. Public routes still use their
+    // viewer cookies even when a valid member token accompanies the request.
+    if (c.get("authType") === "token" && !carriesPublicCredential)
+      return next();
     const carriesCookieCredential =
-      Boolean(cookies[SESSION_COOKIE]) ||
-      Object.keys(cookies).some((name) => name.startsWith("ol_share_"));
-    if (!carriesCookieCredential) return next();
+      Boolean(cookies[SESSION_COOKIE]) || carriesPublicCredential;
     const candidate = c.req.header("origin") ?? c.req.header("referer");
-    if (!candidate || !isAllowedOrigin(candidate, env.config.allowedOrigins))
+    if (
+      candidate
+        ? !isAllowedOrigin(candidate, env.config.allowedOrigins)
+        : carriesCookieCredential
+    )
       throw errors.forbidden("The request origin is not allowed.");
     await next();
   };

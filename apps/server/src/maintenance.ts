@@ -783,7 +783,7 @@ type RenditionKeySource = Pick<
 >;
 
 /** All object keys a rendition row owns: main blob, VTT sidecar, PDF pages. */
-const renditionBlobKeys = (row: RenditionKeySource): string[] => {
+export const renditionBlobKeys = (row: RenditionKeySource): string[] => {
   const keys = [row.blobKey];
   const meta = parseObjectJson(row.metaJson);
   if (typeof meta.vtt_blob_key === "string") keys.push(meta.vtt_blob_key);

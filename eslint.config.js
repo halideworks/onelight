@@ -8,6 +8,7 @@ export default tseslint.config(
       "**/dist/**",
       "**/build/**",
       "**/.svelte-kit/**",
+      "**/.wrangler/**",
       "**/node_modules/**",
       "**/coverage/**",
       "qa/.artifacts/**",

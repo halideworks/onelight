@@ -41,6 +41,7 @@ export const migrationFiles = [
   "0035_project_visits.sql",
   "0036_notification_project.sql",
   "0037_notification_routing.sql",
+  "0038_media_lookup_indexes.sql",
 ];
 
 const migrationPath = (file: string): string =>

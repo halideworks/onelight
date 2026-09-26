@@ -28,7 +28,7 @@ docker run --rm --network host \
   -e E2E_PASSWORD=... \
   -e E2E_PROJECT_ID=01KX... \
   mcr.microsoft.com/playwright:v1.56.1-noble \
-  sh -c 'npm i --silent --no-save playwright@1.56.1 >/dev/null 2>&1 && node share-flows.e2e.mjs && node settings.e2e.mjs && node review-room.e2e.mjs'
+  sh -c 'npm i --silent --no-save playwright@1.56.1 >/dev/null 2>&1 && node account-flows.e2e.mjs && node share-flows.e2e.mjs && node settings.e2e.mjs && node review-room.e2e.mjs'
 ```
 
 Environment:
@@ -38,6 +38,16 @@ Environment:
   where a secure-context API is missing in production.
 - `E2E_EMAIL`, `E2E_PASSWORD` - an admin account on that instance.
 - `E2E_PROJECT_ID` - a project with at least two transcoded video assets.
+
+`node account-flows.e2e.mjs` also runs in the Integration workflow. It only
+needs BASE_URL, E2E_EMAIL and E2E_PASSWORD, and should use a disposable instance
+with an admin account that has no uploaded avatar. It verifies sign-in return
+navigation, profile persistence and generated avatars, mobile layout, transfer
+passphrase errors and recovery, CSRF rejection, inline-script CSP enforcement,
+email-dialog content and keyboard focus, and password-reset network failure
+feedback. Its project is deleted and the account name restored on exit.
+Set E2E_SCREENSHOTS to an existing directory to capture the profile, portal,
+and email dialog.
 
 Checks that need real playback skip loudly (not silently) when the media is
 not ready. Exit code is non-zero on any failure.

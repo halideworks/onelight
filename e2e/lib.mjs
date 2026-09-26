@@ -40,8 +40,10 @@ export const adminPage = async (
   await page.goto(`${BASE}/login`, { waitUntil: "networkidle" });
   await page.fill("input[type=email]", EMAIL);
   await page.fill("input[type=password]", PASSWORD);
-  await page.click("button[type=submit]");
-  await page.waitForTimeout(1800);
+  await Promise.all([
+    page.waitForURL((url) => url.pathname !== "/login"),
+    page.click("button[type=submit]"),
+  ]);
   return page;
 };
 

@@ -24,6 +24,31 @@ const HOUR = 60 * 60 * 1000;
 
 export const registerAuthDomain = (ctx: SuiteContext): void => {
   describe("auth", () => {
+    it("checks anonymous origins and every public cookie despite an authorization header", async () => {
+      const h = ctx.h();
+      for (const cookie of [
+        undefined,
+        "ol_share_test=grant",
+        "ol_transfer_test=grant",
+      ]) {
+        const blocked = await req(h, "/api/v1/auth/login", {
+          json: { email: "csrf@example.com", password: PASSWORD },
+          ...(cookie ? { cookie } : {}),
+          origin: "https://evil.example",
+          headers: { authorization: "Bearer invalid" },
+        });
+        expect(blocked.status).toBe(403);
+      }
+      for (const cookie of ["ol_share_test=grant", "ol_transfer_test=grant"]) {
+        const blocked = await req(h, "/api/v1/auth/login", {
+          json: { email: "csrf@example.com", password: PASSWORD },
+          cookie,
+          origin: false,
+        });
+        expect(blocked.status).toBe(403);
+      }
+    });
+
     it("returns 404 from /setup once a user exists", async () => {
       const h = ctx.h();
       const response = await req(h, "/api/v1/setup", {
@@ -461,6 +486,26 @@ export const registerAuthDomain = (ctx: SuiteContext): void => {
   });
 
   describe("two-factor", () => {
+    it("rate limits second-factor management attempts per account", async () => {
+      const h = ctx.h();
+      const seed = ctx.seed();
+      const user = await createUser(h, {
+        workspaceId: seed.workspaceId,
+        passwordHash: seed.passwordHash,
+      });
+      await req(h, "/api/v1/users/me/totp", {
+        method: "POST",
+        cookie: user.cookie,
+      });
+      for (let attempt = 0; attempt < 11; attempt++) {
+        const response = await req(h, "/api/v1/users/me/totp/verify", {
+          cookie: user.cookie,
+          json: { code: "not-a-code" },
+        });
+        expect(response.status).toBe(attempt < 10 ? 400 : 429);
+      }
+    });
+
     it("enrolls, gates login, and burns backup codes on use", async () => {
       const h = ctx.h();
       const seed = ctx.seed();
@@ -536,11 +581,17 @@ export const registerAuthDomain = (ctx: SuiteContext): void => {
         }),
       );
       const backup = backup_codes[0] ?? "";
-      const viaBackup = await req(h, "/api/v1/auth/login/totp", {
-        json: { mfa_token: reChallenge.mfa_token, code: backup },
-        headers: { "x-forwarded-for": uniqueIp() },
-      });
-      expect(viaBackup.status).toBe(200);
+      const concurrent = await Promise.all(
+        [0, 1].map(() =>
+          req(h, "/api/v1/auth/login/totp", {
+            json: { mfa_token: reChallenge.mfa_token, code: backup },
+            headers: { "x-forwarded-for": uniqueIp() },
+          }),
+        ),
+      );
+      expect(concurrent.map((response) => response.status).sort()).toEqual([
+        200, 401,
+      ]);
       const reuse = await json<{ mfa_token: string }>(
         await req(h, "/api/v1/auth/login", {
           json: { email: user.email, password: PASSWORD },

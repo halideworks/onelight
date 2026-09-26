@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyNodeMigrations,
   createNodeDb,
@@ -80,11 +80,16 @@ describe("backups", () => {
   });
 
   it("writes a consistent snapshot and a manifest of its referenced blobs", async () => {
-    const { db, sqlite } = await seededDb(path.join(tmp, "live.db"));
+    const { sqlite } = await seededDb(path.join(tmp, "live.db"));
+    const backup = sqlite.backup.bind(sqlite);
+    vi.spyOn(sqlite, "backup").mockImplementation(async (...args) => {
+      const result = await backup(...args);
+      sqlite.exec("UPDATE users SET avatar_key = NULL");
+      return result;
+    });
     const out = path.join(tmp, "out");
     const file = await backupOnce(
       sqlite,
-      db,
       { dir: out, intervalMs: 1, keep: 5 },
       new Date(2026, 6, 16, 12, 0, 0),
     );
@@ -109,12 +114,11 @@ describe("backups", () => {
   });
 
   it("prunes the oldest beyond keep, db and manifest as a pair", async () => {
-    const { db, sqlite } = await seededDb(path.join(tmp, "live2.db"));
+    const { sqlite } = await seededDb(path.join(tmp, "live2.db"));
     const dir = path.join(tmp, "retain");
     for (let hour = 0; hour < 5; hour += 1)
       await backupOnce(
         sqlite,
-        db,
         { dir, intervalMs: 1, keep: 2 },
         new Date(2026, 6, 16, hour, 0, 0),
       );
@@ -129,17 +133,15 @@ describe("backups", () => {
   });
 
   it("keeps the premigrate series separate from the timed one", async () => {
-    const { db, sqlite } = await seededDb(path.join(tmp, "live3.db"));
+    const { sqlite } = await seededDb(path.join(tmp, "live3.db"));
     const dir = path.join(tmp, "mixed");
     await backupOnce(
       sqlite,
-      db,
       { dir, intervalMs: 1, keep: 2 },
       new Date(2026, 6, 16, 1, 0, 0),
     );
     await backupOnce(
       sqlite,
-      db,
       { dir, intervalMs: 1, keep: 2 },
       new Date(2026, 6, 16, 2, 0, 0),
       { label: "premigrate", keep: 5 },
@@ -150,5 +152,27 @@ describe("backups", () => {
     // versa: both survive.
     expect(names).toContain("onelight-20260716-010000.db");
     expect(names).toContain("onelight-premigrate-20260716-020000.db");
+  });
+
+  it("backs up fresh and old schemas before migrations exist", async () => {
+    const sqlite = new Database(path.join(tmp, "legacy.db"));
+    const config = {
+      dir: path.join(tmp, "legacy-backups"),
+      intervalMs: 1,
+      keep: 5,
+    };
+    try {
+      await backupOnce(sqlite, config, new Date(2026, 6, 16, 1));
+      sqlite.exec(
+        "CREATE TABLE asset_versions (original_blob_key TEXT); INSERT INTO asset_versions VALUES ('originals/legacy.mov')",
+      );
+      const file = await backupOnce(sqlite, config, new Date(2026, 6, 16, 2));
+      const manifest = JSON.parse(
+        fs.readFileSync(file.replace(/\.db$/, ".manifest.json"), "utf8"),
+      ) as { blob_keys: string[] };
+      expect(manifest.blob_keys).toEqual(["originals/legacy.mov"]);
+    } finally {
+      sqlite.close();
+    }
   });
 });

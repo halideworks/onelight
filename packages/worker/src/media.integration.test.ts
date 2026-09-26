@@ -6,6 +6,8 @@
    they do run in the worker image, which is where the suite executes on nyx. */
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -99,6 +101,34 @@ describe.skipIf(!hasFfmpeg)("media integration (real ffmpeg)", () => {
       /hung/,
     );
     expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("never follows network URLs embedded in an uploaded playlist", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "onelight-playlist-"));
+    let requests = 0;
+    const listener = createServer((_request, response) => {
+      requests += 1;
+      response.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) =>
+      listener.listen(0, "127.0.0.1", resolve),
+    );
+    try {
+      const { port } = listener.address() as AddressInfo;
+      const source = path.join(dir, "uploaded.m3u8");
+      await writeFile(
+        source,
+        `#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nhttp://127.0.0.1:${String(port)}/private.ts\n#EXT-X-ENDLIST\n`,
+      );
+      await expect(probeFile(source, ffprobe)).rejects.toThrow(/whitelist/);
+      await expect(
+        runProcess(ffmpeg, ["-v", "error", "-i", source, "-f", "null", "-"]),
+      ).rejects.toThrow(/whitelist/);
+      expect(requests).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => listener.close(() => resolve()));
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("does not trip the watchdog on a working encode", async () => {

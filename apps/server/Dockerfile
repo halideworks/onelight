@@ -41,22 +41,24 @@ COPY tsconfig.base.json tsconfig.json eslint.config.js vitest.config.ts ./
 # itself. Six separate pnpm+tsc startups cost more than the compiling did.
 RUN pnpm exec tsc -b
 RUN pnpm --filter @onelight/web build
+RUN pnpm --filter @onelight/server deploy --prod /production
 
 FROM node:22-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
+ENV WEB_ROOT=/app/web
 # Same non-root uid as the worker image so both containers agree on the
 # ownership of the shared /data volume.
-RUN corepack enable \
+RUN apt-get update && apt-get upgrade -y \
+  && rm -rf /var/lib/apt/lists/* /usr/local/lib/node_modules/npm \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx \
+  && corepack enable \
   && useradd --create-home --uid 10001 onelight \
   && mkdir -p /data \
   && chown onelight:onelight /data
-COPY --from=build /app/package.json /app/pnpm-workspace.yaml /app/
-COPY --from=build /app/node_modules /app/node_modules
-COPY --from=build /app/packages /app/packages
-COPY --from=build /app/apps/server/node_modules /app/apps/server/node_modules
-COPY --from=build /app/apps/server/dist /app/apps/server/dist
+COPY --from=build /production /app
+COPY --from=build /app/packages/web/build /app/web
 USER onelight
 VOLUME /data
 EXPOSE 3000
-CMD ["node", "apps/server/dist/index.js"]
+CMD ["node", "dist/index.js"]

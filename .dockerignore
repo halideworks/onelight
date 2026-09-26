@@ -3,13 +3,15 @@
 **/.svelte-kit
 **/*.tsbuildinfo
 **/build
-.wrangler
+**/.wrangler
 coverage
 data
 *.db
 *.db-shm
 *.db-wal
 .git
+.env
+.env.*
 docs
 mockups
 gradients

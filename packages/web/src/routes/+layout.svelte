@@ -11,6 +11,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { auth } from '$lib/auth.svelte.js';
+  import { isPublicPath } from '$lib/public-path.js';
   import { notifications } from '$lib/notifications.svelte.js';
   import NavProgress from '$lib/NavProgress.svelte';
   import NotificationsPanel from '$lib/NotificationsPanel.svelte';
@@ -22,18 +23,20 @@
 
   let notificationsOpen = $state(false);
 
-  const PUBLIC_PREFIXES = ['/login', '/setup', '/invite', '/reset', '/s'];
-  const isPublic = $derived(
-    PUBLIC_PREFIXES.some(
-      (prefix) => page.url.pathname === prefix || page.url.pathname.startsWith(`${prefix}/`)
-    )
-  );
+  const isPublic = $derived(isPublicPath(page.url.pathname));
   /* The review room owns its chrome: strictly neutral, nothing tinted near footage. */
   const inReviewRoom = $derived(/^\/projects\/[^/]+\/assets\/./.test(page.url.pathname));
   const chrome = $derived(auth.signedIn && !isPublic && !inReviewRoom);
 
   onMount(() => {
     if (!auth.ready) void auth.hydrate();
+  });
+
+  $effect(() => {
+    if (auth.ready && !auth.signedIn && !isPublic && page.url.pathname !== '/') {
+      const next = page.url.pathname + page.url.search + page.url.hash;
+      void goto(`/login?next=${encodeURIComponent(next)}`, { replaceState: true });
+    }
   });
 
   /* Cheap unread poll: one GET on an interval, only while the tab is visible. */

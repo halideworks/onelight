@@ -26,7 +26,11 @@ export { isHdrSource, planRenditions, primaryRenditionKinds, videoStream };
 export type { PlannedRendition };
 import { ALL_FORMATS, FilePathSource, Input } from "mediabunny";
 import { fingerprintClipSignatures } from "./fingerprint-media.js";
-import { PROCESS_IDLE_TIMEOUT_MS, runProcess } from "./run-process.js";
+import {
+  localDecoderArgs,
+  PROCESS_IDLE_TIMEOUT_MS,
+  runProcess,
+} from "./run-process.js";
 import {
   fingerprintStillSource,
   STILL_FULL_RUNG,
@@ -1993,7 +1997,9 @@ export const hardwareEncoderUsable = (
     "-",
   ];
   const probe = new Promise<boolean>((resolve) => {
-    const child = spawn(ffmpeg, args, { stdio: "ignore" });
+    const child = spawn(ffmpeg, localDecoderArgs(ffmpeg, args), {
+      stdio: "ignore",
+    });
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       resolve(false);
@@ -2815,7 +2821,9 @@ const streamProcess = (
   onChunk: (chunk: Uint8Array) => void,
 ): Promise<void> =>
   new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, localDecoderArgs(command, args), {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     const stderr: Buffer[] = [];
     let timedOut = false;
     let idle: ReturnType<typeof setTimeout>;

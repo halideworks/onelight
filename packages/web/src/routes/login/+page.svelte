@@ -16,6 +16,7 @@
   let resetEmail = $state('');
   let resetSent = $state(false);
   let resetBusy = $state(false);
+  let resetError = $state('');
   let resetNote = $state(false);
 
   onMount(async () => {
@@ -36,6 +37,7 @@
   const openForgot = (): void => {
     forgotOpen = true;
     resetSent = false;
+    resetError = '';
     resetEmail = email;
   };
 
@@ -43,14 +45,14 @@
     event.preventDefault();
     if (resetBusy) return;
     resetBusy = true;
+    resetError = '';
     try {
       await requestPasswordReset(resetEmail.trim());
-    } catch {
-      /* Same neutral confirmation either way: the form must not reveal
-         whether an address has an account. */
+      resetSent = true;
+    } catch (caught) {
+      resetError = messageFrom(caught, 'The request could not be sent. Try again.');
     } finally {
       resetBusy = false;
-      resetSent = true;
     }
   };
 
@@ -59,14 +61,28 @@
   let mfaToken = $state<string | null>(null);
   let mfaCode = $state('');
 
+  const destination = (): string => {
+    const next = page.url.searchParams.get('next');
+    if (!next?.startsWith('/')) return '/';
+    try {
+      const target = new URL(next, page.url.origin);
+      return target.origin === page.url.origin
+        ? `${target.pathname}${target.search}${target.hash}`
+        : '/';
+    } catch {
+      return '/';
+    }
+  };
+
   const submit = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
+    if (busy) return;
     busy = true;
     error = '';
     try {
       const result = await apiPost<{ mfa_required?: boolean; mfa_token?: string }>(
         '/api/v1/auth/login',
-        { email, password },
+        { email: email.trim(), password },
         { redirectOn401: false }
       );
       if (result.mfa_required && result.mfa_token) {
@@ -75,7 +91,7 @@
         return;
       }
       await auth.hydrate();
-      await goto('/');
+      await goto(destination());
     } catch (caught) {
       error = messageFrom(caught, 'Sign in failed.');
     } finally {
@@ -95,7 +111,7 @@
         { redirectOn401: false }
       );
       await auth.hydrate();
-      await goto('/');
+      await goto(destination());
     } catch {
       /* The server answers a wrong code with the same 401 the password step
          uses; its words fit passwords, not codes, so this step keeps its
@@ -151,6 +167,7 @@
           <input bind:value={resetEmail} name="reset-email" type="email" autocomplete="email" required />
         </label>
         <button type="submit" class="quiet" disabled={resetBusy}>{resetBusy ? 'Sending' : 'Send reset link'}</button>
+        {#if resetError}<p class="error" role="alert">{resetError}</p>{/if}
       </form>
     {/if}
     {#if oidcEnabled}

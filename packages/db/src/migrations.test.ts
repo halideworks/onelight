@@ -10,6 +10,31 @@ import {
 import { d1Migrations } from "./d1-migrations.js";
 
 describe("migration parity", () => {
+  it("indexes media lookups instead of scanning the library", () => {
+    const { sqlite } = createNodeDb(":memory:");
+    try {
+      applyNodeMigrations(sqlite);
+      for (const [table, column, index] of [
+        ["renditions", "blob_key", "renditions_blob_key_idx"],
+        ["comment_attachments", "blob_key", "comment_attachments_blob_key_idx"],
+        [
+          "comment_attachments",
+          "comment_id",
+          "comment_attachments_comment_idx",
+        ],
+      ]) {
+        const plan = sqlite
+          .prepare(
+            `EXPLAIN QUERY PLAN SELECT * FROM ${table} WHERE ${column} = ?`,
+          )
+          .all("test");
+        expect(JSON.stringify(plan)).toContain(index);
+      }
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it("embeds every migration file under its file name", () => {
     expect(d1Migrations.map((migration) => migration.name)).toEqual(
       migrationFiles,

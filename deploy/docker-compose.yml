@@ -6,6 +6,15 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    mem_limit: ${ONELIGHT_SERVER_MEMORY:-4g}
+    pids_limit: ${ONELIGHT_SERVER_PIDS:-256}
     # Compose passes exactly the keys named here, so a setting documented
     # anywhere but missing from this list is silently ignored no matter what
     # the operator puts in .env. The list is generated from

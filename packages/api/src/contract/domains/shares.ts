@@ -93,6 +93,42 @@ const accessShare = async (
 
 export const registerSharesDomain = (ctx: SuiteContext): void => {
   describe("shares", () => {
+    ctx.itBlob(
+      "revokes viewer grants and fresh media URLs when the passphrase changes",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const fixture = await makeShare(h, seed, {
+          passphrase: "original-passphrase",
+        });
+        await seedRendition(h, {
+          versionId: fixture.versionId,
+          content: "private-proxy",
+        });
+        const viewer = await accessShare(h, fixture.slug, {
+          name: "Client",
+          passphrase: "original-passphrase",
+        });
+        const detailPath = `/api/v1/s/${fixture.slug}/assets/${fixture.assetId}`;
+        const detail = await json<{
+          versions: Array<{ sources: Array<{ url: string }> }>;
+        }>(await req(h, detailPath, { cookie: viewer.cookie }));
+        const url = wireUrl(detail.versions[0]?.sources[0]?.url);
+        const path = url.pathname + url.search;
+        expect((await req(h, path)).status).toBe(200);
+        const changed = await req(h, `/api/v1/shares/${fixture.shareId}`, {
+          method: "PATCH",
+          cookie: seed.admin.cookie,
+          json: { passphrase: "new-passphrase" },
+        });
+        expect(changed.status).toBe(200);
+        expect((await req(h, path)).status).toBe(401);
+        expect(
+          (await req(h, detailPath, { cookie: viewer.cookie })).status,
+        ).toBe(401);
+      },
+    );
+
     it("sends a share by email, and never the password with it", async () => {
       const h = ctx.h();
       const seed = ctx.seed();
@@ -504,6 +540,26 @@ export const registerSharesDomain = (ctx: SuiteContext): void => {
           `--${boundary}--`,
           "",
         ].join("\r\n");
+        for (const contentType of [
+          "text/plain",
+          "multipart/form-data",
+          "multipart/form-data; boundary=wrong-boundary",
+        ]) {
+          const malformed = await req(
+            h,
+            `/api/v1/s/${fixture.slug}/comments/${posted.id}/attachments`,
+            {
+              method: "POST",
+              cookie: author.cookie,
+              body,
+              headers: {
+                "content-type": contentType,
+                "content-length": String(new TextEncoder().encode(body).length),
+              },
+            },
+          );
+          expect(malformed.status).toBe(400);
+        }
         const storageBefore = (
           await h.db
             .select({ bytes: projects.storageBytes })

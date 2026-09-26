@@ -139,6 +139,8 @@ import {
   parseJsonObject,
   parseJsonValue,
   userFromContext,
+  limitStream,
+  readBodyBytes,
 } from "./helpers.js";
 import type { SearchStream } from "./helpers.js";
 import { bodies, errorEnvelope, routeDocs } from "./schemas.js";
@@ -223,9 +225,6 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       ? mailControl.status()
       : { state: "disabled", detail: null, source: "none" };
 
-  root.use("*", authMiddleware(env));
-  root.use("*", requireOrigin(env));
-
   const errorHandler = (
     error: unknown,
     c: Context<{ Variables: Variables }>,
@@ -300,11 +299,19 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (path === "/healthz" || path === "/readyz") return;
     const ms = Date.now() - started;
     const status = c.res.status;
+    if (
+      (c.res.headers.get("content-type") ?? "").includes("application/json") &&
+      !c.res.headers.has("cache-control")
+    )
+      c.header("cache-control", "private, no-store");
     if (status >= 400 || ms > 1000)
       console.log(
         `[onelight] ${c.req.method} ${redactBearerPath(path)} ${String(status)} ${String(ms)}ms req=${c.get("requestId") ?? "-"}`,
       );
   });
+
+  root.use("*", authMiddleware(env));
+  root.use("*", requireOrigin(env));
 
   const userWire = (user: ActorUser) => ({
     id: user.id,
@@ -1376,24 +1383,6 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     return store;
   };
 
-  // Enforces a byte cap while streaming so chunked bodies cannot bypass
-  // content-length checks; the consumer sees the 413 as a stream error.
-  const limitStream = (
-    source: ReadableStream<Uint8Array>,
-    maxBytes: number,
-  ): ReadableStream<Uint8Array> => {
-    let total = 0;
-    return source.pipeThrough(
-      new TransformStream<Uint8Array, Uint8Array>({
-        transform(chunk, controller) {
-          total += chunk.byteLength;
-          if (total > maxBytes) controller.error(errors.payloadTooLarge());
-          else controller.enqueue(chunk);
-        },
-      }),
-    );
-  };
-
   /* The name a file is stored under. Separators are flattened so a client
      cannot describe a directory, and a name that is only dots is refused
      outright: "uploads/<ulid>/.." names the directory above rather than a
@@ -1922,16 +1911,22 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       const hashed = await sha256Hex(code.toUpperCase());
       const stored = JSON.parse(user.totpBackupCodesJson) as string[];
       if (stored.includes(hashed)) {
-        passed = true;
-        await env.db
+        const consumed = await env.db
           .update(users)
           .set({
             totpBackupCodesJson: JSON.stringify(
               stored.filter((entry) => entry !== hashed),
             ),
           })
-          .where(eq(users.id, user.id))
-          .run();
+          .where(
+            and(
+              eq(users.id, user.id),
+              eq(users.totpBackupCodesJson, user.totpBackupCodesJson),
+            ),
+          )
+          .returning({ id: users.id })
+          .all();
+        passed = consumed.length === 1;
       }
     }
     if (!passed) {
@@ -2653,6 +2648,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.post("/users/me/totp/verify", requireAuth, async (c) => {
     const user = userFromContext(c);
     if (c.get("authType") !== "session") throw errors.forbidden();
+    await hitRateLimit(`totp_manage:${user.id}`, 10, 5 * 60 * 1000);
     const body = await jsonBody(c, bodies.totpCode);
     if (!user.totpSecret || user.totpVerifiedAt)
       throw errors.validation("There is no enrolment waiting for a code.");
@@ -2682,6 +2678,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
   api.delete("/users/me/totp", requireAuth, async (c) => {
     const user = userFromContext(c);
     if (c.get("authType") !== "session") throw errors.forbidden();
+    await hitRateLimit(`totp_manage:${user.id}`, 10, 5 * 60 * 1000);
     const body = await jsonBody(c, bodies.totpCode);
     if (!user.totpSecret || !user.totpVerifiedAt)
       throw errors.validation("Two-factor is not on.");
@@ -2719,10 +2716,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const extension = AVATAR_TYPES[contentType];
     if (!extension)
       throw errors.validation("The avatar must be a PNG, JPEG, or WebP.");
-    const bytes = await c.req.arrayBuffer();
+    const bytes = await readBodyBytes(c, AVATAR_MAX_BYTES);
     if (bytes.byteLength === 0) throw errors.validation("The avatar is empty.");
-    if (bytes.byteLength > AVATAR_MAX_BYTES)
-      throw errors.validation("The avatar must be under 512 KB.");
     // One key per user and format; a format change strands the old blob,
     // which the GC reconciliation is for.
     const key = `avatars/${user.id}.${extension}`;
@@ -4740,11 +4735,23 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       length > MAX_COMMENT_ATTACHMENT_BYTES + 1_048_576
     )
       throw errors.payloadTooLarge();
-    const form = await c.req.parseBody();
-    const candidate = form.file;
+    let form: FormData;
+    try {
+      form = await new Response(
+        limitStream(c.req.raw.body, MAX_COMMENT_ATTACHMENT_BYTES + 1_048_576),
+        { headers: { "content-type": c.req.header("content-type") ?? "" } },
+      ).formData();
+    } catch (error) {
+      if (error instanceof TypeError)
+        throw errors.validation(
+          "Request body must be valid multipart form data.",
+        );
+      throw error;
+    }
+    const candidate = form.get("file");
     if (!candidate || typeof candidate === "string")
       throw errors.validation("A file field is required.");
-    const file = candidate as File;
+    const file = candidate;
     if (file.size < 1 || file.size > MAX_COMMENT_ATTACHMENT_BYTES)
       throw errors.payloadTooLarge();
     return file;
@@ -6015,6 +6022,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const signed = await new SignJWT({
       share_id: share.id,
       viewer_key: viewerKey,
+      passphrase_tag: await sha256Hex(share.passphraseHash ?? ""),
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
@@ -6043,7 +6051,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       );
       if (
         verified.payload.share_id !== share.id ||
-        typeof verified.payload.viewer_key !== "string"
+        typeof verified.payload.viewer_key !== "string" ||
+        verified.payload.passphrase_tag !==
+          (await sha256Hex(share.passphraseHash ?? ""))
       )
         return undefined;
       const viewer = (
@@ -6120,6 +6130,18 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     }
   };
 
+  const shareMediaPolicy = (
+    share: typeof shares.$inferSelect,
+  ): Promise<string> =>
+    sha256Hex(
+      JSON.stringify([
+        share.passphraseHash,
+        share.watermarkSpecHash,
+        share.allowDownload,
+        share.showAllVersions,
+      ]),
+    );
+
   const issueMediaToken = async (
     share: typeof shares.$inferSelect,
     assetId: string,
@@ -6132,6 +6154,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       asset_id: assetId,
       version_id: versionId,
       blob_key: blobKey,
+      access_policy: await shareMediaPolicy(share),
       ...(disposition ? { disposition } : {}),
     })
       .setProtectedHeader({ alg: "HS256" })
@@ -6289,10 +6312,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       : match[1];
   };
 
-  /* What the blob belongs to. The claim is not consulted when serving --
-     blob_key is what authorizes -- but a token should not misdescribe its own
-     subject: an export is not a version, and a project cover has no version at
-     all. */
+  /* Private media is authorized against its current project on every request.
+     The signed scope identifies that project without trusting the blob path. */
   type MediaScope =
     { versionId: string } | { projectId: string } | { exportId: string };
 
@@ -6318,11 +6339,10 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       .setExpirationTime(disposition ? DOWNLOAD_TOKEN_TTL : "15m")
       .sign(mediaSigningKey);
 
-  const authorizeExpiredPrivateMedia = async (
+  const authorizePrivateMedia = async (
     payload: Record<string, unknown>,
     actor: ActorUser,
   ): Promise<void> => {
-    if (payload.disposition !== undefined) throw errors.unauthorized();
     if (typeof payload.version_id === "string") {
       const row = (
         await env.db
@@ -6477,6 +6497,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     if (!store) throw errors.internal("Blob storage is not configured.");
     c.header("accept-ranges", "bytes");
     c.header("content-type", await blobContentType(key));
+    c.header("x-content-type-options", "nosniff");
+    c.header("cache-control", "private, no-store");
+    c.header("content-security-policy", "default-src 'none'; sandbox");
     if (disposition) c.header("content-disposition", disposition);
     /* Blobs are immutable per key, so the key is a permanent strong
        validator. Without an ETag, browsers restart an interrupted download
@@ -7205,10 +7228,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     const extension = LOGO_TYPES[contentType];
     if (!extension)
       throw errors.validation("The logo must be a PNG, JPEG, WebP, or SVG.");
-    const bytes = await c.req.arrayBuffer();
+    const bytes = await readBodyBytes(c, LOGO_MAX_BYTES);
     if (bytes.byteLength === 0) throw errors.validation("The logo is empty.");
-    if (bytes.byteLength > LOGO_MAX_BYTES)
-      throw errors.validation("The logo must be under 512 KB.");
     // A fresh key per upload, so the public URL changes and no cache can
     // serve the old mark; the replaced blob is deleted best-effort.
     const previous = logoKeyOf(share);
@@ -8898,7 +8919,8 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       if (
         payload.share_id !== share.id ||
         payload.asset_id !== c.req.param("assetId") ||
-        typeof payload.blob_key !== "string"
+        typeof payload.blob_key !== "string" ||
+        typeof payload.version_id !== "string"
       )
         throw new Error("Token claims do not match this share asset.");
       blobKey = payload.blob_key;
@@ -8909,6 +8931,37 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     } catch {
       throw errors.unauthorized();
     }
+    // Signed URLs remain capabilities, but cannot outlive the policy or
+    // asset membership under which they were issued.
+    if (
+      (!expired || payload.access_policy !== undefined) &&
+      payload.access_policy !== (await shareMediaPolicy(share))
+    )
+      throw errors.unauthorized();
+    const visible = await env.db
+      .select({ id: assets.id })
+      .from(shareAssets)
+      .innerJoin(assets, eq(shareAssets.assetId, assets.id))
+      .innerJoin(assetVersions, eq(assetVersions.assetId, assets.id))
+      .innerJoin(projects, eq(assets.projectId, projects.id))
+      .where(
+        and(
+          eq(shareAssets.shareId, share.id),
+          eq(assets.id, c.req.param("assetId")),
+          eq(
+            assetVersions.id,
+            typeof payload.version_id === "string" ? payload.version_id : "",
+          ),
+          isNull(assets.deletedAt),
+          isNull(assetVersions.deletedAt),
+          share.showAllVersions
+            ? undefined
+            : eq(assets.currentVersionId, assetVersions.id),
+        ),
+      )
+      .limit(1)
+      .all();
+    if (!visible.length) throw errors.notFound();
     if (expired)
       await authorizeExpiredShareMedia(
         c,
@@ -9474,6 +9527,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       transfer_id: transfer.id,
       name,
       grant_key: grantKey,
+      passphrase_tag: await sha256Hex(transfer.passphraseHash ?? ""),
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
@@ -9501,7 +9555,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       );
       if (
         verified.payload.transfer_id !== transfer.id ||
-        typeof verified.payload.name !== "string"
+        typeof verified.payload.name !== "string" ||
+        verified.payload.passphrase_tag !==
+          (await sha256Hex(transfer.passphraseHash ?? ""))
       )
         return undefined;
       const grantKey =
@@ -9738,6 +9794,7 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       transfer_id: transfer.id,
       blob_key: file.version.originalBlobKey,
       disposition: attachmentDisposition(file.version.originalFilename),
+      passphrase_tag: await sha256Hex(transfer.passphraseHash ?? ""),
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
@@ -9769,7 +9826,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       );
       if (
         verified.payload.transfer_id !== transfer.id ||
-        typeof verified.payload.blob_key !== "string"
+        typeof verified.payload.blob_key !== "string" ||
+        verified.payload.passphrase_tag !==
+          (await sha256Hex(transfer.passphraseHash ?? ""))
       )
         throw new Error("Token claims do not match this transfer.");
       blobKey = verified.payload.blob_key;
@@ -9778,6 +9837,22 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     } catch {
       throw errors.unauthorized();
     }
+    const visible = await env.db
+      .select({ id: assets.id })
+      .from(transferItems)
+      .innerJoin(assets, eq(transferItems.assetId, assets.id))
+      .innerJoin(assetVersions, eq(assets.currentVersionId, assetVersions.id))
+      .where(
+        and(
+          eq(transferItems.transferId, transfer.id),
+          eq(assetVersions.originalBlobKey, blobKey),
+          isNull(assets.deletedAt),
+          isNull(assetVersions.deletedAt),
+        ),
+      )
+      .limit(1)
+      .all();
+    if (!visible.length) throw errors.notFound();
     return serveBlob(c, blobKey, disposition);
   });
 
@@ -12927,11 +13002,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       );
     const label = (c.req.query("label") ?? "").trim() || language.toUpperCase();
     if (label.length > 80) throw errors.validation("label is too long.");
-    const bytes = await c.req.arrayBuffer();
+    const bytes = await readBodyBytes(c, CAPTION_MAX_BYTES);
     if (!bytes.byteLength)
       throw errors.validation("The captions file is empty.");
-    if (bytes.byteLength > CAPTION_MAX_BYTES)
-      throw errors.validation("Captions must be under 1 MB.");
     const head = new TextDecoder().decode(bytes.slice(0, 32));
     if (
       !head
@@ -13120,12 +13193,17 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
       throw errors.internal("Blob storage is not configured.");
     const rawKey = c.req.path.split("/media/")[1];
     if (!rawKey) throw errors.notFound();
-    const key =
-      rawKey
-        .split("?")[0]
-        ?.split("/")
-        .map((part) => decodeURIComponent(part))
-        .join("/") ?? "";
+    let key: string;
+    try {
+      key =
+        rawKey
+          .split("?")[0]
+          ?.split("/")
+          .map((part) => decodeURIComponent(part))
+          .join("/") ?? "";
+    } catch {
+      throw errors.notFound();
+    }
     const token = c.req.query("token");
     if (!token) throw errors.unauthorized();
     let disposition: string | undefined;
@@ -13147,8 +13225,9 @@ const app = (env: AppEnv): Hono<{ Variables: Variables }> => {
     } catch {
       throw errors.unauthorized();
     }
-    if (expired)
-      await authorizeExpiredPrivateMedia(payload, userFromContext(c));
+    if (expired && payload.disposition !== undefined)
+      throw errors.unauthorized();
+    await authorizePrivateMedia(payload, userFromContext(c));
     return serveBlob(c, key, disposition);
   });
 

@@ -719,6 +719,40 @@ export const registerCommentsDomain = (ctx: SuiteContext): void => {
       );
       const created = await json<{ id: string }>(createdResponse);
       const payload = multipartBody("note.txt", "attachment-payload");
+      for (const contentType of [
+        "text/plain",
+        "multipart/form-data",
+        "multipart/form-data; boundary=wrong-boundary",
+      ]) {
+        const malformed = await req(
+          h,
+          `/api/v1/comments/${created.id}/attachments`,
+          {
+            method: "POST",
+            cookie: seed.commenter.cookie,
+            body: payload.body,
+            headers: {
+              "content-type": contentType,
+              "content-length": String(payload.length),
+            },
+          },
+        );
+        expect(malformed.status).toBe(400);
+      }
+      const oversized = await req(
+        h,
+        `/api/v1/comments/${created.id}/attachments`,
+        {
+          method: "POST",
+          cookie: seed.commenter.cookie,
+          body: new Uint8Array(27 * 1024 * 1024),
+          headers: {
+            "content-type": payload.contentType,
+            "content-length": "1",
+          },
+        },
+      );
+      expect(oversized.status).toBe(413);
       const missingLength = await req(
         h,
         `/api/v1/comments/${created.id}/attachments`,

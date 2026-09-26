@@ -254,6 +254,15 @@ export const registerTransfersDomain = (ctx: SuiteContext): void => {
         passphrase: "gate-7",
       });
       expect(rightPass.response.status).toBe(200);
+      await req(h, `/api/v1/transfers/${fixture.transferId}`, {
+        method: "PATCH",
+        cookie: seed.admin.cookie,
+        json: { passphrase: "rotated-passphrase" },
+      });
+      const stale = await json<{ authorized: boolean }>(
+        await req(h, `/api/v1/t/${fixture.slug}`, { cookie: rightPass.cookie }),
+      );
+      expect(stale.authorized).toBe(false);
     });
 
     it("public shell shows files only after a name is given, and leaks nothing", async () => {

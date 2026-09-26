@@ -17,9 +17,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type Database from "better-sqlite3";
-import type { AppDb } from "@onelight/db";
-import { referencedBlobKeys } from "./maintenance.js";
+import Database from "better-sqlite3";
+import { renditionBlobKeys } from "./maintenance.js";
 import type { BackupManifest } from "./maintenance.js";
 
 export interface BackupConfig {
@@ -27,6 +26,64 @@ export interface BackupConfig {
   intervalMs: number;
   keep: number;
 }
+
+/** Read the snapshot, including schemas older than the code doing the backup. */
+const snapshotBlobKeys = (file: string): string[] => {
+  const copy = new Database(file, { fileMustExist: true });
+  const keys = new Set<string>();
+  const quote = (name: string): string => `"${name.replaceAll('"', '""')}"`;
+  try {
+    // A retained snapshot is one standalone file, not a live WAL database.
+    copy.pragma("journal_mode = DELETE");
+    const tables = copy
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all() as { name: string }[];
+    for (const { name: table } of tables) {
+      const columns = copy
+        .prepare(`PRAGMA table_info(${quote(table)})`)
+        .all() as { name: string }[];
+      for (const { name: column } of columns) {
+        if (
+          column !== "blob_key" &&
+          !column.endsWith("_blob_key") &&
+          column !== "avatar_key"
+        )
+          continue;
+        for (const row of copy
+          .prepare(`SELECT ${quote(column)} AS key FROM ${quote(table)}`)
+          .iterate() as Iterable<{ key: unknown }>)
+          if (typeof row.key === "string") keys.add(row.key);
+      }
+      if (
+        table === "renditions" &&
+        columns.some((column) => column.name === "meta_json")
+      )
+        for (const row of copy
+          .prepare(
+            "SELECT blob_key AS blobKey, meta_json AS metaJson FROM renditions",
+          )
+          .iterate() as Iterable<{ blobKey: string; metaJson: string }>)
+          for (const key of renditionBlobKeys(row)) keys.add(key);
+      if (
+        table === "shares" &&
+        columns.some((column) => column.name === "brand_json")
+      )
+        for (const row of copy
+          .prepare("SELECT brand_json FROM shares WHERE brand_json IS NOT NULL")
+          .iterate() as Iterable<{ brand_json: string }>) {
+          try {
+            const brand = JSON.parse(row.brand_json) as { logo_key?: unknown };
+            if (typeof brand.logo_key === "string") keys.add(brand.logo_key);
+          } catch {
+            /* Invalid branding has no usable logo reference. */
+          }
+        }
+    }
+    return [...keys].sort();
+  } finally {
+    copy.close();
+  }
+};
 
 /**
  * Backups are off unless BACKUP_DIR is set. The interval and retention are
@@ -70,7 +127,6 @@ const snapshotStem = (label: string | undefined, at: Date): string =>
    and retention without disturbing the timed series. */
 export const backupOnce = async (
   sqlite: Database.Database,
-  db: AppDb,
   config: BackupConfig,
   now: Date,
   options: { label?: string; keep?: number } = {},
@@ -79,11 +135,8 @@ export const backupOnce = async (
   const stem = snapshotStem(options.label, now);
   const file = path.join(config.dir, `${stem}.db`);
   await sqlite.backup(file);
-  /* The manifest is written AFTER the DB snapshot from the SAME live db. A blob
-     referenced by the snapshot but created between the two reads is at worst
-     over-protected (listed though the snapshot's DB may not name it) -- never
-     under-protected, which is the direction that loses data. */
-  const referenced = [...(await referencedBlobKeys(db))].sort();
+  // Reading the live DB here would miss references deleted after the snapshot.
+  const referenced = snapshotBlobKeys(file);
   const manifest: BackupManifest = {
     created_at: now.toISOString(),
     blob_keys: referenced,
@@ -114,7 +167,6 @@ export const backupOnce = async (
 
 export const startBackups = (
   sqlite: Database.Database,
-  db: AppDb,
   config: BackupConfig,
 ): (() => void) => {
   let active = false;
@@ -122,7 +174,7 @@ export const startBackups = (
     if (active) return;
     active = true;
     try {
-      const file = await backupOnce(sqlite, db, config, new Date());
+      const file = await backupOnce(sqlite, config, new Date());
       const size = fs.statSync(file).size;
       console.log(`[onelight] backup: ${file} (${String(size)} bytes)`);
     } catch (error) {

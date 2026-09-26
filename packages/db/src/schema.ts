@@ -511,6 +511,7 @@ export const renditions = sqliteTable(
     baseUnique: uniqueIndex("renditions_base_uq")
       .on(table.versionId, table.kind)
       .where(sql`${table.shareId} IS NULL`),
+    blobKeyIdx: index("renditions_blob_key_idx").on(table.blobKey),
     shareUnique: uniqueIndex("renditions_share_uq")
       .on(table.versionId, table.kind, table.shareId)
       .where(sql`${table.shareId} IS NOT NULL`),
@@ -655,19 +656,26 @@ export const comments = sqliteTable(
   }),
 );
 
-export const commentAttachments = sqliteTable("comment_attachments", {
-  id: text("id").primaryKey(),
-  commentId: text("comment_id")
-    .notNull()
-    .references(() => comments.id, { onDelete: "cascade" }),
-  blobKey: text("blob_key").notNull(),
-  filename: text("filename").notNull(),
-  size: integer("size").notNull(),
-  contentType: text("content_type")
-    .notNull()
-    .default("application/octet-stream"),
-  checksumSha256: text("checksum_sha256").notNull().default(""),
-});
+export const commentAttachments = sqliteTable(
+  "comment_attachments",
+  {
+    id: text("id").primaryKey(),
+    commentId: text("comment_id")
+      .notNull()
+      .references(() => comments.id, { onDelete: "cascade" }),
+    blobKey: text("blob_key").notNull(),
+    filename: text("filename").notNull(),
+    size: integer("size").notNull(),
+    contentType: text("content_type")
+      .notNull()
+      .default("application/octet-stream"),
+    checksumSha256: text("checksum_sha256").notNull().default(""),
+  },
+  (table) => ({
+    blobKeyIdx: index("comment_attachments_blob_key_idx").on(table.blobKey),
+    commentIdx: index("comment_attachments_comment_idx").on(table.commentId),
+  }),
+);
 
 export const commentReads = sqliteTable(
   "comment_reads",

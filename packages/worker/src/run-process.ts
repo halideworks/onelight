@@ -5,6 +5,20 @@
 
 import { spawn } from "node:child_process";
 import { setPriority } from "node:os";
+import { basename } from "node:path";
+
+/** Uploaded media may contain playlists. Decoders must never fetch their URLs. */
+export const localDecoderArgs = (command: string, args: string[]): string[] => {
+  const executable = basename(command)
+    .toLowerCase()
+    .replace(/\.exe$/, "");
+  const protocols = ["-protocol_whitelist", "file,pipe"];
+  if (executable === "ffprobe" || command === process.env.FFPROBE_PATH)
+    return [...protocols, ...args];
+  if (executable === "ffmpeg" || command === process.env.FFMPEG_PATH)
+    return args.flatMap((arg) => (arg === "-i" ? [...protocols, arg] : [arg]));
+  return args;
+};
 
 export interface ProcessResult {
   stdout: string;
@@ -37,7 +51,7 @@ export const runProcess = (
   niceness?: number,
 ): Promise<ProcessResult> =>
   new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(command, localDecoderArgs(command, args), {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });

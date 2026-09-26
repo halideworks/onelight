@@ -40,6 +40,8 @@ const getApp = (env: Env): ReturnType<typeof createApp> => {
   const config = loadConfig({
     PUBLIC_URL: env.PUBLIC_URL,
     SECRET_KEY: env.SECRET_KEY,
+    // Cloudflare supplies CF-Connecting-IP; this target has no peer socket.
+    TRUST_PROXY: "true",
     OIDC_ISSUER: env.OIDC_ISSUER,
     OIDC_CLIENT_ID: env.OIDC_CLIENT_ID,
     OIDC_CLIENT_SECRET: env.OIDC_CLIENT_SECRET,

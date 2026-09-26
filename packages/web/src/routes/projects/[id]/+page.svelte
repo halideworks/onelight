@@ -738,7 +738,11 @@
   let emailMessage = $state('');
   let emailBusy = $state(false);
   let emailError = $state('');
-  const emailShare = shares.find((entry) => entry.id === emailShareFor);
+  const emailShare = $derived(shares.find((entry) => entry.id === emailShareFor));
+  let emailDialog = $state<HTMLDialogElement | null>(null);
+  $effect(() => {
+    if (emailDialog && !emailDialog.open) emailDialog.showModal();
+  });
 
   const openEmailShare = (shareId: string): void => {
     emailShareFor = shareId;
@@ -3193,15 +3197,15 @@
      because a link and its password together is the password not existing. -->
 {#if emailShareFor}
   {@const share = emailShare}
-  <div
+  <dialog
+    bind:this={emailDialog}
     class="emailsheet"
-    role="presentation"
+    aria-label={`Send ${share?.title ?? 'share'} by email`}
+    onclose={() => { emailShareFor = null; }}
     onclick={(event) => { if (event.target === event.currentTarget) emailShareFor = null; }}
   >
     <form
       class="emailbody"
-      role="dialog"
-      aria-label={`Send ${share?.title ?? 'share'} by email`}
       onsubmit={sendShareEmail}
     >
       <h2>Send “{share?.title ?? 'this share'}”</h2>
@@ -3240,7 +3244,7 @@
         <button type="submit" disabled={emailBusy}>{emailBusy ? 'Sending…' : 'Send'}</button>
       </div>
     </form>
-  </div>
+  </dialog>
 {/if}
 
 {#if shareMenu}
@@ -3371,12 +3375,20 @@
   .emailsheet {
     position: fixed;
     inset: 0;
+    width: 100vw;
+    height: 100dvh;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    border: 0;
+    color: inherit;
     z-index: 60;
     display: grid;
     place-items: center;
     padding: 24px;
     background: rgb(0 0 0 / 0.5);
   }
+  .emailsheet::backdrop { background: transparent; }
   .emailbody {
     width: min(460px, 100%);
     display: grid;

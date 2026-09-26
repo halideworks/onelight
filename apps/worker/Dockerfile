@@ -16,6 +16,7 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @onelight/core build \
   && pnpm --filter @onelight/worker build \
   && pnpm --filter @onelight/worker-app build
+RUN pnpm --filter @onelight/worker-app deploy --prod /production
 
 # Both stages must share a base: native modules built against the build stage's
 # glibc are copied wholesale into this one.
@@ -40,21 +41,24 @@ FROM node:22-trixie-slim
 # what every iPhone since 2017 hands over. Both are decoders only: the stills
 # ladder is still rendered by sharp, so orientation and colour behave the same
 # whatever opened the file.
+# Sharp bundles libvips; the unused system libvips-tools would add another
+# decoder stack, including ImageMagick, without serving any application path.
 # /scratch exists here, owned by the unprivileged user, so that a named volume
 # mounted over it inherits that ownership. Docker seeds an empty volume from
 # the image's directory, permissions included; without this the volume arrives
 # root-owned and a worker running as onelight cannot write its scratch at all.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg mesa-va-drivers mesa-vulkan-drivers libvulkan1 poppler-utils libvips-tools libraw-bin libheif-examples fonts-dejavu-core ca-certificates intel-media-va-driver libva2 libva-drm2 vainfo \
+  && apt-get upgrade -y \
+  && apt-get install -y --no-install-recommends ffmpeg mesa-va-drivers mesa-vulkan-drivers libvulkan1 poppler-utils libraw-bin libheif-examples fonts-dejavu-core ca-certificates intel-media-va-driver libva2 libva-drm2 vainfo \
   && rm -rf /var/lib/apt/lists/* \
+  && rm -rf /usr/local/lib/node_modules/npm \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx \
   && useradd --create-home --uid 10001 onelight \
   && mkdir -p /data /scratch \
   && chown onelight:onelight /data /scratch
 WORKDIR /app
-COPY --from=build /app/node_modules /app/node_modules
-COPY --from=build /app/packages /app/packages
-COPY --from=build /app/apps/worker/node_modules /app/apps/worker/node_modules
-COPY --from=build /app/apps/worker/dist /app/apps/worker/dist
+ENV NODE_ENV=production
+COPY --from=build /production /app
 USER onelight
 EXPOSE 8080
-CMD ["node", "apps/worker/dist/index.js"]
+CMD ["node", "dist/index.js"]

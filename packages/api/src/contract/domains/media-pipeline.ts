@@ -1163,6 +1163,16 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
       expect(badNo.status).toBe(404);
     });
 
+    ctx.itBlob(
+      "rejects malformed media paths without an internal error",
+      async () => {
+        const response = await req(ctx.h(), "/api/v1/media/%ZZ?token=invalid", {
+          cookie: ctx.seed().editor.cookie,
+        });
+        expect(response.status).toBe(404);
+      },
+    );
+
     it("serves rendition metadata with signed URLs when a store exists", async () => {
       const h = ctx.h();
       const seed = ctx.seed();
@@ -1508,6 +1518,21 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
 
   describe("private media route", () => {
     ctx.itBlob(
+      "caps uploads before buffering even with a false content length",
+      async () => {
+        const h = ctx.h();
+        const seed = ctx.seed();
+        const tooLarge = await req(h, "/api/v1/users/me/avatar", {
+          method: "PUT",
+          cookie: seed.admin.cookie,
+          body: new Uint8Array(512 * 1024 + 1),
+          headers: { "content-type": "image/png", "content-length": "1" },
+        });
+        expect(tooLarge.status).toBe(413);
+      },
+    );
+
+    ctx.itBlob(
       "requires a valid token and serves ranges with 206/416 semantics",
       async () => {
         const h = ctx.h();
@@ -1537,12 +1562,22 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
         expect(withToken.status).toBe(200);
         expect(await withToken.text()).toBe("0123456789abcdef");
         expect(withToken.headers.get("accept-ranges")).toBe("bytes");
+        expect(withToken.headers.get("cache-control")).toBe(
+          "private, no-store",
+        );
+        expect(withToken.headers.get("content-security-policy")).toContain(
+          "sandbox",
+        );
         const noToken = await req(h, parsed.pathname, {
           cookie: seed.viewer.cookie,
         });
         expect(noToken.status).toBe(401);
         const noAuth = await req(h, parsed.pathname + parsed.search);
         expect(noAuth.status).toBe(401);
+        const foreign = await req(h, parsed.pathname + parsed.search, {
+          cookie: seed.other.admin.cookie,
+        });
+        expect(foreign.status).toBe(404);
         const badToken = await req(h, `${parsed.pathname}?token=garbage`, {
           cookie: seed.viewer.cookie,
         });

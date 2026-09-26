@@ -68,34 +68,39 @@ export const clientIp = (
   return socketAddress(c) ?? PROXYLESS_IP;
 };
 
+export const limitStream = (
+  source: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): ReadableStream<Uint8Array> => {
+  let total = 0;
+  return source.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        total += chunk.byteLength;
+        if (total > maxBytes) controller.error(errors.payloadTooLarge());
+        else controller.enqueue(chunk);
+      },
+    }),
+  );
+};
+
+/** Bound the bytes before buffering, including chunked or misdeclared bodies. */
+export const readBodyBytes = async (
+  c: Context<{ Variables: Variables }>,
+  maxBytes: number,
+): Promise<ArrayBuffer> => {
+  if (Number(c.req.header("content-length") ?? 0) > maxBytes)
+    throw errors.payloadTooLarge();
+  return c.req.raw.body
+    ? new Response(limitStream(c.req.raw.body, maxBytes)).arrayBuffer()
+    : new ArrayBuffer(0);
+};
+
 export const jsonBody = async <S extends z.ZodTypeAny>(
   c: Context<{ Variables: Variables }>,
   schema: S,
 ): Promise<z.output<S>> => {
-  const contentLength = Number(c.req.header("content-length") ?? 0);
-  if (contentLength > JSON_BODY_LIMIT) throw errors.payloadTooLarge();
-  // Read the stream directly so chunked bodies cannot bypass the cap.
-  const source = c.req.raw.body;
-  if (!source) throw errors.validation("Request body must be valid JSON.");
-  const reader = source.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > JSON_BODY_LIMIT) {
-      await reader.cancel().catch(() => undefined);
-      throw errors.payloadTooLarge();
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
+  const bytes = await readBodyBytes(c, JSON_BODY_LIMIT);
   let body: unknown;
   try {
     body = JSON.parse(new TextDecoder().decode(bytes)) as unknown;

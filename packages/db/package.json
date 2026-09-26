@@ -4,6 +4,10 @@
   "license": "AGPL-3.0-only",
   "author": "David Torcivia (halideworks)",
   "type": "module",
+  "files": [
+    "dist",
+    "migrations"
+  ],
   "exports": {
     ".": "./dist/index.js",
     "./schema": "./dist/schema.js",

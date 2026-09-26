@@ -54,7 +54,7 @@ if (
   fs.existsSync(config.DATABASE_PATH)
 ) {
   try {
-    const snapshot = await backupOnce(sqlite, db, cliBackupConfig, new Date(), {
+    const snapshot = await backupOnce(sqlite, cliBackupConfig, new Date(), {
       label: "premigrate",
       keep: 10,
     });
@@ -62,9 +62,9 @@ if (
       `[onelight] pre-migration snapshot for ${String(cliPending.length)} pending migration(s): ${snapshot}`,
     );
   } catch (error) {
-    console.warn(
-      `[onelight] pre-migration snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    throw new Error("Pre-migration backup failed; schema left unchanged.", {
+      cause: error,
+    });
   }
 }
 applyNodeMigrations(sqlite);

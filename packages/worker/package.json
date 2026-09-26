@@ -4,6 +4,10 @@
   "license": "AGPL-3.0-only",
   "author": "David Torcivia (halideworks)",
   "type": "module",
+  "files": [
+    "dist",
+    "assets"
+  ],
   "exports": {
     ".": "./dist/index.js",
     "./local-store": "./dist/local-store.js"
@@ -17,6 +21,6 @@
     "@pdf-lib/fontkit": "^1.1.1",
     "mediabunny": "^1.50.8",
     "pdf-lib": "^1.17.1",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.4"
   }
 }

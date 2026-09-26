@@ -1,5 +1,6 @@
 import { goto } from "$app/navigation";
 import type { paths } from "./api-types.gen.js";
+import { isPublicPath } from "./public-path.js";
 
 /* Thin typed fetch wrapper for the Onelight REST API.
    Unwraps the { error: { code, message } } envelope into a typed ApiError and
@@ -26,14 +27,9 @@ export class ApiError extends Error {
   }
 }
 
-const PUBLIC_PREFIXES = ["/login", "/setup", "/invite", "/reset", "/s"];
-
 const onPublicPage = (): boolean => {
   if (typeof location === "undefined") return true;
-  const pathname = location.pathname;
-  return PUBLIC_PREFIXES.some(
-    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
-  );
+  return isPublicPath(location.pathname);
 };
 
 export interface ApiInit extends RequestInit {
@@ -64,7 +60,9 @@ export const api = async <T>(path: string, init?: ApiInit): Promise<T> => {
     /* Non-JSON error body: keep the generic message. */
   }
   if (response.status === 401 && redirectOn401 && !onPublicPage())
-    void goto("/login");
+    void goto(
+      `/login?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`,
+    );
   throw new ApiError(response.status, code, message, details);
 };
 
