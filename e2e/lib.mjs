@@ -21,7 +21,9 @@ export const finish = async (browser) => {
   await browser.close();
   const failed = results.filter((entry) => !entry).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed`);
-  process.exit(failed ? 1 : 0);
+  // Called from finally: let an in-flight exception reach Node instead of
+  // replacing it with a successful exit when no checks were reached.
+  if (failed || results.length === 0) process.exitCode = 1;
 };
 
 export const launch = async () => {

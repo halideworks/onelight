@@ -28,7 +28,7 @@ docker run --rm --network host \
   -e E2E_PASSWORD=... \
   -e E2E_PROJECT_ID=01KX... \
   mcr.microsoft.com/playwright:v1.56.1-noble \
-  sh -c 'npm i --silent --no-save playwright@1.56.1 >/dev/null 2>&1 && node account-flows.e2e.mjs && node share-flows.e2e.mjs && node settings.e2e.mjs && node review-room.e2e.mjs'
+  sh -c 'npm i --silent --no-save playwright@1.56.1 >/dev/null 2>&1 && node --test runner.test.mjs && node account-flows.e2e.mjs && node share-flows.e2e.mjs && node settings.e2e.mjs && node review-room.e2e.mjs'
 ```
 
 Environment:
@@ -50,4 +50,5 @@ Set E2E_SCREENSHOTS to an existing directory to capture the profile, portal,
 and email dialog.
 
 Checks that need real playback skip loudly (not silently) when the media is
-not ready. Exit code is non-zero on any failure.
+not ready. Exit code is non-zero on failed checks, empty runs, or exceptions.
+The native Node runner test verifies that browser cleanup cannot mask a failure.

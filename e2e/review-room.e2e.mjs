@@ -94,8 +94,9 @@ try {
   }
 
   // ---- the phone top bar: every panel has to reach the screen ----
+  // Media requests can remain active; network idleness is not page readiness.
   await admin.goto(`${BASE}/projects/${PROJECT_ID}/assets/${assets[0].id}`, {
-    waitUntil: "networkidle",
+    waitUntil: "domcontentloaded",
   });
   await admin.waitForTimeout(1800);
 
@@ -161,7 +162,7 @@ try {
     await admin.goto(
       `${BASE}/projects/${PROJECT_ID}/assets/${versioned.assetId}`,
       {
-        waitUntil: "networkidle",
+        waitUntil: "domcontentloaded",
       },
     );
     await admin.waitForTimeout(1800);
@@ -199,7 +200,7 @@ try {
     );
     check("the note is copied onto this version", copies.length === 1);
     check("the banner stops offering it", (await bannerText()) === null);
-    await admin.reload({ waitUntil: "networkidle" });
+    await admin.reload({ waitUntil: "domcontentloaded" });
     await admin.waitForTimeout(1800);
     check("and stays gone across a reload", (await bannerText()) === null);
 
