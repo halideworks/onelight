@@ -20,12 +20,15 @@ import {
 // share one implementation.
 import { MemoryBlobStore } from "./contract/memory-blob-store.js";
 
-const makeTestApp = (blobStore?: MultipartBlobStore) => {
+const makeTestApp = (
+  blobStore?: MultipartBlobStore,
+  options: { secret?: string; version?: string } = {},
+) => {
   const { db, sqlite } = createNodeDb(":memory:");
   applyNodeMigrations(sqlite);
   const config = loadConfig({
     PUBLIC_URL: "http://test.local",
-    SECRET_KEY: "test-secret-that-is-longer-than-32-chars",
+    SECRET_KEY: options.secret ?? "test-secret-that-is-longer-than-32-chars",
   });
   const app = createApp({
     db,
@@ -33,7 +36,7 @@ const makeTestApp = (blobStore?: MultipartBlobStore) => {
     clock: systemClock,
     ids: new UlidGenerator(),
     config,
-    version: "test",
+    version: options.version ?? "test",
     ...(blobStore ? { blobStore } : {}),
   });
   return { app, db, sqlite };
@@ -395,6 +398,130 @@ describe("Phase 0 API contract", () => {
 });
 
 describe("audited defect fixes", () => {
+  it("isolates OpenAPI caches and media signing between app instances", async () => {
+    const stores = [new MemoryBlobStore(), new MemoryBlobStore()];
+    const contexts = stores.map((store, index) => {
+      store.blobs.set(
+        "spot.mp4",
+        new TextEncoder().encode(`instance-${index}`),
+      );
+      return makeTestApp(store, {
+        secret: `instance-${index}-secret-that-is-longer-than-32-chars`,
+        version: `instance-${index}`,
+      });
+    });
+    try {
+      const fixtures = await Promise.all(contexts.map(seedVersionFixture));
+      const urls: string[] = [];
+      for (const [index, ctx] of contexts.entries()) {
+        const fixture = fixtures[index]!;
+        const document = await ctx.app.request("/api/v1/openapi.json");
+        expect(document.status).toBe(200);
+        expect(await document.json()).toMatchObject({
+          info: { version: `instance-${index}` },
+        });
+        const download = await ctx.app.request(
+          `/api/v1/versions/${fixture.versionId}/download`,
+          { headers: { cookie: fixture.cookie } },
+        );
+        expect(download.status).toBe(200);
+        urls.push(((await download.json()) as { url: string }).url);
+      }
+      // Both databases contain the same version and blob keys. A foreign
+      // token must fail its signature, not merely miss a row in the database.
+      for (const [index, ctx] of contexts.entries()) {
+        const headers = { cookie: fixtures[index]!.cookie };
+        const own = await ctx.app.request(urls[index]!, { headers });
+        expect(own.status).toBe(200);
+        expect(await own.text()).toBe(`instance-${index}`);
+        const foreign = await ctx.app.request(urls[1 - index]!, { headers });
+        expect(foreign.status).toBe(401);
+        expect(await foreign.json()).toMatchObject({
+          error: { code: "unauthorized" },
+        });
+        const cached = await ctx.app.request("/api/v1/openapi.json");
+        expect(await cached.json()).toMatchObject({
+          info: { version: `instance-${index}` },
+        });
+      }
+    } finally {
+      for (const ctx of contexts) ctx.sqlite.close();
+    }
+  });
+
+  it("preserves the unpaged legacy share shell and forwarded error envelopes", async () => {
+    const ctx = makeTestApp();
+    try {
+      const seeded = await seedVersionFixture(ctx);
+      const extraAssets = Array.from({ length: 200 }, (_, index) => ({
+        id: `legacy-share-asset-${index}`,
+        projectId: seeded.projectId,
+        name: `Asset ${index}`,
+        kind: "video" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }));
+      await ctx.db.insert(assets).values(extraAssets).run();
+      const shareResponse = await ctx.app.request("/api/v1/shares", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: seeded.cookie,
+          origin: ORIGIN,
+        },
+        body: JSON.stringify({
+          project_id: seeded.projectId,
+          title: "Legacy share",
+          passphrase: "legacy-share-passphrase",
+          asset_ids: [seeded.assetId, ...extraAssets.map((asset) => asset.id)],
+        }),
+      });
+      expect(shareResponse.status).toBe(201);
+      const { share } = (await shareResponse.json()) as {
+        share: { slug: string };
+      };
+      for (const path of [`/s/${share.slug}`, `/s/${share.slug}/assets`]) {
+        const locked = await ctx.app.request(path);
+        expect(locked.status).toBe(401);
+        expect(await locked.json()).toMatchObject({
+          error: { code: "unauthorized" },
+        });
+      }
+      const access = await ctx.app.request(`/s/${share.slug}/access`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ passphrase: "legacy-share-passphrase" }),
+      });
+      expect(access.status).toBe(200);
+      const headers = { cookie: cookieFrom(access) };
+      const legacy = await ctx.app.request(`/s/${share.slug}`, { headers });
+      expect(legacy.status).toBe(200);
+      const legacyBody = (await legacy.json()) as {
+        assets: unknown[];
+        next_cursor: string | null;
+      };
+      expect(legacyBody.assets).toHaveLength(201);
+      expect(legacyBody.next_cursor).toBeNull();
+      const paged = await ctx.app.request(`/api/v1/s/${share.slug}`, {
+        headers,
+      });
+      expect(paged.status).toBe(200);
+      const pagedBody = (await paged.json()) as {
+        assets: unknown[];
+        next_cursor: string | null;
+      };
+      expect(pagedBody.assets).toHaveLength(200);
+      expect(pagedBody.next_cursor).toEqual(expect.any(String));
+      const missing = await ctx.app.request(`/s/${share.slug}/not-a-route`);
+      expect(missing.status).toBe(404);
+      expect(await missing.json()).toMatchObject({
+        error: { code: "not_found" },
+      });
+    } finally {
+      ctx.sqlite.close();
+    }
+  });
+
   it("serves comment attachments through /media/* with token, range, and disposition", async () => {
     const ctx = makeTestApp(new MemoryBlobStore());
     const seeded = await seedVersionFixture(ctx);

@@ -1,9 +1,16 @@
 import type { Context } from "hono";
 import type { z } from "zod";
-import { AppError, errors } from "@onelight/core";
+import { AppError, errors, randomBytes } from "@onelight/core";
 import type { AppEnv, Variables } from "./types.js";
 
 const JSON_BODY_LIMIT = 1_048_576;
+
+export const base62 = (size: number): string => {
+  const alphabet =
+    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  const bytes = randomBytes(size);
+  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
+};
 
 /**
  * Rate-limit bucket key when the real client IP cannot be observed: no proxy

@@ -10,6 +10,7 @@ import type {
 import type { AppDb, SearchBackend } from "@onelight/db";
 import type { User } from "@onelight/db";
 import type { WorkspaceRole } from "@onelight/core";
+import type { Hono } from "hono";
 
 export interface AppEnv {
   db: AppDb;
@@ -85,3 +86,10 @@ export type Variables = {
   authType: "session" | "token";
   requestId: string;
 };
+
+export type ApiRouter = Hono<{ Variables: Variables }>;
+
+/* A user as the routes handle one: either the session-derived shape (guest
+   folded into role) or a raw row read from the table for wire projection.
+   Property-wise identical apart from role's width. */
+export type ActorUser = SessionUser | User;
