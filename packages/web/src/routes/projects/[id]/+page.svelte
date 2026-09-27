@@ -1,7 +1,16 @@
 <script lang="ts">
   import { askConfirm, askText } from '$lib/confirm.svelte.js';
-  import { tick } from 'svelte';
-  import { goto } from '$app/navigation';
+  import { tick, onDestroy, untrack } from 'svelte';
+  import { auth } from '$lib/auth.svelte.js';
+  import { readPreference, writePreference, isEditing } from '$lib/workbench/preferences.js';
+  import { parseLibrary, parseView, type LibraryView, type LibraryState } from '$lib/workbench/library.js';
+  import LibraryControls from '$lib/workbench/LibraryControls.svelte';
+  import QuickLook from '$lib/workbench/QuickLook.svelte';
+  import AssetInspector from '$lib/workbench/AssetInspector.svelte';
+  import { commandState } from '$lib/workbench/commands.svelte.js';
+  import { undo } from '$lib/workbench/undo.svelte.js';
+  import { changeAsset, trashAsset, restoreAsset } from '$lib/workbench/asset-actions.js';
+  import { beforeNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api, apiDelete, apiPatch, apiPost, createAssetVersion, messageFrom } from '$lib/api.js';
   import { notifications } from '$lib/notifications.svelte.js';
@@ -44,8 +53,9 @@
     deleted_at?: number | null;
     created_at: number;
     updated_at: number;
+    tags?: string[];
   };
-  type Project = { id: string; public_id: string; name: string; palette: string; status: string };
+  type Project = { id: string; public_id: string; name: string; palette: string; status: string; my_role?: 'viewer' | 'editor' | 'manager' };
   type Folder = { id: string; parent_id: string | null; kind?: 'assets' | 'shares'; name: string };
   type TreeNode = { folder: Folder; childIds: string[] | null; expanded: boolean };
   type UploadItem = {
@@ -69,6 +79,8 @@
   };
 
   let project = $state<Project | null>(null);
+  const canEdit = $derived(project?.my_role === 'editor' || project?.my_role === 'manager');
+  const canApprove = $derived(project?.my_role === 'manager');
   type Share = {
     id: string;
     public_id: string;
@@ -139,6 +151,17 @@
      toggle only renders under the 720px breakpoint. SSR renders open; the
      effect folds it before first paint on a phone viewport. */
   let railOpen = $state(true);
+  let personal = $state<LibraryState>(parseLibrary({}));
+  let stateReady = $state(false);
+  let quickId = $state<string | null>(null);
+  let inspectorId = $state<string | null>(null);
+  let inspectorPanel = $state<HTMLElement | null>(null);
+  let inspectorReturn: HTMLElement | null = null;
+  let querySequence = 0;
+  let navigationToken = 0;
+  let restoredUser: string | null = null;
+  let persistTimer: ReturnType<typeof setTimeout> | undefined;
+  let alive = true;
   $effect(() => {
     if (window.matchMedia('(max-width: 720px)').matches) railOpen = false;
   });
@@ -158,10 +181,14 @@
   /* The shortlist filter. A photographer picks frames, then wants to see only
      those, then wants the list of their names to hand to the retoucher. */
   let selectsOnly = $state(false);
-  const listSuffix = (): string =>
-    `${selectedFolder ? `&folder_id=${encodeURIComponent(selectedFolder)}` : ''}${
-      selectsOnly ? '&selected=1' : ''
-    }`;
+  const listSuffix = (): string => {
+    const query = new URLSearchParams({ sort: sortKey, direction: sortDir === 1 ? 'asc' : 'desc' });
+    if (selectedFolder) query.set('folder_id', selectedFolder);
+    if (selectsOnly) query.set('selected', '1');
+    if (personal.view.status) query.set('status', personal.view.status);
+    if (personal.view.kind) query.set('kind', personal.view.kind);
+    return `&${query}`;
+  };
 
   /* The project's own bin. Workspace settings has an admin-only ledger of
      everything trashed anywhere; what a person in a room needs is what THEY
@@ -182,11 +209,14 @@
 
   const restoreFromTrash = async (asset: TrashedAsset): Promise<void> => {
     const id = projectId;
-    if (!id || trashBusy) return;
+    if (!id || trashBusy || undo.busy || asset.deleted_at == null) return;
+    const owner = auth.user?.id;
     trashBusy = true;
     try {
-      await apiPost(`/api/v1/assets/${asset.id}/restore`, {});
-      await Promise.all([loadTrash(id), loadAssets(id)]);
+      const step = await restoreAsset(asset.id, asset.deleted_at);
+      if (owner !== auth.user?.id) return;
+      undo.push({ label: 'Restored asset', steps: [step] });
+      if (alive && projectId === id) await refreshLibraryAfterChange(id);
     } catch (caught) {
       error = messageFrom(caught, 'That asset could not be restored.');
     } finally {
@@ -197,44 +227,64 @@
   /* Loading and loaded-empty are different truths; the ghost grid holds the
      room until the first page answers. Changing folders re-opens the wait. */
   let assetsLoaded = $state(false);
+  let refreshingAssets = $state(false);
 
   const loadAssets = async (id: string): Promise<void> => {
+    const sequence = ++querySequence;
+    loadingMore = false;
+    refreshingAssets = true;
     const folder = selectedFolder;
     const suffix = listSuffix();
+    const targetCount = Math.max(100, assets.length + (assetsLoaded && !nextCursor ? 100 : 0));
     try {
-      const loaded = await api<{ items: Asset[]; next_cursor: string | null }>(
-        `/api/v1/projects/${id}/assets?limit=100${suffix}`
-      );
-      if (id !== projectId || folder !== selectedFolder) return;
-      assets = loaded.items;
-      nextCursor = loaded.next_cursor;
-      selected = selected.filter((entry) => loaded.items.some((asset) => asset.id === entry));
-    } catch {
-      /* Keep whatever list we had; the page error covers hard failures. */
+      // Replace atomically after rebuilding the loaded window. A live event
+      // must not discard a selection or scroll position on a later page.
+      const collected = new Map<string, Asset>();
+      let cursor: string | null = null;
+      for (let count = 0; count < Math.ceil(targetCount / 100) + 2; count += 1) {
+        const limit = Math.min(count === 0 ? 100 : 200, targetCount - collected.size);
+        const loaded: { items: Asset[]; next_cursor: string | null } = await api(
+          `/api/v1/projects/${id}/assets?limit=${limit}${suffix}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
+        );
+        if (id !== projectId || folder !== selectedFolder || sequence !== querySequence) return;
+        for (const asset of loaded.items) collected.set(asset.id, asset);
+        cursor = loaded.next_cursor;
+        if (!cursor || collected.size >= targetCount) break;
+      }
+      if (cursor && collected.size < targetCount) throw new Error('The library changed while refreshing. Try again.');
+      assets = [...collected.values()];
+      nextCursor = cursor;
+      selected = selected.filter(entry => collected.has(entry));
+    } catch (caught) {
+      if (sequence === querySequence) listError = messageFrom(caught, 'Assets could not be loaded.');
     } finally {
-      if (id === projectId && folder === selectedFolder) assetsLoaded = true;
+      if (id === projectId && folder === selectedFolder && sequence === querySequence) {
+        assetsLoaded = true;
+        refreshingAssets = false;
+      }
     }
   };
 
   const loadMoreAssets = async (): Promise<void> => {
     const id = projectId;
     const cursor = nextCursor;
-    if (!id || !cursor || loadingMore) return;
+    if (!id || !cursor || loadingMore || refreshingAssets) return;
     loadingMore = true;
+    const sequence = querySequence;
     const folder = selectedFolder;
     const suffix = listSuffix();
     try {
       const loaded = await api<{ items: Asset[]; next_cursor: string | null }>(
         `/api/v1/projects/${id}/assets?limit=100&cursor=${encodeURIComponent(cursor)}${suffix}`
       );
-      if (id !== projectId || folder !== selectedFolder) return;
+      if (id !== projectId || folder !== selectedFolder || sequence !== querySequence) return;
       const known = new Set(assets.map((asset) => asset.id));
       assets = [...assets, ...loaded.items.filter((asset) => !known.has(asset.id))];
       nextCursor = loaded.next_cursor;
     } catch (caught) {
-      listError = messageFrom(caught, 'More assets could not be loaded.');
+      if (sequence === querySequence) listError = messageFrom(caught, 'More assets could not be loaded.');
     } finally {
-      loadingMore = false;
+      if (sequence === querySequence) loadingMore = false;
     }
   };
 
@@ -288,6 +338,10 @@
   };
 
   const load = async (id: string): Promise<void> => {
+    const navigation = ++navigationToken;
+    stateReady = false;
+    quickId = null; inspectorId = null;
+    querySequence += 1;
     project = null; assets = []; nextCursor = null; error = ''; listError = ''; queue = []; queueWindow.total = 0;
     nodes = {}; rootIds = []; selectedFolder = null; focusedRow = 'root'; assetsLoaded = false;
     shares = []; shareError = ''; shareMenu = null; rowMenu = null;
@@ -297,10 +351,16 @@
     let canonical = '';
     try {
       const loaded = await api<Project>(`/api/v1/projects/${id}`);
-      if (id !== routeId) return;
+      if (id !== routeId || navigation !== navigationToken) return;
       project = loaded;
       projectId = loaded.id;
       canonical = loaded.id;
+      restoredUser = auth.user?.id ?? null;
+      personal = readPreference(restoredUser, `library:${canonical}`, parseLibrary, parseLibrary({}));
+      applyViewValues(personal.view);
+      railOpen = window.innerWidth > 720 && personal.railOpen;
+      if (selectedFolder) await validateFolder(selectedFolder, navigation);
+      if (navigation !== navigationToken) return;
       canonicalizePath(`/projects/${pretty(loaded.public_id, loaded.name)}`);
       /* You are here: this is what the recent shelf on the projects list is
          built from, and what clears this project's badge. Told to the server
@@ -319,12 +379,28 @@
     } catch (caught) {
       treeError = messageFrom(caught, 'Folders could not be loaded.');
     }
+    if (navigation !== navigationToken) return;
     await Promise.all([loadAssets(canonical), loadShares(canonical), loadTrash(canonical)]);
+    if (canonical !== projectId || navigation !== navigationToken) return;
+    const remembered = personal;
+    for (let count = 0; count < 19 && nextCursor && assets.length < remembered.loaded; count += 1) {
+      const before = assets.length;
+      await loadMoreAssets();
+      if (canonical !== projectId || navigation !== navigationToken) return;
+      if (assets.length === before) break;
+    }
+    selected = remembered.selection.filter(id => assets.some(asset => asset.id === id));
+    if (remembered.loaded >= 2000 && nextCursor) listError = 'Restored the first 2,000 assets. Load more to continue further down this library.';
+    inspectorId = selected[0] ?? remembered.inspectorId;
+    stateReady = true;
+    await tick();
+    requestAnimationFrame(() => { if (canonical === projectId && navigation === navigationToken) window.scrollTo(0, remembered.scroll); });
   };
 
   $effect(() => {
     const id = routeId;
-    if (id) void load(id);
+    const userId = auth.user?.id;
+    if (id && userId) untrack(() => { void load(id); });
   });
 
   /* The pretty path segment for links out of this page. */
@@ -334,27 +410,12 @@
 
   /* ---- live updates (project SSE) ---- */
 
-  /* Several rows re-read at once. A batch of versions touches many assets,
-     and re-reading each one as its own request is the shape this whole pass
-     exists to remove; over a handful it is cheaper to re-read the page. */
+  /* Version changes can rename an asset or move its updated-at sort key.
+     Rebuild the server-ordered page rather than patching a stale cursor. */
   const refreshAssets = async (assetIds: string[]): Promise<void> => {
     const id = projectId;
     if (!id || assetIds.length === 0) return;
-    if (assetIds.length > 5) {
-      await loadAssets(id);
-      return;
-    }
-    for (const assetId of assetIds) await refreshAsset(assetId);
-  };
-
-  const refreshAsset = async (assetId: string): Promise<void> => {
-    try {
-      const asset = await api<Asset>(`/api/v1/assets/${assetId}`);
-      assets = assets.map((entry) => (entry.id === assetId ? asset : entry));
-      media.refresh(asset);
-    } catch {
-      /* The row keeps its last known state. */
-    }
+    await loadAssets(id);
   };
 
   /* Arrivals are collected and applied together.
@@ -365,7 +426,6 @@
      and anything larger is a page refresh, which is one request however many
      landed. */
   const ARRIVAL_WINDOW_MS = 400;
-  const ARRIVAL_FETCH_LIMIT = 5;
   let arrivals = new Set<string>();
   let arrivalTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -378,28 +438,7 @@
     const known = new Set(assets.map((asset) => asset.id));
     const fresh = pending.filter((assetId) => !known.has(assetId));
     if (fresh.length === 0) return;
-    if (fresh.length > ARRIVAL_FETCH_LIMIT) {
-      await loadAssets(id);
-      return;
-    }
-    const landed: Asset[] = [];
-    for (const assetId of fresh) {
-      try {
-        const asset = await api<Asset>(`/api/v1/assets/${assetId}`);
-        if (id !== projectId || asset.project_id !== id) continue;
-        /* An event says an asset was created, not that it still exists. The
-           API refuses to read a trashed asset now, so this is belt and
-           braces: nothing puts a deleted row back in the list. */
-        if (asset.deleted_at) continue;
-        if (selectedFolder && asset.folder_id !== selectedFolder) continue;
-        landed.push(asset);
-      } catch {
-        /* A later refresh picks it up. */
-      }
-    }
-    if (!landed.length) return;
-    const present = new Set(assets.map((asset) => asset.id));
-    assets = [...landed.filter((asset) => !present.has(asset.id)), ...assets];
+    await loadAssets(id);
   };
 
   const noteArrival = (id: string, assetId: string): void => {
@@ -431,7 +470,7 @@
         media.refresh(known ?? { id: assetId });
       }
     } else if (event.type === 'asset.version_created') {
-      void refreshAsset(assetId);
+      void refreshAssets([assetId]);
 
     } else if (event.type === 'version.probed') {
       const known = assets.find((asset) => asset.id === assetId);
@@ -539,14 +578,19 @@
   };
 
   const select = async (id: string | null): Promise<void> => {
+    const navigation = ++navigationToken;
+    if (id && !(await validateFolder(id, navigation))) id = null;
+    if (navigation !== navigationToken) return;
     selectedFolder = id;
     showTrash = false;
     assetsLoaded = false;
     selected = [];
     anchor = null;
     if (id) await expand(id);
+    if (navigation !== navigationToken) return;
     const project_ = projectId;
-    if (project_) await loadAssets(project_);
+    if (project_) await reloadLibrary();
+    if (navigation === navigationToken) stateReady = true;
   };
 
   const openTrash = (): void => {
@@ -1103,23 +1147,7 @@
 
   const moveAssets = async (ids: string[], folderId: string | null): Promise<void> => {
     try {
-      await Promise.all(
-        ids.map((id) => apiPatch(`/api/v1/assets/${id}`, { folder_id: folderId }))
-      );
-      /* Reload rather than patch in place: the visible list is folder-scoped,
-         so a moved asset may belong somewhere else now. */
-      if (projectId) await loadAssets(projectId);
-      /* The tree shows folder contents, so a move changes two branches: the one
-         it left and the one it joined. Only refresh what has been opened --
-         an unexpanded folder loads on first sight anyway. */
-      const touched = new Set<string>([folderId ?? 'root']);
-      for (const [key, list] of Object.entries(folderAssets))
-        if (list.some((asset) => ids.includes(asset.id))) touched.add(key);
-      await Promise.all(
-        [...touched]
-          .filter((key) => folderAssets[key] !== undefined || key === (folderId ?? 'root'))
-          .map((key) => loadFolderAssets(key === 'root' ? null : key))
-      );
+      await reversibleBatch('Moved', ids, id => changeAsset(id, { folder_id: folderId }));
       selected = [];
       error = '';
     } catch (caught) {
@@ -1206,14 +1234,11 @@
 
   /* ---- view mode, sorting, selection ---- */
 
-  const VIEW_KEY = 'onelight.assets.view';
-  const initialView = (): 'grid' | 'list' =>
-    typeof localStorage !== 'undefined' && localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'grid';
-  let view = $state<'grid' | 'list'>(initialView());
+  let view = $state<'grid' | 'list'>('grid');
   const toggleSelectsOnly = (): void => {
     selectsOnly = !selectsOnly;
     const id = projectId;
-    if (id) void loadAssets(id);
+    if (id) void reloadLibrary();
   };
 
   /* The picks as a list of filenames, which is the artifact that otherwise
@@ -1258,16 +1283,135 @@
 
   const setView = (next: 'grid' | 'list'): void => {
     view = next;
-    try {
-      localStorage.setItem(VIEW_KEY, next);
-    } catch {
-      /* Private mode: the toggle still works for this visit. */
-    }
   };
 
   type SortKey = 'name' | 'status' | 'created_at' | 'updated_at';
   let sortKey = $state<SortKey>('created_at');
   let sortDir = $state<1 | -1>(-1);
+  let cardSize = $state(200);
+  const currentView = $derived<LibraryView>({ ...personal.view, view, sort: sortKey,
+    direction: sortDir === 1 ? 'asc' : 'desc', selects: selectsOnly, folder: selectedFolder, cardSize });
+  const applyViewValues = (value: LibraryView): void => {
+    personal.view = parseView(value);
+    view = personal.view.view; sortKey = personal.view.sort;
+    sortDir = personal.view.direction === 'asc' ? 1 : -1;
+    selectsOnly = personal.view.selects; selectedFolder = personal.view.folder;
+    cardSize = personal.view.cardSize;
+  };
+  const validateFolder = async (id: string, navigation = navigationToken): Promise<boolean> => {
+    const project_ = projectId;
+    try {
+      const folder = await api<Folder & { project_id: string }>(`/api/v1/folders/${encodeURIComponent(id)}`);
+      if (project_ !== projectId || navigation !== navigationToken) return false;
+      if (folder.project_id !== project_ || folder.kind === 'shares') throw new Error('Folder is not available.');
+      nodes[id] = nodes[id] ? { ...nodes[id], folder } : { folder, childIds: null, expanded: false };
+      personal.pins = personal.pins.map(pin => pin.id === id ? { id, name: folder.name } : pin);
+      return true;
+    } catch {
+      if (project_ === projectId && navigation === navigationToken) {
+        selectedFolder = null;
+        listError = 'The remembered folder is no longer available. Showing all assets.';
+      }
+      return false;
+    }
+  };
+  const changeView = async (patch: Partial<LibraryView>): Promise<void> => {
+    const navigation = ++navigationToken;
+    const before = listSuffix();
+    applyViewValues({ ...currentView, ...patch });
+    if (patch.folder && !(await validateFolder(patch.folder, navigation)) && navigation === navigationToken) selectedFolder = null;
+    if (navigation !== navigationToken) return;
+    if (before !== listSuffix() && projectId) {
+      selected = [];
+      await reloadLibrary();
+    }
+  };
+  const reloadLibrary = async (): Promise<void> => {
+    assets = []; nextCursor = null; assetsLoaded = false; listError = '';
+    if (projectId) await loadAssets(projectId);
+  };
+  const saveView = async (): Promise<void> => {
+    if (personal.saved.length >= 20) return;
+    const name = await askText({ title: 'Save library view', label: 'View name', placeholder: 'Approved finals', confirmLabel: 'Save view' });
+    if (name?.trim()) {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      personal.saved = [...personal.saved, { id, name: name.trim().slice(0, 80), view: parseView(currentView) }];
+      personal.activeView = id;
+    }
+  };
+  const renameView = async (id: string): Promise<void> => {
+    const found = personal.saved.find(v => v.id === id);
+    if (!found) return;
+    const name = await askText({ title: 'Rename saved view', label: 'View name', initial: found.name, confirmLabel: 'Rename' });
+    if (name?.trim()) personal.saved = personal.saved.map(v => v.id === id ? { ...v, name: name.trim().slice(0, 80) } : v);
+  };
+  const pinFolder = (): void => {
+    const id = selectedFolder;
+    if (!id) return;
+    personal.pins = personal.pins.some(pin => pin.id === id)
+      ? personal.pins.filter(pin => pin.id !== id)
+      : [...personal.pins, { id, name: selectedName }].slice(-20);
+  };
+  const saveWorkingState = (): void => {
+    clearTimeout(persistTimer);
+    persistTimer = undefined;
+    if (!stateReady || !projectId || restoredUser !== auth.user?.id) return;
+    writePreference(restoredUser, `library:${projectId}`, {
+      ...personal, view: currentView, selection: selected, loaded: assets.length,
+      railOpen, inspectorId, scroll: window.scrollY,
+    });
+  };
+  const scheduleSave = (): void => {
+    if (persistTimer !== undefined) return;
+    persistTimer = setTimeout(saveWorkingState, 300);
+  };
+  $effect(() => {
+    const snapshot = { personal, currentView, selected, railOpen, inspectorId, count: assets.length, stateReady };
+    // Read nested settings as a single compact snapshot, write after interaction settles.
+    JSON.stringify(snapshot);
+    untrack(scheduleSave);
+  });
+  // Snapshot before navigation removes the long virtual list and clamps scrollY.
+  beforeNavigate(saveWorkingState);
+  onDestroy(() => { clearTimeout(persistTimer); alive = false; navigationToken += 1; querySequence += 1; });
+  let lastUndoRevision = undo.revision;
+  $effect(() => {
+    const revision = undo.revision;
+    if (revision === lastUndoRevision) return;
+    lastUndoRevision = revision;
+    untrack(() => {
+      if (alive && projectId && auth.user?.id === restoredUser) {
+        void refreshLibraryAfterChange(projectId);
+      }
+    });
+  });
+  const inspect = (id: string): void => {
+    inspectorReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    inspectorId = id; personal.inspectorOpen = true;
+    void tick().then(() => inspectorPanel?.focus());
+  };
+  const closeInspector = (): void => {
+    personal.inspectorOpen = false;
+    if (inspectorReturn?.isConnected) inspectorReturn.focus();
+  };
+  $effect(() => {
+    if (selected[0]) inspectorId = selected[0];
+  });
+  $effect(() => {
+    if (!projectId) return;
+    const id = selected[0] ?? inspectorId;
+    commandState.contextual = [
+      { id: 'library-grid', label: 'Library: grid view', run: () => setView('grid') },
+      { id: 'library-list', label: 'Library: list view', run: () => setView('list') },
+      { id: 'library-save', label: 'Save current library view', run: saveView },
+      { id: 'library-density', label: personal.view.density === 'compact' ? 'Comfortable information density' : 'Compact information density', run: () => { personal.view.density = personal.view.density === 'compact' ? 'comfortable' : 'compact'; } },
+      ...(id ? [
+        { id: 'asset-preview', label: 'Quick look at selected asset', run: () => { quickId = id; } },
+        { id: 'asset-inspect', label: 'Inspect selected asset', run: () => inspect(id) },
+      ] : []),
+    ];
+    return () => { commandState.contextual = []; };
+  });
   const sortBy = (key: SortKey): void => {
     if (sortKey === key) {
       sortDir = sortDir === 1 ? -1 : 1;
@@ -1275,23 +1419,9 @@
       sortKey = key;
       sortDir = key === 'name' || key === 'status' ? 1 : -1;
     }
+    if (projectId) void reloadLibrary();
   };
-  /* Client-side sort over the pages loaded so far; unloaded pages join the
-     order as they arrive via Load more. */
-  const sortedAssets = $derived.by(() => {
-    const list = [...assets];
-    list.sort((a, b) => {
-      const left = a[sortKey];
-      const right = b[sortKey];
-      const compared =
-        typeof left === 'string' && typeof right === 'string'
-          ? left.localeCompare(right, undefined, { sensitivity: 'base' })
-          : Number(left) - Number(right);
-      return compared * sortDir || a.id.localeCompare(b.id);
-    });
-    return list;
-  });
-  const displayed = $derived(view === 'grid' ? assets : sortedAssets);
+  const displayed = $derived(assets);
   /* One window serves both views: only one of them is mounted at a time, and
      each measures its own cell when it appears. Pages load as the scroller
      approaches the end rather than on a button, so a folder of any size is
@@ -1300,7 +1430,7 @@
     scroller: 'window',
     overscan: 2,
     onEnd: () => {
-      if (nextCursor && !loadingMore) void loadMoreAssets();
+      if (stateReady && assetsLoaded && browserWindow.total === assets.length && assets.length > 0 && nextCursor && !loadingMore) void loadMoreAssets();
     }
   });
   $effect(() => {
@@ -1315,25 +1445,10 @@
      The size is a width in pixels and it moves continuously. Four fixed steps
      made the wall jump between four layouts; sorting through a contact sheet
      wants the size to answer the hand. */
-  const SIZE_KEY = 'onelight.assets.cardsize';
   const CARD_MIN = 120;
   const CARD_MAX = 400;
-  const CARD_DEFAULT = 200;
   /* What the four old steps meant, so a stored index becomes the width it used
      to draw rather than a card 2px wide. */
-  const LEGACY_SIZES = [130, 200, 280, 380];
-  let cardSize = $state(CARD_DEFAULT);
-  $effect(() => {
-    try {
-      const stored = Number(localStorage.getItem(SIZE_KEY));
-      if (!Number.isFinite(stored)) return;
-      if (Number.isInteger(stored) && stored >= 0 && stored < LEGACY_SIZES.length)
-        cardSize = LEGACY_SIZES[stored] ?? CARD_DEFAULT;
-      else if (stored >= CARD_MIN && stored <= CARD_MAX) cardSize = stored;
-    } catch {
-      /* Storage can be unavailable; the default size stands. */
-    }
-  });
   const setSize = (next: number): void => {
     cardSize = Math.round(next);
   };
@@ -1341,11 +1456,6 @@
      one decision, not two hundred writes to localStorage. */
   const commitSize = (next: number): void => {
     cardSize = Math.round(next);
-    try {
-      localStorage.setItem(SIZE_KEY, String(cardSize));
-    } catch {
-      /* Non-persistent, still applied for the session. */
-    }
   };
 
   /* Codec and picture size, read out of the stored probe. media_info is the
@@ -1407,6 +1517,7 @@
   };
 
   const onCardPointerDown = (event: PointerEvent, id: string): void => {
+    if (event.target instanceof Element && event.target.closest('a, button, input')) return;
     /* Let modifier-clicks and non-primary buttons fall through to select. */
     if (event.button !== 0 || event.shiftKey || event.metaKey || event.ctrlKey) return;
     holdFired = false;
@@ -1436,6 +1547,8 @@
   };
 
   const onCardClick = (event: MouseEvent, id: string): void => {
+    // Let native links bubble to SvelteKit so navigation preserves in-memory undo.
+    if (event.target instanceof Element && event.target.closest('a, button, input')) return;
     /* The hold already acted; the click that follows it must not also open. */
     if (holdFired) {
       holdFired = false;
@@ -1490,9 +1603,13 @@
   };
 
   const onItemKeydown = (event: KeyboardEvent, id: string): void => {
+    if (isEditing(event.target) || event.defaultPrevented) return;
+    if (event.target !== event.currentTarget && event.target instanceof Element && event.target.closest('button, a')) return;
     if (event.key === ' ') {
       event.preventDefault();
-      handleSelect(event, id);
+      event.stopPropagation();
+      if (event.shiftKey || event.ctrlKey || event.metaKey) handleSelect(event, id);
+      else quickId = id;
     } else if (event.key === 'Enter') {
       event.preventDefault();
       void goto(assetHref(id));
@@ -1656,6 +1773,37 @@
     }
     batch = { ...batch, running: false };
   };
+  const refreshLibraryAfterChange = async (id: string): Promise<void> => {
+    const open = new Set(visibleRows.filter(row => row.kind === 'folder' && nodes[row.id]?.expanded).map(row => row.id));
+    // Keep visible branches in place while refreshing; hidden branches reload on expansion.
+    folderAssets = Object.fromEntries(Object.entries(folderAssets).filter(([key]) => open.has(key)));
+    await Promise.all([loadAssets(id), loadTrash(id), ...[...open].map(loadFolderAssets)]);
+  };
+  const reversibleBatch = async (label: string, ids: string[], run: (id: string) => Promise<() => Promise<void>>): Promise<void> => {
+    if (batch.running || undo.busy) return;
+    const origin = projectId;
+    const owner = auth.user?.id;
+    const steps: Array<() => Promise<void>> = [];
+    await runBatch(label, ids, async (id) => {
+      if (!owner || owner !== auth.user?.id) throw new Error('The signed-in account changed.');
+      steps.push(await run(id));
+    });
+    if (steps.length && owner === auth.user?.id) undo.push({ label: `${label}: ${steps.length} ${steps.length === 1 ? 'asset' : 'assets'}`, steps });
+    if (alive && owner === auth.user?.id && origin && origin === projectId) await refreshLibraryAfterChange(origin);
+  };
+  const renameAsset = async (id: string): Promise<void> => {
+    const name = await askText({ title: 'Rename asset', label: 'Asset name', initial: nameOf(id), confirmLabel: 'Rename' });
+    if (name?.trim()) await reversibleBatch('Renamed', [id], id => changeAsset(id, { name: name.trim() }));
+  };
+  const editTags = async (id: string): Promise<void> => {
+    try {
+      const asset = await api<Asset>(`/api/v1/assets/${id}`);
+      const text = await askText({ title: 'Edit asset tags', label: 'Tags, separated by commas', initial: asset.tags?.join(', ') ?? '', confirmLabel: 'Save tags', allowEmpty: true, maxLength: 10000 });
+      if (text === null) return;
+      const tags = [...new Set(text.split(',').map(tag => tag.trim()).filter(Boolean))];
+      await reversibleBatch('Updated tags', [id], id => changeAsset(id, { tags }));
+    } catch (caught) { listError = messageFrom(caught, 'Tags could not be updated.'); }
+  };
 
   /* Every folder that can hold an asset, flattened for a picker. The rail only
      knows the branches that have been expanded, so this walks the whole asset
@@ -1694,20 +1842,12 @@
   const applyMove = async (): Promise<void> => {
     const ids = [...selected];
     moveOpen = false;
-    await runBatch('Moving', ids, async (id) => {
-      await apiPatch(`/api/v1/assets/${id}`, { folder_id: moveTarget || null });
-    });
-    selected = [];
-    const id = projectId;
-    if (id) await loadAssets(id);
+    await moveAssets(ids, moveTarget || null);
   };
 
   const applyApproval = async (): Promise<void> => {
     const ids = [...selected];
-    await runBatch('Setting status', ids, async (id) => {
-      const updated = await apiPatch<Asset>(`/api/v1/assets/${id}/approval`, { status: approvalChoice });
-      assets = assets.map((asset) => (asset.id === id ? { ...asset, status: updated.status } : asset));
-    });
+    await reversibleBatch('Changed status', ids, id => changeAsset(id, { status: approvalChoice }));
   };
 
   const trashSelected = async (): Promise<void> => {
@@ -1721,14 +1861,8 @@
       }))
     )
       return;
-    await runBatch('Trashing', ids, async (id) => {
-      await apiPost(`/api/v1/assets/${id}/trash`);
-    });
+    await reversibleBatch('Trashed', ids, trashAsset);
     selected = [];
-    const id = projectId;
-    /* Refresh the bin too, or the rail keeps saying the project has no trash
-       while the thing you just threw away is sitting in it. */
-    if (id) await Promise.all([loadAssets(id), loadTrash(id)]);
   };
 
   /* ---- uploads ---- */
@@ -2069,27 +2203,14 @@
     enqueue(await filesFromDataTransfer(event.dataTransfer as DataTransfer));
   };
 
-  /* A freshly created asset joins the list in place. Newest first is the list
-     order, so it goes to the front, but only when the browser is actually
-     looking at where it landed: an upload into another folder must not appear
-     in this one. */
+  /* The server owns ordering and filtering, including freshly landed media. */
   const adoptCreatedAssets = (
     landed: Array<{ asset: Asset; folderId: string | null }>
   ): void => {
     /* A new asset is not on the shortlist, so it does not belong in a view
        that is showing only the shortlist. */
     if (showTrash || selectsOnly || landed.length === 0) return;
-    const known = new Set(assets.map((asset) => asset.id));
-    const fresh = landed
-      .filter(
-        (entry) =>
-          (selectedFolder ?? null) === (entry.folderId ?? null) &&
-          !known.has(entry.asset.id)
-      )
-      .map((entry) => entry.asset);
-    if (!fresh.length) return;
-    /* Newest first is the list's order, and a batch arrives newest last. */
-    assets = [...fresh.reverse(), ...assets];
+    if (projectId) void loadAssets(projectId);
   };
 
   /* Landing is batched.
@@ -2411,11 +2532,12 @@
   ondragleave={onPageDragLeave}
   ondrop={onPageDrop}
   ondragend={endPageDrop}
-  onscroll={closeShareMenu}
+  onscroll={() => { closeShareMenu(); if (stateReady) scheduleSave(); }}
+  onpagehide={saveWorkingState}
   onkeydown={(event) => { if (event.key === 'Escape') closeShareMenu(); }}
 />
 
-<main class="room" class:pagedrop={pageDropActive} style={`background-image: ${wash};`}>
+<main class="room" class:inspecting={personal.inspectorOpen && !!inspectorId} class:compact={personal.view.density === 'compact'} class:pagedrop={pageDropActive} style={`background-image: ${wash}; --rail-width: ${personal.railWidth}px; --inspector-width: ${personal.inspectorWidth}px;`}>
   {#if pageDropActive}
     <div class="dropveil" aria-hidden="true">
       <div class="dropcard">
@@ -2468,6 +2590,14 @@
           Folders &amp; shares
           {#if shares.length}<span class="tc railcount">{shares.length + rootIds.length}</span>{/if}
         </button>
+        {#if personal.pins.length}
+          <nav class="pins" aria-label="Pinned folders">
+            <h2>Pinned folders</h2>
+            {#each personal.pins as pin (pin.id)}
+              <div><button type="button" class="quiet pinlink" onclick={() => void select(pin.id)}>{pin.name}</button><button type="button" class="quiet" aria-label={`Unpin ${pin.name}`} onclick={() => { personal.pins = personal.pins.filter(p => p.id !== pin.id); }}>Unpin</button></div>
+            {/each}
+          </nav>
+        {/if}
         <div class="railbody">
         <!-- Making a folder comes before filing things in one, so the control
              that makes them sits above the list rather than under it. -->
@@ -2857,6 +2987,9 @@
             </span>
           {/if}
           {#if !showTrash}
+            {#if selectedFolder}<button type="button" class="quiet" onclick={pinFolder}>{personal.pins.some(p => p.id === selectedFolder) ? 'Unpin folder' : 'Pin folder'}</button>{/if}
+            <button type="button" class="quiet" disabled={!selected[0] && !inspectorId} onclick={() => { quickId = selected[0] ?? inspectorId; }}>Quick look</button>
+            <button type="button" class="quiet" aria-pressed={personal.inspectorOpen} onclick={() => { const id = selected[0] ?? inspectorId ?? assets[0]?.id; if (personal.inspectorOpen) closeInspector(); else if (id) inspect(id); }}>Inspector</button>
             <button
               type="button"
               class="viewbtn"
@@ -2877,6 +3010,16 @@
             <button type="button" class="quiet" onclick={() => void select(selectedFolder)}>Back to assets</button>
           {/if}
         </div>
+
+        {#if !showTrash && stateReady}
+          <LibraryControls value={currentView} saved={personal.saved} selectedId={personal.activeView} onchange={(patch) => { void changeView(patch); }}
+            onsave={() => void saveView()} onapply={(value, id) => { personal.activeView = id; void changeView(value); }}
+            onrename={(id) => { void renameView(id); }} ondelete={(id) => { personal.saved = personal.saved.filter(v => v.id !== id); }}
+            railWidth={personal.railWidth} onrailwidth={(width) => { personal.railWidth = width; }} />
+        {/if}
+        {#if listError}
+          <div class="list-notice" role="status"><p>{listError}</p><button type="button" class="quiet" onclick={() => { listError = ''; }}>Dismiss</button><button type="button" class="quiet" onclick={() => { void reloadLibrary(); }}>Refresh library</button></div>
+        {/if}
 
         {#if showTrash}
           <!-- Names, where each came from, when it went, and the way back.
@@ -2910,7 +3053,11 @@
               <span class="tc">{batch.label} {batch.done} of {batch.total}</span>
             {:else if selected.length > 0}
               <span class="tc">{selected.length} selected</span>
-              <button type="button" class="quiet" onclick={() => void openMove()}>Move to folder</button>
+              {#if selected.length === 1 && canEdit}
+                <button type="button" class="quiet" onclick={() => void renameAsset(selected[0])}>Rename</button>
+                <button type="button" class="quiet" onclick={() => void editTags(selected[0])}>Edit tags</button>
+              {/if}
+              <button type="button" class="quiet" disabled={!canEdit} onclick={() => void openMove()}>Move to folder</button>
               <button type="button" class="quiet" onclick={downloadSelection}>Download zip</button>
               <button type="button" class="quiet" onclick={() => void downloadSelectionFiles()}>Download files</button>
               <span class="approval">
@@ -2936,7 +3083,7 @@
                   <option value="approved">Approved</option>
                   <option value="changes_requested">Changes requested</option>
                 </select>
-                <button type="button" class="quiet" onclick={() => void applyApproval()}>Set status</button>
+                <button type="button" class="quiet" disabled={!canApprove} onclick={() => void applyApproval()}>Set status</button>
               </span>
               <button type="button" class="quiet danger" onclick={() => void trashSelected()}>Trash</button>
               <button type="button" class="quiet" onclick={() => { selected = []; anchor = null; }}>Clear</button>
@@ -3009,7 +3156,13 @@
             {/each}
           </div>
         {:else if displayed.length === 0}
-          <p class="empty">{selectedFolder ? 'No assets in this folder. Drop media above to fill it.' : 'No assets yet. Upload media to start a review.'}</p>
+          {#if listError}
+            <p class="empty">The library could not be loaded. Use Refresh library to try again.</p>
+          {:else if personal.view.status || personal.view.kind || selectsOnly}
+            <div class="empty"><p>No assets match this view.</p><button type="button" class="quiet" onclick={() => { void changeView({ status: '', kind: '', selects: false }); }}>Clear all filters</button></div>
+          {:else}
+            <p class="empty">{selectedFolder ? 'No assets in this folder. Drop media above to fill it.' : 'No assets yet. Upload media to start a review.'}</p>
+          {/if}
         {:else if view === 'grid'}
           <!-- Windowed on the page's own scroll: a folder can hold a whole
                delivery, and only what is near the viewport is built. The
@@ -3056,7 +3209,6 @@
                   <a
                     class="card-name"
                     href={assetHref(asset.id)}
-                    onclick={(event) => event.stopPropagation()}
                   >{asset.name}</a>
                   {#if detail && detail.versionCount > 1}
                     <span class="vbadge tc" title={`${detail.versionCount} versions`}>v{detail.versionCount}</span>
@@ -3089,14 +3241,14 @@
                   />
                 </th>
                 {@render sortHeader('name', 'Name')}
-                {@render sortHeader('status', 'Status')}
-                <th>Kind</th>
-                <th>Runtime</th>
-                <th>Size</th>
-                <th>Format</th>
-                <th>Versions</th>
-                {@render sortHeader('created_at', 'Created')}
-                {@render sortHeader('updated_at', 'Updated')}
+                {#if personal.view.columns.includes('status')}{@render sortHeader('status', 'Status')}{/if}
+                {#if personal.view.columns.includes('kind')}<th>Kind</th>{/if}
+                {#if personal.view.columns.includes('runtime')}<th>Runtime</th>{/if}
+                {#if personal.view.columns.includes('size')}<th>Size</th>{/if}
+                {#if personal.view.columns.includes('format')}<th>Format</th>{/if}
+                {#if personal.view.columns.includes('versions')}<th>Versions</th>{/if}
+                {#if personal.view.columns.includes('created')}{@render sortHeader('created_at', 'Created')}{/if}
+                {#if personal.view.columns.includes('updated')}{@render sortHeader('updated_at', 'Updated')}{/if}
               </tr>
             </thead>
             <tbody use:browserWindow.container>
@@ -3146,25 +3298,25 @@
                         <img src={detail.posterUrl} alt="" loading="lazy" decoding="async" use:arrives />
                       {/if}
                     </span>
-                    <a href={assetHref(asset.id)} onclick={(event) => event.stopPropagation()}>{asset.name}</a>
+                    <a href={assetHref(asset.id)}>{asset.name}</a>
                   </td>
-                  <td>
+                  {#if personal.view.columns.includes('status')}<td>
                     {#if STATUS_LABEL[asset.status]}
                       <span class={`chip s-${asset.status}`}>{STATUS_LABEL[asset.status]}</span>
                     {/if}
                     {#if transcodeLabel(detail?.transcodeStatus ?? null)}
                       <span class="chip t-{detail?.transcodeStatus}">{transcodeLabel(detail?.transcodeStatus ?? null)}</span>
                     {/if}
-                  </td>
-                  <td class="kindcell">{asset.kind}</td>
-                  <td class="tc">{runtimeOf(detail?.currentVersion)}</td>
-                  <td class="tc">{detail?.currentVersion?.size ? formatBytes(detail.currentVersion.size) : ''}</td>
+                  </td>{/if}
+                  {#if personal.view.columns.includes('kind')}<td class="kindcell">{asset.kind}</td>{/if}
+                  {#if personal.view.columns.includes('runtime')}<td class="tc">{runtimeOf(detail?.currentVersion)}</td>{/if}
+                  {#if personal.view.columns.includes('size')}<td class="tc">{detail?.currentVersion?.size ? formatBytes(detail.currentVersion.size) : ''}</td>{/if}
                   <!-- What it actually is, from the probe: a list of names
                        cannot tell a ProRes from an H.264 named the same. -->
-                  <td class="fmtcell">{formatOf(detail?.currentVersion)}</td>
-                  <td class="tc">{detail ? detail.versionCount : ''}</td>
-                  <td class="tc" title={whenAbsolute(asset.created_at)}>{whenRelative(asset.created_at)}</td>
-                  <td class="tc" title={whenAbsolute(asset.updated_at)}>{whenRelative(asset.updated_at)}</td>
+                  {#if personal.view.columns.includes('format')}<td class="fmtcell">{formatOf(detail?.currentVersion)}</td>{/if}
+                  {#if personal.view.columns.includes('versions')}<td class="tc">{detail ? detail.versionCount : ''}</td>{/if}
+                  {#if personal.view.columns.includes('created')}<td class="tc" title={whenAbsolute(asset.created_at)}>{whenRelative(asset.created_at)}</td>{/if}
+                  {#if personal.view.columns.includes('updated')}<td class="tc" title={whenAbsolute(asset.updated_at)}>{whenRelative(asset.updated_at)}</td>{/if}
                 </tr>
               {/each}
               {#if browserSlice.padBottom > 0}
@@ -3173,20 +3325,30 @@
             </tbody>
           </table>
           </div>
-          <p class="hint">Sorting orders the {assets.length} loaded assets; load more to include the rest.</p>
+          <p class="hint">{assets.length} loaded. Sorting and filters apply to the whole library.</p>
         {/if}
         {#if nextCursor}
-          <button type="button" class="quiet more" onclick={() => void loadMoreAssets()} disabled={loadingMore}>
+          <button type="button" class="quiet more" onclick={() => void loadMoreAssets()} disabled={loadingMore || refreshingAssets}>
             {loadingMore ? 'Loading' : 'Load more'}
           </button>
         {/if}
         {#if displayed.length > 0 && !showTrash}
-          <p class="hint kbdhint">Click opens, hold selects. Ctrl-click adds, Shift-click extends, right-click shares.</p>
+          <p class="hint kbdhint">Click opens, hold selects. Space previews, Ctrl-click adds, Shift-click extends.</p>
         {/if}
       </section>
     </div>
   {/if}
 </main>
+
+{#if quickId}
+  <QuickLook assets={displayed} assetId={quickId} href={assetHref} hasMore={!!nextCursor} onmore={loadMoreAssets} onnavigate={(id) => { quickId = id; }} onclose={() => { quickId = null; }} />
+{/if}
+{#if personal.inspectorOpen && inspectorId}
+  <aside bind:this={inspectorPanel} tabindex="-1" class="asset-inspector" aria-label="Asset inspector" style={`width: min(${personal.inspectorWidth}px, 100vw);`}>
+    <label class="inspector-size">Panel width<input type="range" min="280" max="480" step="10" aria-label="Inspector width" bind:value={personal.inspectorWidth} /></label>
+    <AssetInspector assetId={inspectorId} onclose={closeInspector} />
+  </aside>
+{/if}
 
 <!-- Right-click menu. Positioned at the pointer and dismissed by the next
      click anywhere, Escape, or a scroll -- a menu that outlives its context is
@@ -3268,6 +3430,12 @@
     </p>
     {#if menu.ids.length === 1}
       <button type="button" role="menuitem" onclick={() => menuOpen(takeMenuIds())}>Open</button>
+      <button type="button" role="menuitem" onclick={() => { quickId = takeMenuIds()[0] ?? null; }}>Quick look</button>
+      <button type="button" role="menuitem" onclick={() => { const id = takeMenuIds()[0]; if (id) inspect(id); }}>Inspect</button>
+      {#if canEdit}
+        <button type="button" role="menuitem" onclick={() => { const id = takeMenuIds()[0]; if (id) void renameAsset(id); }}>Rename</button>
+        <button type="button" role="menuitem" onclick={() => { const id = takeMenuIds()[0]; if (id) void editTags(id); }}>Edit tags</button>
+      {/if}
     {/if}
     <button type="button" role="menuitem" onclick={() => void menuDownload(takeMenuIds())}>Download</button>
 
@@ -3449,7 +3617,23 @@
      third of the screen empty beside it, while the asset grid -- the thing you
      came for -- wrapped at four across. The folder pane stays a fixed column;
      everything else it does not need goes to the assets. */
-  .body { padding: var(--pad-3) var(--pad-4) var(--pad-4); display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--pad-4); align-items: start; }
+  .body { padding: var(--pad-3) var(--pad-4) var(--pad-4); display: grid; grid-template-columns: var(--rail-width, 240px) minmax(0, 1fr); gap: var(--pad-4); align-items: start; }
+  .main { min-width: 0; }
+  .inspecting { margin-right: var(--inspector-width); }
+  .asset-inspector { position: fixed; right: 0; top: 52px; bottom: 0; z-index: 30; overflow: auto; background: var(--ink-100); padding: 16px; box-sizing: border-box; }
+  .inspector-size { display: grid; gap: 6px; margin-bottom: 16px; color: var(--ink-text-dim); font-size: 13px; }
+  .inspector-size input { accent-color: var(--accent); }
+  .pins { margin-bottom: 20px; }
+  .pins h2 { font-size: 13px; font-weight: 500; color: var(--ink-text-dim); }
+  .pins > div { display: flex; gap: 4px; }
+  .list-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px; background: var(--ink-100); font-size: 13px; }
+  .list-notice p { flex: 1; margin: 0; min-width: 180px; }
+  .pinlink { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+  .compact .grid { gap: 8px; }
+  .compact .card { padding: 4px; margin: -4px; gap: 4px; }
+  .compact .list td { padding-top: 4px; padding-bottom: 4px; }
+  @media (max-width: 1000px) { .inspecting { margin-right: 0; } }
+  @media (max-width: 760px) { .body { grid-template-columns: minmax(0, 1fr); } }
   /* A grid item's min-content width beats its track: without this the rail's
      rows -- name plus Rename plus Delete -- push the pane past its 240px column
      and slide under the content beside it. */
@@ -3488,7 +3672,6 @@
     .grow { display: none; }
     .body { padding: var(--pad-2) var(--pad-2) var(--pad-3); gap: var(--pad-3); }
   }
-  @media (max-width: 760px) { .body { grid-template-columns: 1fr; } }
   /* Mouse-and-keyboard coaching reads as noise where there is neither, and
      directory upload does not exist in mobile browsers. */
   @media (pointer: coarse) {
@@ -3639,8 +3822,8 @@
   li.q-failed .state { color: var(--warn); }
 
   /* ---- browser chrome ---- */
-  .browser-bar { display: flex; align-items: center; gap: 14px; margin-top: var(--pad-2); }
-  .browser-title { margin: 0; font-size: var(--text-14); font-weight: 600; }
+  .browser-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: var(--pad-2); }
+  .browser-title { margin: 0; overflow-wrap: anywhere; font-size: var(--text-14); font-weight: 600; }
   .views { display: flex; gap: 2px; }
   .viewbtn { background: var(--ink-100); color: var(--ink-text-dim); font-weight: 500; padding: 6px 12px; }
   .viewbtn:hover { background: var(--ink-200); color: var(--ink-text); }

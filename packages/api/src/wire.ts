@@ -14,6 +14,7 @@ import type {
   commentAttachments,
   shares,
   shareViewers,
+  folders,
 } from "@onelight/db/schema";
 import type { ActorUser } from "./types.js";
 
@@ -60,6 +61,15 @@ export const uploadWire = (upload: typeof uploadSessions.$inferSelect) => ({
   status: upload.status,
   created_at: upload.createdAt,
   completed_at: upload.completedAt,
+});
+
+export const folderWire = (folder: typeof folders.$inferSelect) => ({
+  id: folder.id,
+  project_id: folder.projectId,
+  parent_id: folder.parentId,
+  kind: folder.kind,
+  name: folder.name,
+  created_at: folder.createdAt,
 });
 
 export const assetWire = (asset: typeof assets.$inferSelect) => ({

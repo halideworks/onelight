@@ -23,6 +23,7 @@ import { commentWire, assetWire } from "../wire.js";
 import type { Activity } from "../operation/activity.js";
 import type { Media } from "../operation/media.js";
 import type { Blobs } from "../operation/blobs.js";
+import { assetPredicate, nextAssetStamp } from "../operation/asset-state.js";
 
 export const registerCommentsRoutes = (
   api: ApiRouter,
@@ -755,20 +756,16 @@ export const registerCommentsRoutes = (
     const actor = userFromContext(c);
     const asset = await assetForActor(c.req.param("id"), actor, "manager");
     const body = await jsonBody(c, bodies.approvalPatch);
-    await env.db
+    const [updated] = await env.db
       .update(assets)
-      .set({ status: body.status, updatedAt: env.clock.now() })
-      .where(eq(assets.id, asset.id))
-      .run();
-    const updated = (
-      await env.db
-        .select()
-        .from(assets)
-        .where(eq(assets.id, asset.id))
-        .limit(1)
-        .all()
-    )[0];
-    if (!updated) throw errors.notFound();
+      .set({ status: body.status, updatedAt: nextAssetStamp(env.clock.now()) })
+      .where(
+        and(assetPredicate(asset.id, body.expected), isNull(assets.deletedAt)),
+      )
+      .returning()
+      .all();
+    if (!updated)
+      throw errors.conflict("The asset changed. Refresh before trying again.");
     await notifyApprovalChange({
       asset: updated,
       status: body.status,

@@ -25,6 +25,24 @@ const approvalStatus = z.enum([
   "approved",
   "changes_requested",
 ]);
+const assetExpected = z
+  .object({
+    name: z.string().min(1).max(500).optional(),
+    folder_id: z.string().nullable().optional(),
+    status: approvalStatus.optional(),
+    tags: z.array(z.string().min(1).max(100)).max(100).optional(),
+    selected: z.boolean().optional(),
+    deleted_at: z.number().int().nonnegative().safe().nullable().optional(),
+    updated_at: z.number().int().nonnegative().safe().optional(),
+  })
+  .strict();
+
+export const assetListQuery = z.object({
+  sort: z.enum(["name", "status", "created_at", "updated_at"]).optional(),
+  direction: z.enum(["asc", "desc"]).optional(),
+  status: approvalStatus.optional(),
+  kind: z.enum(["video", "audio", "image", "pdf", "file"]).optional(),
+});
 const allowDownload = z.enum(["none", "proxy", "original"]);
 const shareLayout = z.enum(["grid", "list", "reel"]);
 const shareKind = z.enum(["review", "presentation"]);
@@ -314,7 +332,10 @@ export const bodies = {
   replyCreate: commentBody.extend({ mentions: mentionList }),
   reactionCreate: z.object({ code: z.string().regex(/^[a-z0-9_]{1,32}$/) }),
   carryForward: z.object({ from_version_id: z.string() }),
-  approvalPatch: z.object({ status: approvalStatus }),
+  approvalPatch: z.object({
+    status: approvalStatus,
+    expected: assetExpected.optional(),
+  }),
   /* Rows by id, or every unread row in one project. The project form is what
      a badge needs: a count the server made can only be cleared by the server,
      or the two disagree the moment anything reloads. */
@@ -398,6 +419,7 @@ export const bodies = {
   /* Every asset in the share, exactly once, in the order wanted. */
   shareAssetsReorder: z.object({
     asset_ids: z.array(z.string()).min(1).max(1000),
+    expected_asset_ids: z.array(z.string()).min(1).max(1000).optional(),
   }),
   webhookCreate: z.object({
     url: z.string().url(),
@@ -580,6 +602,7 @@ export const bodies = {
       .optional(),
   }),
   assetPatch: z.object({
+    expected: assetExpected.optional(),
     name: z.string().min(1).max(500).optional(),
     folder_id: z.string().nullable().optional(),
     status: approvalStatus.optional(),
@@ -592,6 +615,11 @@ export const bodies = {
        the source tag; the rest pin it. Editors and managers only. */
     display_transfer: z.enum(["auto", "srgb", "gamma22", "bt1886"]).optional(),
   }),
+  assetTrash: z.object({
+    expected: assetExpected.optional(),
+    return_asset: z.boolean().optional(),
+  }),
+  assetRestore: z.object({ expected: assetExpected.optional() }),
   stackPatch: z.object({ version_no: z.number().int().positive() }),
   versionCreate: z.object({
     upload_id: z.string(),
@@ -1333,6 +1361,10 @@ const created = (schema: z.ZodTypeAny): ResponseDoc => ({
   description: "Created",
 });
 const noContent: ResponseDoc = { description: "No content" };
+const conflict = ok(
+  errorEnvelope,
+  "The resource changed; the mutation precondition no longer matches.",
+);
 
 const mailSettingsView = z.object({
   stored: z
@@ -1578,6 +1610,7 @@ export const routeDocs: Record<string, RouteDoc> = {
     request: bodies.folderCreate,
     responses: { "201": created(folder) },
   },
+  "GET /folders/:id": { responses: { "200": ok(folder) } },
   "PATCH /folders/:id": {
     request: bodies.folderPatch,
     responses: { "200": ok(folder) },
@@ -1632,7 +1665,7 @@ export const routeDocs: Record<string, RouteDoc> = {
   },
   "PATCH /assets/:id/approval": {
     request: bodies.approvalPatch,
-    responses: { "200": ok(asset) },
+    responses: { "200": ok(asset), "409": conflict },
   },
   "GET /notifications": {
     query: paging,
@@ -1720,6 +1753,7 @@ export const routeDocs: Record<string, RouteDoc> = {
       "200": ok(
         list(z.object({ asset_id: z.string(), sort_order: z.number().int() })),
       ),
+      "409": conflict,
     },
   },
   "DELETE /shares/:id/assets/:assetId": { responses: { "204": noContent } },
@@ -2075,6 +2109,18 @@ export const routeDocs: Record<string, RouteDoc> = {
   "GET /projects/:id/assets": {
     query: {
       ...paging,
+      sort: {
+        description:
+          "Order by name (case-insensitive), status, created_at or updated_at. Asset id breaks ties. Omit to preserve the original newest-id ordering.",
+      },
+      direction: {
+        description: "asc or desc (default desc). Requires sort.",
+      },
+      status: {
+        description:
+          "Filter by none, in_review, approved or changes_requested.",
+      },
+      kind: { description: "Filter by video, audio, image, pdf or file." },
       folder_id: { description: "Filter by folder." },
       selected: {
         description: "Pass 1 for the shortlist only.",
@@ -2269,11 +2315,49 @@ export const routeDocs: Record<string, RouteDoc> = {
     responses: { "200": binary("application/zip") },
   },
   "GET /assets/:id": { responses: { "200": ok(asset) } },
-  "PATCH /assets/:id": {
-    request: bodies.assetPatch,
-    responses: { "200": ok(asset) },
+  "GET /assets/:id/context": {
+    summary:
+      "Inspector context. Share membership is available to project managers only; recorded activity omits payloads and actor identities. Both sections are bounded.",
+    responses: {
+      "200": ok(
+        z.object({
+          shares: z
+            .object({
+              items: z.array(
+                z.object({
+                  id: z.string(),
+                  title: z.string(),
+                  revoked_at: timestamp.nullable(),
+                  expires_at: timestamp.nullable(),
+                }),
+              ),
+              has_more: z.boolean(),
+            })
+            .nullable(),
+          activity: z.object({
+            items: z.array(
+              z.object({ id: z.string(), type: z.string(), at: timestamp }),
+            ),
+            has_more: z.boolean(),
+          }),
+        }),
+      ),
+    },
   },
-  "DELETE /assets/:id": { responses: { "204": noContent } },
+  "PATCH /assets/:id": {
+    summary:
+      "Update asset metadata as a project editor. Changing approval status requires a project manager and notifies the uploader and managers.",
+    request: bodies.assetPatch,
+    responses: { "200": ok(asset), "409": conflict },
+  },
+  "DELETE /assets/:id": {
+    request: bodies.assetTrash.optional(),
+    responses: {
+      "200": ok(asset, "Trashed asset when return_asset is true"),
+      "204": noContent,
+      "409": conflict,
+    },
+  },
   "PUT /assets/:id/thumbnail": {
     summary:
       "Set a completed image upload as this asset's thumbnail, overriding the generated poster wherever the asset is shown, share rooms included.",
@@ -2300,8 +2384,18 @@ export const routeDocs: Record<string, RouteDoc> = {
       "201": created(z.object({ asset, version, job_id: z.string() })),
     },
   },
-  "POST /assets/:id/trash": { responses: { "204": noContent } },
-  "POST /assets/:id/restore": { responses: { "200": ok(asset) } },
+  "POST /assets/:id/trash": {
+    request: bodies.assetTrash.optional(),
+    responses: {
+      "200": ok(asset, "Trashed asset when return_asset is true"),
+      "204": noContent,
+      "409": conflict,
+    },
+  },
+  "POST /assets/:id/restore": {
+    request: bodies.assetRestore.optional(),
+    responses: { "200": ok(asset), "409": conflict },
+  },
   "GET /versions/:id": { responses: { "200": ok(version) } },
   "POST /versions/:id/playback-diagnostics": {
     summary:

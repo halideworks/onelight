@@ -12,11 +12,12 @@ import {
   shares,
   shareAssets,
   projects,
+  projectMembers,
   shareViewers,
   folders,
   renditions,
 } from "@onelight/db/schema";
-import { and, eq, isNull, desc, asc, sql } from "drizzle-orm";
+import { and, eq, isNull, isNotNull, or, desc, asc, sql } from "drizzle-orm";
 import {
   errors,
   sha256Hex,
@@ -144,10 +145,25 @@ export const registerSharesRoutes = (
       .select()
       .from(shares)
       .innerJoin(projects, eq(shares.projectId, projects.id))
+      .leftJoin(
+        projectMembers,
+        and(
+          eq(projectMembers.projectId, projects.id),
+          eq(projectMembers.userId, actor.id),
+        ),
+      )
       .where(
         and(
           eq(projects.workspaceId, actor.workspaceId),
           projectId ? eq(shares.projectId, projectId) : undefined,
+          actor.role === "admin"
+            ? undefined
+            : actor.role === "guest"
+              ? isNotNull(projectMembers.userId)
+              : or(
+                  eq(projects.restricted, false),
+                  isNotNull(projectMembers.userId),
+                ),
         ),
       )
       .orderBy(desc(shares.id))
@@ -175,7 +191,7 @@ export const registerSharesRoutes = (
       .select()
       .from(shareAssets)
       .where(eq(shareAssets.shareId, share.id))
-      .orderBy(asc(shareAssets.sortOrder))
+      .orderBy(asc(shareAssets.sortOrder), asc(shareAssets.assetId))
       .all();
     return c.json({
       ...shareWire(share),
@@ -536,29 +552,60 @@ export const registerSharesRoutes = (
       .select({ assetId: shareAssets.assetId })
       .from(shareAssets)
       .where(eq(shareAssets.shareId, share.id))
+      .orderBy(asc(shareAssets.sortOrder), asc(shareAssets.assetId))
       .all()) as Array<{ assetId: string }>;
     const current = new Set(existing.map((link) => link.assetId));
     const wanted = new Set(body.asset_ids);
-    if (
-      wanted.size !== body.asset_ids.length ||
-      current.size !== wanted.size ||
-      body.asset_ids.some((id) => !current.has(id))
-    )
+    if (wanted.size !== body.asset_ids.length)
       throw errors.validation(
         "The order must name each asset in the share exactly once.",
       );
-    for (const [index, assetId] of body.asset_ids.entries()) {
-      await env.db
-        .update(shareAssets)
-        .set({ sortOrder: index })
-        .where(
-          and(
-            eq(shareAssets.shareId, share.id),
-            eq(shareAssets.assetId, assetId),
-          ),
-        )
-        .run();
+    if (
+      current.size !== wanted.size ||
+      body.asset_ids.some((id) => !current.has(id))
+    ) {
+      if (body.expected_asset_ids)
+        throw errors.conflict(
+          "The share membership changed. Refresh before trying again.",
+        );
+      throw errors.validation(
+        "The order must name each asset in the share exactly once.",
+      );
     }
+    /* One statement, not N independent commits. The uncorrelated order
+       subquery is evaluated once against the pre-update snapshot; a stale
+       undo or concurrent membership edit therefore changes zero rows. JSON
+       parameters also avoid SQLite's bind-variable limit on large reels. */
+    const expected =
+      body.expected_asset_ids ?? existing.map((link) => link.assetId);
+    const changed = await env.db
+      .update(shareAssets)
+      .set({
+        sortOrder: sql<number>`(
+        SELECT CAST(key AS INTEGER) FROM json_each(${JSON.stringify(body.asset_ids)})
+        WHERE value = ${shareAssets.assetId}
+      )`,
+      })
+      .where(
+        and(
+          eq(shareAssets.shareId, share.id),
+          sql`(
+          SELECT json_group_array(asset_id) FROM (
+            SELECT asset_id FROM share_assets WHERE share_id = ${share.id}
+            ORDER BY sort_order, asset_id
+          )
+        ) = ${JSON.stringify(expected)}`,
+        ),
+      )
+      .returning({
+        asset_id: shareAssets.assetId,
+        sort_order: shareAssets.sortOrder,
+      })
+      .all();
+    if (changed.length !== body.asset_ids.length)
+      throw errors.conflict(
+        "The share order changed. Refresh before trying again.",
+      );
     await audit(
       actor.workspaceId,
       actor.id,
@@ -566,10 +613,7 @@ export const registerSharesRoutes = (
       `share:${share.id}`,
     );
     return c.json({
-      items: body.asset_ids.map((assetId, index) => ({
-        asset_id: assetId,
-        sort_order: index,
-      })),
+      items: changed.sort((left, right) => left.sort_order - right.sort_order),
     });
   });
 

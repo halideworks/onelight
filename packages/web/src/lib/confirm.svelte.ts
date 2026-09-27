@@ -26,6 +26,8 @@ export interface ConfirmRequest {
 }
 
 export interface TextRequest extends ConfirmRequest {
+  allowEmpty?: boolean;
+  maxLength?: number;
   /* Present (even as "") means this asks for text rather than agreement. */
   initial?: string;
   placeholder?: string;

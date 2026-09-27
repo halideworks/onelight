@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { PALETTES } from '@onelight/core';
   import { page } from '$app/state';
   import { api, apiDelete, apiPatch, listShareViewers, messageFrom, revokeShare, updateShare } from '$lib/api.js';
@@ -10,6 +11,8 @@
   import { canonicalizePath } from '$lib/canonical.js';
   import { idFrom, pretty } from '$lib/ids.js';
   import { pageWashFor, pageWashFromStops, washFor } from '$lib/washes.js';
+  import { auth } from '$lib/auth.svelte.js';
+  import { undo } from '$lib/workbench/undo.svelte.js';
   import Slider from '@onelight/player/Slider.svelte';
 
   /* One share, one page. The old flow was a list of every share with a dialog
@@ -20,6 +23,7 @@
 
   type Project = { id: string; public_id: string; name: string; palette: string };
   type Asset = { id: string; public_id: string; name: string; kind: string; current_version_id?: string | null };
+  type ShareDetail = Share & { assets: Array<{ asset_id: string; sort_order: number }> };
 
   const routeProjectId = $derived(idFrom(page.params.id));
   const routeShareId = $derived(idFrom(page.params.shareId));
@@ -39,6 +43,10 @@
   let error = $state('');
   let saved = $state('');
   let copied = $state(false);
+  let contentsNotice = $state('');
+  let contentsComplete = $state(false);
+  let orderBusy = $state(false);
+  let contentsGeneration = 0;
 
   const media = createMediaCache();
   const observeMedia = media.observe;
@@ -49,17 +57,76 @@
   );
   const expired = $derived(Boolean(share?.expires_at && share.expires_at <= Date.now()));
   const dead = $derived(Boolean(share?.revoked_at) || expired);
+  const viewingShare = (id: string): boolean => {
+    const route = idFrom(page.params.shareId);
+    return shareId === id && (route === id || route === share?.public_id);
+  };
+
+  const loadContents = async (detail: ShareDetail, pid: string): Promise<void> => {
+    const generation = ++contentsGeneration;
+    const owner = auth.user?.id;
+    const current = (): boolean => generation === contentsGeneration && viewingShare(detail.id) && auth.user?.id === owner;
+    contentsComplete = false;
+    contentsNotice = 'Loading contents';
+    const collected: Asset[] = [];
+    let cursor: string | null = null;
+    try {
+      /* Reorder accepts at most 1,000 assets. Fetch every supported page, then
+         use the curator's order, not the library's newest-id order. */
+      do {
+        const query = new URLSearchParams({ share_id: detail.id, limit: '200' });
+        if (cursor) query.set('cursor', cursor);
+        const loaded = await api<{ items: Asset[]; next_cursor: string | null }>(`/api/v1/projects/${pid}/assets?${query}`);
+        if (!current()) return;
+        collected.push(...loaded.items);
+        cursor = loaded.next_cursor;
+      } while (cursor && collected.length < 1000);
+      const byId = new Map(collected.map(asset => [asset.id, asset]));
+      assets = [...detail.assets]
+        .sort((a, b) => a.sort_order - b.sort_order || a.asset_id.localeCompare(b.asset_id))
+        .flatMap(link => { const asset = byId.get(link.asset_id); return asset ? [asset] : []; });
+      contentsComplete = !cursor && assets.length === detail.assets.length;
+      contentsNotice = cursor
+        ? 'Showing up to 1,000 assets. Reordering is available for shares of 1,000 assets or fewer.'
+        : contentsComplete ? '' : 'Some assets are in the trash or no longer available. Restore them before reordering this share.';
+    } catch (caught) {
+      if (current()) contentsNotice = messageFrom(caught, 'The contents could not be loaded. Reload to try again.');
+    }
+  };
+
+  const refreshContents = async (id: string, pid: string, owner: string): Promise<void> => {
+    if (!viewingShare(id) || auth.user?.id !== owner) return;
+    const detail = await api<ShareDetail>(`/api/v1/shares/${id}`);
+    if (!viewingShare(id) || auth.user?.id !== owner) return;
+    share = detail;
+    await loadContents(detail, pid);
+  };
+
+  let lastUndoRevision = undo.revision;
+  $effect(() => {
+    const revision = undo.revision;
+    if (revision === lastUndoRevision) return;
+    lastUndoRevision = revision;
+    untrack(() => {
+      const id = shareId; const pid = projectId; const owner = auth.user?.id;
+      if (id && pid && owner) void refreshContents(id, pid, owner).catch(caught => {
+        if (viewingShare(id) && auth.user?.id === owner) error = messageFrom(caught, 'Reload to see the latest share order.');
+      });
+    });
+  });
 
   const load = async (routeRef: string): Promise<void> => {
+    const owner = auth.user?.id;
     project = null; share = null; assets = []; viewers = null;
+    contentsGeneration += 1; contentsComplete = false; contentsNotice = ''; orderBusy = false;
     pageError = ''; error = ''; saved = '';
     projectId = null; shareId = null;
     try {
       const [loadedShare, loadedProject] = await Promise.all([
-        api<Share>(`/api/v1/shares/${routeRef}`),
+        api<ShareDetail>(`/api/v1/shares/${routeRef}`),
         api<Project>(`/api/v1/projects/${routeProjectId}`)
       ]);
-      if (routeRef !== routeShareId) return;
+      if (routeRef !== routeShareId || auth.user?.id !== owner) return;
       share = loadedShare;
       project = loadedProject;
       shareId = loadedShare.id;
@@ -67,26 +134,19 @@
       canonicalizePath(
         `/projects/${pretty(loadedProject.public_id, loadedProject.name)}/shares/${pretty(loadedShare.public_id, loadedShare.title)}`
       );
+      await loadContents(loadedShare, loadedProject.id);
     } catch (caught) {
-      pageError = messageFrom(caught, 'This share is not available.');
+      if (routeRef === routeShareId && auth.user?.id === owner) pageError = messageFrom(caught, 'This share is not available.');
       return;
     }
     const canonicalShare = shareId;
     const canonicalProject = projectId;
     if (!canonicalShare || !canonicalProject) return;
     try {
-      const loaded = await api<{ items: Asset[] }>(
-        `/api/v1/projects/${canonicalProject}/assets?share_id=${encodeURIComponent(canonicalShare)}&limit=200`
-      );
-      if (routeRef === routeShareId) assets = loaded.items;
-    } catch {
-      /* The contents panel reports the empty list itself. */
-    }
-    try {
       const roster = await listShareViewers(canonicalShare);
-      if (routeRef === routeShareId) viewers = roster.items;
+      if (routeRef === routeShareId && auth.user?.id === owner) viewers = roster.items;
     } catch {
-      viewers = null;
+      if (routeRef === routeShareId && auth.user?.id === owner) viewers = null;
     }
   };
 
@@ -222,11 +282,27 @@
   let dropBefore = $state<string | null>(null);
 
   const persistOrder = async (ordered: Asset[]): Promise<void> => {
-    if (!share) return;
+    const owner = auth.user?.id;
+    if (!share || !projectId || !owner || orderBusy || undo.busy || !contentsComplete) return;
+    const id = share.id;
+    const pid = projectId;
+    const previous = assets.map(asset => asset.id);
+    orderBusy = true;
     try {
-      await apiPatch(`/api/v1/shares/${share.id}/assets`, {
-        asset_ids: ordered.map((asset) => asset.id)
+      const changed = await apiPatch<{ items: Array<{ asset_id: string; sort_order: number }> }>(`/api/v1/shares/${id}/assets`, {
+        asset_ids: ordered.map((asset) => asset.id),
+        expected_asset_ids: previous,
       });
+      if (auth.user?.id !== owner) return;
+      const expected = changed.items.map(item => item.asset_id);
+      undo.push({
+        label: 'Share order changed',
+        steps: [async () => {
+          if (auth.user?.id !== owner) throw new Error('The signed-in account changed.');
+          await apiPatch(`/api/v1/shares/${id}/assets`, { asset_ids: previous, expected_asset_ids: expected });
+        }],
+      });
+      if (shareId !== id) return;
       assets = ordered;
       error = '';
       saved = 'Order saved';
@@ -234,7 +310,12 @@
         if (saved === 'Order saved') saved = '';
       }, 1600);
     } catch (caught) {
-      error = messageFrom(caught, 'The order could not be saved.');
+      if (shareId === id && auth.user?.id === owner) {
+        error = messageFrom(caught, 'The order could not be saved.');
+        await refreshContents(id, pid, owner).catch(() => undefined);
+      }
+    } finally {
+      if (shareId === id) orderBusy = false;
     }
   };
 
@@ -264,7 +345,9 @@
   };
 
   const removeAsset = async (asset: Asset): Promise<void> => {
-    if (!share) return;
+    const owner = auth.user?.id;
+    if (!share || !projectId || !owner || orderBusy || undo.busy) return;
+    const id = share.id; const pid = projectId;
     if (
       !(await askConfirm({
         title: `Take "${asset.name}" out of this share?`,
@@ -274,12 +357,17 @@
       }))
     )
       return;
+    if (auth.user?.id !== owner || shareId !== id || orderBusy || undo.busy) return;
+    orderBusy = true;
     try {
-      await apiDelete(`/api/v1/shares/${share.id}/assets/${asset.id}`);
-      assets = assets.filter((entry) => entry.id !== asset.id);
+      await apiDelete(`/api/v1/shares/${id}/assets/${asset.id}`);
+      if (auth.user?.id !== owner || shareId !== id) return;
+      await refreshContents(id, pid, owner);
       error = '';
     } catch (caught) {
-      error = messageFrom(caught, 'It could not be removed.');
+      if (auth.user?.id === owner && shareId === id) error = messageFrom(caught, 'It could not be removed.');
+    } finally {
+      if (shareId === id) orderBusy = false;
     }
   };
 
@@ -737,9 +825,10 @@
 
         <section class="panel wide" aria-label="In this share">
           <h2>In this share</h2>
-          {#if assets.length === 0}
+          {#if contentsNotice}<p class="sub" role="status">{contentsNotice}</p>{/if}
+          {#if assets.length === 0 && contentsComplete}
             <p class="empty">Nothing is in this share yet. Add assets from the project page: select them and right-click, or drag them onto the share in the rail.</p>
-          {:else}
+          {:else if assets.length > 0}
             <p class="sub">Set the order the share plays in: drag the tiles, or use a tile's arrows.</p>
             <div class="contents">
               {#each assets as asset, index (asset.id)}
@@ -749,7 +838,7 @@
                   class:dropbefore={dropBefore === asset.id}
                   class:dragging={draggingAsset === asset.id}
                   role="listitem"
-                  draggable="true"
+                  draggable={contentsComplete && !orderBusy && !undo.busy}
                   ondragstart={(event) => {
                     draggingAsset = asset.id;
                     if (event.dataTransfer) {
@@ -790,6 +879,7 @@
                     class="contentdrop"
                     aria-label={`Remove ${asset.name} from this share`}
                     title="Remove from this share"
+                    disabled={orderBusy || undo.busy}
                     onclick={() => void removeAsset(asset)}
                   >×</button>
                   <span class="movers">
@@ -797,14 +887,14 @@
                       type="button"
                       class="mover"
                       aria-label={`Move ${asset.name} earlier`}
-                      disabled={index === 0}
+                      disabled={index === 0 || !contentsComplete || orderBusy || undo.busy}
                       onclick={() => moveAsset(asset, -1)}
                     ><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.5L5.5 8l4.5 4.5" /></svg></button>
                     <button
                       type="button"
                       class="mover"
                       aria-label={`Move ${asset.name} later`}
-                      disabled={index === assets.length - 1}
+                      disabled={index === assets.length - 1 || !contentsComplete || orderBusy || undo.busy}
                       onclick={() => moveAsset(asset, 1)}
                     ><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5L10.5 8L6 12.5" /></svg></button>
                   </span>
@@ -962,12 +1052,11 @@
   .contentwrap.dragging { opacity: 0.4; }
   .contentwrap.dropbefore { outline: 2px solid var(--accent-bright); outline-offset: 2px; border-radius: var(--radius); }
   .contentdrop { position: absolute; top: 4px; right: 4px; display: none; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: rgba(6, 9, 14, 0.85); color: #fff; font-size: 13px; line-height: 1; cursor: pointer; }
-  .contentwrap:hover .contentdrop, .contentdrop:focus-visible { display: grid; }
+  .contentwrap:hover .contentdrop, .contentwrap:focus-within .contentdrop { display: grid; }
   .contentdrop:hover { background: var(--warn); color: #12080a; }
-  /* Reordering without a drag: fine pointers never see these — the drag is
-     richer — but touch has no HTML5 drag at all, so the arrows are the only
-     way a phone curates the reel. */
+  /* Keyboard and touch users need the same ordering controls as a drag. */
   .movers { display: none; position: absolute; top: 4px; left: 4px; gap: 4px; }
+  .contentwrap:hover .movers, .contentwrap:focus-within .movers { display: inline-flex; }
   .mover { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; background: rgba(6, 9, 14, 0.85); color: #fff; cursor: pointer; }
   .mover:disabled { opacity: 0.35; cursor: default; }
   @media (pointer: coarse) {

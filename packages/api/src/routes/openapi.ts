@@ -1,4 +1,5 @@
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { z } from "zod";
 import type { RouteDoc } from "../schemas.js";
 import { routeDocs, errorEnvelope } from "../schemas.js";
 import type { AppEnv, ApiRouter } from "../types.js";
@@ -114,9 +115,18 @@ export const registerOpenapiRoutes = (
       ...(doc?.request
         ? {
             requestBody: {
-              required: true,
+              required: !doc.request.isOptional(),
               content: {
-                "application/json": { schema: jsonSchemaFor(doc.request) },
+                "application/json": {
+                  /* Optionality describes the HTTP body, not a JSON value.
+                     JSON has no undefined; converting the wrapper would add
+                     an unconstrained union branch to the generated client. */
+                  schema: jsonSchemaFor(
+                    doc.request instanceof z.ZodOptional
+                      ? doc.request.unwrap()
+                      : doc.request,
+                  ),
+                },
               },
             },
           }

@@ -133,7 +133,6 @@ export const createMediaCache = (): MediaCache => {
   };
 
   const request = (asset: ObservedAsset): void => {
-    if (entries[asset.id]) return;
     if (asset.media) {
       entries[asset.id] = {
         status: "ready",
@@ -151,6 +150,7 @@ export const createMediaCache = (): MediaCache => {
       };
       return;
     }
+    if (entries[asset.id]) return;
     entries[asset.id] = { status: "loading" };
     waiting.push(() => load(asset));
     pump();
@@ -207,6 +207,7 @@ export const createMediaCache = (): MediaCache => {
     return {
       update(next: ObservedAsset) {
         if (observedAssets.has(node)) observedAssets.set(node, next);
+        else if (next.media) request(next);
       },
       destroy() {
         observedAssets.delete(node);

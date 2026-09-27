@@ -17,7 +17,7 @@
 
   /* A prompt with an empty field has nothing to submit; the button says so
      rather than accepting and failing later. */
-  const ready = $derived(!pending?.prompt || text.trim().length > 0);
+  const ready = $derived(!pending?.prompt || pending.allowEmpty || text.trim().length > 0);
 
   const accept = (): void => {
     if (!pending) return;
@@ -68,7 +68,7 @@
             use:focusField
             aria-label={pending.label ?? pending.title}
             placeholder={pending.placeholder ?? ''}
-            maxlength="200"
+            maxlength={pending.maxLength ?? 200}
           />
         </form>
       {/if}

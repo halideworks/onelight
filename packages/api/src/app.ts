@@ -29,6 +29,7 @@ import { registerShareCommentsRoutes } from "./routes/share-comments.js";
 import { registerTransfersRoutes } from "./routes/transfers.js";
 import { registerUploadsRoutes } from "./routes/uploads.js";
 import { registerAssetsRoutes } from "./routes/assets.js";
+import { registerAssetInspectorRoutes } from "./routes/asset-inspector.js";
 import { registerMatchingRoutes } from "./routes/matching.js";
 import { registerVersionsRoutes } from "./routes/versions.js";
 import { registerMediaRoutes } from "./routes/media.js";
@@ -195,6 +196,7 @@ export const createApp = (env: AppEnv): Hono<{ Variables: Variables }> => {
   });
   registerUploadsRoutes(api, env, { access, uploads, blobs });
   registerAssetsRoutes(api, env, { access, uploads, activity, media, blobs });
+  registerAssetInspectorRoutes(api, env, { access });
   registerMatchingRoutes(api, env, { access });
   registerVersionsRoutes(api, env, {
     access,

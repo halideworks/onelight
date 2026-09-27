@@ -1,5 +1,9 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
+  import AssetInspector from '$lib/workbench/AssetInspector.svelte';
+  import { readPreference, writePreference } from '$lib/workbench/preferences.js';
+  import { changeAsset } from '$lib/workbench/asset-actions.js';
+  import { undo } from '$lib/workbench/undo.svelte.js';
   import Player from '@onelight/player/Player.svelte';
   import ImageViewer from '@onelight/player/ImageViewer.svelte';
   import { parseSpriteVtt } from '@onelight/player';
@@ -157,21 +161,32 @@
   /* The rail can be folded away to give the picture the whole window. Open by
      default: notes are the job. */
   let notesOpen = $state(true);
-  const NOTES_OPEN_KEY = 'onelight.notes.open';
+  let notesWidth = $state(360);
+  type ReviewState = { version: string | null; frame: number; notes: boolean; info: boolean; width: number; filter: NoteFilter };
+  const defaultReview: ReviewState = { version: null, frame: 0, notes: true, info: false, width: 360, filter: 'all' };
+  let reviewUser: string | null = null;
+  let loadSequence = 0;
+  const validateReview = (value: unknown): ReviewState => {
+    if (!value || typeof value !== 'object') return defaultReview;
+    const state = value as Partial<ReviewState>;
+    return {
+      version: typeof state.version === 'string' && /^[0-9A-Z]{26}$/.test(state.version) ? state.version : null,
+      frame: Number.isSafeInteger(state.frame) && (state.frame ?? -1) >= 0 ? state.frame as number : 0,
+      notes: state.notes !== false, info: state.info === true,
+      width: typeof state.width === 'number' && Number.isFinite(state.width) ? Math.max(280, Math.min(560, state.width)) : 360,
+      filter: state.filter === 'open' || state.filter === 'completed' ? state.filter : 'all'
+    };
+  };
+  const rememberReview = (): void => {
+    if (!assetId || !selectedVersionId || reviewUser !== auth.user?.id) return;
+    writePreference(reviewUser, `review:${assetId}`, { version: selectedVersionId, frame: currentFrame, notes: notesOpen, info: infoOpen, width: notesWidth, filter: noteFilter });
+  };
   $effect(() => {
-    try {
-      notesOpen = localStorage.getItem(NOTES_OPEN_KEY) !== '0';
-    } catch {
-      /* Storage can be unavailable; the rail stays open. */
-    }
+    void notesOpen; void infoOpen; void notesWidth; void noteFilter;
+    untrack(rememberReview);
   });
   const setNotesOpen = (open: boolean): void => {
     notesOpen = open;
-    try {
-      localStorage.setItem(NOTES_OPEN_KEY, open ? '1' : '0');
-    } catch {
-      /* Non-persistent, still applied for the session. */
-    }
   };
   /* Renaming happens in place on the title: PATCH /assets/:id already takes a
      name, and nothing in the UI ever offered it. */
@@ -198,126 +213,8 @@
       if (carryNotice === message) carryNotice = '';
     }, 4000);
   };
-  /* The Info drawer: everything the probe knows about the version on screen,
-     grouped the way a post professional reads it -- picture, color, motion,
-     sound, file. The full ffprobe record is stored per version; this renders
-     it instead of hiding it. */
-  type InfoDetail = {
-    original_filename: string | null;
-    size: number;
-    source_timecode_start: string | null;
-    media_info: {
-      format?: {
-        format_long_name?: string;
-        bit_rate?: string;
-        tags?: Record<string, string>;
-      };
-      streams?: Array<Record<string, unknown>>;
-    };
-  };
   let infoOpen = $state(false);
-  let infoDetail = $state<InfoDetail | null>(null);
-  let infoFor: string | null = null;
-  const toggleInfo = (): void => {
-    infoOpen = !infoOpen;
-    if (!infoOpen || !selectedVersionId || infoFor === selectedVersionId) return;
-    infoFor = selectedVersionId;
-    infoDetail = null;
-    /* Guard the async write with the same version token every other load on
-       this page uses: switching versions while this is in flight must not let a
-       stale response paint the wrong version's details. */
-    const token = versionToken;
-    const wantedVersion = selectedVersionId;
-    void (async () => {
-      try {
-        const detail = await api<InfoDetail>(`/api/v1/versions/${wantedVersion}`);
-        if (token === versionToken) infoDetail = detail;
-      } catch {
-        if (token === versionToken) infoFor = null;
-      }
-    })();
-  };
-
-  type InfoGroup = { title: string; rows: Array<[string, string]>; alert?: boolean };
-  const infoGroups = $derived.by((): InfoGroup[] => {
-    if (!infoDetail) return [];
-    const streams = infoDetail.media_info.streams ?? [];
-    const str = (value: unknown): string | null =>
-      typeof value === 'string' && value ? value : typeof value === 'number' ? String(value) : null;
-    const video = streams.find((stream) => stream.codec_type === 'video');
-    const audio = streams.filter((stream) => stream.codec_type === 'audio');
-    const groups: InfoGroup[] = [];
-    if (video) {
-      const codec = [str(video.codec_name)?.toUpperCase(), str(video.profile)].filter(Boolean).join(' ');
-      const size = video.width && video.height ? `${String(video.width)} x ${String(video.height)}` : null;
-      groups.push({
-        title: 'Picture',
-        rows: (
-          [
-            ['Codec', codec || null],
-            ['Frame size', size],
-            ['Aspect', str(video.display_aspect_ratio)],
-            ['Pixel format', str(video.pix_fmt)],
-            ['Scan', str(video.field_order)]
-          ] as Array<[string, string | null]>
-        ).filter((row): row is [string, string] => row[1] !== null)
-      });
-      const primaries = str(video.color_primaries);
-      const transfer = str(video.color_transfer);
-      const nonRec709 = Boolean((primaries && primaries !== 'bt709') || (transfer && transfer !== 'bt709'));
-      groups.push({
-        title: 'Color',
-        alert: nonRec709,
-        rows: (
-          [
-            ['Primaries', primaries],
-            ['Transfer', transfer],
-            ['Matrix', str(video.color_space)],
-            ['Range', str(video.color_range)]
-          ] as Array<[string, string | null]>
-        ).filter((row): row is [string, string] => row[1] !== null)
-      });
-    }
-    const motionRows: Array<[string, string]> = [];
-    if (rate) {
-      const exact = rate.den === 1 ? `${rate.num} fps` : `${rate.num}/${rate.den} (${(rate.num / rate.den).toFixed(3)}) fps`;
-      motionRows.push(['Frame rate', `${exact}${dropFrame ? ', drop frame' : ''}`]);
-    }
-    if (durationFrames) {
-      motionRows.push(['Duration', `${timecodeAt(Math.max(0, durationFrames - 1))} (${String(durationFrames)} frames)`]);
-    }
-    if (infoDetail.source_timecode_start) motionRows.push(['Start timecode', infoDetail.source_timecode_start]);
-    if (motionRows.length) groups.push({ title: 'Motion', rows: motionRows });
-    if (audio.length) {
-      groups.push({
-        title: 'Sound',
-        rows: audio.map((stream, index) => [
-          audio.length > 1 ? `Track ${String(index + 1)}` : 'Track',
-          [
-            str(stream.codec_name)?.toUpperCase(),
-            str(stream.channel_layout) ?? (stream.channels ? `${String(stream.channels)}ch` : null),
-            str(stream.sample_rate) ? `${Number(stream.sample_rate) / 1000} kHz` : null
-          ]
-            .filter(Boolean)
-            .join(', ')
-        ])
-      });
-    }
-    const format = infoDetail.media_info.format;
-    const fileRows: Array<[string, string | null]> = [
-      ['Filename', infoDetail.original_filename],
-      ['Container', format?.format_long_name ?? null],
-      ['Size', infoDetail.size ? formatBytes(infoDetail.size) : null],
-      ['Bitrate', format?.bit_rate ? `${(Number(format.bit_rate) / 1_000_000).toFixed(1)} Mb/s` : null],
-      ['Encoder', format?.tags?.encoder ?? null],
-      ['Created', format?.tags?.creation_time ? format.tags.creation_time.slice(0, 10) : null]
-    ];
-    groups.push({
-      title: 'File',
-      rows: fileRows.filter((row): row is [string, string] => row[1] !== null)
-    });
-    return groups;
-  });
+  const toggleInfo = (): void => { infoOpen = !infoOpen; };
 
   /* The NLE round trip: notes leave as marker files and marker files come
      back as notes, both scoped to the version on screen. */
@@ -493,6 +390,37 @@
     player?.setRange(nextIn, nextOut);
   };
 
+  let changingAsset = false;
+  let lastUndoRevision = undo.revision;
+  const refreshAsset = async (id: string): Promise<void> => {
+    const sequence = loadSequence;
+    const loaded = await api<Asset>(`/api/v1/assets/${id}`);
+    if (sequence === loadSequence && asset?.id === id && reviewUser === auth.user?.id) asset = loaded;
+  };
+  $effect(() => {
+    const revision = undo.revision;
+    if (revision === lastUndoRevision) return;
+    lastUndoRevision = revision;
+    untrack(() => {
+      if (asset) void refreshAsset(asset.id).catch((caught: unknown) => {
+        error = messageFrom(caught, 'Refresh the asset to see its latest state.');
+      });
+    });
+  });
+  const changeReviewedAsset = async (label: string, patch: Parameters<typeof changeAsset>[1]): Promise<void> => {
+    if (!asset || changingAsset || undo.busy) return;
+    const id = asset.id;
+    const owner = auth.user?.id;
+    changingAsset = true;
+    try {
+      const step = await changeAsset(id, patch);
+      if (owner !== auth.user?.id) return;
+      undo.push({ label, steps: [step] });
+      await refreshAsset(id);
+      if (asset?.id === id) error = '';
+    } finally { changingAsset = false; }
+  };
+
   const renameAsset = async (event: SubmitEvent): Promise<void> => {
     event.preventDefault();
     const name = renameText.trim();
@@ -500,12 +428,14 @@
       renaming = false;
       return;
     }
+    const target = asset.id;
     try {
-      asset = await apiPatch<Asset>(`/api/v1/assets/${asset.id}`, { name });
+      await changeReviewedAsset('Renamed asset', { name });
+      if (asset?.id !== target) return;
       renaming = false;
       error = '';
     } catch (caught) {
-      error = messageFrom(caught, 'The name could not be changed.');
+      if (asset?.id === target) error = messageFrom(caught, 'The name could not be changed.');
     }
   };
 
@@ -798,6 +728,10 @@
   };
 
   const selectVersion = async (versionId: string, options?: { fromUser?: boolean }): Promise<void> => {
+    if (options?.fromUser) rememberReview();
+    if (urlTimer !== null) { clearTimeout(urlTimer); urlTimer = null; }
+    lastWrittenF = null; appliedF = null; currentFrame = 0; paused = true;
+    if (options?.fromUser) pendingFrame = null;
     versionToken += 1;
     const token = versionToken;
     selectedVersionId = versionId;
@@ -811,9 +745,6 @@
     peaksUrl = null;
     spectrogramUrl = null;
     stillUrl = null;
-    infoOpen = false;
-    infoFor = null;
-    infoDetail = null;
     waveformUrl = null;
     comments = [];
     commentError = '';
@@ -833,6 +764,12 @@
   };
 
   const load = async (id: string): Promise<void> => {
+    rememberReview();
+    const sequence = ++loadSequence;
+    const userId = auth.user?.id ?? null;
+    reviewUser = userId;
+    if (urlTimer !== null) { clearTimeout(urlTimer); urlTimer = null; }
+    pendingFrame = null; lastWrittenF = null; appliedF = null; currentFrame = 0; paused = true;
     versionToken += 1;
     asset = null; versions = []; selectedVersionId = null; source = ''; renditionOptions = []; shuttleAudio = null; sourceHasAudio = true;
     filmstrip = null; waveformUrl = null; peaksUrl = null; spectrogramUrl = null; posterUrl = null;
@@ -845,12 +782,13 @@
     let canonical = '';
     try {
       const loaded = await api<Asset>(`/api/v1/assets/${id}`);
-      if (id !== routeAssetId) return;
+      if (id !== routeAssetId || sequence !== loadSequence || userId !== auth.user?.id) return;
       asset = loaded;
       assetId = loaded.id;
       projectId = loaded.project_id;
       canonical = loaded.id;
     } catch (caught) {
+      if (sequence !== loadSequence) return;
       error = messageFrom(caught, 'This asset is not available.');
       return;
     }
@@ -878,25 +816,36 @@
         });
     }
     try {
-      versions = (await api<{ items: Version[] }>(`/api/v1/assets/${canonical}/versions`)).items;
+      const loadedVersions = await api<{ items: Version[] }>(`/api/v1/assets/${canonical}/versions`);
+      if (sequence !== loadSequence || userId !== auth.user?.id) return;
+      versions = loadedVersions.items;
     } catch {
+      if (sequence !== loadSequence) return;
       versions = [];
     }
-    if (id !== routeAssetId) return;
+    if (id !== routeAssetId || sequence !== loadSequence || userId !== auth.user?.id) return;
     /* Deep links may pin a specific version (?v=); location.search is read
        directly so this load never re-runs on ?f= rewrites. */
-    const pinned = new URLSearchParams(location.search).get('v');
+    const params = new URLSearchParams(location.search);
+    const pinned = params.get('v');
+    const remembered = readPreference(userId, `review:${canonical}`, validateReview, defaultReview);
+    notesOpen = remembered.notes; infoOpen = remembered.info; notesWidth = remembered.width; noteFilter = remembered.filter;
+    const explicit = params.has('v') || params.has('f');
     const initial =
       (pinned && versions.find((version) => version.id === pinned)?.id) ||
+      (!explicit && versions.find((version) => version.id === remembered.version)?.id) ||
       asset.current_version_id ||
       versions[0]?.id ||
       null;
+    pendingFrame = !explicit && initial === remembered.version ? remembered.frame : null;
+    if (!explicit && initial && initial !== asset.current_version_id) writeVersionParam(initial);
     if (initial) await selectVersion(initial);
   };
 
   $effect(() => {
     const id = routeAssetId;
-    if (id) void load(id);
+    const userId = auth.user?.id;
+    if (id && userId) void untrack(() => load(id));
   });
 
   /* The original is the negative and downloads at editor; anyone else gets
@@ -1176,19 +1125,23 @@
   let lastWrittenF: number | null = null;
   let appliedF: number | null = null;
   let urlTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingFrame = $state<number | null>(null);
 
   $effect(() => {
     const raw = page.url.searchParams.get('f');
     const current = player;
     if (!current || !source) return;
-    if (raw === null || !/^\d+$/.test(raw)) return;
-    const frame = Number(raw);
+    const desired = raw !== null && /^\d+$/.test(raw) ? Number(raw) : pendingFrame;
+    if (desired === null || !Number.isSafeInteger(desired)) return;
+    const frame = Math.max(0, Math.min(desired, Math.max(0, (durationFrames ?? desired + 1) - 1)));
     if (frame === lastWrittenF || frame === appliedF) return;
     appliedF = frame;
+    pendingFrame = null;
     current.seekToFrame(frame);
   });
 
   const writeFrameParam = (): void => {
+    rememberReview();
     const frame = currentFrame;
     if (frame === lastWrittenF) return;
     const url = new URL(page.url.href);
@@ -1221,7 +1174,11 @@
   };
 
   $effect(() => {
+    const save = (): void => rememberReview();
+    window.addEventListener('pagehide', save);
     return () => {
+      save();
+      window.removeEventListener('pagehide', save);
       if (urlTimer !== null) clearTimeout(urlTimer);
     };
   });
@@ -1524,11 +1481,14 @@
 
   const updateApproval = async (status: string): Promise<void> => {
     if (!asset) return;
+    const target = asset.id;
+    const value = (['none', 'in_review', 'approved', 'changes_requested'] as const).find((allowed) => allowed === status);
+    if (!value) return;
     try {
-      asset = await apiPatch<Asset>(`/api/v1/assets/${asset.id}/approval`, { status });
-      error = '';
+      await changeReviewedAsset('Changed approval', { status: value });
+      if (asset?.id === target) error = '';
     } catch (caught) {
-      error = messageFrom(caught, 'Approval state could not be updated.');
+      if (asset?.id === target) error = messageFrom(caught, 'Approval state could not be updated.');
     }
   };
 
@@ -1673,13 +1633,12 @@
      the list of picked filenames is the thing the retoucher works from. */
   const toggleSelected = async (): Promise<void> => {
     if (!asset) return;
+    const target = asset.id;
     try {
-      asset = await apiPatch<Asset>(`/api/v1/assets/${asset.id}`, {
-        selected: !asset.selected
-      });
-      error = '';
+      await changeReviewedAsset('Changed shortlist', { selected: !asset.selected });
+      if (asset?.id === target) error = '';
     } catch (caught) {
-      error = messageFrom(caught, 'The select could not be changed.');
+      if (asset?.id === target) error = messageFrom(caught, 'The select could not be changed.');
     }
   };
 
@@ -1703,6 +1662,7 @@
   };
 
   const onRoomKeydown = (event: KeyboardEvent): void => {
+    if (event.defaultPrevented || document.querySelector('dialog[open]')) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (typingIn(event.target)) return;
     if (event.key.toLowerCase() === 's') {
@@ -1866,27 +1826,12 @@
           </div>
         {/if}
       </div>
+      <button type="button" class="focus-trigger" aria-pressed={!notesOpen} onclick={() => { setNotesOpen(!notesOpen); infoOpen = false; }}>Focus</button>
       <div class="infowrap" use:dismissable={() => { infoOpen = false; }}>
         <button type="button" class="info-trigger" aria-expanded={infoOpen} onclick={toggleInfo}>Info</button>
         {#if infoOpen}
-          <div class="info-panel" role="dialog" aria-label="Version details">
-            {#if infoGroups.length === 0}
-              <p class="info-empty">Nothing probed yet.</p>
-            {/if}
-            {#each infoGroups as group (group.title)}
-              <section class="info-group" class:alert={group.alert}>
-                <h3>
-                  {group.title}
-                  {#if group.alert}<span class="info-flag">Not Rec.709</span>{/if}
-                </h3>
-                <dl>
-                  {#each group.rows as [term, value] (term)}
-                    <dt>{term}</dt>
-                    <dd class="tc">{value}</dd>
-                  {/each}
-                </dl>
-              </section>
-            {/each}
+          <div class="info-panel" role="region" aria-label="Version details">
+            <AssetInspector assetId={asset.id} versionId={selectedVersionId} neutral onversionselect={(id) => { void selectVersion(id, { fromUser: true }); }} onclose={() => { infoOpen = false; }} />
           </div>
         {/if}
       </div>
@@ -2008,7 +1953,7 @@
   {#if error}
     <p class="error" role="alert">{error}</p>
   {:else if asset}
-    <div class="content" class:notes-closed={!notesOpen}>
+    <div class="content" class:notes-closed={!notesOpen} style={`--notes-width: ${notesWidth}px`}>
       <div class="maincol">
         {#if mediaKind === 'image' && stillUrl}
           <!-- A still is reviewed in the still viewer: zoom, one-to-one, and
@@ -2113,6 +2058,7 @@
           <p class="sr-only" role="status" aria-live="polite">{noteAnnounce}</p>
           <div class="notes-head">
             <h2>Notes</h2>
+            <label class="notes-width">Panel width <input type="range" min="280" max="560" step="10" bind:value={notesWidth} aria-label="Notes panel width" /></label>
             {#if activeTag}
               <button type="button" class="tagfilter" onclick={() => { activeTag = null; }} aria-label={`Stop filtering by #${activeTag}`}>
                 #{activeTag} <span aria-hidden="true">clear</span>
@@ -2512,16 +2458,9 @@
 
   /* Versions menu: says which version you are on, and opens the rest. */
   .infowrap { position: relative; }
-  .info-trigger { background: var(--n-150); color: var(--n-800); padding: 8px 12px; border-radius: var(--radius); font-size: var(--text-13); font-weight: 500; }
-  .info-trigger:hover, .info-trigger[aria-expanded='true'] { background: var(--n-300); color: var(--n-900); }
-  .info-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: 320px; max-height: 70vh; overflow-y: auto; background: var(--n-100); border: 1px solid var(--n-300); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 14px; }
-  .info-group h3 { margin: 0 0 6px; font-size: var(--text-12); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--n-600); display: flex; align-items: center; gap: 8px; }
-  .info-group.alert h3 { color: var(--n-800); }
-  .info-flag { font-size: var(--text-12); letter-spacing: normal; text-transform: none; background: var(--n-300); color: var(--n-900); padding: 1px 7px; border-radius: 2px; font-weight: 500; }
-  .info-group dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; margin: 0; font-size: var(--text-13); }
-  .info-group dt { color: var(--n-600); }
-  .info-group dd { margin: 0; color: var(--n-900); overflow-wrap: anywhere; }
-  .info-empty { margin: 0; color: var(--n-600); font-size: var(--text-13); }
+  .info-trigger, .focus-trigger { background: var(--n-150); color: var(--n-800); padding: 8px 12px; border-radius: var(--radius); font-size: var(--text-13); font-weight: 500; }
+  .info-trigger:hover, .info-trigger[aria-expanded='true'], .focus-trigger:hover, .focus-trigger[aria-pressed='true'] { background: var(--n-300); color: var(--n-900); }
+  .info-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: 360px; max-width: calc(100vw - 32px); max-height: 75vh; box-sizing: border-box; overflow: auto; overscroll-behavior: contain; background: var(--n-100); border-radius: var(--radius); }
   .vmenu { position: relative; }
   .vtrigger { display: inline-flex; align-items: center; gap: 8px; }
   .vtrigger-no { font-weight: 600; color: var(--n-900); }
@@ -2549,7 +2488,7 @@
      clamped rather than fixed so it stays usable on a laptop, and it folds away
      when the picture wants the window. The grid animates, so the rail slides
      rather than blinking out. */
-  .content { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 420px); align-items: stretch; transition: grid-template-columns 180ms ease; }
+  .content { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) min(var(--notes-width, 360px), 45vw); align-items: stretch; transition: grid-template-columns 180ms ease; }
   .content.notes-closed { grid-template-columns: minmax(0, 1fr) 0px; }
   .content.notes-closed .rail { overflow: hidden; }
   /* A column too, so the player has a definite height to divide. overflow
@@ -2562,7 +2501,9 @@
      both the last place you look and exactly where it disappears when the rail
      is closed. Anchored to the rail's inside edge, it travels with the rail and
      is always the thing between the two panes. */
-  .railtoggle { position: absolute; top: 10px; right: clamp(320px, 26vw, 420px); z-index: 5; width: 22px; height: 44px; padding: 0; border-radius: var(--radius) 0 0 var(--radius); background: var(--n-200); color: var(--n-700); font-size: 13px; line-height: 1; transition: right 180ms ease, width 180ms ease, height 180ms ease; }
+  .railtoggle { position: absolute; top: 10px; right: min(var(--notes-width, 360px), 45vw); z-index: 5; width: 22px; height: 44px; padding: 0; border-radius: var(--radius) 0 0 var(--radius); background: var(--n-200); color: var(--n-700); font-size: 13px; line-height: 1; transition: right 180ms ease, width 180ms ease, height 180ms ease; }
+  .notes-width { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--n-600); }
+  .notes-width input { width: 130px; padding: 0; accent-color: #aaa; }
   .railtoggle:hover { background: var(--n-300); color: var(--n-900); }
   /* Closed, this is the only way back to the notes, so it stops being a sliver:
      a 22px tab against the window edge was a dart-throw. */
@@ -2578,6 +2519,8 @@
     .review { height: auto; min-height: 100vh; overflow: visible; }
     .content, .content.notes-closed { grid-template-columns: minmax(0, 1fr); height: auto; }
     .railtoggle { display: none; }
+    .notes-width { display: none; }
+    .content.notes-closed .rail { display: none; }
   }
   /* Above the phone width the wrapper adds no box at all. */
   .acts { display: contents; }
@@ -2610,6 +2553,7 @@
     /* Panels anchored inside a sideways scroller would be clipped by it;
        pin them to the viewport instead. */
     .info-panel, .vpanel { position: fixed; left: var(--pad-2); right: var(--pad-2); top: 96px; width: auto; }
+    .info-panel { max-height: min(75vh, calc(100dvh - 112px)); }
   }
   .stage-empty { padding: 18vh 0; text-align: center; background: var(--n-000); margin: 0; }
   .empty { color: var(--n-600); }

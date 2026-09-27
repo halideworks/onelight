@@ -18,6 +18,8 @@ import { registerDownloadsDomain } from "./domains/downloads.js";
 import { registerTransfersDomain } from "./domains/transfers.js";
 import { registerVersionsDomain } from "./domains/versions.js";
 import { registerWorkspaceUsersDomain } from "./domains/workspace-users.js";
+import { registerLibraryWorkbenchDomain } from "./domains/library-workbench.js";
+import { registerAssetInspectorDomain } from "./domains/asset-inspector.js";
 
 export type { ContractCapabilities, ContractHarness } from "./harness.js";
 export { FakeClock, StubMailer } from "./harness.js";
@@ -108,5 +110,7 @@ export const registerContractSuite = (
     registerSystemDomain(ctx);
     registerTransfersDomain(ctx);
     registerDownloadsDomain(ctx);
+    registerLibraryWorkbenchDomain(ctx);
+    registerAssetInspectorDomain(ctx);
   });
 };

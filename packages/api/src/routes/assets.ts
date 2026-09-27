@@ -4,9 +4,7 @@ import {
   jsonBody,
   mapError,
   getLimit,
-  cursorParam,
   parseJsonObject,
-  encodeCursor,
 } from "../helpers.js";
 import { bodies } from "../schemas.js";
 import { errors, stackKeyOf } from "@onelight/core";
@@ -18,15 +16,18 @@ import {
   shareAssets,
   renditions,
 } from "@onelight/db/schema";
-import { eq, and, isNotNull, desc, isNull, inArray, lt } from "drizzle-orm";
+import { eq, and, isNotNull, desc, isNull, inArray } from "drizzle-orm";
 import { MAX_ATTACH_BATCH } from "../limits.js";
-import type { AppEnv, ApiRouter } from "../types.js";
+import type { AppEnv, ApiRouter, Variables } from "../types.js";
+import type { Context } from "hono";
 import type { Access } from "../operation/access.js";
 import type { Uploads } from "../operation/uploads.js";
 import type { Activity } from "../operation/activity.js";
 import { assetWire, listCardVersion, versionWire } from "../wire.js";
 import type { Media } from "../operation/media.js";
 import type { Blobs } from "../operation/blobs.js";
+import { assetPredicate, nextAssetStamp } from "../operation/asset-state.js";
+import { assetListOrder } from "./asset-list.js";
 
 export const registerAssetsRoutes = (
   api: ApiRouter,
@@ -53,7 +54,7 @@ export const registerAssetsRoutes = (
     assetParam,
   } = access;
   const { landUploadAsAsset, assetKind, isImageFilename } = uploads;
-  const { appendProjectEvent } = activity;
+  const { appendProjectEvent, notifyApprovalChange } = activity;
   const { POSTER_FALLBACK_KINDS, posterRank, privateMediaUrl } = media;
   const { blobContentType } = blobs;
 
@@ -210,7 +211,7 @@ export const registerAssetsRoutes = (
     const actor = userFromContext(c);
     await requireProject(c.req.param("id"), actor, "viewer");
     const limit = getLimit(c.req.query("limit"));
-    const cursor = cursorParam(c.req.query("cursor"));
+    const listing = assetListOrder(c.req.param("id"), c.req.query());
     const folderId = c.req.query("folder_id");
     /* A share reads as a folder in the browser rail, so it filters the same
        list the same way -- one endpoint, one paging rule, one permission
@@ -251,10 +252,10 @@ export const registerAssetsRoutes = (
                   .where(eq(shareAssets.shareId, shareId)),
               )
             : undefined,
-          cursor ? lt(assets.id, cursor) : undefined,
+          listing.where,
         ),
       )
-      .orderBy(desc(assets.id))
+      .orderBy(...listing.order)
       .limit(limit + 1)
       .all();
     const page = rows.slice(0, limit);
@@ -370,9 +371,7 @@ export const registerAssetsRoutes = (
         })),
       ),
       next_cursor:
-        rows.length > limit
-          ? encodeCursor(page[page.length - 1]?.id ?? "")
-          : null,
+        rows.length > limit ? listing.cursor(page[page.length - 1]!) : null,
     });
   });
 
@@ -393,13 +392,15 @@ export const registerAssetsRoutes = (
     const actor = userFromContext(c);
     const asset = await assetForActor(c.req.param("id"), actor, "editor");
     const body = await jsonBody(c, bodies.assetPatch);
+    if (body.status !== undefined)
+      await requireProject(asset.projectId, actor, "manager");
     /* A folder move must land in an assets folder of THIS project. Without the
        check a stray id filed the asset under another project's tree (or a
        shares folder), where every folder listing -- all scoped by project --
        stopped showing it: orphaned in the UI with no way back. */
     if (body.folder_id != null)
       await requireDestinationFolder(asset.projectId, body.folder_id);
-    await env.db
+    const [updated] = await env.db
       .update(assets)
       .set({
         ...(body.name
@@ -422,32 +423,44 @@ export const registerAssetsRoutes = (
               displayTransfer:
                 body.display_transfer === "auto" ? null : body.display_transfer,
             }),
-        updatedAt: env.clock.now(),
+        updatedAt: nextAssetStamp(env.clock.now()),
       })
-      .where(eq(assets.id, asset.id))
-      .run();
-    const updated = (
-      await env.db
-        .select()
-        .from(assets)
-        .where(eq(assets.id, asset.id))
-        .limit(1)
-        .all()
-    )[0];
-    if (!updated) throw errors.notFound();
+      .where(
+        and(assetPredicate(asset.id, body.expected), isNull(assets.deletedAt)),
+      )
+      .returning()
+      .all();
+    if (!updated)
+      throw errors.conflict("The asset changed. Refresh before trying again.");
+    if (body.status !== undefined)
+      await notifyApprovalChange({
+        asset: updated,
+        status: body.status,
+        actorUserId: actor.id,
+        actorName: actor.name,
+      });
     return c.json(assetWire(updated));
   });
 
-  api.delete("/assets/:id", requireAuth, async (c) => {
+  const trashAsset = async (
+    c: Context<{ Variables: Variables }, "/assets/:id">,
+  ) => {
     const actor = userFromContext(c);
     const asset = await assetForActor(c.req.param("id"), actor, "editor");
-    await env.db
+    const body = (await jsonBody(c, bodies.assetTrash.optional())) ?? {};
+    const stamp = nextAssetStamp(env.clock.now());
+    const [updated] = await env.db
       .update(assets)
-      .set({ deletedAt: env.clock.now(), updatedAt: env.clock.now() })
-      .where(eq(assets.id, asset.id))
-      .run();
-    return c.body(null, 204);
-  });
+      .set({ deletedAt: stamp, updatedAt: stamp })
+      .where(assetPredicate(asset.id, body.expected))
+      .returning()
+      .all();
+    if (!updated)
+      throw errors.conflict("The asset changed. Refresh before trying again.");
+    return body.return_asset ? c.json(assetWire(updated)) : c.body(null, 204);
+  };
+  api.delete("/assets/:id", requireAuth, trashAsset);
+  api.post("/assets/:id/trash", requireAuth, trashAsset);
 
   /* A chosen thumbnail: an uploaded picture, or a frame captured out of the
      viewer and uploaded as a PNG. Same shape as the project cover -- a
@@ -467,7 +480,10 @@ export const registerAssetsRoutes = (
       throw errors.validation("A thumbnail must be an image.");
     await env.db
       .update(assets)
-      .set({ thumbnailBlobKey: upload.blobKey, updatedAt: env.clock.now() })
+      .set({
+        thumbnailBlobKey: upload.blobKey,
+        updatedAt: nextAssetStamp(env.clock.now()),
+      })
       .where(eq(assets.id, asset.id))
       .run();
     const updated = (
@@ -487,7 +503,10 @@ export const registerAssetsRoutes = (
     const asset = await assetForActor(c.req.param("id"), actor, "editor");
     await env.db
       .update(assets)
-      .set({ thumbnailBlobKey: null, updatedAt: env.clock.now() })
+      .set({
+        thumbnailBlobKey: null,
+        updatedAt: nextAssetStamp(env.clock.now()),
+      })
       .where(eq(assets.id, asset.id))
       .run();
     return c.body(null, 204);
@@ -539,34 +558,18 @@ export const registerAssetsRoutes = (
     });
   });
 
-  api.post("/assets/:id/trash", requireAuth, async (c) => {
-    const actor = userFromContext(c);
-    const asset = await assetForActor(c.req.param("id"), actor, "editor");
-    await env.db
-      .update(assets)
-      .set({ deletedAt: env.clock.now(), updatedAt: env.clock.now() })
-      .where(eq(assets.id, asset.id))
-      .run();
-    return c.body(null, 204);
-  });
-
   api.post("/assets/:id/restore", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const asset = await assetForActor(c.req.param("id"), actor, "editor");
-    await env.db
+    const body = (await jsonBody(c, bodies.assetRestore.optional())) ?? {};
+    const [restored] = await env.db
       .update(assets)
-      .set({ deletedAt: null, updatedAt: env.clock.now() })
-      .where(eq(assets.id, asset.id))
-      .run();
-    const restored = (
-      await env.db
-        .select()
-        .from(assets)
-        .where(eq(assets.id, asset.id))
-        .limit(1)
-        .all()
-    )[0];
-    if (!restored) throw errors.notFound();
+      .set({ deletedAt: null, updatedAt: nextAssetStamp(env.clock.now()) })
+      .where(assetPredicate(asset.id, body.expected))
+      .returning()
+      .all();
+    if (!restored)
+      throw errors.conflict("The asset changed. Refresh before trying again.");
     return c.json(assetWire(restored));
   });
 };

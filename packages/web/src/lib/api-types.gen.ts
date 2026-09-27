@@ -704,8 +704,53 @@ export interface paths {
                 };
                 cookie?: never;
             };
-            requestBody?: never;
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        expected?: {
+                            name?: string;
+                            folder_id?: string | null;
+                            /** @enum {string} */
+                            status?: "none" | "in_review" | "approved" | "changes_requested";
+                            tags?: string[];
+                            selected?: boolean;
+                            deleted_at?: number | null;
+                            updated_at?: number;
+                        };
+                        return_asset?: boolean;
+                    };
+                };
+            };
             responses: {
+                /** @description Trashed asset when return_asset is true */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            public_id: string;
+                            project_id: string;
+                            folder_id: string | null;
+                            name: string;
+                            /** @enum {string} */
+                            kind: "video" | "audio" | "image" | "pdf" | "file";
+                            current_version_id: string | null;
+                            /** @enum {string} */
+                            status: "none" | "in_review" | "approved" | "changes_requested";
+                            description: string;
+                            tags: string[];
+                            has_thumbnail: boolean;
+                            selected: boolean;
+                            selected_at: number | null;
+                            display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
+                            deleted_at: number | null;
+                            created_at: number;
+                            updated_at: number;
+                        };
+                    };
+                };
                 /** @description No content */
                 204: {
                     headers: {
@@ -749,10 +794,26 @@ export interface paths {
                         "application/json": components["schemas"]["Error"];
                     };
                 };
+                /** @description The resource changed; the mutation precondition no longer matches. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                details?: unknown;
+                            };
+                        };
+                    };
+                };
             };
         };
         options?: never;
         head?: never;
+        /** Update asset metadata as a project editor. Changing approval status requires a project manager and notifies the uploader and managers. */
         patch: {
             parameters: {
                 query?: never;
@@ -765,6 +826,16 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
+                        expected?: {
+                            name?: string;
+                            folder_id?: string | null;
+                            /** @enum {string} */
+                            status?: "none" | "in_review" | "approved" | "changes_requested";
+                            tags?: string[];
+                            selected?: boolean;
+                            deleted_at?: number | null;
+                            updated_at?: number;
+                        };
                         name?: string;
                         folder_id?: string | null;
                         /** @enum {string} */
@@ -843,6 +914,21 @@ export interface paths {
                         "application/json": components["schemas"]["Error"];
                     };
                 };
+                /** @description The resource changed; the mutation precondition no longer matches. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                details?: unknown;
+                            };
+                        };
+                    };
+                };
             };
         };
         trace?: never;
@@ -874,6 +960,16 @@ export interface paths {
                     "application/json": {
                         /** @enum {string} */
                         status: "none" | "in_review" | "approved" | "changes_requested";
+                        expected?: {
+                            name?: string;
+                            folder_id?: string | null;
+                            /** @enum {string} */
+                            status?: "none" | "in_review" | "approved" | "changes_requested";
+                            tags?: string[];
+                            selected?: boolean;
+                            deleted_at?: number | null;
+                            updated_at?: number;
+                        };
                     };
                 };
             };
@@ -943,8 +1039,115 @@ export interface paths {
                         "application/json": components["schemas"]["Error"];
                     };
                 };
+                /** @description The resource changed; the mutation precondition no longer matches. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                details?: unknown;
+                            };
+                        };
+                    };
+                };
             };
         };
+        trace?: never;
+    };
+    "/api/v1/assets/{id}/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Inspector context. Share membership is available to project managers only; recorded activity omits payloads and actor identities. Both sections are bounded. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            shares: {
+                                items: {
+                                    id: string;
+                                    title: string;
+                                    revoked_at: number | null;
+                                    expires_at: number | null;
+                                }[];
+                                has_more: boolean;
+                            } | null;
+                            activity: {
+                                items: {
+                                    id: string;
+                                    type: string;
+                                    at: number;
+                                }[];
+                                has_more: boolean;
+                            };
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/assets/{id}/restore": {
@@ -965,7 +1168,22 @@ export interface paths {
                 };
                 cookie?: never;
             };
-            requestBody?: never;
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        expected?: {
+                            name?: string;
+                            folder_id?: string | null;
+                            /** @enum {string} */
+                            status?: "none" | "in_review" | "approved" | "changes_requested";
+                            tags?: string[];
+                            selected?: boolean;
+                            deleted_at?: number | null;
+                            updated_at?: number;
+                        };
+                    };
+                };
+            };
             responses: {
                 /** @description Success */
                 200: {
@@ -1030,6 +1248,21 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description The resource changed; the mutation precondition no longer matches. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                details?: unknown;
+                            };
+                        };
                     };
                 };
             };
@@ -1275,8 +1508,53 @@ export interface paths {
                 };
                 cookie?: never;
             };
-            requestBody?: never;
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        expected?: {
+                            name?: string;
+                            folder_id?: string | null;
+                            /** @enum {string} */
+                            status?: "none" | "in_review" | "approved" | "changes_requested";
+                            tags?: string[];
+                            selected?: boolean;
+                            deleted_at?: number | null;
+                            updated_at?: number;
+                        };
+                        return_asset?: boolean;
+                    };
+                };
+            };
             responses: {
+                /** @description Trashed asset when return_asset is true */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            public_id: string;
+                            project_id: string;
+                            folder_id: string | null;
+                            name: string;
+                            /** @enum {string} */
+                            kind: "video" | "audio" | "image" | "pdf" | "file";
+                            current_version_id: string | null;
+                            /** @enum {string} */
+                            status: "none" | "in_review" | "approved" | "changes_requested";
+                            description: string;
+                            tags: string[];
+                            has_thumbnail: boolean;
+                            selected: boolean;
+                            selected_at: number | null;
+                            display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
+                            deleted_at: number | null;
+                            created_at: number;
+                            updated_at: number;
+                        };
+                    };
+                };
                 /** @description No content */
                 204: {
                     headers: {
@@ -1318,6 +1596,21 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description The resource changed; the mutation precondition no longer matches. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                details?: unknown;
+                            };
+                        };
                     };
                 };
             };
@@ -3434,7 +3727,72 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            project_id: string;
+                            parent_id: string | null;
+                            /** @enum {string} */
+                            kind: "assets" | "shares";
+                            name: string;
+                            created_at: number;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         put?: never;
         post?: never;
         delete: {
@@ -5152,6 +5510,14 @@ export interface paths {
                     limit?: string;
                     /** @description Opaque keyset cursor from next_cursor. */
                     cursor?: string;
+                    /** @description Order by name (case-insensitive), status, created_at or updated_at. Asset id breaks ties. Omit to preserve the original newest-id ordering. */
+                    sort?: string;
+                    /** @description asc or desc (default desc). Requires sort. */
+                    direction?: string;
+                    /** @description Filter by none, in_review, approved or changes_requested. */
+                    status?: string;
+                    /** @description Filter by video, audio, image, pdf or file. */
+                    kind?: string;
                     /** @description Filter by folder. */
                     folder_id?: string;
                     /** @description Pass 1 for the shortlist only. */
@@ -9970,6 +10336,7 @@ export interface paths {
                 content: {
                     "application/json": {
                         asset_ids: string[];
+                        expected_asset_ids?: string[];
                     };
                 };
             };
@@ -10022,6 +10389,21 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description The resource changed; the mutation precondition no longer matches. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                details?: unknown;
+                            };
+                        };
                     };
                 };
             };

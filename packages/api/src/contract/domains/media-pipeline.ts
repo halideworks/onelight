@@ -947,7 +947,6 @@ export const registerMediaPipelineDomain = (ctx: SuiteContext): void => {
           name: "Edited Asset",
           description: "A cut",
           tags: ["vfx", "day-1"],
-          status: "in_review",
         },
       });
       expect(edited.status).toBe(200);

@@ -10,10 +10,16 @@ export function dismissable(
   node: HTMLElement,
   close: () => void,
 ): { destroy: () => void } {
+  const obscuredByModal = (): boolean => {
+    const modal = Array.from(document.querySelectorAll("dialog[open]")).at(-1);
+    return Boolean(modal && !modal.contains(node));
+  };
   const onPointerDown = (event: PointerEvent): void => {
+    if (obscuredByModal()) return;
     if (!node.contains(event.target as Node)) close();
   };
   const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.defaultPrevented || obscuredByModal()) return;
     if (event.key === "Escape") close();
   };
   document.addEventListener("pointerdown", onPointerDown, true);

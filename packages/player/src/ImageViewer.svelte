@@ -228,8 +228,13 @@
   };
 
   const handleKeydown = (event: KeyboardEvent): void => {
+    if (event.defaultPrevented) return;
+    const modal = Array.from(document.querySelectorAll('dialog[open]')).at(-1);
+    if (modal && (!stage || !modal.contains(stage))) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target;
+    const control = target instanceof Element ? target.closest('button, a[href], summary, [role="button"]') : null;
+    if (control && (event.key === ' ' || event.key === 'Enter' || !stage?.closest('.viewer')?.contains(control))) return;
     if (
       target instanceof HTMLElement &&
       (target instanceof HTMLInputElement ||

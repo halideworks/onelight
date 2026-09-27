@@ -274,6 +274,8 @@
   let referenceClock = $state<HTMLAudioElement | null>(null);
   let referenceBackend: ReferencePictureBackend | null = null;
   let referenceActive = $state(false);
+  /* Native playback is paused only for the final handoff, not preparation. */
+  let referenceHandoff: { frame: number; playing: boolean } | null = null;
   let referenceLoading = $state(false);
   let referenceFailure = $state<string | null>(null);
   let referenceNotice = $state(false);
@@ -1164,6 +1166,7 @@
   };
 
   const beginMediaScrub = (): void => {
+    cancelPendingRestore();
     beginPictureScrub();
     beginPlaybackScrub();
   };
@@ -1593,6 +1596,7 @@
     referencePreparing = false;
     referenceSwitching = false;
     referenceLoading = false;
+    referenceHandoff = null;
     activeReferenceSource = '';
   };
 
@@ -1601,6 +1605,9 @@
     wasPlaying: boolean,
     failure: ReferenceFailure | null,
   ): void => {
+    const ownedPicture = referenceActive;
+    const handoff = referenceHandoff;
+    if (handoff) { at = handoff.frame; wasPlaying = handoff.playing; }
     stopReferenceClock();
     const failedSource = activeReferenceSource;
     disposeReferencePreparation();
@@ -1620,6 +1627,10 @@
       holdOrBlockReference(failedSource, failure);
       reportReferenceDiagnostic('fallback', failure);
     }
+    /* Preparation runs behind native playback. Its captured frame is not the
+       viewer's playhead: a late preparation failure must not undo a newer
+       native seek or pause playback that never handed off to reference. */
+    if (!ownedPicture && !handoff) return;
     seekFrame(at);
     if (!wasPlaying || !video) {
       forwardSpeed = 0;
@@ -1641,7 +1652,7 @@
   };
 
   const handleReferenceFailure = (failure: ReferenceFailure): void => {
-    if (!referenceActive && !untrack(() => referenceRequested)) {
+    if (!referenceActive && !referenceHandoff && !untrack(() => referenceRequested)) {
       stopReferenceClock();
       const failedSource = activeReferenceSource;
       disposeReferencePreparation();
@@ -1706,12 +1717,15 @@
       )
         return;
       const wasPlaying = untrack(() => playing);
+      const handoff = { frame: untrack(() => frame), playing: wasPlaying };
+      referenceHandoff = handoff;
       video?.pause();
       stopShuttleAudio();
       /* Native playback remains visible while the hidden renderer catches
          up. Pause only for the final exact-frame handoff, then correct the
          rare frame that advanced during the first decode. */
       const pausedFrame = untrack(() => frame);
+      handoff.frame = pausedFrame;
       if (pausedFrame !== switchFrame) {
         switchFrame = pausedFrame;
         preparation.backend.seek(switchFrame);
@@ -1720,10 +1734,12 @@
       if (
         preparation !== preparedReference ||
         preparation.generation !== referenceGeneration ||
+        referenceHandoff !== handoff ||
         !untrack(() => referenceRequested)
       )
         return;
       referenceActive = true;
+      referenceHandoff = null;
       referenceLoading = false;
       referenceDecodedColor = referenceBackend?.decodedColor ?? null;
       clearReferenceRetry();
@@ -1884,7 +1900,7 @@
     const shouldPrepare =
       nativeSourceReady &&
       (requested || colorPlaybackMode === 'automatic');
-    if (!requested && referenceActive) {
+    if (!requested && (referenceActive || referenceHandoff)) {
       closeReferenceToNative(untrack(() => frame), untrack(() => playing), null);
       return;
     }
@@ -1894,7 +1910,7 @@
       sourceKey === blockedReferenceSource
     ) {
       if (!requested || !contract || !clockReady) {
-        if (referenceActive)
+        if (referenceActive || referenceHandoff)
           closeReferenceToNative(untrack(() => frame), untrack(() => playing), null);
         else if (referenceLoading || referencePreparing || referencePrepared)
           disposeReferencePreparation();
@@ -1907,14 +1923,14 @@
       return;
     }
     if (!shouldPrepare) {
-      if (referenceActive)
+      if (referenceActive || referenceHandoff)
         closeReferenceToNative(untrack(() => frame), untrack(() => playing), null);
       else if (referencePreparing || referencePrepared)
         disposeReferencePreparation();
       referenceLoading = requested;
       return;
     }
-    if (referenceActive && sourceKey !== activeReferenceSource) {
+    if ((referenceActive || referenceHandoff) && sourceKey !== activeReferenceSource) {
       referenceRequestStartedAt = performance.now();
       referencePreparedBeforeRequest = false;
       closeReferenceToNative(untrack(() => frame), untrack(() => playing), null);
@@ -2993,6 +3009,7 @@
      restore.play() racing a reverse shuttle the reviewer just started). */
   const cancelPendingRestore = (): void => {
     pendingRestore = null;
+    referenceHandoff = null;
   };
 
   const jumpTo = (targetFrame: number): void => {
@@ -3214,8 +3231,13 @@
   };
 
   const handleKeydown = (event: KeyboardEvent): void => {
+    if (event.defaultPrevented) return;
+    const modal = Array.from(document.querySelectorAll('dialog[open]')).at(-1);
+    if (modal && (!stage || !modal.contains(stage))) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target;
+    const control = target instanceof Element ? target.closest('button, a[href], summary, [role="button"]') : null;
+    if (control && (event.key === ' ' || event.key === 'Enter' || !stage?.closest('.player')?.contains(control))) return;
     if (
       target instanceof HTMLElement &&
       (target instanceof HTMLInputElement ||

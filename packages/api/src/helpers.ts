@@ -110,7 +110,10 @@ export const jsonBody = async <S extends z.ZodTypeAny>(
   const bytes = await readBodyBytes(c, JSON_BODY_LIMIT);
   let body: unknown;
   try {
-    body = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+    body =
+      bytes.byteLength === 0 && schema.isOptional()
+        ? undefined
+        : (JSON.parse(new TextDecoder().decode(bytes)) as unknown);
   } catch {
     throw errors.validation("Request body must be valid JSON.");
   }

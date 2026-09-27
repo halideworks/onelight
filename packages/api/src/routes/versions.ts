@@ -7,6 +7,7 @@ import {
   readBodyBytes,
 } from "../helpers.js";
 import { bodies } from "../schemas.js";
+import { nextAssetStamp } from "../operation/asset-state.js";
 import { MAX_ATTACH_BATCH } from "../limits.js";
 import { errors, stackKeyOf, needsStillFull } from "@onelight/core";
 import type { uploadSessions } from "@onelight/db/schema";
@@ -209,7 +210,7 @@ export const registerVersionsRoutes = (
               stackKey: stackKeyOf(options.name.trim()),
             }
           : {}),
-        updatedAt: now,
+        updatedAt: nextAssetStamp(now),
       })
       .where(eq(assets.id, asset.id))
       .run();
@@ -730,7 +731,10 @@ export const registerVersionsRoutes = (
     if (!target) throw errors.notFound("Version was not found.");
     await env.db
       .update(assets)
-      .set({ currentVersionId: target.id, updatedAt: env.clock.now() })
+      .set({
+        currentVersionId: target.id,
+        updatedAt: nextAssetStamp(env.clock.now()),
+      })
       .where(eq(assets.id, version.assetId))
       .run();
     const rows = await env.db

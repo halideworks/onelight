@@ -133,6 +133,43 @@ describe("D1 migrations", () => {
 });
 
 describe("D1 dialect, where the app leans on it", () => {
+  it("evaluates guarded JSON reorder against one snapshot and returns only changed rows", async () => {
+    /* The share reorder uses this single-statement compare-and-swap. The
+       uncorrelated aggregate must not be reevaluated after each row moves. */
+    await env.DB.batch([
+      env.DB.prepare(
+        "CREATE TABLE conformance_reorder (asset_id TEXT PRIMARY KEY, sort_order INTEGER NOT NULL)",
+      ),
+      env.DB.prepare(
+        "INSERT INTO conformance_reorder VALUES ('a', 0), ('b', 1), ('c', 2)",
+      ),
+    ]);
+    const reorder = () =>
+      env.DB.prepare(
+        `
+      UPDATE conformance_reorder SET sort_order = (
+        SELECT CAST(key AS INTEGER) FROM json_each(?)
+        WHERE value = conformance_reorder.asset_id
+      ) WHERE (
+        SELECT json_group_array(asset_id) FROM (
+          SELECT asset_id FROM conformance_reorder ORDER BY sort_order, asset_id
+        )
+      ) = ? RETURNING asset_id, sort_order
+    `,
+      )
+        .bind('["c","b","a"]', '["a","b","c"]')
+        .all<{ asset_id: string; sort_order: number }>();
+    const changed = await reorder();
+    expect(
+      changed.results.sort((left, right) => left.sort_order - right.sort_order),
+    ).toEqual([
+      { asset_id: "c", sort_order: 0 },
+      { asset_id: "b", sort_order: 1 },
+      { asset_id: "a", sort_order: 2 },
+    ]);
+    expect((await reorder()).results).toEqual([]);
+  });
+
   it("enforces the partial unique indexes on renditions", async () => {
     /* Two partial unique indexes over the same table, split on share_id being
        null. Migration 0020 rebuilds the table to get them; if D1 dropped

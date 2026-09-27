@@ -17,6 +17,11 @@
   import NotificationsPanel from '$lib/NotificationsPanel.svelte';
   import Avatar from '$lib/Avatar.svelte';
   import ConfirmHost from '$lib/ConfirmHost.svelte';
+  import CommandPalette from '$lib/CommandPalette.svelte';
+  import UndoHost from '$lib/UndoHost.svelte';
+  import { commandState, openCommands, closeCommands } from '$lib/workbench/commands.svelte.js';
+  import { isEditing as isEditable } from '$lib/workbench/preferences.js';
+  import { undo } from '$lib/workbench/undo.svelte.js';
   import type { Snippet } from 'svelte';
 
   let { children }: { children: Snippet } = $props();
@@ -30,6 +35,23 @@
 
   onMount(() => {
     if (!auth.ready) void auth.hydrate();
+    window.addEventListener('keydown', onKeydown, { capture: true });
+    return () => window.removeEventListener('keydown', onKeydown, { capture: true });
+  });
+
+  let actionOwner: string | null | undefined;
+  $effect(() => {
+    // Account changes discard private actions, including in-flight undo results.
+    const owner = auth.user?.id ?? null;
+    if (owner === actionOwner) return;
+    actionOwner = owner;
+    undo.clear();
+    commandState.contextual = [];
+    closeCommands();
+  });
+
+  $effect(() => {
+    if (isPublic) closeCommands();
   });
 
   $effect(() => {
@@ -54,22 +76,38 @@
     };
   });
 
-  const isTyping = (target: EventTarget | null): boolean =>
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    (target instanceof HTMLElement && target.isContentEditable);
-
   /* Global "/" jumps to search everywhere in the app world (skipped while
      typing and in the review room, which owns its own keyboard surface). */
   const onKeydown = (event: KeyboardEvent): void => {
+    if (event.defaultPrevented || event.isComposing || !auth.signedIn || isPublic) return;
+    const modal = document.querySelector('dialog[open]');
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
+      if (modal && !commandState.open) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (event.repeat) return;
+      if (commandState.open) closeCommands();
+      else openCommands();
+      return;
+    }
+    if (modal) return;
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'z') {
+      if (!isEditable(event.target) && undo.canUndo) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void undo.run();
+      }
+      return;
+    }
     if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
-    if (!chrome || isTyping(event.target)) return;
+    if (!chrome || isEditable(event.target)) return;
     event.preventDefault();
     /* The field is in the nav now, so "/" focuses it here rather than
        navigating somewhere to find one. */
-    searchEl?.focus();
-    searchEl?.select();
+    if (searchEl?.offsetParent) {
+      searchEl.focus();
+      searchEl.select();
+    } else openCommands();
   };
 
   let searchEl = $state<HTMLInputElement | null>(null);
@@ -103,8 +141,6 @@
   <link rel="preload" href={switzer400} as="font" type="font/woff2" crossorigin="anonymous" />
   <link rel="preload" href={switzer500} as="font" type="font/woff2" crossorigin="anonymous" />
 </svelte:head>
-
-<svelte:window onkeydown={onKeydown} />
 
 <!-- The review room bans tinted chrome near the frame, so the bar goes grey
      there and verdigris everywhere else. -->
@@ -163,11 +199,9 @@
          search field collapses into the first icon; on desktop that icon
          hides and the field stands before the cluster instead. -->
     <span class="iconrow">
-      <a class="searchlink" href="/search" aria-label="Search">
-        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" stroke-linecap="round" />
-        </svg>
-      </a>
+      <button class="commands" type="button" onclick={openCommands} aria-label="Open command palette" title="Commands (Ctrl or Cmd + K)">
+        <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2.5" y="4" width="15" height="12" rx="2" /><path d="m6 8 2 2-2 2m5 0h3" stroke-linecap="round" stroke-linejoin="round" /></svg>
+      </button>
       <button
         type="button"
         class="bell"
@@ -195,6 +229,15 @@
   <NotificationsPanel bind:open={notificationsOpen} />
 {/if}
 <ConfirmHost />
+{#if auth.signedIn && !isPublic}
+  <CommandPalette neutral={inReviewRoom} />
+  <UndoHost neutral={inReviewRoom} />
+  {#if inReviewRoom}
+    <button class="commands review-commands" type="button" onclick={openCommands} aria-label="Open command palette" title="Commands (Ctrl or Cmd + K)">
+      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2.5" y="4" width="15" height="12" rx="2" /><path d="m6 8 2 2-2 2m5 0h3" stroke-linecap="round" stroke-linejoin="round" /></svg>
+    </button>
+  {/if}
+{/if}
 
 <!-- display: contents, so this wrapper adds no box and changes no layout; it
      exists only to hand --topbar-h down to the page. Custom properties still
@@ -297,16 +340,22 @@
      its centre, so the gaps between glyphs are actually equal instead of a
      side effect of each icon's own padding and negative margins. */
   .iconrow { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
-  .searchlink {
-    display: none;
+  .commands {
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 40px;
     height: 40px;
     border-radius: var(--radius);
+    border: 0;
+    padding: 0;
+    background: transparent;
     color: var(--ink-text-dim);
   }
-  .searchlink:hover { color: var(--ink-text); }
+  .commands:hover { color: var(--ink-text); background: var(--ink-200); }
+  .review-commands { position: fixed; right: 16px; bottom: 16px; z-index: 90; width: 36px; height: 36px; background: var(--n-200); color: var(--n-800); }
+  .review-commands:hover { background: var(--n-300); color: var(--n-900); }
+  .review-commands:focus-visible { outline-color: var(--n-800); }
   /* Coarse pointers get full-height nav targets; the visual stays quiet. */
   @media (pointer: coarse) {
     nav a { padding: 12px 4px; margin: -12px -4px; }
@@ -367,7 +416,7 @@
     .topbar { gap: 20px; }
     .navsearch { display: none; }
     nav { display: none; }
-    .searchlink { display: inline-flex; }
+    .commands { width: 44px; height: 44px; }
   }
   a:focus-visible,
   button:focus-visible {

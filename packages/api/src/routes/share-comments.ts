@@ -10,6 +10,7 @@ import {
 import { and, eq, isNull, asc, desc, ne } from "drizzle-orm";
 import { clientIp, jsonBody } from "../helpers.js";
 import { bodies } from "../schemas.js";
+import { nextAssetStamp } from "../operation/asset-state.js";
 import type { AppEnv, ApiRouter } from "../types.js";
 import type { Shares } from "../operation/shares.js";
 import type { Comments } from "../operation/comments.js";
@@ -537,7 +538,7 @@ export const registerShareCommentsRoutes = (
     if (!asset) throw errors.notFound();
     const changed = await env.db
       .update(assets)
-      .set({ status: body.status, updatedAt: env.clock.now() })
+      .set({ status: body.status, updatedAt: nextAssetStamp(env.clock.now()) })
       .where(and(eq(assets.id, asset.id), ne(assets.status, body.status)))
       .returning({ id: assets.id })
       .all();

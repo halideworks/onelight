@@ -28,7 +28,7 @@ import type { Activity } from "../operation/activity.js";
 import type { Uploads } from "../operation/uploads.js";
 import type { Media } from "../operation/media.js";
 import type { Blobs } from "../operation/blobs.js";
-import { userWire } from "../wire.js";
+import { userWire, folderWire } from "../wire.js";
 
 export const registerProjectsRoutes = (
   api: ApiRouter,
@@ -802,15 +802,21 @@ export const registerProjectsRoutes = (
       .orderBy(asc(folders.name))
       .all();
     return c.json({
-      items: rows.map((folder: typeof folders.$inferSelect) => ({
-        id: folder.id,
-        project_id: folder.projectId,
-        parent_id: folder.parentId,
-        kind: folder.kind,
-        name: folder.name,
-        created_at: folder.createdAt,
-      })),
+      items: rows.map(folderWire),
     });
+  });
+
+  api.get("/folders/:id", requireAuth, async (c) => {
+    const actor = userFromContext(c);
+    const [folder] = await env.db
+      .select()
+      .from(folders)
+      .where(eq(folders.id, c.req.param("id")))
+      .limit(1)
+      .all();
+    if (!folder) throw errors.notFound();
+    await requireProject(folder.projectId, actor, "viewer");
+    return c.json(folderWire(folder));
   });
 
   api.post("/projects/:id/folders", requireAuth, async (c) => {
@@ -955,14 +961,7 @@ export const registerProjectsRoutes = (
       body.parent_id === undefined ? "folder.rename" : "folder.move",
       `folder:${folder.id}`,
     );
-    return c.json({
-      id: updated.id,
-      project_id: updated.projectId,
-      parent_id: updated.parentId,
-      kind: updated.kind,
-      name: updated.name,
-      created_at: updated.createdAt,
-    });
+    return c.json(folderWire(updated));
   });
 
   api.delete("/folders/:id", requireAuth, async (c) => {
