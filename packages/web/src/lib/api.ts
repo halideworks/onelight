@@ -137,6 +137,11 @@ type Created<P extends keyof paths> = paths[P] extends {
 }
   ? JsonOf<R[Extract<keyof R, 201 | "201">]>
   : never;
+type Posted<P extends keyof paths> = paths[P] extends {
+  post: { responses: infer R };
+}
+  ? JsonOf<R[Extract<keyof R, 200 | "200">]>
+  : never;
 type PatchBody<P extends keyof paths> = paths[P] extends {
   patch: { requestBody: { content: { "application/json": infer B } } };
 }
@@ -169,6 +174,10 @@ export type Rendition = RenditionList["items"][number];
 export type ShareViewerList = Get<"/api/v1/shares/{id}/viewers">;
 export type ShareViewer = ShareViewerList["items"][number];
 export type VersionCreated = Created<"/api/v1/assets/{id}/versions">;
+export type VersionBatchCreated =
+  Created<"/api/v1/projects/{id}/versions/batch">;
+export type VersionUnstacked = Posted<"/api/v1/versions/{id}/unstack">;
+export type StackState = VersionList["stack_state"];
 
 /* The share watermark spec crosses the wire as a loose JSON record; this is
    the concrete shape the transcode worker consumes (media.ts WatermarkSpec). */

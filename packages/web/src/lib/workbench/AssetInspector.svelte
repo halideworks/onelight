@@ -1,20 +1,23 @@
 <script lang="ts">
-  import { api, messageFrom, type Asset, type Version } from '$lib/api.js';
+  import { untrack } from 'svelte';
+  import { api, messageFrom, type Asset, type Version, type VersionList } from '$lib/api.js';
   import { formatBytes } from '$lib/upload.js';
   import { whenAbsolute } from '$lib/format.js';
   import { formatTimecode, timecodeFromFrames } from '@onelight/core';
   import { undo } from './undo.svelte.js';
 
-  let { assetId, versionId = null, neutral = false, onversionselect, onclose }: {
+  let { assetId, versionId = null, neutral = false, onversionselect, onclose, refreshKey = 0 }: {
     assetId: string;
     versionId?: string | null;
     neutral?: boolean;
     onversionselect?: (id: string) => void;
     onclose?: () => void;
+    refreshKey?: number;
   } = $props();
   let asset = $state<Asset | null>(null);
   let versions = $state<Version[]>([]);
   let chosen = $state<string | null>(null);
+  let chosenAsset: string | null = null;
   let detail = $state<Version | null>(null);
   let loading = $state(true);
   let error = $state('');
@@ -35,6 +38,7 @@
   $effect(() => {
     const id = assetId;
     void retry;
+    void refreshKey;
     let active = true;
     const request = new AbortController();
     context = null; contextError = '';
@@ -49,23 +53,27 @@
   $effect(() => {
     const id = assetId;
     void retry;
+    void refreshKey;
     let active = true;
     const request = new AbortController();
-    asset = null; versions = []; chosen = null; loading = true; error = '';
+    const previous = untrack(() => chosenAsset === id ? chosen : null);
+    if (chosenAsset !== id) chosen = null;
+    asset = null; versions = []; loading = true; error = '';
     void Promise.all([
       api<Asset>(`/api/v1/assets/${id}`, { signal: request.signal }),
-      api<{ items: Version[] }>(`/api/v1/assets/${id}/versions`, { signal: request.signal })
+      api<VersionList>(`/api/v1/assets/${id}/versions`, { signal: request.signal })
     ]).then(([loaded, listing]) => {
       if (!active) return;
-      asset = loaded; versions = listing.items;
-      chosen = loaded.current_version_id ?? listing.items[0]?.id ?? null;
+      asset = { ...loaded, current_version_id: listing.stack_state.current_version_id }; versions = listing.items;
+      chosenAsset = id;
+      chosen = listing.items.find((version) => version.id === previous)?.id ?? listing.items.find((version) => version.id === listing.stack_state.current_version_id)?.id ?? listing.items[0]?.id ?? null;
     }).catch((caught: unknown) => {
       if (active) error = messageFrom(caught, 'Asset details could not be loaded.');
     }).finally(() => { if (active) loading = false; });
     return () => { active = false; request.abort(); };
   });
 
-  const selected = $derived(versionId ?? chosen);
+  const selected = $derived(versionId && versions.some((version) => version.id === versionId) ? versionId : chosen);
   $effect(() => {
     const id = selected;
     let active = true;

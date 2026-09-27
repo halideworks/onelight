@@ -3493,10 +3493,55 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "stack_state": {
+                      "type": "object",
+                      "properties": {
+                        "asset_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "current_version_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "versions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "version_no": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "version_no"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "asset_id",
+                        "current_version_id",
+                        "versions"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
-                    "items"
+                    "items",
+                    "stack_state"
                   ],
                   "additionalProperties": false
                 }
@@ -3835,12 +3880,68 @@
                     },
                     "job_id": {
                       "type": "string"
+                    },
+                    "stack_state": {
+                      "type": "object",
+                      "properties": {
+                        "asset_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "current_version_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "versions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "version_no": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "version_no"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "asset_id",
+                        "current_version_id",
+                        "versions"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "previous_current_version_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "undo_token": {
+                      "type": "string"
                     }
                   },
                   "required": [
                     "asset",
                     "version",
-                    "job_id"
+                    "job_id",
+                    "stack_state",
+                    "previous_current_version_id",
+                    "undo_token"
                   ],
                   "additionalProperties": false
                 }
@@ -12157,6 +12258,59 @@
                           },
                           "job_id": {
                             "type": "string"
+                          },
+                          "stack_state": {
+                            "type": "object",
+                            "properties": {
+                              "asset_id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "current_version_id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "versions": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "version_no": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "version_no"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              }
+                            },
+                            "required": [
+                              "asset_id",
+                              "current_version_id",
+                              "versions"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "previous_current_version_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "undo_token": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -12164,7 +12318,10 @@
                           "upload_id",
                           "version_id",
                           "version_no",
-                          "job_id"
+                          "job_id",
+                          "stack_state",
+                          "previous_current_version_id",
+                          "undo_token"
                         ],
                         "additionalProperties": false
                       }
@@ -27013,6 +27170,463 @@
         }
       }
     },
+    "/api/v1/versions/{id}/restack": {
+      "post": {
+        "summary": "Undo an unstack using its signed token and an unchanged source stack. Refuses to remove an edited or referenced detached asset.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "expected": {
+                    "type": "object",
+                    "properties": {
+                      "asset_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "current_version_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "versions": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "version_no": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "version_no"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "asset_id",
+                      "current_version_id",
+                      "versions"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "undo_token": {
+                    "type": "string",
+                    "maxLength": 16384
+                  }
+                },
+                "required": [
+                  "expected",
+                  "undo_token"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "asset": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "public_id": {
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "folder_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "video",
+                            "audio",
+                            "image",
+                            "pdf",
+                            "file"
+                          ]
+                        },
+                        "current_version_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "in_review",
+                            "approved",
+                            "changes_requested"
+                          ]
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "has_thumbnail": {
+                          "type": "boolean"
+                        },
+                        "selected": {
+                          "type": "boolean"
+                        },
+                        "selected_at": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "display_transfer": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "srgb",
+                                "gamma22",
+                                "bt1886"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "deleted_at": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "created_at": {
+                          "type": "integer"
+                        },
+                        "updated_at": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "public_id",
+                        "project_id",
+                        "folder_id",
+                        "name",
+                        "kind",
+                        "current_version_id",
+                        "status",
+                        "description",
+                        "tags",
+                        "has_thumbnail",
+                        "selected",
+                        "selected_at",
+                        "display_transfer",
+                        "deleted_at",
+                        "created_at",
+                        "updated_at"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "version": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "asset_id": {
+                          "type": "string"
+                        },
+                        "version_no": {
+                          "type": "integer"
+                        },
+                        "original_filename": {
+                          "type": "string"
+                        },
+                        "size": {
+                          "type": "integer"
+                        },
+                        "checksum_crc32c": {
+                          "type": "string"
+                        },
+                        "uploaded_by": {
+                          "type": "string"
+                        },
+                        "media_info": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        },
+                        "source_timecode_start": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "source_start_frame": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "frame_rate_num": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "frame_rate_den": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "drop_frame": {
+                          "type": "boolean"
+                        },
+                        "duration_frames": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "color": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        },
+                        "transcode_status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "processing",
+                            "ready",
+                            "failed",
+                            "skipped"
+                          ]
+                        },
+                        "created_at": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "asset_id",
+                        "version_no",
+                        "original_filename",
+                        "size",
+                        "checksum_crc32c",
+                        "uploaded_by",
+                        "media_info",
+                        "source_timecode_start",
+                        "source_start_frame",
+                        "frame_rate_num",
+                        "frame_rate_den",
+                        "drop_frame",
+                        "duration_frames",
+                        "color",
+                        "transcode_status",
+                        "created_at"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "stack_state": {
+                      "type": "object",
+                      "properties": {
+                        "asset_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "current_version_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "versions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "version_no": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "version_no"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "asset_id",
+                        "current_version_id",
+                        "versions"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "asset",
+                    "version",
+                    "stack_state"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource changed; the mutation precondition no longer matches.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/versions/{id}/stack": {
       "patch": {
         "parameters": [
@@ -27329,6 +27943,511 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/versions/{id}/unstack": {
+      "post": {
+        "summary": "Move a live version into a separate asset, preserving its media and comments. An upload undo token restores its previous current version.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "expected": {
+                    "type": "object",
+                    "properties": {
+                      "asset_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "current_version_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "versions": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "version_no": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "version_no"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "asset_id",
+                      "current_version_id",
+                      "versions"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "undo_token": {
+                    "type": "string",
+                    "maxLength": 16384
+                  }
+                },
+                "required": [
+                  "expected"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "asset": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "public_id": {
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "folder_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "video",
+                            "audio",
+                            "image",
+                            "pdf",
+                            "file"
+                          ]
+                        },
+                        "current_version_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "in_review",
+                            "approved",
+                            "changes_requested"
+                          ]
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "has_thumbnail": {
+                          "type": "boolean"
+                        },
+                        "selected": {
+                          "type": "boolean"
+                        },
+                        "selected_at": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "display_transfer": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "srgb",
+                                "gamma22",
+                                "bt1886"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "deleted_at": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "created_at": {
+                          "type": "integer"
+                        },
+                        "updated_at": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "public_id",
+                        "project_id",
+                        "folder_id",
+                        "name",
+                        "kind",
+                        "current_version_id",
+                        "status",
+                        "description",
+                        "tags",
+                        "has_thumbnail",
+                        "selected",
+                        "selected_at",
+                        "display_transfer",
+                        "deleted_at",
+                        "created_at",
+                        "updated_at"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "version": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "asset_id": {
+                          "type": "string"
+                        },
+                        "version_no": {
+                          "type": "integer"
+                        },
+                        "original_filename": {
+                          "type": "string"
+                        },
+                        "size": {
+                          "type": "integer"
+                        },
+                        "checksum_crc32c": {
+                          "type": "string"
+                        },
+                        "uploaded_by": {
+                          "type": "string"
+                        },
+                        "media_info": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        },
+                        "source_timecode_start": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "source_start_frame": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "frame_rate_num": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "frame_rate_den": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "drop_frame": {
+                          "type": "boolean"
+                        },
+                        "duration_frames": {
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "color": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        },
+                        "transcode_status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "processing",
+                            "ready",
+                            "failed",
+                            "skipped"
+                          ]
+                        },
+                        "created_at": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "asset_id",
+                        "version_no",
+                        "original_filename",
+                        "size",
+                        "checksum_crc32c",
+                        "uploaded_by",
+                        "media_info",
+                        "source_timecode_start",
+                        "source_start_frame",
+                        "frame_rate_num",
+                        "frame_rate_den",
+                        "drop_frame",
+                        "duration_frames",
+                        "color",
+                        "transcode_status",
+                        "created_at"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "source_stack": {
+                      "type": "object",
+                      "properties": {
+                        "asset_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "current_version_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "versions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "version_no": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "version_no"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "asset_id",
+                        "current_version_id",
+                        "versions"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "before_stack": {
+                      "type": "object",
+                      "properties": {
+                        "asset_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "current_version_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "versions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "version_no": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "version_no"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "asset_id",
+                        "current_version_id",
+                        "versions"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "undo_token": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "asset",
+                    "version",
+                    "source_stack",
+                    "before_stack",
+                    "undo_token"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The resource changed; the mutation precondition no longer matches.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
                 }
               }
             }

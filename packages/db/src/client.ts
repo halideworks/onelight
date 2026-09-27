@@ -1,9 +1,10 @@
 import Database from "better-sqlite3";
-import { drizzle as drizzleD1 } from "drizzle-orm/d1";
 import { drizzle as drizzleNode } from "drizzle-orm/better-sqlite3";
-import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
-import type { D1Database } from "@cloudflare/workers-types";
+import type { SQL } from "drizzle-orm";
+import { compileSql, type AppDb } from "./atomic.js";
 import { schema } from "./schema.js";
+export type { AppDb } from "./atomic.js";
+export { createD1Db } from "./cf.js";
 
 /**
  * The database handle shared by both runtimes. better-sqlite3 instantiates
@@ -13,12 +14,6 @@ import { schema } from "./schema.js";
  * both drivers satisfy, so callers await every terminal call (awaiting the
  * sync driver's plain values is a no-op) and never branch per driver.
  */
-export type AppDb = BaseSQLiteDatabase<
-  "sync" | "async",
-  unknown,
-  typeof schema
->;
-
 export const createNodeDb = (
   filename: string,
 ): { db: AppDb; sqlite: Database.Database } => {
@@ -39,8 +34,21 @@ export const createNodeDb = (
   sqlite.pragma("cache_size = -65536");
   sqlite.pragma("mmap_size = 268435456");
   sqlite.pragma("temp_store = MEMORY");
-  return { db: drizzleNode(sqlite, { schema }), sqlite };
+  const db = Object.assign(drizzleNode(sqlite, { schema }), {
+    atomic: (statements: SQL[]) =>
+      Promise.resolve().then(() => {
+        const queries = statements.map(compileSql);
+        // Never await inside a synchronous better-sqlite3 transaction.
+        return sqlite.transaction(() =>
+          queries.map(({ sql, params }) => {
+            const statement = sqlite.prepare(sql);
+            if (statement.reader)
+              return statement.all(...params) as Record<string, unknown>[];
+            statement.run(...params);
+            return [];
+          }),
+        )();
+      }),
+  });
+  return { db, sqlite };
 };
-
-export const createD1Db = (binding: D1Database): AppDb =>
-  drizzleD1(binding, { schema });

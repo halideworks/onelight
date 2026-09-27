@@ -1,17 +1,20 @@
 import { drizzle } from "drizzle-orm/d1";
-import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
+import type { SQL } from "drizzle-orm";
 import type { D1Database } from "@cloudflare/workers-types";
+import { compileSql, type AppDb } from "./atomic.js";
 import { schema } from "./schema.js";
 export { applyD1Migrations, d1Migrations } from "./d1-migrations.js";
-
-// Keep in sync with AppDb in client.ts. This entry point must not import
-// client.ts because that module loads better-sqlite3 at runtime, which does
-// not exist in Workers.
-export type AppDb = BaseSQLiteDatabase<
-  "sync" | "async",
-  unknown,
-  typeof schema
->;
+export type { AppDb } from "./atomic.js";
 
 export const createD1Db = (binding: D1Database): AppDb =>
-  drizzle(binding, { schema });
+  Object.assign(drizzle(binding, { schema }), {
+    atomic: async (statements: SQL[]) => {
+      if (!statements.length) return [];
+      const prepared = statements.map((statement) => {
+        const { sql, params } = compileSql(statement);
+        return binding.prepare(sql).bind(...params);
+      });
+      const results = await binding.batch<Record<string, unknown>>(prepared);
+      return results.map((result) => result.results);
+    },
+  });

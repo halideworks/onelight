@@ -3,6 +3,7 @@
   import AssetInspector from '$lib/workbench/AssetInspector.svelte';
   import { readPreference, writePreference } from '$lib/workbench/preferences.js';
   import { changeAsset } from '$lib/workbench/asset-actions.js';
+  import { undoStackedUploads, unstackVersion } from '$lib/workbench/version-actions.js';
   import { undo } from '$lib/workbench/undo.svelte.js';
   import Player from '@onelight/player/Player.svelte';
   import ImageViewer from '@onelight/player/ImageViewer.svelte';
@@ -26,7 +27,7 @@
   import { dismissable } from '$lib/dismiss.js';
   import { holdRepeat } from '$lib/hold-repeat.js';
   import { goto, replaceState } from '$app/navigation';
-  import { api, apiDelete, apiPatch, apiPost, apiPut, messageFrom } from '$lib/api.js';
+  import { api, ApiError, apiDelete, apiPatch, apiPost, apiPut, createAssetVersion, messageFrom, type StackState, type VersionList } from '$lib/api.js';
   import { uploadFile } from '$lib/upload.js';
   import { projectEvents } from '$lib/sse.svelte.js';
   import AttachmentImage from '$lib/AttachmentImage.svelte';
@@ -98,6 +99,12 @@
   );
   let projectTransferFor: string | null = null;
   let versions = $state<Version[]>([]);
+  let stackState = $state<StackState | null>(null);
+  let stackBusy = $state(false);
+  let stackRefreshSequence = 0;
+  let initializingReview = false;
+  let refreshAfterInitialization = false;
+  let inspectorRevision = $state(0);
   let selectedVersionId = $state<string | null>(null);
   let source = $state('');
   let renditionOptions = $state<PlayerRendition[]>([]);
@@ -402,9 +409,7 @@
     if (revision === lastUndoRevision) return;
     lastUndoRevision = revision;
     untrack(() => {
-      if (asset) void refreshAsset(asset.id).catch((caught: unknown) => {
-        error = messageFrom(caught, 'Refresh the asset to see its latest state.');
-      });
+      if (asset) void refreshVersions();
     });
   });
   const changeReviewedAsset = async (label: string, patch: Parameters<typeof changeAsset>[1]): Promise<void> => {
@@ -676,7 +681,10 @@
   /* The still one version back, for the viewer's A/B. Fetched only for image
      assets and only when there is a version before this one; everything else
      leaves the compare controls off. */
+  let previousStillRequest = 0;
   const loadPreviousStill = async (token: number): Promise<void> => {
+    if (token !== versionToken) return;
+    const request = ++previousStillRequest;
     stillPrevUrl = null;
     if (asset?.kind !== 'image') return;
     const index = versions.findIndex((version) => version.id === selectedVersionId);
@@ -686,7 +694,7 @@
       const listing = await api<{ items: Rendition[] }>(
         `/api/v1/versions/${previous.id}/renditions`
       );
-      if (token !== versionToken) return;
+      if (token !== versionToken || request !== previousStillRequest) return;
       const still = pickStill(listing.items);
       stillPrevUrl = still ? urlForRendition(still) : null;
     } catch {
@@ -694,16 +702,18 @@
     }
   };
 
+  let carrySourceRequest = 0;
   const checkCarrySource = async (token: number): Promise<void> => {
+    if (token !== versionToken) return;
+    const request = ++carrySourceRequest;
+    const previous = isNewestSelected ? versions[1] : undefined;
+    if (prevVersion?.id !== previous?.id) settledSources = [];
     prevVersion = null;
     prevOpenIds = [];
-    settledSources = [];
-    if (!isNewestSelected || versions.length < 2) return;
-    const previous = versions[1];
     if (!previous) return;
     try {
       const items = (await api<{ items: Comment[] }>(`/api/v1/versions/${previous.id}/comments`)).items;
-      if (token !== versionToken) return;
+      if (token !== versionToken || request !== carrySourceRequest) return;
       rememberVersionNos(items, previous.version_no);
       prevVersion = previous;
       prevOpenIds = items
@@ -766,80 +776,97 @@
   const load = async (id: string): Promise<void> => {
     rememberReview();
     const sequence = ++loadSequence;
+    stackRefreshSequence += 1;
+    initializingReview = true;
+    refreshAfterInitialization = false;
     const userId = auth.user?.id ?? null;
-    reviewUser = userId;
-    if (urlTimer !== null) { clearTimeout(urlTimer); urlTimer = null; }
-    pendingFrame = null; lastWrittenF = null; appliedF = null; currentFrame = 0; paused = true;
-    versionToken += 1;
-    asset = null; versions = []; selectedVersionId = null; source = ''; renditionOptions = []; shuttleAudio = null; sourceHasAudio = true;
-    filmstrip = null; waveformUrl = null; peaksUrl = null; spectrogramUrl = null; posterUrl = null;
-    stillUrl = null; stillPrevUrl = null; rate = null; dropFrame = false; durationFrames = null;
-    error = ''; comments = []; commentError = ''; highlightedId = null; pendingDrawing = null;
-    noteFilter = 'all'; activeTag = null; railError = ''; prevVersion = null; prevOpenIds = []; settledSources = [];
-    versionNoByComment = {};
-    assetId = null;
-    projectId = null;
-    let canonical = '';
     try {
-      const loaded = await api<Asset>(`/api/v1/assets/${id}`);
+      reviewUser = userId;
+      stackBusy = false; uploadState = { status: 'idle', progress: 0, error: '' };
+      projectRole = null;
+      if (urlTimer !== null) { clearTimeout(urlTimer); urlTimer = null; }
+      pendingFrame = null; lastWrittenF = null; appliedF = null; currentFrame = 0; paused = true;
+      versionToken += 1;
+      asset = null; versions = []; stackState = null; selectedVersionId = null; source = ''; renditionOptions = []; shuttleAudio = null; sourceHasAudio = true;
+      filmstrip = null; waveformUrl = null; peaksUrl = null; spectrogramUrl = null; posterUrl = null;
+      stillUrl = null; stillPrevUrl = null; rate = null; dropFrame = false; durationFrames = null;
+      error = ''; comments = []; commentError = ''; highlightedId = null; pendingDrawing = null;
+      noteFilter = 'all'; activeTag = null; railError = ''; prevVersion = null; prevOpenIds = []; settledSources = [];
+      versionNoByComment = {};
+      assetId = null;
+      projectId = null;
+      let canonical = '';
+      try {
+        const loaded = await api<Asset>(`/api/v1/assets/${id}`);
+        if (id !== routeAssetId || sequence !== loadSequence || userId !== auth.user?.id) return;
+        asset = loaded;
+        assetId = loaded.id;
+        projectId = loaded.project_id;
+        canonical = loaded.id;
+      } catch (caught) {
+        if (sequence !== loadSequence) return;
+        error = messageFrom(caught, 'This asset is not available.');
+        return;
+      }
+      const pid = projectId;
+      if (pid) {
+        void loadMembers(pid);
+        /* The folder's order, for [ and ] and for the neighbour prefetch. */
+        void loadSiblings();
+        /* The project's public identity, for the address bar and the links
+           out; the page works before it arrives. */
+        void api<{ id: string; public_id: string; name: string; my_role?: string | null }>(
+          `/api/v1/projects/${pid}`
+          )
+          .then((loadedProject) => {
+            if (asset?.project_id !== loadedProject.id || sequence !== loadSequence || userId !== auth.user?.id) return;
+            projectInfo = { public_id: loadedProject.public_id, name: loadedProject.name };
+            projectRole = loadedProject.my_role ?? null;
+            if (asset)
+              canonicalizePath(
+                `/projects/${pretty(loadedProject.public_id, loadedProject.name)}/assets/${pretty(asset.public_id, asset.name)}`
+              );
+          })
+          .catch(() => {
+            /* Cosmetic only. */
+          });
+      }
+      try {
+        const loadedVersions = await api<VersionList>(`/api/v1/assets/${canonical}/versions`);
+        if (sequence !== loadSequence || userId !== auth.user?.id) return;
+        versions = loadedVersions.items;
+        stackState = loadedVersions.stack_state;
+        asset = { ...asset, current_version_id: stackState.current_version_id };
+      } catch {
+        if (sequence !== loadSequence) return;
+        versions = [];
+      }
       if (id !== routeAssetId || sequence !== loadSequence || userId !== auth.user?.id) return;
-      asset = loaded;
-      assetId = loaded.id;
-      projectId = loaded.project_id;
-      canonical = loaded.id;
-    } catch (caught) {
-      if (sequence !== loadSequence) return;
-      error = messageFrom(caught, 'This asset is not available.');
-      return;
+      /* Deep links may pin a specific version (?v=); location.search is read
+         directly so this load never re-runs on ?f= rewrites. */
+      const params = new URLSearchParams(location.search);
+      const pinned = params.get('v');
+      const remembered = readPreference(userId, `review:${canonical}`, validateReview, defaultReview);
+      notesOpen = remembered.notes; infoOpen = remembered.info; notesWidth = remembered.width; noteFilter = remembered.filter;
+      const explicit = params.has('v') || params.has('f');
+      const initial =
+        (pinned && versions.find((version) => version.id === pinned)?.id) ||
+        (!explicit && versions.find((version) => version.id === remembered.version)?.id) ||
+        asset.current_version_id ||
+        versions[0]?.id ||
+        null;
+      pendingFrame = !explicit && initial === remembered.version ? remembered.frame : null;
+      if (!explicit && initial && initial !== asset.current_version_id) writeVersionParam(initial);
+      if (initial) await selectVersion(initial);
+    } finally {
+      if (sequence === loadSequence && userId === (auth.user?.id ?? null)) {
+        initializingReview = false;
+        if (refreshAfterInitialization) {
+          refreshAfterInitialization = false;
+          await refreshVersions();
+        }
+      }
     }
-    const pid = projectId;
-    if (pid) {
-      void loadMembers(pid);
-      /* The folder's order, for [ and ] and for the neighbour prefetch. */
-      void loadSiblings();
-      /* The project's public identity, for the address bar and the links
-         out; the page works before it arrives. */
-      void api<{ id: string; public_id: string; name: string; my_role?: string | null }>(
-        `/api/v1/projects/${pid}`
-      )
-        .then((loadedProject) => {
-          if (asset?.project_id !== loadedProject.id) return;
-          projectInfo = { public_id: loadedProject.public_id, name: loadedProject.name };
-          projectRole = loadedProject.my_role ?? null;
-          if (asset)
-            canonicalizePath(
-              `/projects/${pretty(loadedProject.public_id, loadedProject.name)}/assets/${pretty(asset.public_id, asset.name)}`
-            );
-        })
-        .catch(() => {
-          /* Cosmetic only. */
-        });
-    }
-    try {
-      const loadedVersions = await api<{ items: Version[] }>(`/api/v1/assets/${canonical}/versions`);
-      if (sequence !== loadSequence || userId !== auth.user?.id) return;
-      versions = loadedVersions.items;
-    } catch {
-      if (sequence !== loadSequence) return;
-      versions = [];
-    }
-    if (id !== routeAssetId || sequence !== loadSequence || userId !== auth.user?.id) return;
-    /* Deep links may pin a specific version (?v=); location.search is read
-       directly so this load never re-runs on ?f= rewrites. */
-    const params = new URLSearchParams(location.search);
-    const pinned = params.get('v');
-    const remembered = readPreference(userId, `review:${canonical}`, validateReview, defaultReview);
-    notesOpen = remembered.notes; infoOpen = remembered.info; notesWidth = remembered.width; noteFilter = remembered.filter;
-    const explicit = params.has('v') || params.has('f');
-    const initial =
-      (pinned && versions.find((version) => version.id === pinned)?.id) ||
-      (!explicit && versions.find((version) => version.id === remembered.version)?.id) ||
-      asset.current_version_id ||
-      versions[0]?.id ||
-      null;
-    pendingFrame = !explicit && initial === remembered.version ? remembered.frame : null;
-    if (!explicit && initial && initial !== asset.current_version_id) writeVersionParam(initial);
-    if (initial) await selectVersion(initial);
   };
 
   $effect(() => {
@@ -871,30 +898,107 @@
   /* ---- version rail actions ---- */
 
   const refreshVersions = async (): Promise<void> => {
+    // Finish restoring personal state before a live update can replace it.
+    // Coalescing here also prevents an older initial response overwriting SSE.
+    if (initializingReview) { refreshAfterInitialization = true; return; }
     const id = assetId;
     if (!id) return;
+    const owner = auth.user?.id;
+    const routeSequence = loadSequence;
+    const sequence = ++stackRefreshSequence;
+    const current = (): boolean => sequence === stackRefreshSequence && routeSequence === loadSequence && assetId === id && owner === auth.user?.id;
     try {
-      versions = (await api<{ items: Version[] }>(`/api/v1/assets/${id}/versions`)).items;
+      const [loadedAsset, loadedVersions] = await Promise.all([
+        api<Asset>(`/api/v1/assets/${id}`),
+        api<VersionList>(`/api/v1/assets/${id}/versions`)
+      ]);
+      if (!current()) return;
+      asset = { ...loadedAsset, current_version_id: loadedVersions.stack_state.current_version_id };
+      versions = loadedVersions.items;
+      stackState = loadedVersions.stack_state;
+      error = '';
+      inspectorRevision += 1;
+      if (!versions.some(version => version.id === selectedVersionId)) {
+        const next = asset.current_version_id ?? versions[0]?.id;
+        if (next) await selectVersion(next, { fromUser: true });
+        return;
+      }
       applyVersionMeta(versions.find((version) => version.id === selectedVersionId) ?? null);
-    } catch {
-      /* The rail keeps its last state. */
+      // A version can remain selected while its "current" marker changes.
+      const url = new URL(page.url.href);
+      if (selectedVersionId !== asset.current_version_id && selectedVersionId) url.searchParams.set('v', selectedVersionId);
+      else url.searchParams.delete('v');
+      if (url.href !== page.url.href) replaceState(url, {});
+      // Membership can change around a version that stays on screen. Refresh
+      // its predecessor-dependent tools without reloading media or the playhead.
+      await Promise.all([loadPreviousStill(versionToken), checkCarrySource(versionToken)]);
+    } catch (caught) {
+      if (!current()) return;
+      if (caught instanceof ApiError && caught.status === 404 && selectedVersionId) {
+        // Undo can remove the empty detached asset. Follow the preserved version.
+        try {
+          const moved = await api<Version>(`/api/v1/versions/${selectedVersionId}`);
+          if (!current()) return;
+          if (moved.asset_id !== id) {
+            await goto(`/projects/${projectId}/assets/${moved.asset_id}?v=${moved.id}`);
+            return;
+          }
+        } catch { /* The error below also handles a deleted or inaccessible version. */ }
+        if (!current()) return;
+        source = ''; stillUrl = null; versions = []; stackState = null;
+      }
+      error = messageFrom(caught, 'Refresh the asset to see its latest stack.');
     }
+  };
+
+  const unstack = async (version: Version): Promise<void> => {
+    if (!canEditAsset || !stackState || versions.length < 2 || stackBusy || undo.busy) return;
+    const id = assetId;
+    const owner = auth.user?.id;
+    const sequence = loadSequence;
+    const expected = stackState;
+    stackBusy = true;
+    try {
+      versionMenuOpen = false;
+      const confirmed = await askConfirm({
+        title: `Unstack v${version.version_no}?`,
+        body: 'Move this version into a separate asset in the same folder. Its media and notes stay intact. Undo restores the original stack.',
+        confirmLabel: 'Unstack'
+      });
+      if (!confirmed || owner !== auth.user?.id || assetId !== id || sequence !== loadSequence) return;
+      const step = await unstackVersion(version.id, expected);
+      if (owner !== auth.user?.id) return;
+      undo.push({ label: `Unstacked v${version.version_no}`, steps: [step] });
+      if (assetId === id && sequence === loadSequence) await refreshVersions();
+    } catch (caught) {
+      if (owner === auth.user?.id && assetId === id && sequence === loadSequence) {
+        railError = messageFrom(caught, 'The version could not be unstacked.');
+        versionMenuOpen = true;
+      }
+    } finally { if (sequence === loadSequence) stackBusy = false; }
   };
 
   /* PATCH /versions/:id/stack sets which version of the stack is current
      (body {version_no}); that is all it does, so that is all we expose. */
   const setCurrent = async (version: Version): Promise<void> => {
+    if (stackBusy || undo.busy) return;
+    const id = assetId;
+    const owner = auth.user?.id;
+    const sequence = loadSequence;
+    stackBusy = true;
     railError = '';
     try {
       const result = await apiPatch<{ items: Version[]; current_version_id: string }>(
         `/api/v1/versions/${version.id}/stack`,
         { version_no: version.version_no }
       );
+      if (assetId !== id || owner !== auth.user?.id || sequence !== loadSequence) return;
       versions = result.items;
       if (asset) asset = { ...asset, current_version_id: result.current_version_id };
+      await refreshVersions();
     } catch (caught) {
-      railError = messageFrom(caught, 'The current version could not be changed.');
-    }
+      if (assetId === id && owner === auth.user?.id && sequence === loadSequence) railError = messageFrom(caught, 'The current version could not be changed.');
+    } finally { if (sequence === loadSequence) stackBusy = false; }
   };
 
   /* Copy the open notes of any version onto the one on screen. The banner
@@ -1015,49 +1119,28 @@
     input.value = '';
     const target = asset;
     const pid = projectId;
-    if (!file || !target || !pid || uploadState.status === 'uploading' || uploadState.status === 'registering') return;
+    const owner = auth.user?.id;
+    const sequence = loadSequence;
+    const carryForward = carryForwardOnUpload;
+    if (!file || !target || !pid || !owner || !canEditAsset || stackBusy || uploadState.status === 'uploading' || uploadState.status === 'registering') return;
+    const current = (): boolean => owner === auth.user?.id && assetId === target.id && sequence === loadSequence;
     uploadState = { status: 'uploading', progress: 0, error: '' };
     try {
-      const created = await apiPost<{ upload: { id: string } }>('/api/v1/uploads', {
-        project_id: pid,
-        filename: file.name,
-        relative_path: '',
-        size: file.size
-      });
-      const sessionId = created.upload.id;
-      const multipart = await apiPost<{ upload: { status: string }; part_size?: number }>(
-        `/api/v1/uploads/${sessionId}/multipart`
-      );
-      if (multipart.upload.status !== 'completed') {
-        const partSize = multipart.part_size;
-        if (!partSize) throw new Error('The upload session did not return a part size.');
-        const parts: Array<{ part_no: number; etag: string }> = [];
-        const count = Math.max(1, Math.ceil(file.size / partSize));
-        for (let partNo = 1; partNo <= count; partNo += 1) {
-          const start = (partNo - 1) * partSize;
-          const response = await fetch(`/api/v1/uploads/${sessionId}/parts/${partNo}`, {
-            method: 'PUT',
-            headers: { 'content-type': 'application/octet-stream' },
-            body: file.slice(start, Math.min(file.size, start + partSize))
-          });
-          if (!response.ok) throw new Error(`Part ${partNo} could not be uploaded.`);
-          parts.push({ part_no: partNo, etag: response.headers.get('etag') ?? '' });
-          uploadState = { status: 'uploading', progress: Math.round((partNo / count) * 90), error: '' };
-        }
-        await apiPost(`/api/v1/uploads/${sessionId}/complete`, { parts });
+      const sessionId = await uploadFile({ projectId: pid, file, relativePath: '', onProgress: ({ bytes, total }) => {
+        if (current()) uploadState = { status: 'uploading', progress: Math.round(bytes / Math.max(1, total) * 90), error: '' };
+      } });
+      if (owner !== auth.user?.id) return;
+      if (current()) uploadState = { status: 'registering', progress: 95, error: '' };
+      const result = await createAssetVersion(target.id, { upload_id: sessionId, carry_forward: carryForward });
+      if (owner !== auth.user?.id) return;
+      undo.push({ label: 'Stacked version', steps: undoStackedUploads([{ ...result, version_id: result.version.id }]) });
+      if (current()) {
+        await refreshVersions();
+        if (current() && versions.some(version => version.id === result.version.id)) await selectVersion(result.version.id, { fromUser: true });
+        if (current()) uploadState = { status: 'idle', progress: 100, error: '' };
       }
-      uploadState = { status: 'registering', progress: 95, error: '' };
-      const result = await apiPost<{ asset?: Asset; version?: Version; job_id?: string }>(
-        `/api/v1/assets/${target.id}/versions`,
-        { upload_id: sessionId, carry_forward: carryForwardOnUpload }
-      );
-      if (result.asset) asset = result.asset;
-      await refreshVersions();
-      const landed = result.version?.id ?? versions[0]?.id;
-      if (landed) await selectVersion(landed);
-      uploadState = { status: 'idle', progress: 100, error: '' };
     } catch (caught) {
-      uploadState = { status: 'failed', progress: 0, error: messageFrom(caught, 'The version upload failed.') };
+      if (current()) uploadState = { status: 'failed', progress: 0, error: messageFrom(caught, 'The version upload failed.') };
     }
   };
 
@@ -1067,6 +1150,11 @@
 
   const handleProjectEvent = (event: { type: string; payload: Record<string, unknown> }): void => {
     const payload = event.payload;
+    if (event.type === 'asset.versions_changed' || event.type === 'asset.versions_created_batch') {
+      // Batch events intentionally sample asset IDs for large deliveries.
+      if (event.type === 'asset.versions_created_batch' || (Array.isArray(payload.asset_ids) && payload.asset_ids.includes(assetId))) void refreshVersions();
+      return;
+    }
     const versionId = typeof payload['version_id'] === 'string' ? payload['version_id'] : null;
     const eventAssetId = typeof payload['asset_id'] === 'string' ? payload['asset_id'] : null;
     if (event.type === 'comment.created' || event.type === 'comment.updated') {
@@ -1081,6 +1169,7 @@
     }
     if (event.type === 'version.transcode') {
       if (eventAssetId !== assetId || !versionId) return;
+      inspectorRevision += 1;
       const status = typeof payload['status'] === 'string' ? payload['status'] : null;
       if (status)
         versions = versions.map((version) =>
@@ -1111,7 +1200,9 @@
         'comment.deleted',
         'version.transcode',
         'version.probed',
-        'asset.version_created'
+        'asset.version_created',
+        'asset.versions_created_batch',
+        'asset.versions_changed'
       ],
       handleProjectEvent
     );
@@ -1788,8 +1879,18 @@
                   <span class="vmeta">{memberName(version.uploaded_by)} · {whenRelative(version.created_at)}</span>
                 </button>
                 <span class="vacts">
-                  {#if asset && version.id !== asset.current_version_id}
-                    <button type="button" class="quiet setcur" onclick={() => void setCurrent(version)}>Set current</button>
+                  {#if asset && version.id !== asset.current_version_id && (projectRole === 'manager' || auth.user?.role === 'admin')}
+                    <button type="button" class="quiet setcur" disabled={stackBusy || undo.busy} onclick={() => void setCurrent(version)}>Set current</button>
+                  {/if}
+                  {#if canEditAsset}
+                    <button
+                      type="button"
+                      class="quiet setcur"
+                      aria-label={`Unstack v${version.version_no}`}
+                      disabled={versions.length < 2 || stackBusy || undo.busy || !stackState}
+                      title={versions.length < 2 ? 'The only version must stay with its asset.' : 'Move this version into a separate asset'}
+                      onclick={() => void unstack(version)}
+                    >Unstack</button>
                   {/if}
                   {#if version.id !== selectedVersionId}
                     <!-- Copies onto the version on screen, not onto this row:
@@ -1815,7 +1916,7 @@
                 <input
                   type="file"
                   onchange={uploadVersion}
-                  disabled={uploadState.status === 'uploading' || uploadState.status === 'registering'}
+                  disabled={!canEditAsset || stackBusy || uploadState.status === 'uploading' || uploadState.status === 'registering'}
                 />
               </label>
               <label class="carry-opt">
@@ -1831,7 +1932,7 @@
         <button type="button" class="info-trigger" aria-expanded={infoOpen} onclick={toggleInfo}>Info</button>
         {#if infoOpen}
           <div class="info-panel" role="region" aria-label="Version details">
-            <AssetInspector assetId={asset.id} versionId={selectedVersionId} neutral onversionselect={(id) => { void selectVersion(id, { fromUser: true }); }} onclose={() => { infoOpen = false; }} />
+            <AssetInspector assetId={asset.id} versionId={selectedVersionId} refreshKey={inspectorRevision} neutral onversionselect={(id) => { void selectVersion(id, { fromUser: true }); }} onclose={() => { infoOpen = false; }} />
           </div>
         {/if}
       </div>
@@ -2466,7 +2567,7 @@
   .vtrigger-no { font-weight: 600; color: var(--n-900); }
   .vtrigger-current { color: var(--n-600); font-size: var(--text-11); }
   .caret { color: var(--n-600); font-size: 10px; }
-  .vpanel { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 280px; padding: 6px; background: var(--n-150); border-radius: var(--radius-lg); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); }
+  .vpanel { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 320px; max-width: calc(100vw - 32px); max-height: calc(100dvh - 128px); box-sizing: border-box; overflow: auto; overscroll-behavior: contain; padding: 6px; background: var(--n-150); border-radius: var(--radius-lg); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); }
   .grow { flex: 1; }
   .pick[aria-pressed='true'] { background: var(--accent); color: var(--n-000); }
   .stepper { display: flex; align-items: center; gap: 6px; }

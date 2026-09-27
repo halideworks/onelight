@@ -60,6 +60,17 @@ const exportFormat = z.enum([
 
 const commentText = z.string().min(1).max(10000);
 
+export const stackState = z.object({
+  asset_id: z.string().min(1),
+  current_version_id: z.string().nullable(),
+  versions: z.array(
+    z.object({
+      id: z.string().min(1),
+      version_no: z.number().int().positive().safe(),
+    }),
+  ),
+});
+
 /* The share room's design, chosen by whoever made the share: one library
    palette or two custom hexes for the wash, and which player the viewer
    gets. Design doc section 11 promises palette-or-hexes plus a logo; the
@@ -621,6 +632,15 @@ export const bodies = {
   }),
   assetRestore: z.object({ expected: assetExpected.optional() }),
   stackPatch: z.object({ version_no: z.number().int().positive() }),
+  versionUnstack: z
+    .object({
+      expected: stackState,
+      undo_token: z.string().max(16384).optional(),
+    })
+    .strict(),
+  versionRestack: z
+    .object({ expected: stackState, undo_token: z.string().max(16384) })
+    .strict(),
   versionCreate: z.object({
     upload_id: z.string(),
     name: z.string().min(1).max(500).optional(),
@@ -2258,6 +2278,9 @@ export const routeDocs: Record<string, RouteDoc> = {
               version_id: z.string(),
               version_no: z.number().int(),
               job_id: z.string(),
+              stack_state: stackState,
+              previous_current_version_id: z.string().nullable(),
+              undo_token: z.string(),
             }),
           ),
           failures: z.array(
@@ -2375,13 +2398,52 @@ export const routeDocs: Record<string, RouteDoc> = {
     },
     responses: { "200": binary("image/png") },
   },
-  "GET /assets/:id/versions": { responses: { "200": ok(list(version)) } },
+  "GET /assets/:id/versions": {
+    responses: {
+      "200": ok(z.object({ items: z.array(version), stack_state: stackState })),
+    },
+  },
   "POST /assets/:id/versions": {
     summary:
       "Attach a completed upload as the next version of an asset. The new version becomes current; carry_forward copies unresolved comments from the previous current version.",
     request: bodies.versionCreate,
     responses: {
-      "201": created(z.object({ asset, version, job_id: z.string() })),
+      "201": created(
+        z.object({
+          asset,
+          version,
+          job_id: z.string(),
+          stack_state: stackState,
+          previous_current_version_id: z.string().nullable(),
+          undo_token: z.string(),
+        }),
+      ),
+    },
+  },
+  "POST /versions/:id/unstack": {
+    summary:
+      "Move a live version into a separate asset, preserving its media and comments. An upload undo token restores its previous current version.",
+    request: bodies.versionUnstack,
+    responses: {
+      "200": ok(
+        z.object({
+          asset,
+          version,
+          source_stack: stackState,
+          before_stack: stackState,
+          undo_token: z.string(),
+        }),
+      ),
+      "409": conflict,
+    },
+  },
+  "POST /versions/:id/restack": {
+    summary:
+      "Undo an unstack using its signed token and an unchanged source stack. Refuses to remove an edited or referenced detached asset.",
+    request: bodies.versionRestack,
+    responses: {
+      "200": ok(z.object({ asset, version, stack_state: stackState })),
+      "409": conflict,
     },
   },
   "POST /assets/:id/trash": {

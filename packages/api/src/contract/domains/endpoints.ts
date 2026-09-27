@@ -76,6 +76,8 @@ const AUTHED_ENDPOINTS: Array<[string, string]> = [
   ["PUT", `/api/v1/versions/${ID}/captions`],
   ["DELETE", `/api/v1/versions/${ID}/captions/en`],
   ["PATCH", `/api/v1/versions/${ID}/stack`],
+  ["POST", `/api/v1/versions/${ID}/unstack`],
+  ["POST", `/api/v1/versions/${ID}/restack`],
   ["POST", `/api/v1/versions/${ID}/carry-forward`],
   ["GET", `/api/v1/versions/${ID}/comments`],
   ["POST", `/api/v1/versions/${ID}/comments`],

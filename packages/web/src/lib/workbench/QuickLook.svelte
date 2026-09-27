@@ -3,10 +3,11 @@
   import type Player from '@onelight/player/Player.svelte';
   import type ImageViewer from '@onelight/player/ImageViewer.svelte';
   import type { PlayerRendition } from '@onelight/player';
-  import { api, messageFrom, type Asset, type Version, type RenditionList } from '$lib/api.js';
+  import { api, messageFrom, type Asset, type Version, type VersionList, type RenditionList } from '$lib/api.js';
   import AssetInspector from './AssetInspector.svelte';
+  import { undo } from './undo.svelte.js';
 
-  let { assets, assetId, href, onnavigate, onclose, hasMore = false, onmore }: {
+  let { assets, assetId, href, onnavigate, onclose, hasMore = false, onmore, refreshKey = 0 }: {
     assets: Array<{ id: string; name: string }>;
     assetId: string;
     href: (id: string) => string;
@@ -14,6 +15,7 @@
     onclose: () => void;
     hasMore?: boolean;
     onmore?: () => Promise<void>;
+    refreshKey?: number;
   } = $props();
   let dialog = $state<HTMLDialogElement | null>(null);
   let asset = $state<Asset | null>(null);
@@ -49,6 +51,8 @@
   $effect(() => {
     const id = assetId;
     void retry;
+    void refreshKey;
+    void undo.revision;
     let active = true;
     const request = new AbortController();
     asset = null; version = null; renditions = []; loading = true; error = ''; projectTransfer = null;
@@ -56,11 +60,11 @@
       try {
         const [loaded, listing] = await Promise.all([
           api<Asset>(`/api/v1/assets/${id}`, { signal: request.signal }),
-          api<{ items: Version[] }>(`/api/v1/assets/${id}/versions`, { signal: request.signal })
+          api<VersionList>(`/api/v1/assets/${id}/versions`, { signal: request.signal })
         ]);
         if (!active) return;
-        asset = loaded;
-        const selected = listing.items.find((item) => item.id === loaded.current_version_id) ?? listing.items[0] ?? null;
+        asset = { ...loaded, current_version_id: listing.stack_state.current_version_id };
+        const selected = listing.items.find((item) => item.id === listing.stack_state.current_version_id) ?? listing.items[0] ?? null;
         version = selected;
         if (selected) {
           const [media, project] = await Promise.all([
@@ -146,7 +150,7 @@
       {:else if still}<img src={still} alt={name} />
       {:else}<div class="fallback"><h3>{version?.transcode_status === 'failed' ? 'Processing failed' : version?.transcode_status === 'pending' || version?.transcode_status === 'processing' ? 'Preview is processing' : 'No preview available'}</h3><p>Open the asset to review its details and available downloads.</p><a href={href(assetId)}>Open asset</a> <button type="button" onclick={() => { retry += 1; }}>Refresh preview</button></div>{/if}
     </div>
-    {#if inspect}<aside><AssetInspector {assetId} neutral onclose={() => { inspect = false; }} /></aside>{/if}
+    {#if inspect}<aside><AssetInspector {assetId} {refreshKey} neutral onclose={() => { inspect = false; }} /></aside>{/if}
   </div>
 </dialog>
 

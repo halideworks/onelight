@@ -28,6 +28,7 @@ import type { Media } from "../operation/media.js";
 import type { Blobs } from "../operation/blobs.js";
 import { assetPredicate, nextAssetStamp } from "../operation/asset-state.js";
 import { assetListOrder } from "./asset-list.js";
+import { readVersionStack } from "../operation/version-stack.js";
 
 export const registerAssetsRoutes = (
   api: ApiRouter,
@@ -536,25 +537,13 @@ export const registerAssetsRoutes = (
   api.get("/assets/:id/versions", requireAuth, async (c) => {
     const actor = userFromContext(c);
     const asset = await assetForActor(c.req.param("id"), actor);
-    const rows = await env.db
-      .select()
-      .from(assetVersions)
-      /* Exclude soft-deleted versions. The column exists and purgeTrashedVersions
-         is ready, but no route sets it yet -- so this is a no-op today that makes
-         the listing correct-by-construction the moment version-trash is wired,
-         rather than a leak that has to be remembered. */
-      .where(
-        and(
-          eq(assetVersions.assetId, asset.id),
-          isNull(assetVersions.deletedAt),
-        ),
-      )
-      .orderBy(desc(assetVersions.versionNo))
-      .all();
+    const stack = await readVersionStack(env, asset.id);
     return c.json({
-      items: rows.map((version: typeof assetVersions.$inferSelect) =>
-        versionWire(version),
-      ),
+      items: stack.versions
+        .filter((version) => version.deletedAt === null)
+        .reverse()
+        .map(versionWire),
+      stack_state: stack.state,
     });
   });
 

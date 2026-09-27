@@ -16,6 +16,7 @@
     "@onelight/job-protocol": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250110.0"
+    "@cloudflare/workers-types": "^4.20250110.0",
+    "drizzle-orm": "^0.45.2"
   }
 }

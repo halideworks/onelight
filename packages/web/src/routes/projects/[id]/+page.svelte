@@ -10,9 +10,10 @@
   import { commandState } from '$lib/workbench/commands.svelte.js';
   import { undo } from '$lib/workbench/undo.svelte.js';
   import { changeAsset, trashAsset, restoreAsset } from '$lib/workbench/asset-actions.js';
+  import { undoStackedUploads } from '$lib/workbench/version-actions.js';
   import { beforeNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { api, apiDelete, apiPatch, apiPost, createAssetVersion, messageFrom } from '$lib/api.js';
+  import { api, apiDelete, apiPatch, apiPost, messageFrom, type VersionBatchCreated } from '$lib/api.js';
   import { notifications } from '$lib/notifications.svelte.js';
   import { copyText } from '$lib/clipboard.js';
   import { canonicalizePath } from '$lib/canonical.js';
@@ -72,6 +73,7 @@
     /* Upload-time version stacking: when set, the finished upload becomes a
        new version of this asset instead of a new asset. */
     versionOf: string | null;
+    matchAnswered: boolean;
     carryForward: boolean;
     /* The folder in force when the file was dropped, not when it finished.
        Uploads run unattended now, so the selection will have moved on. */
@@ -106,6 +108,7 @@
   const queueWindow = new Virtual({ scroller: 'self', overscan: 4 });
   const queueSlice = $derived(queueWindow.slice);
   let uploading = $state(false);
+  let uploadGeneration = 0;
   /* Where the driver last looked for work; see pump(). */
   let pumpCursor = 0;
   let dropActive = $state(false);
@@ -155,6 +158,8 @@
   let stateReady = $state(false);
   let quickId = $state<string | null>(null);
   let inspectorId = $state<string | null>(null);
+  let quickRevision = $state(0);
+  let inspectorRevision = $state(0);
   let inspectorPanel = $state<HTMLElement | null>(null);
   let inspectorReturn: HTMLElement | null = null;
   let querySequence = 0;
@@ -343,6 +348,12 @@
     quickId = null; inspectorId = null;
     querySequence += 1;
     project = null; assets = []; nextCursor = null; error = ''; listError = ''; queue = []; queueWindow.total = 0;
+    recountQueue();
+    uploadGeneration += 1; uploading = false; attaching = false; attachPending = []; pumpCursor = 0;
+    pendingNameChecks.clear(); checkingNames = 0; committingFiles.clear();
+    if (attachTimer) { clearTimeout(attachTimer); attachTimer = null; }
+    matchOffer = null; matchByName = new Map();
+    if (matchTimer) { clearTimeout(matchTimer); matchTimer = null; }
     nodes = {}; rootIds = []; selectedFolder = null; focusedRow = 'root'; assetsLoaded = false;
     shares = []; shareError = ''; shareMenu = null; rowMenu = null;
     renaming = null; treeError = ''; newFolderName = '';
@@ -447,19 +458,30 @@
     arrivalTimer = setTimeout(() => void flushArrivals(id), ARRIVAL_WINDOW_MS);
   };
 
+  const refreshPreviews = (ids?: string[]): void => {
+    if (quickId && (!ids || ids.includes(quickId))) quickRevision += 1;
+    if (inspectorId && personal.inspectorOpen && (!ids || ids.includes(inspectorId))) inspectorRevision += 1;
+  };
   const onProjectEvent = (id: string, event: ProjectEvent): void => {
     const payload = event.payload;
     /* A batch event names a count, not an asset: one refresh covers all of
        them. */
     if (
       event.type === 'assets.created_batch' ||
-      event.type === 'asset.versions_created_batch'
+      event.type === 'asset.versions_created_batch' ||
+      event.type === 'asset.versions_changed'
     ) {
+      const affected = Array.isArray(payload.asset_ids) ? payload.asset_ids.filter((value): value is string => typeof value === 'string') : undefined;
+      if (event.type === 'asset.versions_changed') refreshPreviews(affected);
+      // Batch version events sample at most 20 IDs. Only a shorter list is
+      // guaranteed complete; unrelated new-asset arrivals never reload a preview.
+      else if (event.type === 'asset.versions_created_batch') refreshPreviews(affected && affected.length < 20 ? affected : undefined);
       if (!showTrash) void loadAssets(id);
       return;
     }
     const assetId = typeof payload.asset_id === 'string' ? payload.asset_id : null;
     if (!assetId) return;
+    if (event.type !== 'asset.created') refreshPreviews([assetId]);
     if (event.type === 'asset.created') {
       noteArrival(id, assetId);
     } else if (event.type === 'version.transcode') {
@@ -488,6 +510,7 @@
         'assets.created_batch',
         'asset.version_created',
         'asset.versions_created_batch',
+        'asset.versions_changed',
         'version.transcode',
         'version.probed'
       ],
@@ -1373,7 +1396,7 @@
   });
   // Snapshot before navigation removes the long virtual list and clamps scrollY.
   beforeNavigate(saveWorkingState);
-  onDestroy(() => { clearTimeout(persistTimer); alive = false; navigationToken += 1; querySequence += 1; });
+  onDestroy(() => { clearTimeout(persistTimer); if (attachTimer) clearTimeout(attachTimer); if (matchTimer) clearTimeout(matchTimer); alive = false; navigationToken += 1; querySequence += 1; });
   let lastUndoRevision = undo.revision;
   $effect(() => {
     const revision = undo.revision;
@@ -1902,7 +1925,7 @@
 
      Dropping a second pass of a batch used to mean setting a dropdown on every
      row: 1200 files, 1200 decisions, and the reason people deliver retouches
-     through Dropbox instead. The server is asked, before a byte moves, which
+     through Dropbox instead. The server is asked as the transfer starts which
      of these filenames look like new versions of assets already here; the
      answer is one line and one button.
 
@@ -1953,6 +1976,9 @@
   } | null>(null);
   /* Reactive: the queue rows read it for the name they would stack onto. */
   let matchByName = $state(new Map<string, MatchItem>());
+  const pendingNameChecks = new Set<number>();
+  let checkingNames = $state(0);
+  const committingFiles = new Set<number>();
   let matchTimer: ReturnType<typeof setTimeout> | null = null;
   /* An offer nobody answers must not strand the files. After this it answers
      itself the way the app behaved before there was a question. */
@@ -1960,12 +1986,13 @@
 
   /* Asked once on the filenames alone, then again as the files land.
 
-     The name tier answers before a byte moves. The other two need the file to
+     The name tier gates attachment, not the transfer. The other two need the file to
      have been opened, which happens in the worker while the bytes are already
      on their way, so the offer is re-asked with the upload ids and improves
      under the reader rather than making them wait for it. */
   const askForMatches = async (
-    entries: Array<{ filename: string; relativePath?: string; uploadId?: string }>
+    entries: Array<{ filename: string; relativePath?: string; uploadId?: string }>,
+    folder: string | null = selectedFolder
   ): Promise<{
     items: MatchItem[];
     matched: number;
@@ -1975,7 +2002,6 @@
   } | null> => {
     const id = projectId;
     if (!id || entries.length === 0) return null;
-    const folder = selectedFolder;
     try {
       return await apiPost(`/api/v1/projects/${id}/versions/match`, {
         ...(folder ? { folder_id: folder } : {}),
@@ -1984,7 +2010,7 @@
           ...(entry.relativePath ? { relative_path: entry.relativePath } : {}),
           ...(entry.uploadId ? { upload_id: entry.uploadId } : {})
         }))
-      });
+      }, { signal: AbortSignal.timeout(15_000) });
     } catch {
       return null;
     }
@@ -1997,39 +2023,66 @@
       ambiguous: number;
       unmatched: number;
       pending: number;
-    },
-    total: number
+    }
   ): void => {
-    const next = new Map(matchByName);
+    /* A late optional fingerprint may only offer files whose destination is
+       still undecided, never rows already claimed by an attachment request. */
+    if (matchOffer?.answered) return;
+    const candidates = queue.filter((item) => !item.matchAnswered && item.status !== 'done' && item.status !== 'quarantined' && !committingFiles.has(item.key));
+    const eligible = new Set(candidates.map((item) => item.file.name));
+    const next = new Map([...matchByName].filter(([name]) => eligible.has(name)));
     for (const item of result.items)
-      if (item.asset_id) next.set(item.filename, item);
+      if (item.asset_id && eligible.has(item.filename)) next.set(item.filename, item);
     matchByName = next;
     if (next.size === 0) return;
-    /* An offer already answered is not reopened: a late fingerprint must not
-       undo a decision someone already made. */
-    if (matchOffer?.answered) return;
     matchOffer = {
-      matched: next.size,
+      matched: candidates.filter((item) => next.has(item.file.name)).length,
       ambiguous: result.ambiguous,
       unmatched: result.unmatched,
-      total,
+      total: candidates.length,
       answered: false
     };
+    armMatchTimeout();
+  };
+
+  const armMatchTimeout = (): void => {
+    if (checkingNames > 0 || !matchOffer || matchOffer.answered) return;
     if (matchTimer) clearTimeout(matchTimer);
     matchTimer = setTimeout(() => dismissVersionMatches(), MATCH_OFFER_TIMEOUT_MS);
   };
 
-  const offerVersionMatches = async (files: PendingFile[]): Promise<void> => {
+  const offerVersionMatches = async (files: UploadItem[]): Promise<void> => {
     const id = projectId;
-    if (!id || files.length === 0) return;
-    const result = await askForMatches(
-      files.map((entry) => ({
-        filename: entry.file.name,
-        ...(entry.relativePath ? { relativePath: entry.relativePath } : {})
-      }))
-    );
-    if (!result || id !== projectId) return;
-    applyMatchResult(result, files.length);
+    const owner = auth.user?.id;
+    const generation = uploadGeneration;
+    const current = (): boolean => alive && generation === uploadGeneration && id === projectId && owner === auth.user?.id;
+    if (!id || !owner || files.length === 0) return;
+    for (const item of files) pendingNameChecks.add(item.key);
+    checkingNames = pendingNameChecks.size;
+    if (matchTimer) { clearTimeout(matchTimer); matchTimer = null; }
+    try {
+      const combined = { items: [] as MatchItem[], matched: 0, ambiguous: 0, unmatched: 0, pending: 0 };
+      for (let offset = 0; offset < files.length && current(); offset += ATTACH_BATCH) {
+        const result = await askForMatches(
+          files.slice(offset, offset + ATTACH_BATCH).map((entry) => ({
+            filename: entry.file.name,
+            ...(entry.relativePath ? { relativePath: entry.relativePath } : {})
+          })), files[0]?.folderId ?? null
+        );
+        if (!current()) return;
+        if (!result) continue;
+        combined.items.push(...result.items);
+        combined.matched += result.matched; combined.ambiguous += result.ambiguous;
+        combined.unmatched += result.unmatched; combined.pending += result.pending;
+      }
+      if (current()) applyMatchResult(combined);
+    } finally {
+      if (generation === uploadGeneration) {
+        for (const item of files) pendingNameChecks.delete(item.key);
+        checkingNames = pendingNameChecks.size;
+        if (current()) { armMatchTimeout(); void flushAttach(); }
+      }
+    }
   };
 
   /* The second ask, once bytes exist to look at. Runs from the attach buffer,
@@ -2041,31 +2094,36 @@
     batch: Array<{ item: UploadItem; uploadId: string }>
   ): Promise<void> => {
     const id = projectId;
-    if (!id || batch.length === 0) return;
+    const owner = auth.user?.id;
+    const generation = uploadGeneration;
+    if (!id || !owner || batch.length === 0) return;
     const undecided = batch.filter(
-      (entry) => !entry.item.versionOf && !matchByName.has(entry.item.file.name)
+      (entry) => !entry.item.matchAnswered && !entry.item.versionOf && !matchByName.has(entry.item.file.name)
     );
     if (!undecided.length) return;
     for (let attempt = 0; attempt < MATCH_POLL_TRIES; attempt += 1) {
+      if (!alive || generation !== uploadGeneration || id !== projectId || owner !== auth.user?.id || matchOffer?.answered || undecided.every(({ item }) => item.matchAnswered || item.status === 'done' || committingFiles.has(item.key))) return;
       const result = await askForMatches(
         undecided.map((entry) => ({
           filename: entry.item.file.name,
           uploadId: entry.uploadId
-        }))
+        })), undecided[0]?.item.folderId ?? null
       );
-      if (!result || id !== projectId) return;
-      applyMatchResult(result, tally.count || undecided.length);
+      if (!result || !alive || generation !== uploadGeneration || id !== projectId || owner !== auth.user?.id) return;
+      const liveUploads = new Set(undecided.filter(({ item }) => !item.matchAnswered && item.status !== 'done' && item.status !== 'quarantined' && !committingFiles.has(item.key)).map(({ uploadId }) => uploadId));
+      const items = result.items.filter((item) => item.upload_id && liveUploads.has(item.upload_id));
+      if (items.length) applyMatchResult({ ...result, items });
       if (result.pending === 0) return;
       await new Promise((resolve) => setTimeout(resolve, MATCH_POLL_MS));
     }
   };
 
   const applyVersionMatches = (): void => {
-    if (!matchOffer) return;
+    if (!matchOffer || checkingNames > 0) return;
     /* Every row still waiting, not only the queued ones: a file whose bytes
        are already stored is exactly the case this has to catch. */
     for (const item of queue) {
-      if (item.status === 'done' || item.status === 'quarantined') continue;
+      if (item.matchAnswered || item.status === 'done' || item.status === 'quarantined' || committingFiles.has(item.key)) continue;
       const match = matchByName.get(item.file.name);
       if (match?.asset_id) item.versionOf = match.asset_id;
     }
@@ -2099,17 +2157,20 @@
       matchTimer = null;
     }
     if (matchOffer) matchOffer = { ...matchOffer, answered: true };
+    for (const item of queue) item.matchAnswered = true;
     /* Whatever was held back now lands. */
     void flushAttach();
   };
 
   /* Files the offer is still asking about. Everything else lands at once. */
   const heldByOffer = (item: UploadItem): boolean =>
-    Boolean(matchOffer) &&
+    pendingNameChecks.has(item.key) || (Boolean(matchOffer) &&
+    !item.matchAnswered &&
     matchOffer?.answered === false &&
-    matchByName.has(item.file.name);
+    matchByName.has(item.file.name));
 
   const enqueue = (files: PendingFile[]): void => {
+    if (matchOffer?.answered) { matchOffer = null; matchByName = new Map(); }
     const additions = files.map(({ file, relativePath }) => ({
       key: nextKey++,
       file,
@@ -2120,6 +2181,7 @@
       status: 'queued' as const,
       error: '',
       versionOf: null,
+      matchAnswered: false,
       carryForward: true,
       folderId: selectedFolder
     }));
@@ -2131,7 +2193,7 @@
        The version offer runs beside the upload rather than in front of it:
        the pairing is read when a file lands, not when it starts, so asking
        never costs the transfer a second. */
-    void offerVersionMatches(files);
+    void offerVersionMatches(additions);
     void pump();
   };
 
@@ -2259,16 +2321,20 @@
     }
     if (attaching || attachPending.length === 0) return;
     const id = projectId;
-    if (!id) return;
+    const owner = auth.user?.id;
+    const generation = uploadGeneration;
+    const current = (): boolean => alive && generation === uploadGeneration && id === projectId && owner === auth.user?.id;
+    if (!id || !owner || !current()) return;
     /* Anything the version offer is still asking about stays in the buffer:
        a file must not become a new asset while the question of whether it is
        a new version of an existing one is open. */
-    const held = attachPending.filter((entry) => heldByOffer(entry.item));
-    const ready = attachPending.filter((entry) => !heldByOffer(entry.item));
+    const ready = attachPending.filter((entry) => !heldByOffer(entry.item)).slice(0, ATTACH_BATCH);
     if (ready.length === 0) return;
     attaching = true;
     const batch = ready;
-    attachPending = held;
+    const claimed = new Set(batch.map(({ item }) => item.key));
+    attachPending = attachPending.filter(({ item }) => !claimed.has(item.key));
+    for (const { item } of batch) committingFiles.add(item.key);
     /* Two destinations, one buffer: a file the uploader has paired with an
        existing asset becomes a version of it, everything else becomes a new
        asset. Each lands in one request. */
@@ -2276,16 +2342,19 @@
     const asAssets = batch.filter((entry) => !entry.item.versionOf);
     try {
       if (asVersions.length) {
-        const result = await apiPost<{
-          items: Array<{ upload_id: string; asset_id: string }>;
-          failures: Array<{ upload_id: string; error: string }>;
-        }>(`/api/v1/projects/${id}/versions/batch`, {
+        const result = await apiPost<VersionBatchCreated>(`/api/v1/projects/${id}/versions/batch`, {
           items: asVersions.map((entry) => ({
             upload_id: entry.uploadId,
             asset_id: entry.item.versionOf as string,
             carry_forward: entry.item.carryForward
           }))
         });
+        if (owner !== auth.user?.id) return;
+        if (result.items.length) undo.push({
+          label: `Stacked ${result.items.length} ${result.items.length === 1 ? 'version' : 'versions'}`,
+          steps: undoStackedUploads(result.items)
+        });
+        if (!current()) return;
         const byUpload = new Map(
           asVersions.map((entry) => [entry.uploadId, entry.item])
         );
@@ -2307,6 +2376,7 @@
         if (touched.length) void refreshAssets(touched);
       }
       if (asAssets.length) {
+        if (!current()) return;
         const result = await apiPost<{
           items: Array<Asset & { upload_id: string }>;
           failures: Array<{ upload_id: string; error: string }>;
@@ -2317,6 +2387,7 @@
             ...(entry.item.folderId ? { folder_id: entry.item.folderId } : {})
           }))
         });
+        if (!current()) return;
         const byUpload = new Map(
           asAssets.map((entry) => [entry.uploadId, entry.item])
         );
@@ -2341,10 +2412,13 @@
         adoptCreatedAssets(landed);
       }
     } catch (caught) {
-      for (const entry of batch) failItem(entry.item, caught);
+      if (current()) for (const entry of batch) failItem(entry.item, caught);
     } finally {
-      attaching = false;
-      if (attachPending.length >= ATTACH_BATCH) void flushAttach();
+      if (current()) {
+        for (const { item } of batch) committingFiles.delete(item.key);
+        attaching = false;
+        if (attachPending.some((entry) => !heldByOffer(entry.item))) void flushAttach();
+      }
     }
   };
 
@@ -2368,9 +2442,13 @@
      joins the attach batch rather than becoming an asset on the spot. */
   const uploadOne = async (item: UploadItem): Promise<void> => {
     const id = projectId;
-    if (!id) return;
+    const owner = auth.user?.id;
+    const generation = uploadGeneration;
+    const current = (): boolean => alive && generation === uploadGeneration && id === projectId && owner === auth.user?.id;
+    if (!id || !owner) return;
     item.error = '';
     const onProgress = (progress: UploadProgress): void => {
+      if (!current()) return;
       tally.bytes += progress.bytes - item.bytes;
       item.bytes = progress.bytes;
       item.rate = progress.rate;
@@ -2388,7 +2466,7 @@
           attach: false,
           onProgress
         });
-        queueAttach(item, direct.uploadId);
+        if (current()) queueAttach(item, direct.uploadId);
         return;
       }
       const sessionId = await uploadFile({
@@ -2397,14 +2475,13 @@
         relativePath: item.relativePath,
         sessionId: item.sessionId,
         onSession: (session) => {
-          item.sessionId = session;
+          if (current()) item.sessionId = session;
         },
         onProgress
       });
-      item.sessionId = sessionId;
-      queueAttach(item, sessionId);
+      if (current()) { item.sessionId = sessionId; queueAttach(item, sessionId); }
     } catch (caught) {
-      failItem(item, caught);
+      if (current()) failItem(item, caught);
     }
   };
 
@@ -2420,10 +2497,14 @@
 
   const pump = async (): Promise<void> => {
     if (uploading) return;
+    const generation = uploadGeneration;
+    const owner = auth.user?.id;
+    const current = (): boolean => alive && generation === uploadGeneration && owner === auth.user?.id;
     uploading = true;
     try {
       const worker = async (): Promise<void> => {
         for (;;) {
+          if (!current()) return;
           /* A cursor, not a scan. Walking the list from the start to find the
              next queued row cost O(n) per file, so a large drop spent more
              time looking for work than doing it. The cursor only moves
@@ -2451,14 +2532,16 @@
         await Promise.all(
           Array.from({ length: UPLOAD_CONCURRENCY }, () => worker())
         );
+        if (!current()) return;
         /* The tail of the batch lands as soon as the queue drains, rather
            than waiting out the quiet timer. */
         await flushAttach();
+        if (!current()) return;
         if (!queue.some((item) => item.status === 'queued')) break;
         pumpCursor = 0;
       }
     } finally {
-      uploading = false;
+      if (current()) uploading = false;
     }
   };
 
@@ -2858,7 +2941,7 @@
             {/if}
           </div>
           <p class="hint kbdhint">Drop files or folders anywhere in this panel. Uploading starts as soon as they land, and folder structure is kept as each file's relative path.</p>
-          {#if matchOffer && !matchOffer.answered}
+          {#if matchOffer && !matchOffer.answered && checkingNames === 0}
             <!-- The whole point of the pass: one line and one button instead
                  of dragging a version 2 onto a version 1, twelve hundred
                  times. -->
@@ -3341,12 +3424,12 @@
 </main>
 
 {#if quickId}
-  <QuickLook assets={displayed} assetId={quickId} href={assetHref} hasMore={!!nextCursor} onmore={loadMoreAssets} onnavigate={(id) => { quickId = id; }} onclose={() => { quickId = null; }} />
+  <QuickLook assets={displayed} assetId={quickId} refreshKey={quickRevision} href={assetHref} hasMore={!!nextCursor} onmore={loadMoreAssets} onnavigate={(id) => { quickId = id; }} onclose={() => { quickId = null; }} />
 {/if}
 {#if personal.inspectorOpen && inspectorId}
   <aside bind:this={inspectorPanel} tabindex="-1" class="asset-inspector" aria-label="Asset inspector" style={`width: min(${personal.inspectorWidth}px, 100vw);`}>
     <label class="inspector-size">Panel width<input type="range" min="280" max="480" step="10" aria-label="Inspector width" bind:value={personal.inspectorWidth} /></label>
-    <AssetInspector assetId={inspectorId} onclose={closeInspector} />
+    <AssetInspector assetId={inspectorId} refreshKey={inspectorRevision} onclose={closeInspector} />
   </aside>
 {/if}
 

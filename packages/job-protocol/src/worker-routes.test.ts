@@ -9,6 +9,7 @@ import {
   createNodeDb,
   jobs,
   projects,
+  projectEvents,
   uploadSessions,
   users,
   workspaces,
@@ -564,6 +565,61 @@ describe("the files a claim names", () => {
 });
 
 describe("the worker claim", () => {
+  it("uses the current owner and media kind after a queued version is unstacked", async () => {
+    const { db, sqlite } = createNodeDb(":memory:");
+    applyNodeMigrations(sqlite);
+    try {
+      await seed(db);
+      await queueProbe(db);
+      await db
+        .update(jobs)
+        .set({
+          payloadJson: JSON.stringify({
+            workspace_id: "ws-1",
+            project_id: "project-1",
+            asset_id: "asset-1",
+            version_id: "version-1",
+            blob_key: "originals/picture.mov",
+          }),
+        })
+        .where(eq(jobs.id, "job-probe"))
+        .run();
+      await db
+        .insert(assets)
+        .values({
+          id: "detached",
+          projectId: "project-1",
+          name: "File",
+          kind: "file",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      await db
+        .update(assetVersions)
+        .set({ assetId: "detached" })
+        .where(eq(assetVersions.id, "version-1"))
+        .run();
+      // A plain file must skip ffprobe even if its former owner was a video.
+      expect(await claimWorkerJob(db, undefined, "w-1", ["cpu"])).toBeNull();
+      const version = await db
+        .select()
+        .from(assetVersions)
+        .where(eq(assetVersions.id, "version-1"))
+        .get();
+      expect(version?.transcodeStatus).toBe("skipped");
+      const events = await db.select().from(projectEvents).all();
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0]!.payloadJson)).toEqual({
+        asset_id: "detached",
+        version_id: "version-1",
+        status: "skipped",
+      });
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it("refuses a body that is not signed with the worker secret", async () => {
     const { db, sqlite } = createNodeDb(":memory:");
     applyNodeMigrations(sqlite);

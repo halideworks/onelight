@@ -1,5 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import { createApp } from "@onelight/api";
 import { FakeClock, req, json, forbiddenKeysIn } from "@onelight/api/contract";
 import type { ContractHarness } from "@onelight/api/contract";
@@ -133,6 +134,32 @@ describe("D1 migrations", () => {
 });
 
 describe("D1 dialect, where the app leans on it", () => {
+  it("atomic native batches chain guarded writes and roll back late failures", async () => {
+    await env.DB.prepare(
+      "CREATE TABLE atomic_check (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)",
+    ).run();
+    const write = (expected: number) =>
+      h.db.atomic([
+        sql`INSERT INTO atomic_check SELECT 1, 10 WHERE ${expected} = 1 RETURNING id`,
+        sql`INSERT INTO atomic_check SELECT 2, 20 WHERE changes() = 1 RETURNING id`,
+        sql`UPDATE atomic_check SET value = 30 WHERE id = 1 AND changes() = 1 RETURNING value`,
+      ]);
+    expect(await write(0)).toEqual([[], [], []]);
+    expect(await write(1)).toEqual([[{ id: 1 }], [{ id: 2 }], [{ value: 30 }]]);
+    await expect(
+      h.db.atomic([
+        sql`UPDATE atomic_check SET value = 99 WHERE id = 1 RETURNING value`,
+        sql`INSERT INTO atomic_check VALUES (2, 50)`,
+      ]),
+    ).rejects.toThrow();
+    expect(
+      await env.DB.prepare(
+        "SELECT value FROM atomic_check WHERE id = 1",
+      ).first(),
+    ).toEqual({ value: 30 });
+    expect(await h.db.atomic([])).toEqual([]);
+  });
+
   it("evaluates guarded JSON reorder against one snapshot and returns only changed rows", async () => {
     /* The share reorder uses this single-statement compare-and-swap. The
        uncorrelated aggregate must not be reevaluated after each row moves. */
@@ -287,5 +314,66 @@ describe("the API over D1, end to end", () => {
     expect(spec.status).toBe(200);
     const doc = await json<{ paths: Record<string, unknown> }>(spec);
     expect(Object.keys(doc.paths).length).toBeGreaterThan(50);
+  });
+
+  it("moves and restores a version through guarded native D1 batches", async () => {
+    const user = await env.DB.prepare(
+      "SELECT id, workspace_id FROM users LIMIT 1",
+    ).first<{ id: string; workspace_id: string }>();
+    const pid = h.ids.ulid();
+    const aid = h.ids.ulid();
+    const first = h.ids.ulid();
+    const second = h.ids.ulid();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO projects (id, workspace_id, name, palette, created_by, created_at, updated_at) VALUES (?, ?, 'Stack', 'kuro', ?, 1, 1)",
+      ).bind(pid, user!.workspace_id, user!.id),
+      env.DB.prepare(
+        "INSERT INTO assets (id, project_id, name, kind, current_version_id, created_at, updated_at) VALUES (?, ?, 'Stack.txt', 'file', ?, 1, 1)",
+      ).bind(aid, pid, second),
+      ...[first, second].flatMap((vid, index) => [
+        env.DB.prepare(
+          "INSERT INTO upload_sessions (id, workspace_id, project_id, created_by, client_filename, relative_path, size, blob_key, status, created_at) VALUES (?, ?, ?, ?, 'Stack.txt', '', 10, ?, 'completed', 1)",
+        ).bind(vid, user!.workspace_id, pid, user!.id, `originals/${vid}`),
+        env.DB.prepare(
+          "INSERT INTO asset_versions (id, asset_id, upload_session_id, version_no, original_blob_key, original_filename, size, checksum_crc32c, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, 'Stack.txt', 10, '', ?, 1)",
+        ).bind(vid, aid, vid, index + 1, `originals/${vid}`, user!.id),
+      ]),
+    ]);
+    const expected = {
+      asset_id: aid,
+      current_version_id: second,
+      versions: [
+        { id: first, version_no: 1 },
+        { id: second, version_no: 2 },
+      ],
+    };
+    const detached = await req(h, `/api/v1/versions/${second}/unstack`, {
+      cookie,
+      json: { expected },
+    });
+    expect(detached.status).toBe(200);
+    const moved = await json<{
+      asset: { id: string };
+      source_stack: typeof expected;
+      undo_token: string;
+    }>(detached);
+    expect(moved.source_stack.current_version_id).toBe(first);
+    const restored = await req(h, `/api/v1/versions/${second}/restack`, {
+      cookie,
+      json: { expected: moved.source_stack, undo_token: moved.undo_token },
+    });
+    expect(restored.status).toBe(200);
+    expect(
+      (await json<{ stack_state: typeof expected }>(restored)).stack_state,
+    ).toEqual(expected);
+    expect(
+      await env.DB.prepare("SELECT id FROM assets WHERE id = ?")
+        .bind(moved.asset.id)
+        .first(),
+    ).toBeNull();
+    expect(
+      await env.DB.prepare("PRAGMA foreign_key_check").all(),
+    ).toMatchObject({ results: [] });
   });
 });

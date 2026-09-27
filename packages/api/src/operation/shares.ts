@@ -517,6 +517,12 @@ export const createShares = (env: AppEnv, media: Media) => {
       throw errors.forbidden(
         "Only the comment author can change this share comment.",
       );
+    if (
+      comment.internal ||
+      !(await publicShare(c, share, { versionId: comment.versionId })).assets
+        .length
+    )
+      throw errors.notFound("This comment is no longer visible in this share.");
     return { share, projection, comment };
   };
 

@@ -32,6 +32,7 @@ import { registerAssetsRoutes } from "./routes/assets.js";
 import { registerAssetInspectorRoutes } from "./routes/asset-inspector.js";
 import { registerMatchingRoutes } from "./routes/matching.js";
 import { registerVersionsRoutes } from "./routes/versions.js";
+import { registerVersionStacksRoutes } from "./routes/version-stacks.js";
 import { registerMediaRoutes } from "./routes/media.js";
 import { registerOpenapiRoutes } from "./routes/openapi.js";
 
@@ -206,6 +207,7 @@ export const createApp = (env: AppEnv): Hono<{ Variables: Variables }> => {
     media,
     blobs,
   });
+  registerVersionStacksRoutes(api, env, { access, activity, uploads });
   registerMediaRoutes(api, env, { media, blobs });
   registerOpenapiRoutes(api, root, env);
 

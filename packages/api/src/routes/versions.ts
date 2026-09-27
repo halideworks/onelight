@@ -8,13 +8,18 @@ import {
 } from "../helpers.js";
 import { bodies } from "../schemas.js";
 import { nextAssetStamp } from "../operation/asset-state.js";
+import {
+  stackPredicate,
+  signStackUndo,
+  stackDigest,
+} from "../operation/version-stack.js";
+import type { StackState } from "../operation/version-stack.js";
 import { MAX_ATTACH_BATCH } from "../limits.js";
 import { errors, stackKeyOf, needsStillFull } from "@onelight/core";
 import type { uploadSessions } from "@onelight/db/schema";
 import {
   assets,
   assetVersions,
-  projects,
   jobs,
   renditions,
   captionTracks,
@@ -90,6 +95,9 @@ export const registerVersionsRoutes = (
           version_id: created.versionId,
           version_no: created.versionNo,
           job_id: created.jobId,
+          stack_state: created.stackState,
+          previous_current_version_id: created.previousCurrentId,
+          undo_token: created.undoToken,
         });
       } catch (caught) {
         failures.push({
@@ -141,6 +149,9 @@ export const registerVersionsRoutes = (
     versionNo: number;
     jobId: string;
     priorUploaders: string[];
+    stackState: StackState;
+    previousCurrentId: string | null;
+    undoToken: string;
   }> => {
     // The three attach rules are all state conflicts, not shape errors: 409.
     if (upload.status !== "completed")
@@ -172,82 +183,49 @@ export const registerVersionsRoutes = (
           Math.max(max, row.versionNo),
         0,
       ) + 1;
-    const previousCurrentId = asset.currentVersionId;
+    const current = (
+      await env.db
+        .select({ id: assets.currentVersionId })
+        .from(assets)
+        .where(eq(assets.id, asset.id))
+        .limit(1)
+        .all()
+    )[0];
+    if (!current) throw errors.notFound("Asset was not found.");
+    const before: StackState = {
+      asset_id: asset.id,
+      current_version_id: current.id,
+      versions: priorVersions
+        .map((row) => ({ id: row.id, version_no: row.versionNo }))
+        .sort((a, b) => a.version_no - b.version_no),
+    };
+    const previousCurrentId = before.current_version_id;
     const now = env.clock.now();
     const versionId = env.ids.ulid();
-    await env.db
-      .insert(assetVersions)
-      .values({
-        id: versionId,
-        assetId: asset.id,
-        uploadSessionId: upload.id,
-        versionNo,
-        originalBlobKey: upload.blobKey,
-        originalFilename: upload.clientFilename,
-        size: upload.size,
-        checksumCrc32c: upload.checksumCrc32c ?? "",
-        uploadedBy: options.actor.id,
-        mediaInfoJson: "{}",
-        sourceTimecodeStart: null,
-        sourceStartFrame: null,
-        frameRateNum: null,
-        frameRateDen: null,
-        dropFrame: false,
-        durationFrames: null,
-        colorJson: "{}",
-        transcodeStatus: "pending",
-        deletedAt: null,
-        createdAt: now,
-      })
-      .run();
-    await env.db
-      .update(assets)
-      .set({
-        currentVersionId: versionId,
-        ...(options.name
-          ? {
-              name: options.name.trim(),
-              stackKey: stackKeyOf(options.name.trim()),
-            }
-          : {}),
-        updatedAt: nextAssetStamp(now),
-      })
-      .where(eq(assets.id, asset.id))
-      .run();
-    await env.db
-      .update(projects)
-      .set({ storageBytes: sql`${projects.storageBytes} + ${upload.size}` })
-      .where(eq(projects.id, asset.projectId))
-      .run();
     const jobId = env.ids.ulid();
-    await env.db
-      .insert(jobs)
-      .values({
-        id: jobId,
-        kind: "probe",
-        payloadJson: JSON.stringify({
-          workspace_id: options.actor.workspaceId,
-          project_id: asset.projectId,
-          asset_id: asset.id,
-          version_id: versionId,
-          blob_key: upload.blobKey,
-        }),
-        idempotencyKey: `probe:${versionId}`,
-        status: "queued",
-        priority: 0,
-        capabilityJson: "{}",
-        maxAttempts: 5,
-        attempts: 0,
-        runAfter: now,
-        createdAt: now,
-        startedAt: null,
-        heartbeatAt: null,
-        leaseExpiresAt: null,
-        finishedAt: null,
-        error: null,
-        workerId: null,
-      })
-      .run();
+    const jobPayload = JSON.stringify({
+      workspace_id: options.actor.workspaceId,
+      project_id: asset.projectId,
+      asset_id: asset.id,
+      version_id: versionId,
+      blob_key: upload.blobKey,
+    });
+    const renamed = options.name
+      ? sql`, name = ${options.name.trim()}, stack_key = ${stackKeyOf(options.name.trim())}`
+      : sql``;
+    const changed = await env.db.atomic([
+      sql`UPDATE assets SET current_version_id = ${versionId}, updated_at = max(updated_at + 1, ${now}) ${renamed}
+          WHERE ${stackPredicate(before)} AND NOT EXISTS (SELECT 1 FROM asset_versions WHERE upload_session_id = ${upload.id}) RETURNING id`,
+      sql`INSERT INTO asset_versions (id, asset_id, upload_session_id, version_no, original_blob_key, original_filename, size, checksum_crc32c, uploaded_by, drop_frame, created_at)
+          SELECT ${versionId}, ${asset.id}, ${upload.id}, ${versionNo}, ${upload.blobKey}, ${upload.clientFilename}, ${upload.size}, ${upload.checksumCrc32c ?? ""}, ${options.actor.id}, 0, ${now} WHERE changes() = 1 RETURNING id`,
+      sql`UPDATE projects SET storage_bytes = storage_bytes + ${upload.size} WHERE changes() = 1 AND id = ${asset.projectId} RETURNING id`,
+      sql`INSERT INTO jobs (id, kind, payload_json, idempotency_key, status, priority, capability_json, max_attempts, attempts, run_after, created_at)
+          SELECT ${jobId}, 'probe', ${jobPayload}, ${`probe:${versionId}`}, 'queued', 0, '{}', 5, 0, ${now}, ${now} WHERE changes() = 1 RETURNING id`,
+    ]);
+    if (!changed[0]?.length)
+      throw errors.conflict(
+        "The version stack changed. Retry the upload attachment.",
+      );
     if (options.carryForward && previousCurrentId)
       await copyUnresolvedComments(previousCurrentId, versionId);
     if (!options.quiet)
@@ -257,10 +235,25 @@ export const registerVersionsRoutes = (
         version_no: versionNo,
         job_id: jobId,
       });
+    const after: StackState = {
+      ...before,
+      current_version_id: versionId,
+      versions: [...before.versions, { id: versionId, version_no: versionNo }],
+    };
     return {
       versionId,
       versionNo,
       jobId,
+      stackState: after,
+      previousCurrentId,
+      undoToken: await signStackUndo(env, options.actor, {
+        action: "unstack",
+        project_id: asset.projectId,
+        version_id: versionId,
+        asset_id: asset.id,
+        current_version_id: previousCurrentId,
+        expected_digest: await stackDigest(after),
+      }),
       priorUploaders: priorVersions.map(
         (row: { uploadedBy: string }) => row.uploadedBy,
       ),
@@ -317,6 +310,9 @@ export const registerVersionsRoutes = (
         asset: assetWire(updatedAsset),
         version: versionWire(newVersion),
         job_id: created.jobId,
+        stack_state: created.stackState,
+        previous_current_version_id: created.previousCurrentId,
+        undo_token: created.undoToken,
       },
       201,
     );
@@ -729,14 +725,25 @@ export const registerVersionsRoutes = (
         .all()
     )[0];
     if (!target) throw errors.notFound("Version was not found.");
-    await env.db
+    const changed = await env.db
       .update(assets)
       .set({
         currentVersionId: target.id,
         updatedAt: nextAssetStamp(env.clock.now()),
       })
-      .where(eq(assets.id, version.assetId))
-      .run();
+      .where(
+        and(
+          eq(assets.id, version.assetId),
+          isNull(assets.deletedAt),
+          sql`EXISTS (SELECT 1 FROM asset_versions WHERE id = ${target.id} AND asset_id = ${version.assetId} AND deleted_at IS NULL)`,
+        ),
+      )
+      .returning({ id: assets.id })
+      .all();
+    if (!changed.length)
+      throw errors.conflict(
+        "The version moved or was deleted. Refresh the stack.",
+      );
     const rows = await env.db
       .select()
       .from(assetVersions)

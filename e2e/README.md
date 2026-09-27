@@ -28,7 +28,7 @@ docker run --rm --network host \
   -e E2E_PASSWORD=... \
   -e E2E_PROJECT_ID=01KX... \
   mcr.microsoft.com/playwright:v1.56.1-noble \
-  sh -c 'npm i --silent --no-save playwright@1.56.1 >/dev/null 2>&1 && node --test runner.test.mjs && node account-flows.e2e.mjs && node share-flows.e2e.mjs && node settings.e2e.mjs && node review-room.e2e.mjs && node workbench.e2e.mjs'
+  sh -c 'npm i --silent --no-save playwright@1.56.1 >/dev/null 2>&1 && node --test runner.test.mjs && node account-flows.e2e.mjs && node share-flows.e2e.mjs && node settings.e2e.mjs && node review-room.e2e.mjs && node workbench.e2e.mjs && node version-stack.e2e.mjs'
 ```
 
 Environment:
@@ -54,6 +54,17 @@ views, server-side sorting and filters, Quick Look, command search, guarded undo
 deep scroll and selection restoration, review state, account isolation, and phone
 layouts. It removes its project and temporary account on exit. Run suites
 sequentially because account and settings checks change workspace preferences.
+
+`node version-stack.e2e.mjs` needs only the instance URL and admin credentials.
+It uploads disposable text files through the review and library upload controls,
+then checks upload Undo, explicit Unstack and Undo, exact version numbering,
+non-latest current selection, surviving comments and original bytes, and safe
+conflicts when a detached asset is edited or shared. Its project is deleted on
+exit. It also checks delayed filename matching, consecutive deliveries,
+predecessor-note refresh, a stale initial HTTP snapshot superseded by a live stack
+event, and an unrelated stack change leaving Quick Look mounted without
+refetching. `E2E_SCREENSHOTS` captures desktop and phone
+version menus and any failing state.
 
 Checks that need real playback skip loudly (not silently) when the media is
 not ready. Exit code is non-zero on failed checks, empty runs, or exceptions.

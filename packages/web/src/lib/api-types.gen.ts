@@ -1670,6 +1670,14 @@ export interface paths {
                                 transcode_status: "pending" | "processing" | "ready" | "failed" | "skipped";
                                 created_at: number;
                             }[];
+                            stack_state: {
+                                asset_id: string;
+                                current_version_id: string | null;
+                                versions: {
+                                    id: string;
+                                    version_no: number;
+                                }[];
+                            };
                         };
                     };
                 };
@@ -1786,6 +1794,16 @@ export interface paths {
                                 created_at: number;
                             };
                             job_id: string;
+                            stack_state: {
+                                asset_id: string;
+                                current_version_id: string | null;
+                                versions: {
+                                    id: string;
+                                    version_no: number;
+                                }[];
+                            };
+                            previous_current_version_id: string | null;
+                            undo_token: string;
                         };
                     };
                 };
@@ -7056,6 +7074,16 @@ export interface paths {
                                 version_id: string;
                                 version_no: number;
                                 job_id: string;
+                                stack_state: {
+                                    asset_id: string;
+                                    current_version_id: string | null;
+                                    versions: {
+                                        id: string;
+                                        version_no: number;
+                                    }[];
+                                };
+                                previous_current_version_id: string | null;
+                                undo_token: string;
                             }[];
                             failures: {
                                 upload_id: string;
@@ -15360,6 +15388,163 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/versions/{id}/restack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Undo an unstack using its signed token and an unchanged source stack. Refuses to remove an edited or referenced detached asset. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        expected: {
+                            asset_id: string;
+                            current_version_id: string | null;
+                            versions: {
+                                id: string;
+                                version_no: number;
+                            }[];
+                        };
+                        undo_token: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            asset: {
+                                id: string;
+                                public_id: string;
+                                project_id: string;
+                                folder_id: string | null;
+                                name: string;
+                                /** @enum {string} */
+                                kind: "video" | "audio" | "image" | "pdf" | "file";
+                                current_version_id: string | null;
+                                /** @enum {string} */
+                                status: "none" | "in_review" | "approved" | "changes_requested";
+                                description: string;
+                                tags: string[];
+                                has_thumbnail: boolean;
+                                selected: boolean;
+                                selected_at: number | null;
+                                display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
+                                deleted_at: number | null;
+                                created_at: number;
+                                updated_at: number;
+                            };
+                            version: {
+                                id: string;
+                                asset_id: string;
+                                version_no: number;
+                                original_filename: string;
+                                size: number;
+                                checksum_crc32c: string;
+                                uploaded_by: string;
+                                media_info: {
+                                    [key: string]: unknown;
+                                };
+                                source_timecode_start: string | null;
+                                source_start_frame: number | null;
+                                frame_rate_num: number | null;
+                                frame_rate_den: number | null;
+                                drop_frame: boolean;
+                                duration_frames: number | null;
+                                color: {
+                                    [key: string]: unknown;
+                                };
+                                /** @enum {string} */
+                                transcode_status: "pending" | "processing" | "ready" | "failed" | "skipped";
+                                created_at: number;
+                            };
+                            stack_state: {
+                                asset_id: string;
+                                current_version_id: string | null;
+                                versions: {
+                                    id: string;
+                                    version_no: number;
+                                }[];
+                            };
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description The resource changed; the mutation precondition no longer matches. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                details?: unknown;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/versions/{id}/stack": {
         parameters: {
             query?: never;
@@ -15550,6 +15735,172 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/versions/{id}/unstack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Move a live version into a separate asset, preserving its media and comments. An upload undo token restores its previous current version. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        expected: {
+                            asset_id: string;
+                            current_version_id: string | null;
+                            versions: {
+                                id: string;
+                                version_no: number;
+                            }[];
+                        };
+                        undo_token?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Success */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            asset: {
+                                id: string;
+                                public_id: string;
+                                project_id: string;
+                                folder_id: string | null;
+                                name: string;
+                                /** @enum {string} */
+                                kind: "video" | "audio" | "image" | "pdf" | "file";
+                                current_version_id: string | null;
+                                /** @enum {string} */
+                                status: "none" | "in_review" | "approved" | "changes_requested";
+                                description: string;
+                                tags: string[];
+                                has_thumbnail: boolean;
+                                selected: boolean;
+                                selected_at: number | null;
+                                display_transfer: ("srgb" | "gamma22" | "bt1886") | null;
+                                deleted_at: number | null;
+                                created_at: number;
+                                updated_at: number;
+                            };
+                            version: {
+                                id: string;
+                                asset_id: string;
+                                version_no: number;
+                                original_filename: string;
+                                size: number;
+                                checksum_crc32c: string;
+                                uploaded_by: string;
+                                media_info: {
+                                    [key: string]: unknown;
+                                };
+                                source_timecode_start: string | null;
+                                source_start_frame: number | null;
+                                frame_rate_num: number | null;
+                                frame_rate_den: number | null;
+                                drop_frame: boolean;
+                                duration_frames: number | null;
+                                color: {
+                                    [key: string]: unknown;
+                                };
+                                /** @enum {string} */
+                                transcode_status: "pending" | "processing" | "ready" | "failed" | "skipped";
+                                created_at: number;
+                            };
+                            source_stack: {
+                                asset_id: string;
+                                current_version_id: string | null;
+                                versions: {
+                                    id: string;
+                                    version_no: number;
+                                }[];
+                            };
+                            before_stack: {
+                                asset_id: string;
+                                current_version_id: string | null;
+                                versions: {
+                                    id: string;
+                                    version_no: number;
+                                }[];
+                            };
+                            undo_token: string;
+                        };
+                    };
+                };
+                /** @description Validation failure */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description Not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description The resource changed; the mutation precondition no longer matches. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                message: string;
+                                details?: unknown;
+                            };
+                        };
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;

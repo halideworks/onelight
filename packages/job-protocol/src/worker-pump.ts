@@ -29,7 +29,6 @@ import {
   assetVersions,
   assets,
   jobs,
-  projectEvents,
   projects,
   renditions,
   shareAssets,
@@ -195,44 +194,19 @@ const completePlayableRenditionMeta = (
 // job that produced it.
 const insertVersionEvent = async (
   db: AppDb,
-  payload: JobPayload,
   versionId: string,
   type: "version.transcode" | "version.probed",
   status?: string,
 ): Promise<void> => {
   try {
-    let projectId =
-      typeof payload.project_id === "string" ? payload.project_id : undefined;
-    let assetId =
-      typeof payload.asset_id === "string" ? payload.asset_id : undefined;
-    if (!projectId || !assetId) {
-      const row = (
-        await db
-          .select({ assetId: assets.id, projectId: assets.projectId })
-          .from(assetVersions)
-          .innerJoin(assets, eq(assetVersions.assetId, assets.id))
-          .where(eq(assetVersions.id, versionId))
-          .limit(1)
-          .all()
-      )[0];
-      assetId = assetId ?? row?.assetId;
-      projectId = projectId ?? row?.projectId;
-    }
-    if (!projectId) return;
-    await db
-      .insert(projectEvents)
-      .values({
-        id: new UlidGenerator().ulid(),
-        projectId,
-        type,
-        payloadJson: JSON.stringify({
-          asset_id: assetId ?? null,
-          version_id: versionId,
-          ...(status ? { status } : {}),
-        }),
-        createdAt: Date.now(),
-      })
-      .run();
+    // Versions can move while a queued or running job retains its old payload.
+    const statusPair = status ? sql`, 'status', ${status}` : sql``;
+    await db.run(sql`
+      INSERT INTO project_events (id, project_id, type, payload_json, created_at)
+      SELECT ${new UlidGenerator().ulid()}, a.project_id, ${type},
+             json_object('asset_id', a.id, 'version_id', v.id ${statusPair}), ${Date.now()}
+      FROM asset_versions v JOIN assets a ON a.id = v.asset_id
+      WHERE v.id = ${versionId}`);
   } catch (error) {
     console.warn(
       `[onelight] ${type} event for version ${versionId} was not recorded: ${
@@ -327,30 +301,13 @@ const validateWritten = async (
     );
 };
 
-const assetKindFor = async (
-  db: AppDb,
-  payload: JobPayload,
-  versionId: string,
-): Promise<string> => {
-  let assetId =
-    typeof payload.asset_id === "string" ? payload.asset_id : undefined;
-  if (!assetId) {
-    const version = (
-      await db
-        .select({ assetId: assetVersions.assetId })
-        .from(assetVersions)
-        .where(eq(assetVersions.id, versionId))
-        .limit(1)
-        .all()
-    )[0];
-    assetId = version?.assetId;
-  }
-  if (!assetId) return "video";
+const assetKindFor = async (db: AppDb, versionId: string): Promise<string> => {
   const asset = (
     await db
       .select({ kind: assets.kind })
-      .from(assets)
-      .where(eq(assets.id, assetId))
+      .from(assetVersions)
+      .innerJoin(assets, eq(assetVersions.assetId, assets.id))
+      .where(eq(assetVersions.id, versionId))
       .limit(1)
       .all()
   )[0];
@@ -1540,13 +1497,7 @@ const registerWorkerRenditions = async (
     .set({ transcodeStatus: "ready" })
     .where(eq(assetVersions.id, version.id))
     .run();
-  await insertVersionEvent(
-    db,
-    payload,
-    version.id,
-    "version.transcode",
-    "ready",
-  );
+  await insertVersionEvent(db, version.id, "version.transcode", "ready");
 };
 
 /* What the worker is asked for, or null when the job needs no worker at all.
@@ -1675,7 +1626,7 @@ const planTranscodeJob = async (
       .all()
   )[0] as typeof assetVersions.$inferSelect | undefined;
   if (!version) throw new Error("Version was not found.");
-  const assetKind = await assetKindFor(db, payload, versionId);
+  const assetKind = await assetKindFor(db, versionId);
   const mediaInfo: MediaInfo = {
     format: {},
     streams: [],
@@ -1696,13 +1647,7 @@ const planTranscodeJob = async (
       .set({ transcodeStatus: "skipped" })
       .where(eq(assetVersions.id, version.id))
       .run();
-    await insertVersionEvent(
-      db,
-      payload,
-      version.id,
-      "version.transcode",
-      "skipped",
-    );
+    await insertVersionEvent(db, version.id, "version.transcode", "skipped");
     return null;
   }
   const outputs = planned.map((entry) => ({
@@ -1738,7 +1683,7 @@ const applyTranscodeResult = async (
       .all()
   )[0] as typeof assetVersions.$inferSelect | undefined;
   if (!version) throw new Error("Version was not found.");
-  const assetKind = await assetKindFor(db, payload, versionId);
+  const assetKind = await assetKindFor(db, versionId);
   await registerWorkerRenditions(
     db,
     payload,
@@ -1755,7 +1700,7 @@ const planProbeJob = async (
   payload: JobPayload,
   versionId: string,
 ): Promise<JobPlan> => {
-  const assetKind = await assetKindFor(db, payload, versionId);
+  const assetKind = await assetKindFor(db, versionId);
   if (assetKind === "pdf" || assetKind === "file") {
     // ffprobe cannot parse these kinds, so the worker probe is skipped.
     // PDFs still get a transcode (pdftoppm page rasters); plain files
@@ -1771,7 +1716,6 @@ const planProbeJob = async (
       .run();
     await insertVersionEvent(
       db,
-      payload,
       versionId,
       "version.transcode",
       assetKind === "pdf" ? "processing" : "skipped",
@@ -1820,7 +1764,7 @@ const applyProbeResult = async (
      query happened to hit. */
   if (state.status !== "complete" || !state.result?.media_info)
     throw new Error(state.error ?? "Probe failed.");
-  const assetKind = await assetKindFor(db, payload, versionId);
+  const assetKind = await assetKindFor(db, versionId);
   const mediaInfo = state.result.media_info;
   const num =
     typeof mediaInfo.frameRateNum === "number"
@@ -1878,14 +1822,8 @@ const applyProbeResult = async (
     })
     .where(eq(assetVersions.id, versionId))
     .run();
-  await insertVersionEvent(db, payload, versionId, "version.probed");
-  await insertVersionEvent(
-    db,
-    payload,
-    versionId,
-    "version.transcode",
-    "processing",
-  );
+  await insertVersionEvent(db, versionId, "version.probed");
+  await insertVersionEvent(db, versionId, "version.transcode", "processing");
   /* A still came back rendered: register it here and it is done. Anything
      else needs a transcode planned from what the probe just found.
 
@@ -2327,13 +2265,7 @@ export const markAbandonedVersionFailed = async (
     })
     .where(eq(assetVersions.id, versionId))
     .run();
-  await insertVersionEvent(
-    db,
-    payload,
-    versionId,
-    "version.transcode",
-    "failed",
-  );
+  await insertVersionEvent(db, versionId, "version.transcode", "failed");
 };
 
 export const recordDeadMediaJob = async (
@@ -2377,13 +2309,7 @@ export const recordDeadMediaJob = async (
       })
       .where(eq(assetVersions.id, versionId))
       .run();
-    await insertVersionEvent(
-      db,
-      payload,
-      versionId,
-      "version.transcode",
-      "failed",
-    );
+    await insertVersionEvent(db, versionId, "version.transcode", "failed");
   } catch (error) {
     console.warn(
       `[onelight] dead job ${job.id} was not written back to its version: ${
